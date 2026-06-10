@@ -44,3 +44,11 @@ class ChatDisplay(QScrollArea):
     def auto_scroll_to_bottom(self):
         """Smoothly force the scrollbar slider to track the lowest limit"""
         self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
+
+    def clear_messages(self):
+        """Remove all message widgets while keeping the bottom stretch anchor."""
+        while self.chat_layout.count() > 1:
+            item = self.chat_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
