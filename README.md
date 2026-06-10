@@ -50,6 +50,8 @@
 └── core/                  # 🛡️ 隐盾安全业务核心（团队已有核心资产）
     ├── privacy_engine.py  # 数据匿名化与 deanonymize 还原矩阵
     └── file_tools.py      # 大模型绑定的 list、create、delete 本地物理工具链
+```
+
 
 ---
 
