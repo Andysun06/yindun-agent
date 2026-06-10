@@ -1,5 +1,5 @@
 {
-  "model": "mimo",
+  "model": "mimo2.5",
   "privacy": true,
   "permission": "完全控制 (读/写/列表)",
   "policy": "切换到敏感目录需提示",
