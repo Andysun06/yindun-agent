@@ -1,15 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-隐盾 V2.0 — 💬 纯原生流式气泡组件
+隐盾 V2.1.0 — 💬 纯原生流式气泡组件
 彻底抛弃 QTextBrowser 网页标签，改用原生布局与自适应物理卡片
-实现 75% 黄金分割线单行不提前换行算法
+升级：
+1. 引入 QTextDocument 理想宽度计算矩阵，锁死 75% 阈值前的绝对不换行算法
+2. 全面重构时间戳色彩矩阵，实现绿卡与白卡的高对比度现代化视觉
 """
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QFrame, QGraphicsDropShadowEffect
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QTextDocument
 
 class ChatBubble(QWidget):
-    """单条对话的高级原生弹性气泡组件"""
+    """单条对话的高级原生弹性气泡组件 (全新升级自适应不提前换行与高对比度色彩)"""
     def __init__(self, role, text, timestamp, window_width=420):
         super().__init__()
         is_user = (role == "user")
@@ -24,28 +26,48 @@ class ChatBubble(QWidget):
         
         # 3. 🎯 核心算法：精准锁死 75% 最大宽度红线 (窗口宽 420px * 0.75 = 315px)
         # 减去气泡自身的内边距，文字标签的最大宽度死锁在 280px
-        # 这样文字在没达到 280px 宽以前，绝对保持单行横向延伸；一旦达到 280px，才会柔和换行
         max_bubble_width = int(window_width * 0.75) - 35
         
         # 4. 创建气泡内部的纵向文本排版系统
         card_layout = QVBoxLayout(self.bubble_card)
         card_layout.setContentsMargins(12, 9, 12, 9)
-        card_layout.setSpacing(3)
+        card_layout.setSpacing(5)
         
         # 注入标准文本标签
-        self.text_label = QLabel(text)
+        self.text_label = QLabel()
+        self.text_label.setTextFormat(Qt.MarkdownText)
+        self.text_label.setText(text)
         self.text_label.setWordWrap(True) # 激活自适应换行
-        self.text_label.setMaximumWidth(max_bubble_width) # 强行拦截换行边界
+        
+        # 🌟 终极解决方案：引入 QTextDocument 虚拟渲染舱，精准测量 Markdown 在当前字体下的理想“不换行宽度”
+        doc = QTextDocument()
+        doc.setDefaultFont(self.text_label.font())
+        doc.setMarkdown(text)
+        ideal_width = int(doc.idealWidth()) + 12 # 增加轻量级像素缓冲，容错加粗等样式膨胀
+        
+        # 核心红线拦截：如果文本的理想不换行宽度没有达到 75% 限制，强制死锁为其自然展平宽度，彻底杜绝提前换行
+        if ideal_width < max_bubble_width:
+            self.text_label.setFixedWidth(ideal_width)
+        else:
+            # 文本过长真正触发了 75% 红线，则将宽度锁定最大边界，交由底层 setWordWrap 执行标准安全折行
+            self.text_label.setFixedWidth(max_bubble_width)
+        
         self.text_label.setTextInteractionFlags(Qt.TextSelectableByMouse) # 支持鼠标划选机密文本
         card_layout.addWidget(self.text_label)
         
         # 注入时间戳微型标签
         self.time_label = QLabel(timestamp)
-        self.time_label.setStyleSheet("font-size: 10px; color: #b0b8c9; border: none; background: transparent;")
         
         # 5. 根据发送者角色，像素级渲染高定皮肤与对齐策略
         if is_user:
-            self.text_label.setStyleSheet("color: #000000; font-size: 13px; font-weight: 500; border: none; background: transparent;")
+            self.text_label.setStyleSheet("""
+                QLabel { color: #000000; font-size: 13px; font-weight: 500; border: none; background: transparent; }
+            """)
+            
+            # 🌟 核心升级：将绿色卡片内原本模糊的灰色时间戳，替换为高对比度的优雅“深森林绿”，确保日光及暗视场下极佳的清晰度
+            self.time_label.setStyleSheet("""
+                QLabel { font-size: 10px; color: #2c5a16; font-weight: 600; border: none; background: transparent; }
+            """)
             self.time_label.setAlignment(Qt.AlignRight)
             card_layout.addWidget(self.time_label)
             
@@ -62,7 +84,14 @@ class ChatBubble(QWidget):
             row_layout.addStretch(1)
             row_layout.addWidget(self.bubble_card)
         else:
-            self.text_label.setStyleSheet("color: #1e293b; font-size: 13px; line-height: 1.5; border: none; background: transparent;")
+            self.text_label.setStyleSheet("""
+                QLabel { color: #1e293b; font-size: 13px; border: none; background: transparent; }
+            """)
+            
+            # 🌟 核心升级：将白色卡片内的时间戳升级为中高对比度的“深石板灰”（Slate-600），与整体工业风完美契合
+            self.time_label.setStyleSheet("""
+                QLabel { font-size: 10px; color: #576574; font-weight: 500; border: none; background: transparent; }
+            """)
             self.time_label.setAlignment(Qt.AlignLeft)
             card_layout.addWidget(self.time_label)
             
@@ -76,7 +105,7 @@ class ChatBubble(QWidget):
                 }
             """)
             
-            # 🌟 视觉升级：为 AI 的答复卡片注入极其细腻的、带有半透明高斯模糊的物理微阴影
+            # 视觉阴影升级
             shadow = QGraphicsDropShadowEffect(self)
             shadow.setBlurRadius(8)
             shadow.setColor(QColor(0, 0, 0, 12))
