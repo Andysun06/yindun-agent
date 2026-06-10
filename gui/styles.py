@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-隐盾 V2.0 — 皮肤资产库
+隐盾 V2.1.0 — 皮肤资产库
 专门存储控制窗口半透明、现代下拉框、✔号复选框、以及按钮尺寸锁定的全局 QSS 样式
 """
 
@@ -20,7 +20,7 @@ QFrame#titleBar { background: transparent; border: none; border-top-left-radius:
 QLabel#titleIcon { font-size: 16px; background: transparent; border: none; }
 QLabel#titleText { color: #1a1a2e; font-size: 13px; font-weight: 700; background: transparent; border: none; }
 
-/* 🌟 固定并统一顶部栏控制按钮尺寸 (24x24 黄金对齐) */
+/* 固定并统一顶部栏控制按钮尺寸 (24x24 黄金对齐) */
 QPushButton#titleBtn {
     background: transparent; border: none; border-radius: 12px; font-size: 14px; color: #aaa;
     min-width: 24px; max-width: 24px; min-height: 24px; max-height: 24px;
@@ -89,7 +89,7 @@ QComboBox#modeSelector QAbstractItemView::item, QComboBox#settingCombo QAbstract
 QComboBox QAbstractItemView::item:selected { background: #f0faf4; color: #07c160; }
 QComboBox QAbstractItemView::item:hover { background: #f5f6f8; }
 
-/* ---- 🌟 优化：高定制隔离网关复选框样式（未选为空框，选中带打勾对齐✔） ---- */
+/* ---- 高定制隔离网关复选框样式（未选为空框，选中带打勾对齐✔） ---- */
 QCheckBox#settingCheck { font-size: 12px; color: #444; spacing: 8px; background: transparent; }
 QCheckBox#settingCheck::indicator {
     width: 16px; height: 16px; border-radius: 4px;
@@ -101,15 +101,22 @@ QCheckBox#settingCheck::indicator:checked {
     image: url(""" + CK + """);
 }
 
-/* ---- 🌟 优化：横向不透明度拖动条 (QSlider) 专属工业样式表 ---- */
+/* ---- 🌟 优化：横向不透明度拖动条 (QSlider) 专属工业样式表 (已物理根治换行断裂缺陷) ---- */
 QSlider#settingSlider::groove:horizontal {
-    border: 1px solid #e
-    ‘’0e3ea; height: 6px; background: #f1f5f9; border-radius: 3px;
+    border: 1px solid #e0e3ea; height: 6px; background: #f1f5f9; border-radius: 3px;
 }
 QSlider#settingSlider::handle:horizontal {
     background: #07c160; width: 14px; height: 14px; margin: -4px 0; border-radius: 7px;
 }
 QSlider#settingSlider::handle:horizontal:hover { background: #06ad56; }
+
+/* ---- 🌟 新增：外部模型管理微型按钮皮肤样式 ---- */
+QPushButton#addModelBtn {
+    background: #ffffff; border: 1.5px solid #e0e3ea; border-radius: 12px;
+    color: #475569; font-size: 11px; font-weight: 600; padding: 0 10px;
+    min-height: 30px; max-height: 30px;
+}
+QPushButton#addModelBtn:hover { border-color: #07c160; color: #07c160; background: #f0faf4; }
 
 /* ---- 高阶离线设置面板组 ---- */
 QScrollArea#settingsScroll { background: transparent; border: none; }

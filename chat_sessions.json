@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "current_session_id": "02f5e5da953141b4a5586bc59e513346",
+  "sessions": [
+    {
+      "id": "02f5e5da953141b4a5586bc59e513346",
+      "title": "1",
+      "created_at": "2026-06-10T20:21:58",
+      "updated_at": "2026-06-10T20:23:33",
+      "messages": [
+        {
+          "role": "user",
+          "content": "我怎么称呼你"
+        },
+        {
+          "role": "assistant",
+          "content": "你可以叫我 **MiMo-v2.5-pro**，或者简称为 **MiMo**。我是由小米 MiMo 团队开发的 AI 助手，很高兴为你服务！ 😊"
+        }
+      ]
+    }
+  ]
+}
