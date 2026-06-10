@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 # Yindun Security Agent V2.0 - MainWindow Framework (100% Component-Driven)
+import json
 import os
 import sys
 import time
 import traceback
+from pathlib import Path
 
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QStackedLayout,
@@ -62,6 +64,8 @@ class MainWindow(QWidget):
             "model": "qwen2.5:7b", "privacy": True, "permission": "完全控制 (读/写/列表)",
             "policy": "切换到敏感目录需提示", "opacity": 100, "topmost": True
         }
+
+        self._memory_file = Path(__file__).resolve().parents[1] / "chat_history.json"
         
         # Assembly layout setup
         self._build_ui()
@@ -137,6 +141,8 @@ class MainWindow(QWidget):
         self.control_dock.send_triggered.connect(self._on_user_submit)
         self.control_dock.file_requested.connect(self._on_file_pick_request)
         cp.addWidget(self.control_dock)
+
+        self._restore_chat_history()
         
         self._stack.addWidget(chat_page)
 
@@ -173,6 +179,7 @@ class MainWindow(QWidget):
         display_text = f"📎 附件: {self.attached_file['name']}\n{text}" if self.attached_file else text
         self.chat_display.add_message_bubble("user", display_text, self.width())
         self.messages.append(("user", display_text))
+        self._persist_chat_history()
         
         full_context = text
         if self.attached_file:
@@ -221,6 +228,7 @@ class MainWindow(QWidget):
         self.status_bar.stop_thinking()
         self.chat_display.add_message_bubble("assistant", r, self.width())
         self.messages.append(("assistant", r))
+        self._persist_chat_history()
         self._cleanup_session()
 
     def _on_error_caught(self, e):
@@ -232,6 +240,45 @@ class MainWindow(QWidget):
         self.is_busy = False
         self.control_dock.toggle_busy_lock(False)
         self.control_dock.force_input_focus()
+
+    def _restore_chat_history(self):
+        history = self._load_chat_history()
+        self.messages = history
+        for role, text in history:
+            self.chat_display.add_message_bubble(role, text, self.width())
+
+    def _load_chat_history(self):
+        if not self._memory_file.exists():
+            return []
+        try:
+            with self._memory_file.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if isinstance(payload, dict):
+                payload = payload.get("messages", [])
+            if not isinstance(payload, list):
+                return []
+            history = []
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                role = item.get("role")
+                content = item.get("content")
+                if role in {"user", "assistant"} and isinstance(content, str):
+                    history.append((role, content))
+            return history
+        except Exception:
+            return []
+
+    def _persist_chat_history(self):
+        try:
+            payload = {
+                "version": 1,
+                "messages": [{"role": role, "content": content} for role, content in self.messages],
+            }
+            with self._memory_file.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
     def _on_intercept_confirm(self, info):
         """Trigger pop-up auditing block dialog when tool path intrusion occurs"""
