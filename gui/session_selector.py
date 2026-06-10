@@ -17,11 +17,11 @@ class SessionSelectorPage(QWidget):
         root.setContentsMargins(16, 14, 16, 14)
         root.setSpacing(10)
 
-        self.session_title = QLabel("Ñ¡Ôñ¶Ô»°")
+        self.session_title = QLabel("é€‰æ‹©å¯¹è¯")
         self.session_title.setObjectName("titleText")
         root.addWidget(self.session_title)
 
-        self.session_hint = QLabel("¿É´´½¨ĞÂ¶Ô»°¡¢½øÈëÀúÊ·¶Ô»°£¬»òÉ¾³ı²»ĞèÒªµÄ¶Ô»°¡£")
+        self.session_hint = QLabel("å¯åˆ›å»ºæ–°å¯¹è¯ã€è¿›å…¥å†å²å¯¹è¯ï¼Œæˆ–åˆ é™¤ä¸éœ€è¦çš„å¯¹è¯ã€‚")
         self.session_hint.setStyleSheet("color:#6b7280;font-size:12px;")
         root.addWidget(self.session_hint)
 
@@ -30,9 +30,9 @@ class SessionSelectorPage(QWidget):
         root.addWidget(self.session_list, 1)
 
         row = QHBoxLayout()
-        self.new_session_btn = QPushButton("ĞÂ½¨¶Ô»°")
-        self.open_session_btn = QPushButton("½øÈë¶Ô»°")
-        self.delete_session_btn = QPushButton("É¾³ı¶Ô»°")
+        self.new_session_btn = QPushButton("æ–°å»ºå¯¹è¯")
+        self.open_session_btn = QPushButton("è¿›å…¥å¯¹è¯")
+        self.delete_session_btn = QPushButton("åˆ é™¤å¯¹è¯")
         self.new_session_btn.clicked.connect(self.new_session_requested.emit)
         self.open_session_btn.clicked.connect(self._emit_open_current)
         self.delete_session_btn.clicked.connect(self._emit_delete_current)
@@ -50,16 +50,16 @@ class SessionSelectorPage(QWidget):
     def render_sessions(self, sessions, current_session_id):
         self.session_list.clear()
         for session in sessions:
-            title = session.get("title", "Î´ÃüÃû¶Ô»°")
+            title = session.get("title", "æœªå‘½åå¯¹è¯")
             msg_count = len(session.get("messages", []))
             updated = session.get("updated_at", "")[:19].replace("T", " ")
-            label = f"{title}  |  {msg_count} ÌõÏûÏ¢  |  {updated or 'Î´¿ªÊ¼'}"
+            label = f"{title}  |  {msg_count} æ¡æ¶ˆæ¯  |  {updated or 'æœªå¼€å§‹'}"
 
             item = QListWidgetItem(label)
             sid = session.get("id")
             item.setData(Qt.UserRole, sid)
             if sid == current_session_id:
-                item.setText("¡ñ " + item.text())
+                item.setText("â— " + item.text())
             self.session_list.addItem(item)
 
     def _emit_open_current(self):
