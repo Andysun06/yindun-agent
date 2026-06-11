@@ -1,67 +1,60 @@
 @echo off
-title Yindun Security Agent Environment Setup
-chcp 65001 >nul
+title Yindun V2.2.0 - Setup
 cd /d "%~dp0"
 
 echo ===================================================
-echo [Yindun V2.1.0] Starting environment deployment self-check...
+echo  [Yindun V2.2.0] Environment Deployment Self-Check
 echo ===================================================
 echo.
-echo Step 1: Checking global Python installation status...
+
+echo [1/3] Checking Python...
 python --version >nul 2>&1
-if %errorlevel% equ 0 goto PYTHON_OK
-
-echo [ERROR] Python is not installed or not added to your system PATH!
-echo [SOLUTION] Please download and install Python 3.10 or 3.11 from python.org.
-echo Remember to check "Add Python to PATH" during installation.
+if %errorlevel% neq 0 (
+    echo [ERROR] Python not found in PATH.
+    echo Please install Python 3.10+ from https://www.python.org/
+    echo Make sure to check "Add Python to PATH" during installation.
+    echo.
+    pause
+    exit /b 1
+)
+python --version
+echo [OK] Python OK.
 echo.
-pause
-exit
 
-:PYTHON_OK
-echo [OK] Base Python environment confirmed.
-echo.
-echo Step 2: Detection of isolated virtual sandbox [secure_env]...
-if exist ".\secure_env\Scripts\activate.bat" goto ENV_EXISTS
+echo [2/3] Creating virtual environment [secure_env]...
+if exist ".\secure_env\Scripts\python.exe" goto :ENV_OK
 
-echo [WARNING] Isolated sandbox not found.
-echo Deploying automatic setup...
-echo [INFO] Creating independent Python virtual environment [secure_env]...
 python -m venv secure_env
-if %errorlevel% neq 0 goto ENV_FAILED
-echo [OK] Virtual sandbox shell created successfully!
+if %errorlevel% neq 0 (
+    echo [ERROR] Failed to create virtual environment.
+    pause
+    exit /b 1
+)
+echo [OK] Virtual environment created.
+
+:ENV_OK
+echo [OK] Virtual environment ready.
 echo.
 
-echo [INFO] Pulling core modules from Tsinghua high-speed mirror...
+echo [3/3] Installing dependencies via requirements.txt...
+".\secure_env\Scripts\python.exe" -m pip install --upgrade pip -q
+".\secure_env\Scripts\python.exe" -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+if %errorlevel% neq 0 (
+    echo.
+    echo [WARN] Tsinghua mirror failed, trying default PyPI...
+    ".\secure_env\Scripts\python.exe" -m pip install -r requirements.txt
+    if %errorlevel% neq 0 (
+        echo [ERROR] Installation failed. Check your network connection.
+        pause
+        exit /b 1
+    )
+)
 echo.
-".\secure_env\Scripts\python.exe" -m pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple
-:: 🌟 核心更新：在原有依赖基础上，追加安装 langchain-openai 库以支持外部自定义模型
-".\secure_env\Scripts\pip.exe" install PySide6 langchain-ollama langchain-openai langchain-core PyPDF2 python-docx openpyxl tiktoken -i https://pypi.tuna.tsinghua.edu.cn/simple
-
-if %errorlevel% neq 0 goto INSTALL_FAILED
-echo.
-echo [OK] All offline dependencies and security libraries deployed successfully!
-goto ENV_DONE
-
-:ENV_EXISTS
-echo [OK] Independent virtual environment verified and locked.
-goto ENV_DONE
-
-:ENV_FAILED
-echo [ERROR] Sandbox creation failed! Please check your directory write permissions.
-pause
-exit
-
-:INSTALL_FAILED
-echo.
-echo [ERROR] Package download interrupted due to network error. Please re-run script!
-pause
-exit
-
-:ENV_DONE
+echo [OK] All dependencies installed.
 echo.
 echo ===================================================
-echo [SUCCESS] Configuration verified!
-echo Now double-click [启动.bat] to run.
+echo  [SUCCESS] Environment ready!
+echo  Double-click launch.bat to start.
 echo ===================================================
 pause
