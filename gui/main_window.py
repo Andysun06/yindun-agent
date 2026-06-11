@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
+from core.memory_manager import SummarizableChatHistory
+
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QStackedLayout,
     QFrame, QLabel, QPushButton, QSizeGrip, QFileDialog,
@@ -50,7 +52,6 @@ class MainWindow(QWidget):
         self.setMouseTracking(True)
         
         # 核心业务内存与状态锁阵列
-        self.messages = []
         self.llm = None
         self.tools_map = {}
         self.llm_ready = False
@@ -208,7 +209,7 @@ class MainWindow(QWidget):
         
         # 挂载原子砖块一：会话切换页 (默认不强制抢占，由自适应分流控制)
         self.session_page = SessionSelectorPage()
-        self.session_page.setMinimumWidth(180)
+        self.session_page.setMinimumWidth(160)
         self.session_page.setMaximumWidth(260)
         self.session_page.new_session_requested.connect(self._new_session)
         self.session_page.open_session_requested.connect(self._switch_to_session)
@@ -268,12 +269,12 @@ class MainWindow(QWidget):
         """🌟 响应式动态路由算法：全自动监控拉伸宽度，划分左侧列表与右侧对话显隐"""
         if self._collapsed: return
         
-        # 自由横向拉宽突破 600px 阈值，双轨同时浮现，形成工作台侧边栏布局
-        if self.width() >= 600:
+        # 自由横向拉宽突破 450px 阈值，双轨同时浮现，形成工作台侧边栏布局
+        if self.width() >= 450:
             self.session_page.setVisible(True)
             self.chat_container.setVisible(True)
         else:
-            # 小于 600px 窄屏模式下，强制关闭左侧列表，保证大厅呼吸空间
+            # 小于 450px 窄屏模式下，强制关闭左侧列表，保证大厅呼吸空间
             self.session_page.setVisible(False)
             self.chat_container.setVisible(True)
 
@@ -346,7 +347,7 @@ class MainWindow(QWidget):
         
         display_text = f"📎 附件: {self.attached_file['name']}\n{text}" if self.attached_file else text
         self.chat_display.add_message_bubble("user", display_text, self.width())
-        self._append_to_current_session("user", display_text)
+        # ⭐ 不在主线程写入会话，交由 Worker 统一管理本轮对话的记忆写入
         
         full_context = text
         if self.attached_file:
@@ -369,7 +370,9 @@ class MainWindow(QWidget):
         self.status_bar.start_thinking("隐盾大脑研判中")
         self.worker = Worker()
         self.worker.user_input = user_input
-        self.worker.history = self.messages.copy()
+        # ⭐ 传递当前会话的消息快照（dict list），替代旧的 self.messages.copy()
+        sid = self._current_session_id
+        self.worker.messages_snapshot = list(self._sessions.get(sid, {}).get("messages", []))
         self.worker.think_mode = self.control_dock.get_current_mode()
         self.worker.privacy_shield = self._settings["privacy"]
         self.worker.llm = self.llm
@@ -392,13 +395,26 @@ class MainWindow(QWidget):
     def _on_reply_received(self, r):
         self.status_bar.stop_thinking()
         self.chat_display.add_message_bubble("assistant", r, self.width())
-        self._append_to_current_session("assistant", r)
+        # ⭐ 从 Worker 读取最新的消息列表（含摘要标记），写入当前会话
+        self._apply_worker_messages()
         self._cleanup_session()
 
     def _on_error_caught(self, e):
         self.status_bar.stop_thinking()
         self.chat_display.add_message_bubble("assistant", f"⚠️ 算力中断: {e}", self.width())
+        self._apply_worker_messages()
         self._cleanup_session()
+
+    def _apply_worker_messages(self):
+        """⭐ 将 Worker 处理后的消息列表同步回当前会话存储"""
+        if not hasattr(self.worker, 'result_messages') or not self.worker.result_messages:
+            return
+        sid = self._current_session_id
+        if sid not in self._sessions:
+            return
+        self._sessions[sid]["messages"] = self.worker.result_messages
+        self._sessions[sid]["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        self._persist_sessions_store()
 
     def _cleanup_session(self):
         self.is_busy = False
@@ -458,7 +474,6 @@ class MainWindow(QWidget):
         del self._sessions[sid]
         if self._current_session_id == sid:
             self._current_session_id = None
-            self.messages = []
             self.chat_display.clear_messages()
         self._persist_sessions_store()
         self._refresh_session_list()
@@ -467,10 +482,19 @@ class MainWindow(QWidget):
         session = self._sessions.get(sid)
         if session is None: return
         self._current_session_id = sid
-        self.messages = [(m["role"], m["content"]) for m in session.get("messages", [])]
         self.chat_display.clear_messages()
-        for role, content in self.messages:
-            self.chat_display.add_message_bubble(role, content, self.width())
+        # ⭐ 从会话消息列表渲染气泡（跳过 system 摘要标记消息）
+        for m in session.get("messages", []):
+            role = m.get("role", "")
+            content = m.get("content", "")
+            if role == "system":
+                # 摘要消息以状态条方式展示
+                if content.startswith("[SUMMARY]"):
+                    summary_text = content[len("[SUMMARY]"):]
+                    self.chat_display.add_status_banner(f"📝 历史摘要: {summary_text[:80]}…")
+                continue
+            if role in ("user", "assistant"):
+                self.chat_display.add_message_bubble(role, content, self.width())
         self._persist_sessions_store()
         self._refresh_session_list()
         
@@ -479,7 +503,6 @@ class MainWindow(QWidget):
         self.status_bar.set_static_text(f"当前对话：{session.get('title', '未命名对话')}")
 
     def _append_to_current_session(self, role, content):
-        self.messages.append((role, content))
         sid = self._current_session_id
         if sid not in self._sessions: return
         session = self._sessions[sid]
@@ -506,7 +529,7 @@ class MainWindow(QWidget):
         """💬 智能分流按键：如果是宽轨模式直接无视，窄轨模式下独立切回/切出列表层"""
         self._refresh_session_list()
         self._stack.setCurrentIndex(self._workspace_index)
-        if self.width() >= 600:
+        if self.width() >= 450:
             self.session_page.setVisible(True)
             self.chat_container.setVisible(True)
         else:

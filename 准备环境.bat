@@ -36,7 +36,7 @@ echo [INFO] Pulling core modules from Tsinghua high-speed mirror...
 echo.
 ".\secure_env\Scripts\python.exe" -m pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple
 :: 🌟 核心更新：在原有依赖基础上，追加安装 langchain-openai 库以支持外部自定义模型
-".\secure_env\Scripts\pip.exe" install PySide6 langchain-ollama langchain-openai PyPDF2 python-docx openpyxl -i https://pypi.tuna.tsinghua.edu.cn/simple
+".\secure_env\Scripts\pip.exe" install PySide6 langchain-ollama langchain-openai langchain-core PyPDF2 python-docx openpyxl tiktoken -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 if %errorlevel% neq 0 goto INSTALL_FAILED
 echo.
