@@ -12,27 +12,51 @@ class SessionSelectorPage(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("sessionPage")
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 14)
-        root.setSpacing(10)
+        root.setContentsMargins(12, 14, 12, 14)
+        root.setSpacing(8)
 
         self.session_title = QLabel("选择对话")
         self.session_title.setObjectName("titleText")
         root.addWidget(self.session_title)
 
-        self.session_hint = QLabel("可创建新对话、进入历史对话，或删除不需要的对话。")
-        self.session_hint.setStyleSheet("color:#6b7280;font-size:12px;")
+        self.session_hint = QLabel("管理历史对话记录")
+        self.session_hint.setStyleSheet("color:#6b7280;font-size:11px;")
         root.addWidget(self.session_hint)
 
         self.session_list = QListWidget()
+        self.session_list.setObjectName("sessionList")
+        self.session_list.setStyleSheet("""
+            QListWidget#sessionList {
+                background: #f8f9fc; border: 1px solid #e5e7eb;
+                border-radius: 10px; padding: 4px; outline: none;
+            }
+            QListWidget#sessionList::item {
+                padding: 8px 10px; border-radius: 8px; color: #334155;
+                font-size: 12px; border: none;
+            }
+            QListWidget#sessionList::item:selected {
+                background: #e8f5e9; color: #1b5e20; font-weight: 600;
+            }
+            QListWidget#sessionList::item:hover {
+                background: #f1f5f9;
+            }
+        """)
         self.session_list.itemDoubleClicked.connect(lambda _: self._emit_open_current())
         root.addWidget(self.session_list, 1)
 
         row = QHBoxLayout()
+        row.setSpacing(6)
         self.new_session_btn = QPushButton("新建对话")
         self.open_session_btn = QPushButton("进入对话")
         self.delete_session_btn = QPushButton("删除对话")
+
+        for btn in (self.new_session_btn, self.open_session_btn, self.delete_session_btn):
+            btn.setObjectName("sessionBtn")
+            btn.setCursor(Qt.PointingHandCursor)
+
         self.new_session_btn.clicked.connect(self.new_session_requested.emit)
         self.open_session_btn.clicked.connect(self._emit_open_current)
         self.delete_session_btn.clicked.connect(self._emit_delete_current)

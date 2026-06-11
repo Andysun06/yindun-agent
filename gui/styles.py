@@ -118,6 +118,30 @@ QPushButton#addModelBtn {
 }
 QPushButton#addModelBtn:hover { border-color: #07c160; color: #07c160; background: #f0faf4; }
 
+/* ---- 会话选择面板 ---- */
+QWidget#sessionPage { background: #ffffff; }
+QListWidget#sessionList {
+    background: #f8f9fc; border: 1px solid #e5e7eb;
+    border-radius: 10px; padding: 4px; outline: none;
+}
+QListWidget#sessionList::item {
+    padding: 8px 10px; border-radius: 8px; color: #334155;
+    font-size: 12px; border: none;
+}
+QListWidget#sessionList::item:selected {
+    background: #e8f5e9; color: #1b5e20; font-weight: 600;
+}
+QListWidget#sessionList::item:hover {
+    background: #f1f5f9;
+}
+QPushButton#sessionBtn {
+    background: #f8f9fc; border: 1px solid #e5e7eb; border-radius: 8px;
+    padding: 5px 10px; font-size: 11px; color: #475569; font-weight: 500;
+}
+QPushButton#sessionBtn:hover {
+    border-color: #07c160; color: #07c160; background: #f0faf4;
+}
+
 /* ---- 高阶离线设置面板组 ---- */
 QScrollArea#settingsScroll { background: transparent; border: none; }
 QWidget#settingsPage { background: transparent; }
