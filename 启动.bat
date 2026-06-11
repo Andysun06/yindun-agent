@@ -1,7 +1,7 @@
 @echo off
 :: 🌟 核心修复：必须把切换 UTF-8 编码放在第一行，确保后续所有标题和内容绝不乱码
 chcp 65001 >nul
-title 🛡️ 隐盾安全智能体 V2.0 - 启动总舱
+title 🛡️ 隐盾安全智能体 V2.2.0 - 启动总舱
 
 cd /d "%~dp0"
 
@@ -12,7 +12,7 @@ echo 🧠 正在拉起系统底层离线算力悬浮智能舱...
 echo 💡 提示：后台日志正在同步传输中...
 echo.
 
-python main_win.py
+python run.py
 
 if %errorlevel% neq 0 (
     echo.
