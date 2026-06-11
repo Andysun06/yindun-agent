@@ -9,8 +9,8 @@ import re
 import threading
 from PySide6.QtCore import QObject, Signal
 from langchain_core.messages import HumanMessage, AIMessage
-from core.privacy_engine import PrivacyEngine
-from core.memory_manager import SummarizableChatHistory
+from yindun.core.privacy_engine import PrivacyEngine
+from yindun.core.memory_manager import SummarizableChatHistory
 
 
 class Worker(QObject):
