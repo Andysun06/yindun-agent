@@ -66,6 +66,7 @@ class MainWindow(QWidget):
         self._resize_start_pos = QPoint()
         self._collapsed = False
         self._normal_h = EXPANDED_H
+        self._session_only = False  # 启动时显示会话选择页
         
         # 全局安全隔离配置树
         self._config_file = Path(__file__).resolve().parents[2] / "global_config.json"
@@ -201,6 +202,7 @@ class MainWindow(QWidget):
         # 3. 建立自适应多轨画布 (Workspace Page)
         self.workspace_page = QWidget()
         self.workspace_page.setMouseTracking(True)
+        self.workspace_page.setStyleSheet("background: #f5f6f8;")
         self.workspace_layout = QHBoxLayout(self.workspace_page)
         self.workspace_layout.setContentsMargins(0, 0, 0, 0)
         self.workspace_layout.setSpacing(0)
@@ -256,16 +258,20 @@ class MainWindow(QWidget):
         
         outer.addWidget(self.container)
         
-        self.chat_display.add_status_banner("🛡️ 隐盾解耦版自适应双轨视舱配置完成")
+        self.chat_display.add_status_banner("隐盾 V2.2.0 - 请选择或创建对话")
         self._refresh_session_list()
         
-        # 🌟 核心修复：初始拼装完成后，强制调用一次自适应布局分流，解决一打开就紧凑两列的Bug
-        self._update_responsive_layout()
+        # 启动时无会话 → 进入会话选择模式
+        if self._current_session_id:
+            self._update_responsive_layout()
+        else:
+            self._show_session_only()
         self._stack.setCurrentIndex(self._workspace_index)
 
     def _update_responsive_layout(self):
-        """🌟 响应式动态路由算法：全自动监控拉伸宽度，划分左侧列表与右侧对话显隐"""
-        if self._collapsed: return
+        """响应式动态路由：自适应双轨显隐"""
+        if self._collapsed or self._session_only:
+            return
         
         # 自由横向拉宽突破 450px 阈值，双轨同时浮现，形成工作台侧边栏布局
         if self.width() >= 450:
@@ -334,9 +340,24 @@ class MainWindow(QWidget):
         # 展平后 20ms 微小缓冲后重算自适应宽度，确保多轨列表恢复精确
         QTimer.singleShot(20, self._update_responsive_layout)
 
+    def _show_session_only(self):
+        """强制进入会话选择模式：隐藏对话区，全宽显示会话列表"""
+        self._session_only = True
+        self.session_page.setVisible(True)
+        self.session_page.setMaximumWidth(9999)
+        self.chat_container.setVisible(False)
+
+    def _exit_session_only(self):
+        """退出会话选择模式，恢复响应式布局"""
+        self._session_only = False
+        self.session_page.setMaximumWidth(260)
+        self.chat_container.setVisible(True)
+        self._update_responsive_layout()
+
     def _on_user_submit(self, text):
         if not self._current_session_id:
-            self._open_session_selector()
+            return
+        if self._session_only:
             return
         if not self.llm_ready or self.is_busy: return
         self.is_busy = True
@@ -473,6 +494,7 @@ class MainWindow(QWidget):
         if self._current_session_id == sid:
             self._current_session_id = None
             self.chat_display.clear_messages()
+            self._show_session_only()
         self._persist_sessions_store()
         self._refresh_session_list()
 
@@ -481,7 +503,7 @@ class MainWindow(QWidget):
         if session is None: return
         self._current_session_id = sid
         self.chat_display.clear_messages()
-        # ⭐ 从会话消息列表渲染气泡（跳过 system 摘要标记消息）
+        # 从会话消息列表渲染气泡（跳过 system 摘要标记消息）
         for m in session.get("messages", []):
             role = m.get("role", "")
             content = m.get("content", "")
@@ -489,13 +511,17 @@ class MainWindow(QWidget):
                 # 摘要消息以状态条方式展示
                 if content.startswith("[SUMMARY]"):
                     summary_text = content[len("[SUMMARY]"):]
-                    self.chat_display.add_status_banner(f"📝 历史摘要: {summary_text[:80]}…")
+                    self.chat_display.add_status_banner(f"历史摘要: {summary_text[:80]}…")
                 continue
             if role in ("user", "assistant"):
                 self.chat_display.add_message_bubble(role, content, self.width())
         self._persist_sessions_store()
         self._refresh_session_list()
         
+        # 选中会话后退出会话选择模式，恢复正常工作区
+        self._session_only = False
+        self.session_page.setMaximumWidth(260)
+        self.chat_container.setVisible(True)
         self._update_responsive_layout()
         self._stack.setCurrentIndex(self._workspace_index)
         self.status_bar.set_static_text(f"当前对话：{session.get('title', '未命名对话')}")
@@ -524,19 +550,13 @@ class MainWindow(QWidget):
         self._stack.setCurrentIndex(self._settings_index)
 
     def _open_session_selector(self):
-        """💬 智能分流按键：如果是宽轨模式直接无视，窄轨模式下独立切回/切出列表层"""
+        """切换会话列表显示"""
         self._refresh_session_list()
         self._stack.setCurrentIndex(self._workspace_index)
-        if self.width() >= 450:
-            self.session_page.setVisible(True)
-            self.chat_container.setVisible(True)
+        if self._session_only:
+            self._exit_session_only()
         else:
-            if self.session_page.isVisible():
-                self.session_page.setVisible(False)
-                self.chat_container.setVisible(True)
-            else:
-                self.session_page.setVisible(True)
-                self.chat_container.setVisible(False)
+            self._show_session_only()
 
     def _handle_settings_saved(self, new_settings):
         old_model = self._settings["model"]
