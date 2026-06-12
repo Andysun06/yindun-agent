@@ -4,8 +4,8 @@
 独立无边框高定表单弹窗，负责收集外部 OpenAI/DeepSeek 兼容流的密钥与网关地址
 """
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QLineEdit, QPushButton, QFormLayout, QGraphicsDropShadowEffect
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QCursor
+from PySide6.QtCore import Qt, Signal, QPoint
+from PySide6.QtGui import QColor, QCursor, QMouseEvent
 
 class CustomModelDialog(QWidget):
     """外部大模型 API 配置对话框"""
@@ -17,6 +17,8 @@ class CustomModelDialog(QWidget):
         self.setFixedSize(360, 260)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setWindowModality(Qt.WindowModal)
+        self._drag_pos = None
         
         # 1. 组装物理圆角大卡片外壳
         self.card = QFrame(self)
@@ -109,3 +111,16 @@ class CustomModelDialog(QWidget):
                 "model_id": mid
             })
             self.close()
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        if self._drag_pos is not None and event.buttons() & Qt.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event: QMouseEvent):
+        self._drag_pos = None
