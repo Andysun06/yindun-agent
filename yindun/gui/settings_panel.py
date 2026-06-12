@@ -2,7 +2,7 @@
 # Yindun Security Agent V2.1.0 - Independent Settings Panel Component
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-    QScrollArea, QGroupBox, QFormLayout, QComboBox, QCheckBox, QSlider
+    QScrollArea, QGroupBox, QFormLayout, QComboBox, QCheckBox
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QCursor
@@ -76,36 +76,10 @@ class SettingsPanel(QWidget):
         f1.addRow(self.setting_privacy)
         form_layout.addWidget(g1)
         
-        # 舱区 2：熔断级物理合规策略
-        g2 = QGroupBox("安全策略")
-        f2 = QFormLayout(g2)
-        f2.setSpacing(8)
-        self.setting_perm = QComboBox()
-        self.setting_perm.setObjectName("settingCombo")
-        self.setting_perm.addItems(["完全控制 (读/写/列表)", "安全只读 (仅列表/读取)", "彻底审计 (禁用所有操作)"])
-        f2.addRow("操作权限:", self.setting_perm)
-        self.setting_policy = QComboBox()
-        self.setting_policy.setObjectName("settingCombo")
-        self.setting_policy.addItems(["无需提示", "切换到敏感目录需提示", "每次切换目录都提示"])
-        f2.addRow("目录审计:", self.setting_policy)
-        form_layout.addWidget(g2)
-        
-        # 舱区 3：高级原生物理视觉属性
+        # 界面偏好
         g3 = QGroupBox("界面偏好")
         f3 = QFormLayout(g3)
         f3.setSpacing(8)
-        
-        self.setting_opacity = QSlider(Qt.Horizontal)
-        self.setting_opacity.setObjectName("settingSlider")
-        self.setting_opacity.setRange(50, 100)
-        self.opacity_txt_label = QLabel("100%")
-        self.opacity_txt_label.setStyleSheet("font-size: 12px; color: #555; font-weight: bold;")
-        self.setting_opacity.valueChanged.connect(lambda v: self.opacity_txt_label.setText(f"{v}%"))
-        
-        slider_layout = QHBoxLayout()
-        slider_layout.addWidget(self.setting_opacity)
-        slider_layout.addWidget(self.opacity_txt_label)
-        f3.addRow("窗口不透明度:", slider_layout)
         
         self.setting_topmost = QCheckBox("窗口始终置顶")
         self.setting_topmost.setObjectName("settingCheck")
@@ -139,14 +113,6 @@ class SettingsPanel(QWidget):
         
         self.setting_privacy.setChecked(settings_dict["privacy"])
         
-        idx = self.setting_perm.findText(settings_dict["permission"])
-        if idx >= 0: self.setting_perm.setCurrentIndex(idx)
-        
-        idx = self.setting_policy.findText(settings_dict["policy"])
-        if idx >= 0: self.setting_policy.setCurrentIndex(idx)
-        
-        self.setting_opacity.setValue(settings_dict["opacity"])
-        self.opacity_txt_label.setText(f"{settings_dict['opacity']}%")
         self.setting_topmost.setChecked(settings_dict["topmost"])
 
     def _popup_custom_model_dialog(self):
@@ -173,10 +139,7 @@ class SettingsPanel(QWidget):
         payload = {
             "model": self.setting_model.currentText(),
             "privacy": self.setting_privacy.isChecked(),
-            "permission": self.setting_perm.currentText(),
-            "policy": self.setting_policy.currentText(),
-            "opacity": self.setting_opacity.value(),
             "topmost": self.setting_topmost.isChecked(),
-            "custom_models": self.custom_models # 🌟 核心注入：一并将最新的大模型资产树绑入同步流
+            "custom_models": self.custom_models
         }
         self.settings_saved.emit(payload)

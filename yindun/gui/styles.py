@@ -101,16 +101,7 @@ QCheckBox#settingCheck::indicator:checked {
     image: url(""" + CK + """);
 }
 
-/* ---- 🌟 优化：横向不透明度拖动条 (QSlider) 专属工业样式表 (已物理根治换行断裂缺陷) ---- */
-QSlider#settingSlider::groove:horizontal {
-    border: 1px solid #e0e3ea; height: 6px; background: #f1f5f9; border-radius: 3px;
-}
-QSlider#settingSlider::handle:horizontal {
-    background: #07c160; width: 14px; height: 14px; margin: -4px 0; border-radius: 7px;
-}
-QSlider#settingSlider::handle:horizontal:hover { background: #06ad56; }
-
-/* ---- 🌟 新增：外部模型管理微型按钮皮肤样式 ---- */
+/* ---- 外部模型管理微型按钮皮肤样式 ---- */
 QPushButton#addModelBtn {
     background: #ffffff; border: 1.5px solid #e0e3ea; border-radius: 12px;
     color: #475569; font-size: 11px; font-weight: 600; padding: 0 10px;
