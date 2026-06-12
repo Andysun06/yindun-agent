@@ -212,7 +212,7 @@ class MainWindow(QWidget):
         self.workspace_layout.setContentsMargins(0, 0, 0, 0)
         self.workspace_layout.setSpacing(0)
         
-        # 挂载原子砖块一：会话切换页 (默认不强制抢占，由自适应分流控制)
+        # 挂载原子砖块一：会话切换页
         self.session_page = SessionSelectorPage()
         self.session_page.setMinimumWidth(160)
         self.session_page.setMaximumWidth(260)
@@ -317,10 +317,10 @@ class MainWindow(QWidget):
             self.mini_dock.hide()
             self.title_bar.show()
             self._collapsible.show()
-            self._apply_theme()  # 根据当前主题恢复容器样式
+            self._collapsed = False  # 先切换状态，确保 _apply_theme 正确恢复样式
+            self._apply_theme()
             self._collapse_btn.setText("▸")
             QTimer.singleShot(10, self._do_expand)
-            self._collapsed = False
         else:
             # 物理冻结，切入闪发微型挂件模式
             self._normal_h = self.height()
@@ -369,6 +369,8 @@ class MainWindow(QWidget):
         self.workspace_page.setStyleSheet(f"background: {bg};")
         # 更新聊天区域主题
         self.chat_display.set_dark_mode(dark)
+        # 更新发送按钮内联主题
+        self.control_dock.set_dark_mode(dark)
         # 更新会话选择面板主题
         self.session_page.set_dark_mode(dark)
         # 更新容器外壳样式
@@ -548,7 +550,6 @@ class MainWindow(QWidget):
         self.session_page.setMaximumWidth(260)
         self.chat_container.setVisible(True)
         self._update_responsive_layout()
-        self._stack.setCurrentIndex(self._workspace_index)
         self.status_bar.set_static_text(f"当前对话：{session.get('title', '未命名对话')}")
 
     def _append_to_current_session(self, role, content):
@@ -577,7 +578,6 @@ class MainWindow(QWidget):
     def _open_session_selector(self):
         """切换会话列表显示"""
         self._refresh_session_list()
-        self._stack.setCurrentIndex(self._workspace_index)
         if self._session_only:
             self._exit_session_only()
         else:
@@ -737,6 +737,7 @@ class MainWindow(QWidget):
         if err:
             self.chat_display.add_status_banner("❌ 算力内核连通中断，请检查设置面板的网络参数或本地算力状态")
             self.control_dock.update_placeholder_text("算力内核离线")
+            self.control_dock.toggle_busy_lock(False)
             return
         self.llm = llm
         self.tools_map = tm
