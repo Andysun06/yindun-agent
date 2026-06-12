@@ -44,12 +44,6 @@ class MainWindow(QWidget):
         self.setWindowTitle("隐盾 V2.1.0")
         self.setObjectName("mainWindow")
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
-        self.resize(EXPANDED_W, EXPANDED_H)
-        self._position_bottom_right()
-        
-        # 🌟 核心修复：开启主窗体的全局高级鼠标轨迹追踪，激活无边框自由拉伸机制
-        self.setMouseTracking(True)
         
         # 核心业务内存与状态锁阵列
         self.llm = None
@@ -57,16 +51,6 @@ class MainWindow(QWidget):
         self.llm_ready = False
         self.is_busy = False
         self.attached_file = None
-        
-        # 无边框像素级物理拖拽缩放算力参数
-        self._drag_pos = None
-        self._resize_edge = None
-        self._edge_px = 8  # 提高到 8 像素边缘触发红线，让鼠标更容易抓取
-        self._resize_start_geo = QRect()
-        self._resize_start_pos = QPoint()
-        self._collapsed = False
-        self._normal_h = EXPANDED_H
-        self._session_only = False  # 启动时显示会话选择页
         
         # 全局安全隔离配置树
         self._config_file = Path(__file__).resolve().parents[2] / "global_config.json"
@@ -76,6 +60,27 @@ class MainWindow(QWidget):
         }
         self._load_global_config()
         os.environ["PERMISSION_LEVEL"] = self._settings.get("permission", "完全控制 (读/写/列表)")
+
+        # 根据配置设置窗口标志
+        flags = Qt.FramelessWindowHint
+        if self._settings.get("topmost", True):
+            flags |= Qt.WindowStaysOnTopHint
+        self.setWindowFlags(flags)
+        self.resize(EXPANDED_W, EXPANDED_H)
+        self._position_bottom_right()
+        
+        # 开启主窗体的全局高级鼠标轨迹追踪，激活无边框自由拉伸机制
+        self.setMouseTracking(True)
+        
+        # 无边框像素级物理拖拽缩放算力参数
+        self._drag_pos = None
+        self._resize_edge = None
+        self._edge_px = 8
+        self._resize_start_geo = QRect()
+        self._resize_start_pos = QPoint()
+        self._collapsed = False
+        self._normal_h = EXPANDED_H
+        self._session_only = False
 
         self._sessions_file = Path(__file__).resolve().parents[2] / "chat_sessions.json"
         self._sessions = {}
@@ -258,7 +263,7 @@ class MainWindow(QWidget):
         
         outer.addWidget(self.container)
         
-        self.chat_display.add_status_banner("隐盾 V2.2.0 - 请选择或创建对话")
+        self.chat_display.add_status_banner("隐盾 V3.1.4demo - 请选择或创建对话")
         self._refresh_session_list()
         
         # 启动时无会话 → 进入会话选择模式
