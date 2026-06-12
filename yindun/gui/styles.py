@@ -101,6 +101,18 @@ QCheckBox#settingCheck::indicator:checked {
     image: url(""" + CK + """);
 }
 
+/* ---- 设置面板按钮 ---- */
+QPushButton#settingsCancel {
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;
+    padding: 6px 14px; font-size: 12px; color: #64748b; font-weight: 600;
+}
+QPushButton#settingsCancel:hover { background: #f1f5f9; color: #334155; }
+QPushButton#settingsSave {
+    background: #3b82f6; color: #000000; border: 1px solid #2563eb; border-radius: 8px;
+    padding: 8px 24px; font-size: 13px; font-weight: 600;
+}
+QPushButton#settingsSave:hover { background: #2563eb; }
+
 /* ---- 外部模型管理微型按钮皮肤样式 ---- */
 QPushButton#addModelBtn {
     background: #ffffff; border: 1.5px solid #e0e3ea; border-radius: 12px;
