@@ -13,6 +13,7 @@ class SessionSelectorPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("sessionPage")
+        self._dark_mode = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 14, 12, 14)
@@ -23,27 +24,11 @@ class SessionSelectorPage(QWidget):
         root.addWidget(self.session_title)
 
         self.session_hint = QLabel("管理历史对话记录")
-        self.session_hint.setStyleSheet("color:#6b7280;font-size:11px;")
+        self.session_hint.setObjectName("sessionHint")
         root.addWidget(self.session_hint)
 
         self.session_list = QListWidget()
         self.session_list.setObjectName("sessionList")
-        self.session_list.setStyleSheet("""
-            QListWidget#sessionList {
-                background: #f8f9fc; border: 1px solid #e5e7eb;
-                border-radius: 10px; padding: 4px; outline: none;
-            }
-            QListWidget#sessionList::item {
-                padding: 8px 10px; border-radius: 8px; color: #334155;
-                font-size: 12px; border: none;
-            }
-            QListWidget#sessionList::item:selected {
-                background: #e8f5e9; color: #1b5e20; font-weight: 600;
-            }
-            QListWidget#sessionList::item:hover {
-                background: #f1f5f9;
-            }
-        """)
         self.session_list.itemDoubleClicked.connect(lambda _: self._emit_open_current())
         root.addWidget(self.session_list, 1)
 
@@ -64,6 +49,40 @@ class SessionSelectorPage(QWidget):
         row.addWidget(self.open_session_btn)
         row.addWidget(self.delete_session_btn)
         root.addLayout(row)
+        
+        self._apply_theme(enabled=False)
+
+    def set_dark_mode(self, dark: bool):
+        self._dark_mode = dark
+        self._apply_theme(enabled=dark)
+
+    def _apply_theme(self, enabled: bool):
+        dark = enabled
+        # 提示文字
+        self.session_hint.setStyleSheet(
+            f"color:{'#888' if dark else '#6b7280'};font-size:11px;"
+        )
+        # 列表样式
+        self.session_list.setStyleSheet(f"""
+            QListWidget#sessionList {{
+                background: {'#222240' if dark else '#f8f9fc'};
+                border: 1px solid {'#3a3a50' if dark else '#e5e7eb'};
+                border-radius: 10px; padding: 4px; outline: none;
+            }}
+            QListWidget#sessionList::item {{
+                padding: 8px 10px; border-radius: 8px;
+                color: {'#ccc' if dark else '#334155'};
+                font-size: 12px; border: none;
+            }}
+            QListWidget#sessionList::item:selected {{
+                background: {'#1a3a5c' if dark else '#e8f5e9'};
+                color: {'#60a5fa' if dark else '#1b5e20'};
+                font-weight: 600;
+            }}
+            QListWidget#sessionList::item:hover {{
+                background: {'#303050' if dark else '#f1f5f9'};
+            }}
+        """)
 
     def selected_session_id(self):
         item = self.session_list.currentItem()

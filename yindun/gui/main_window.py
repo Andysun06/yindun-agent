@@ -25,7 +25,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from yindun.core.file_tools import list_local_files, create_local_file, delete_local_file
 
 # 跨模块总线架构集成：动态引入所有的原子功能积木件
-from yindun.gui.styles import GLOBAL_QSS                                
+from yindun.gui.styles import GLOBAL_QSS, DARK_QSS                                
 from yindun.worker.agent_worker import Worker                          
 from yindun.utils.document_parser import extract_file_text              
 from yindun.gui.confirm_dialog import ConfirmDialog                     
@@ -41,7 +41,7 @@ EXPANDED_W, EXPANDED_H = 420, 640
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("隐盾 V2.1.0")
+        self.setWindowTitle("隐盾 V3.1.4demo")
         self.setObjectName("mainWindow")
         self.setAttribute(Qt.WA_TranslucentBackground)
         
@@ -55,7 +55,7 @@ class MainWindow(QWidget):
         # 全局安全隔离配置树
         self._config_file = Path(__file__).resolve().parents[2] / "global_config.json"
         self._settings = {
-            "model": "qwen2.5:7b", "privacy": True, "topmost": True,
+            "model": "qwen2.5:7b", "privacy": True, "dark_mode": False, "topmost": True,
             "custom_models": {}
         }
         self._load_global_config()
@@ -89,6 +89,7 @@ class MainWindow(QWidget):
         
         # 前端原子积木装配火控流
         self._build_ui()
+        self._apply_theme()
         self._init_llm_async()
 
     def _position_bottom_right(self):
@@ -207,7 +208,6 @@ class MainWindow(QWidget):
         # 3. 建立自适应多轨画布 (Workspace Page)
         self.workspace_page = QWidget()
         self.workspace_page.setMouseTracking(True)
-        self.workspace_page.setStyleSheet("background: #f5f6f8;")
         self.workspace_layout = QHBoxLayout(self.workspace_page)
         self.workspace_layout.setContentsMargins(0, 0, 0, 0)
         self.workspace_layout.setSpacing(0)
@@ -317,8 +317,7 @@ class MainWindow(QWidget):
             self.mini_dock.hide()
             self.title_bar.show()
             self._collapsible.show()
-            # 恢复外部大卡片的白底圆角工业样式
-            self.container.setStyleSheet("QFrame#container { background: white; border: 1px solid rgba(0,0,0,18); border-radius: 22px; }")
+            self._apply_theme()  # 根据当前主题恢复容器样式
             self._collapse_btn.setText("▸")
             QTimer.singleShot(10, self._do_expand)
             self._collapsed = False
@@ -358,6 +357,27 @@ class MainWindow(QWidget):
         self.session_page.setMaximumWidth(260)
         self.chat_container.setVisible(True)
         self._update_responsive_layout()
+
+    def _apply_theme(self):
+        """根据 dark_mode 设置切换全局主题"""
+        dark = self._settings.get("dark_mode", False)
+        app = QApplication.instance()
+        if app:
+            app.setStyleSheet(DARK_QSS if dark else GLOBAL_QSS)
+        # 更新工作区背景色
+        bg = "#1a1a2e" if dark else "#f5f6f8"
+        self.workspace_page.setStyleSheet(f"background: {bg};")
+        # 更新聊天区域主题
+        self.chat_display.set_dark_mode(dark)
+        # 更新会话选择面板主题
+        self.session_page.set_dark_mode(dark)
+        # 更新容器外壳样式
+        if not self._collapsed:
+            container_bg = "#1e1e2e" if dark else "white"
+            container_border = "rgba(255,255,255,12)" if dark else "rgba(0,0,0,18)"
+            self.container.setStyleSheet(
+                f"QFrame#container {{ background: {container_bg}; border: 1px solid {container_border}; border-radius: 22px; }}"
+            )
 
     def _on_user_submit(self, text):
         if not self._current_session_id:
@@ -565,8 +585,13 @@ class MainWindow(QWidget):
 
     def _handle_settings_saved(self, new_settings):
         old_model = self._settings["model"]
+        old_dark = self._settings.get("dark_mode", False)
         self._settings.update(new_settings)
         self._save_global_config()
+
+        # 主题变化 → 全局刷新样式
+        if self._settings.get("dark_mode", False) != old_dark:
+            self._apply_theme()
 
         f = self.windowFlags()
         if self._settings["topmost"]:

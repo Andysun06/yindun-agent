@@ -2,7 +2,7 @@
 # Yindun Security Agent V2.1.0 - Independent Settings Panel Component
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-    QScrollArea, QGroupBox, QFormLayout, QComboBox, QCheckBox
+    QScrollArea, QGroupBox, QFormLayout, QComboBox, QCheckBox, QRadioButton, QButtonGroup
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QCursor
@@ -81,6 +81,18 @@ class SettingsPanel(QWidget):
         f3 = QFormLayout(g3)
         f3.setSpacing(8)
         
+        self.setting_theme_light = QRadioButton("白色")
+        self.setting_theme_dark = QRadioButton("黑色")
+        self.setting_theme_light.setChecked(True)
+        theme_group = QButtonGroup(self)
+        theme_group.addButton(self.setting_theme_light)
+        theme_group.addButton(self.setting_theme_dark)
+        theme_container = QHBoxLayout()
+        theme_container.addWidget(self.setting_theme_light)
+        theme_container.addWidget(self.setting_theme_dark)
+        theme_container.addStretch()
+        f3.addRow("背景颜色:", theme_container)
+        
         self.setting_topmost = QCheckBox("窗口始终置顶")
         self.setting_topmost.setObjectName("settingCheck")
         f3.addRow(self.setting_topmost)
@@ -112,7 +124,10 @@ class SettingsPanel(QWidget):
         if idx >= 0: self.setting_model.setCurrentIndex(idx)
         
         self.setting_privacy.setChecked(settings_dict["privacy"])
-        
+        if settings_dict.get("dark_mode", False):
+            self.setting_theme_dark.setChecked(True)
+        else:
+            self.setting_theme_light.setChecked(True)
         self.setting_topmost.setChecked(settings_dict["topmost"])
 
     def _popup_custom_model_dialog(self):
@@ -139,6 +154,7 @@ class SettingsPanel(QWidget):
         payload = {
             "model": self.setting_model.currentText(),
             "privacy": self.setting_privacy.isChecked(),
+            "dark_mode": self.setting_theme_dark.isChecked(),
             "topmost": self.setting_topmost.isChecked(),
             "custom_models": self.custom_models
         }

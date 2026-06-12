@@ -11,6 +11,7 @@ class ChatDisplay(QScrollArea):
         super().__init__(parent)
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._dark_mode = False
         
         # Inner canvas with custom styling
         self.inner_canvas = QWidget()
@@ -26,10 +27,17 @@ class ChatDisplay(QScrollArea):
         
         self.setWidget(self.inner_canvas)
 
+    def set_dark_mode(self, dark: bool):
+        """切换聊天区域深色/浅色主题"""
+        self._dark_mode = dark
+        self.inner_canvas.setStyleSheet(
+            f"background: {'#1a1a2e' if dark else '#f5f6f8'}; border: none;"
+        )
+
     def add_message_bubble(self, role, text, current_window_width):
         """Instantiate and inject a native chat bubble into the flow layout"""
         timestamp = datetime.now().strftime("%H:%M")
-        bubble = ChatBubble(role, text, timestamp, window_width=current_window_width)
+        bubble = ChatBubble(role, text, timestamp, window_width=current_window_width, dark_mode=self._dark_mode)
         
         # Always insert above the bottom stretch anchor spring
         self.chat_layout.insertWidget(self.chat_layout.count() - 1, bubble)
@@ -37,7 +45,7 @@ class ChatDisplay(QScrollArea):
 
     def add_status_banner(self, text):
         """Inject a centered system environment notice banner"""
-        banner = StatusBanner(text)
+        banner = StatusBanner(text, dark_mode=self._dark_mode)
         self.chat_layout.insertWidget(self.chat_layout.count() - 1, banner)
         QTimer.singleShot(40, self.auto_scroll_to_bottom)
 
