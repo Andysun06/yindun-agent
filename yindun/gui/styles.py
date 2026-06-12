@@ -151,5 +151,11 @@ QGroupBox {
     border: 1px solid #e5e7eb; border-radius: 12px;
     margin-top: 12px; padding: 16px 12px 10px 12px; background: rgba(248,249,252,0.9);
 }
-QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 8px; }
+QGroupBox::title {
+    subcontrol-origin: margin; subcontrol-position: top left;
+    padding: 0 8px; color: #1e293b;
+}
+QGroupBox QLabel {
+    color: #334155; font-size: 12px; background: transparent;
+}
 """
