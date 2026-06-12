@@ -49,6 +49,16 @@ class ControlDock(QFrame):
         
         self.send_btn = QPushButton("➤")
         self.send_btn.setObjectName("sendBtn")
+        self.send_btn.setStyleSheet("""
+            QPushButton#sendBtn {
+                background: #07c160; color: white; border: none; border-radius: 16px;
+                font-size: 15px; font-weight: bold;
+                min-width: 38px; max-width: 38px; min-height: 38px; max-height: 38px;
+            }
+            QPushButton#sendBtn:hover { background: #06ad56; }
+            QPushButton#sendBtn:pressed { background: #059a4c; }
+            QPushButton#sendBtn:disabled { background: #c5cde0; }
+        """)
         self.send_btn.setCursor(QCursor(Qt.PointingHandCursor))
         self.send_btn.clicked.connect(self._handle_send)
         inp_row.addWidget(self.send_btn)
@@ -82,3 +92,28 @@ class ControlDock(QFrame):
             self.input_line.setPlaceholderText(customized_placeholder if customized_placeholder else "正在处理机密网关数据...")
         else:
             self.input_line.setPlaceholderText("请输入涉密指令...")
+
+    def set_dark_mode(self, dark: bool):
+        """更新发送按钮内联样式以适应深色/浅色主题"""
+        if dark:
+            self.send_btn.setStyleSheet("""
+                QPushButton#sendBtn {
+                    background: #3b82f6; color: white; border: none; border-radius: 16px;
+                    font-size: 15px; font-weight: bold;
+                    min-width: 38px; max-width: 38px; min-height: 38px; max-height: 38px;
+                }
+                QPushButton#sendBtn:hover { background: #2563eb; }
+                QPushButton#sendBtn:pressed { background: #1d4ed8; }
+                QPushButton#sendBtn:disabled { background: #3a3a50; }
+            """)
+        else:
+            self.send_btn.setStyleSheet("""
+                QPushButton#sendBtn {
+                    background: #07c160; color: white; border: none; border-radius: 16px;
+                    font-size: 15px; font-weight: bold;
+                    min-width: 38px; max-width: 38px; min-height: 38px; max-height: 38px;
+                }
+                QPushButton#sendBtn:hover { background: #06ad56; }
+                QPushButton#sendBtn:pressed { background: #059a4c; }
+                QPushButton#sendBtn:disabled { background: #c5cde0; }
+            """)
