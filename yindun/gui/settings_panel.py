@@ -88,7 +88,7 @@ class SettingsPanel(QWidget):
         form_layout.addStretch()
         
         # 底部下发磁盘落地并即时应用配置实体键
-        save = QPushButton("💾 保存并应用")
+        save = QPushButton("确认")
         save.setObjectName("settingsSave")
         save.setCursor(QCursor(Qt.PointingHandCursor))
         save.clicked.connect(self._on_save_clicked)
