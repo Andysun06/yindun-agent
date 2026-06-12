@@ -70,11 +70,11 @@ class MainWindow(QWidget):
         # 全局安全隔离配置树
         self._config_file = Path(__file__).resolve().parents[2] / "global_config.json"
         self._settings = {
-            "model": "qwen2.5:7b", "privacy": True, "permission": "完全控制 (读/写/列表)",
-            "policy": "切换到敏感目录需提示", "opacity": 100, "topmost": True,
+            "model": "qwen2.5:7b", "privacy": True, "topmost": True,
             "custom_models": {}
         }
-        self._load_global_config() 
+        self._load_global_config()
+        os.environ["PERMISSION_LEVEL"] = self._settings.get("permission", "完全控制 (读/写/列表)")
 
         self._sessions_file = Path(__file__).resolve().parents[2] / "chat_sessions.json"
         self._sessions = {}
@@ -83,7 +83,6 @@ class MainWindow(QWidget):
         
         # 前端原子积木装配火控流
         self._build_ui()
-        self._apply_opacity()
         self._init_llm_async()
 
     def _position_bottom_right(self):
@@ -99,7 +98,6 @@ class MainWindow(QWidget):
                 saved = json.load(f)
                 if isinstance(saved, dict):
                     self._settings.update(saved)
-                    os.environ["PERMISSION_LEVEL"] = self._settings["permission"]
         except: pass
 
     def _save_global_config(self):
@@ -543,24 +541,22 @@ class MainWindow(QWidget):
     def _handle_settings_saved(self, new_settings):
         old_model = self._settings["model"]
         self._settings.update(new_settings)
-        self._save_global_config() 
-        os.environ["PERMISSION_LEVEL"] = self._settings["permission"]
-        self._apply_opacity()
-        
+        self._save_global_config()
+
         f = self.windowFlags()
-        if self._settings["topmost"]: self.setWindowFlags(f | Qt.WindowStaysOnTopHint)
-        else: self.setWindowFlags(f & ~Qt.WindowStaysOnTopHint)
+        if self._settings["topmost"]:
+            self.setWindowFlags(f | Qt.WindowStaysOnTopHint)
+        else:
+            self.setWindowFlags(f & ~Qt.WindowStaysOnTopHint)
         self.show()
-        
+
         if self._settings["model"] != old_model:
             self.llm_ready = False
             self.control_dock.toggle_busy_lock(True, "正在热切换本地算力...")
             self._init_llm_async()
-            
-        self.chat_display.add_status_banner("⚙️ 全局安全隔离策略已同步完成物理更新")
-        self._stack.setCurrentIndex(self._workspace_index)
 
-    def _apply_opacity(self): self.setWindowOpacity(self._settings["opacity"] / 100.0)
+        self.chat_display.add_status_banner("配置已同步完成")
+        self._stack.setCurrentIndex(self._workspace_index)
 
     def _detect_edge(self, pos):
         w, h = self.width(), self.height()
