@@ -23,6 +23,9 @@ class CustomModelDialog(QWidget):
         self.card.setGeometry(10, 10, 340, 240)
         self.card.setStyleSheet("""
             QFrame { background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 18px; }
+            QLabel { color: #334155; font-size: 12px; background: transparent; border: 1px solid #000000; border-radius: 4px; padding: 2px 6px; }
+            QLineEdit { border: 1px solid #cbd5e1; border-radius: 8px; padding: 4px 8px; font-size: 11px; color: #1e293b; background: #ffffff; }
+            QLineEdit:focus { border-color: #07c160; }
         """)
         
         # 注入细腻的高斯模糊物理微阴影
@@ -37,7 +40,7 @@ class CustomModelDialog(QWidget):
         main_layout.setContentsMargins(18, 14, 18, 14)
         main_layout.setSpacing(8)
         
-        title_lbl = QLabel("🔌 接入自定义外部算力模型")
+        title_lbl = QLabel("接入自定义外部算力模型")
         title_lbl.setStyleSheet("font-size: 13px; font-weight: 700; color: #1e293b; border: none; background: transparent;")
         main_layout.addWidget(title_lbl)
         
@@ -50,7 +53,7 @@ class CustomModelDialog(QWidget):
             inp = QLineEdit()
             inp.setPlaceholderText(holder)
             inp.setStyleSheet("""
-                QLineEdit { border: 1px solid #cbd5e1; border-radius: 8px; padding: 4px 8px; font-size: 11px; }
+                QLineEdit { border: 1px solid #cbd5e1; border-radius: 8px; padding: 4px 8px; font-size: 11px; color: #1e293b; background: #ffffff; }
                 QLineEdit:focus { border-color: #07c160; }
             """)
             return inp
