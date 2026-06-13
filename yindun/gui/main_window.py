@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Yindun Security Agent V2.1.0 - MainWindow Framework (Extreme Adaptive & Responsive Edition)
+# Yindun Security Agent V3.1.4 - MainWindow Framework (Extreme Adaptive & Responsive Edition)
 import json
 import os
 import sys
@@ -35,7 +35,7 @@ from yindun.gui.status_bar import AgentStatusBar
 from yindun.gui.control_dock import ControlDock       
 from yindun.gui.session_selector import SessionSelectorPage
 
-COLLAPSED_H = 46  # 🌟 优化：极致折叠挂件高度，刚好容纳一根微型闪发控制条
+COLLAPSED_H = 44  # 极致折叠挂件高度
 EXPANDED_W, EXPANDED_H = 420, 640
 
 class MainWindow(QWidget):
@@ -79,6 +79,7 @@ class MainWindow(QWidget):
         self._resize_start_geo = QRect()
         self._resize_start_pos = QPoint()
         self._collapsed = False
+        self._normal_w = EXPANDED_W
         self._normal_h = EXPANDED_H
         self._session_only = False
 
@@ -115,12 +116,11 @@ class MainWindow(QWidget):
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(8, 8, 8, 8) # 四周预留 8px 拉伸红线抓取区
         outer.setSpacing(0)
         
         self.container = QFrame()
         self.container.setObjectName("container")
-        # 🌟 核心修复：外壳容器同步强推鼠标追踪，杜绝子控件拦截拉伸信号
         self.container.setMouseTracking(True)
         
         cl = QVBoxLayout(self.container)
@@ -156,7 +156,7 @@ class MainWindow(QWidget):
             tb.addWidget(b)
         cl.addWidget(self.title_bar)
 
-        # 🌟 2. 核心重构：全新极简闪发折叠控制舱 (折叠模式下独立渲染，外层完全全透明)
+        # 2. 全极简闪发折叠控制舱
         self.mini_dock = QFrame()
         self.mini_dock.setObjectName("miniDock")
         self.mini_dock.setFixedHeight(44)
@@ -168,7 +168,6 @@ class MainWindow(QWidget):
         md_layout.setContentsMargins(8, 2, 8, 2)
         md_layout.setSpacing(6)
         
-        # 🌟 新增：独立高级白色展开按钮，具备完美的鼠标移入浮现、移出静默穿透特性
         self.mini_expand_btn = QPushButton("展开 ↩")
         self.mini_expand_btn.setFixedSize(50, 26)
         self.mini_expand_btn.setCursor(QCursor(Qt.PointingHandCursor))
@@ -177,7 +176,7 @@ class MainWindow(QWidget):
             QPushButton:hover { background: #f1f5f9; border-color: #07c160; color: #07c160; }
         """)
         self.mini_expand_btn.clicked.connect(self._toggle_collapse)
-        self.mini_expand_btn.hide() # 初始默认隐藏透明
+        self.mini_expand_btn.hide()
         
         self.mini_input = QLineEdit()
         self.mini_input.setPlaceholderText("闪发模式：输入指令直接回车并自动展开...")
@@ -197,7 +196,7 @@ class MainWindow(QWidget):
         md_layout.addWidget(self.mini_input, 1)
         md_layout.addWidget(self.mini_send_btn)
         cl.addWidget(self.mini_dock)
-        self.mini_dock.setVisible(False) # 初始未折叠时隐藏
+        self.mini_dock.setVisible(False)
 
         # 核心弹性展开总画布
         self._collapsible = QWidget()
@@ -212,7 +211,6 @@ class MainWindow(QWidget):
         self.workspace_layout.setContentsMargins(0, 0, 0, 0)
         self.workspace_layout.setSpacing(0)
         
-        # 挂载原子砖块一：会话切换页
         self.session_page = SessionSelectorPage()
         self.session_page.setMinimumWidth(160)
         self.session_page.setMaximumWidth(260)
@@ -221,7 +219,6 @@ class MainWindow(QWidget):
         self.session_page.delete_session_requested.connect(self._delete_session_by_id)
         self.workspace_layout.addWidget(self.session_page)
         
-        # 挂载原子砖块二：独立右侧对话综合体
         self.chat_container = QWidget()
         self.chat_container.setMouseTracking(True)
         cc_layout = QVBoxLayout(self.chat_container)
@@ -266,7 +263,6 @@ class MainWindow(QWidget):
         self.chat_display.add_status_banner("隐盾 V3.1.4demo - 请选择或创建对话")
         self._refresh_session_list()
         
-        # 启动时无会话 → 进入会话选择模式
         if self._current_session_id:
             self._update_responsive_layout()
         else:
@@ -274,36 +270,30 @@ class MainWindow(QWidget):
         self._stack.setCurrentIndex(self._workspace_index)
 
     def _update_responsive_layout(self):
-        """响应式动态路由：自适应双轨显隐"""
+        """响应式分流：拉宽突破 600px 浮现双轨工作台"""
         if self._collapsed or self._session_only:
             return
-        
-        # 自由横向拉宽突破 450px 阈值，双轨同时浮现，形成工作台侧边栏布局
-        if self.width() >= 450:
+        if self.width() >= 600:
             self.session_page.setVisible(True)
             self.chat_container.setVisible(True)
         else:
-            # 小于 450px 窄屏模式下，强制关闭左侧列表，保证大厅呼吸空间
             self.session_page.setVisible(False)
             self.chat_container.setVisible(True)
 
     def _handle_mini_submit(self):
-        """🌟 闪发互锁逻辑：迷你框回车触发时，应用瞬间打破折叠回归正常大厅，并投递提问"""
         text = self.mini_input.text().strip()
         if text:
             if self._collapsed:
-                self._toggle_collapse() # 自动弹回展开状态
+                self._toggle_collapse()
             self._on_user_submit(text)
             self.mini_input.clear()
 
     def enterEvent(self, event):
-        """🌟 悬浮感知：鼠标指针移入软件空间内，如果处于折叠模式，浮现白色展开按钮"""
         super().enterEvent(event)
         if self._collapsed:
             self.mini_expand_btn.show()
 
     def leaveEvent(self, event):
-        """🌟 悬浮感知：鼠标指针离开软件物理范围，白色展开按钮瞬间隐形，恢复透明穿透"""
         super().leaveEvent(event)
         if self._collapsed:
             self.mini_expand_btn.hide()
@@ -311,69 +301,58 @@ class MainWindow(QWidget):
             self.setCursor(Qt.ArrowCursor)
 
     def _toggle_collapse(self):
-        """🌟 极致折叠策略重构：在展开/极致全透闪发框之间互锁切换"""
         if self._collapsed:
-            # 准备解冻回归正常大视舱
             self.mini_dock.hide()
             self.title_bar.show()
             self._collapsible.show()
-            self._collapsed = False  # 先切换状态，确保 _apply_theme 正确恢复样式
+            self._collapsed = False  
             self._apply_theme()
             self._collapse_btn.setText("▸")
             QTimer.singleShot(10, self._do_expand)
         else:
-            # 物理冻结，切入闪发微型挂件模式
+            self._normal_w = self.width()
             self._normal_h = self.height()
             self.title_bar.hide()
             self._collapsible.hide()
             self.mini_dock.show()
-            # 🌟 核心升级：强制将大容器背景及边框全部“全透明化”，抹除输入条以外的所有痕迹
             self.container.setStyleSheet("QFrame#container { background: transparent; border: none; }")
             self._collapse_btn.setText("▾")
             QTimer.singleShot(10, self._do_shrink)
             self._collapsed = True
-            self.mini_expand_btn.hide() # 初始置为安全隐藏
+            self.mini_expand_btn.hide()
 
     def _do_shrink(self):
         g = self.geometry()
-        self.setGeometry(g.x(), g.y() + g.height() - COLLAPSED_H, g.width(), COLLAPSED_H)
+        total_collapsed_h = COLLAPSED_H + 16
+        self.setGeometry(g.x(), g.y() + g.height() - total_collapsed_h, g.width(), total_collapsed_h)
 
     def _do_expand(self):
         g = self.geometry()
-        self.setGeometry(g.x(), g.y() - (self._normal_h - g.height()), g.width(), self._normal_h)
-        # 展平后 20ms 微小缓冲后重算自适应宽度，确保多轨列表恢复精确
+        self.setGeometry(g.x(), g.y() - (self._normal_h - g.height()), self._normal_w, self._normal_h)
         QTimer.singleShot(20, self._update_responsive_layout)
 
     def _show_session_only(self):
-        """强制进入会话选择模式：隐藏对话区，全宽显示会话列表"""
         self._session_only = True
         self.session_page.setVisible(True)
         self.session_page.setMaximumWidth(9999)
         self.chat_container.setVisible(False)
 
     def _exit_session_only(self):
-        """退出会话选择模式，恢复响应式布局"""
         self._session_only = False
         self.session_page.setMaximumWidth(260)
         self.chat_container.setVisible(True)
         self._update_responsive_layout()
 
     def _apply_theme(self):
-        """根据 dark_mode 设置切换全局主题"""
         dark = self._settings.get("dark_mode", False)
         app = QApplication.instance()
         if app:
             app.setStyleSheet(DARK_QSS if dark else GLOBAL_QSS)
-        # 更新工作区背景色
         bg = "#1a1a2e" if dark else "#f5f6f8"
         self.workspace_page.setStyleSheet(f"background: {bg};")
-        # 更新聊天区域主题
         self.chat_display.set_dark_mode(dark)
-        # 更新发送按钮内联主题
         self.control_dock.set_dark_mode(dark)
-        # 更新会话选择面板主题
         self.session_page.set_dark_mode(dark)
-        # 更新容器外壳样式
         if not self._collapsed:
             container_bg = "#1e1e2e" if dark else "white"
             container_border = "rgba(255,255,255,12)" if dark else "rgba(0,0,0,18)"
@@ -382,10 +361,7 @@ class MainWindow(QWidget):
             )
 
     def _on_user_submit(self, text):
-        if not self._current_session_id:
-            return
-        if self._session_only:
-            return
+        if not self._current_session_id or self._session_only: return
         if not self.llm_ready or self.is_busy: return
         self.is_busy = True
         self.control_dock.clear_input_field()
@@ -393,7 +369,6 @@ class MainWindow(QWidget):
         
         display_text = f"📎 附件: {self.attached_file['name']}\n{text}" if self.attached_file else text
         self.chat_display.add_message_bubble("user", display_text, self.width())
-        # ⭐ 不在主线程写入会话，交由 Worker 统一管理本轮对话的记忆写入
         
         full_context = text
         if self.attached_file:
@@ -416,7 +391,6 @@ class MainWindow(QWidget):
         self.status_bar.start_thinking("隐盾大脑研判中")
         self.worker = Worker()
         self.worker.user_input = user_input
-        # ⭐ 传递当前会话的消息快照（dict list），替代旧的 self.messages.copy()
         sid = self._current_session_id
         self.worker.messages_snapshot = list(self._sessions.get(sid, {}).get("messages", []))
         self.worker.think_mode = self.control_dock.get_current_mode()
@@ -441,7 +415,6 @@ class MainWindow(QWidget):
     def _on_reply_received(self, r):
         self.status_bar.stop_thinking()
         self.chat_display.add_message_bubble("assistant", r, self.width())
-        # ⭐ 从 Worker 读取最新的消息列表（含摘要标记），写入当前会话
         self._apply_worker_messages()
         self._cleanup_session()
 
@@ -452,12 +425,9 @@ class MainWindow(QWidget):
         self._cleanup_session()
 
     def _apply_worker_messages(self):
-        """⭐ 将 Worker 处理后的消息列表同步回当前会话存储"""
-        if not hasattr(self.worker, 'result_messages') or not self.worker.result_messages:
-            return
+        if not hasattr(self.worker, 'result_messages') or not self.worker.result_messages: return
         sid = self._current_session_id
-        if sid not in self._sessions:
-            return
+        if sid not in self._sessions: return
         self._sessions[sid]["messages"] = self.worker.result_messages
         self._sessions[sid]["updated_at"] = datetime.now().isoformat(timespec="seconds")
         self._persist_sessions_store()
@@ -480,14 +450,13 @@ class MainWindow(QWidget):
                 if not sid or not isinstance(title, str): continue
                 safe_messages = []
                 for msg in messages if isinstance(messages, list) else []:
-                    if isinstance(msg, dict) and msg.get("role") in {"user", "assistant"} and isinstance(msg.get("content"), str):
+                    if isinstance(msg, dict) and msg.get("role") in {"user", "assistant", "system"} and isinstance(msg.get("content"), str):
                         safe_messages.append({"role": msg["role"], "content": msg["content"]})
                 sessions[sid] = {"id": sid, "title": title, "created_at": str(item.get("created_at", "")), "updated_at": str(item.get("updated_at", "")), "messages": safe_messages}
             self._sessions = sessions
             sid = payload.get("current_session_id")
             self._current_session_id = sid if sid in self._sessions else None
-        except:
-            self._sessions, self._current_session_id = {}, None
+        except: self._sessions, self._current_session_id = {}, None
 
     def _persist_sessions_store(self):
         try:
@@ -530,12 +499,10 @@ class MainWindow(QWidget):
         if session is None: return
         self._current_session_id = sid
         self.chat_display.clear_messages()
-        # 从会话消息列表渲染气泡（跳过 system 摘要标记消息）
         for m in session.get("messages", []):
             role = m.get("role", "")
             content = m.get("content", "")
             if role == "system":
-                # 摘要消息以状态条方式展示
                 if content.startswith("[SUMMARY]"):
                     summary_text = content[len("[SUMMARY]"):]
                     self.chat_display.add_status_banner(f"历史摘要: {summary_text[:80]}…")
@@ -545,7 +512,6 @@ class MainWindow(QWidget):
         self._persist_sessions_store()
         self._refresh_session_list()
         
-        # 选中会话后退出会话选择模式，恢复正常工作区
         self._session_only = False
         self.session_page.setMaximumWidth(260)
         self.chat_container.setVisible(True)
@@ -564,8 +530,7 @@ class MainWindow(QWidget):
         self.status_bar.set_static_text("🚨 等待人工合规审批...")
         dlg = ConfirmDialog(info["name"], info["path"], self)
         s = QApplication.primaryScreen()
-        if s: 
-            dlg.move(s.availableGeometry().right() - 370, s.availableGeometry().bottom() - 230)
+        if s: dlg.move(s.availableGeometry().right() - 370, s.availableGeometry().bottom() - 230)
         dlg.confirmed.connect(lambda ok: self.worker.approve(ok))
         dlg.show()
 
@@ -576,28 +541,23 @@ class MainWindow(QWidget):
         self._stack.setCurrentIndex(self._settings_index)
 
     def _open_session_selector(self):
-        """切换会话列表显示"""
         self._refresh_session_list()
-        if self._session_only:
-            self._exit_session_only()
-        else:
-            self._show_session_only()
+        if self._session_only: self._exit_session_only()
+        else: self._show_session_only()
 
     def _handle_settings_saved(self, new_settings):
+        """🌟 核心优化：即时数据驱动。在保存配置并刷新样式时，砍掉原本的强制切页跳回命令，安稳停留在当前设置页"""
         old_model = self._settings["model"]
         old_dark = self._settings.get("dark_mode", False)
         self._settings.update(new_settings)
         self._save_global_config()
 
-        # 主题变化 → 全局刷新样式
         if self._settings.get("dark_mode", False) != old_dark:
             self._apply_theme()
 
         f = self.windowFlags()
-        if self._settings["topmost"]:
-            self.setWindowFlags(f | Qt.WindowStaysOnTopHint)
-        else:
-            self.setWindowFlags(f & ~Qt.WindowStaysOnTopHint)
+        if self._settings["topmost"]: self.setWindowFlags(f | Qt.WindowStaysOnTopHint)
+        else: self.setWindowFlags(f & ~Qt.WindowStaysOnTopHint)
         self.show()
 
         if self._settings["model"] != old_model:
@@ -606,7 +566,7 @@ class MainWindow(QWidget):
             self._init_llm_async()
 
         self.chat_display.add_status_banner("配置已同步完成")
-        self._stack.setCurrentIndex(self._workspace_index)
+        # ❌ 彻底摘除原本的强制跳转：self._stack.setCurrentIndex(self._workspace_index)
 
     def _detect_edge(self, pos):
         w, h = self.width(), self.height()
@@ -641,19 +601,17 @@ class MainWindow(QWidget):
                 self._resize_start_geo = self.geometry()
                 event.accept()
                 return
-            if pos.y() < 40:
+            if pos.y() >= 8 and pos.y() < 48 and pos.x() >= 8 and pos.x() < self.width() - 8:
                 self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
                 event.accept()
 
     def mouseMoveEvent(self, event):
-        # 🌟 核心修复：即使不按下按键，单纯移动鼠标到边界时，即时转换拉伸箭头
         if not (event.buttons() & Qt.LeftButton):
             if not self._collapsed:
                 edge = self._detect_edge(event.position().toPoint())
                 self._update_cursor(edge)
             event.accept()
             return
-
         if self._resize_edge and event.buttons() & Qt.LeftButton:
             self._do_resize(event.globalPosition().toPoint())
             event.accept()
@@ -663,8 +621,7 @@ class MainWindow(QWidget):
             event.accept()
             return
 
-    def mouseReleaseEvent(self, event): 
-        self._drag_pos, self._resize_edge = None, None
+    def mouseReleaseEvent(self, event): self._drag_pos, self._resize_edge = None, None
 
     def _do_resize(self, gpos):
         d = gpos - self._resize_start_pos
@@ -686,6 +643,7 @@ class MainWindow(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if not self._collapsed: 
+            self._normal_w = self.width()
             self._normal_h = self.height()
             self._update_responsive_layout()
 
@@ -703,14 +661,9 @@ class MainWindow(QWidget):
                     if mn in custom_models:
                         from langchain_openai import ChatOpenAI
                         c_info = custom_models[mn]
-                        base_model = ChatOpenAI(
-                            model=c_info["model_id"],
-                            openai_api_base=c_info["base_url"],
-                            openai_api_key=c_info["api_key"]
-                        )
+                        base_model = ChatOpenAI(model=c_info["model_id"], openai_api_base=c_info["base_url"], openai_api_key=c_info["api_key"])
                     else:
                         base_model = ChatOllama(model=mn, base_url="http://127.0.0.1:11434")
-                    
                     m_bound = base_model.bind_tools(tools_list)
                     try: m_bound.invoke("hi")
                     except: pass
@@ -735,7 +688,7 @@ class MainWindow(QWidget):
     def _on_llm_ready(self, llm, tm, err):
         self.status_bar.stop_thinking()
         if err:
-            self.chat_display.add_status_banner("❌ 算力内核连通中断，请检查设置面板的网络参数或本地算力状态")
+            self.chat_display.add_status_banner("❌ 算力集群离线，请开启 Ollama 后台进程并拉起模型")
             self.control_dock.update_placeholder_text("算力内核离线")
             self.control_dock.toggle_busy_lock(False)
             return
