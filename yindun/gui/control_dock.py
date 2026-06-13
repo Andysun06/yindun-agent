@@ -1,93 +1,140 @@
 # -*- coding: utf-8 -*-
 # Yindun Security Agent V3.1.4 - Independent Control Dock Component (3D Rounded Edition)
-from PySide6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel, QGraphicsDropShadowEffect
-from PySide6.QtCore import Signal, Qt
-from PySide6.QtGui import QCursor, QColor
+from PySide6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel, QGraphicsDropShadowEffect, QWidget
+from PySide6.QtCore import Signal, Qt, QPropertyAnimation, QEasingCurve, Property
+from PySide6.QtGui import QCursor, QColor, QPainter, QFont
 
-class SegmentedModeSwitch(QFrame):
-    """高级原子级分段滑动开关 (已升级完美全圆角胶囊拨杆与立体物理阴影)"""
+class SegmentedModeSwitch(QWidget):
+    """分段滑动式模式开关（紧凑低调风格，与整体 UI 统一）"""
     mode_changed = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedSize(110, 28)
+        self.setCursor(QCursor(Qt.PointingHandCursor))
         self._dark_mode = False
-        self._is_think = False # False 代表左侧快速，True 代表右侧思考
-        
-        self.setObjectName("modeSwitchBase")
-        
-        # 1. 🌟 视觉升级：为整个模式切换胶囊注入细腻、轻量的高斯模糊物理下沉微阴影
-        self.shadow_effect = QGraphicsDropShadowEffect(self)
-        self.shadow_effect.setBlurRadius(8)
-        self.shadow_effect.setColor(QColor(0, 0, 0, 18))
-        self.shadow_effect.setOffset(0, 2)
-        self.setGraphicsEffect(self.shadow_effect)
-        
-        # 内部双轨水平排版布局
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(0)
-        
-        self.fast_btn = QPushButton("快速")
-        self.fast_btn.setCheckable(True)
-        self.fast_btn.setChecked(True)
-        self.fast_btn.setCursor(QCursor(Qt.PointingHandCursor))
-        self.fast_btn.clicked.connect(self._set_fast_mode)
-        
-        self.think_btn = QPushButton("思考")
-        self.think_btn.setCheckable(True)
-        self.think_btn.setChecked(False)
-        self.think_btn.setCursor(QCursor(Qt.PointingHandCursor))
-        self.think_btn.clicked.connect(self._set_think_mode)
-        
-        layout.addWidget(self.fast_btn)
-        layout.addWidget(self.think_btn)
-        
-        self.update_style()
+        self._is_think = False  # False=快速（左）, True=思考（右）
 
+        # 几何参数
+        self._radius = 14          # 背景圆角
+        self._thumb_pad = 3        # 滑块与背景间距
+        self._thumb_w = (self.width() - self._thumb_pad * 2) / 2 - 1
+        self._thumb_h = self.height() - self._thumb_pad * 2
+
+        # 动画
+        self._thumb_x = float(self._thumb_pad + 1)
+        self._anim = QPropertyAnimation(self, b"thumbX", self)
+        self._anim.setDuration(200)
+        self._anim.setEasingCurve(QEasingCurve.InOutCubic)
+
+        # 轻微下沉阴影（低调）
+        self._shadow = QGraphicsDropShadowEffect(self)
+        self._shadow.setBlurRadius(6)
+        self._shadow.setColor(QColor(0, 0, 0, 14))
+        self._shadow.setOffset(0, 1)
+        self.setGraphicsEffect(self._shadow)
+
+    # ── 动画属性 ───────────────────────────────────────────────
+    def _get_thumb_x(self):
+        return self._thumb_x
+
+    def _set_thumb_x(self, v):
+        self._thumb_x = v
+        self.update()
+
+    thumbX = Property(float, _get_thumb_x, _set_thumb_x)
+
+    # ── 对外 API ───────────────────────────────────────────────
     def get_mode(self) -> str:
         return "👁️ 深度自检" if self._is_think else "⚡ 快速响应"
 
     def set_dark_theme(self, dark: bool):
-        self._dark_mode = dark
-        self.update_style()
+        if self._dark_mode != dark:
+            self._dark_mode = dark
+            self._shadow.setColor(QColor(0, 0, 0, 28) if dark else QColor(0, 0, 0, 14))
+            self.update()
 
-    def _set_fast_mode(self):
-        if self._is_think:
-            self._is_think = False
-            self.fast_btn.setChecked(True)
-            self.think_btn.setChecked(False)
-            self.update_style()
-            self.mode_changed.emit(self.get_mode())
+    # ── 交互事件 ───────────────────────────────────────────────
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._set_mode(event.position().x() > self.width() / 2)
+            event.accept()
 
-    def _set_think_mode(self):
-        if not self._is_think:
-            self._is_think = True
-            self.fast_btn.setChecked(False)
-            self.think_btn.setChecked(True)
-            self.update_style()
-            self.mode_changed.emit(self.get_mode())
+    def enterEvent(self, event):
+        super().enterEvent(event)
 
-    def update_style(self):
-        """流式动态渲染多态色板调性 QSS"""
-        # 🌟 优化核心：将 checked（激活）状态的圆角强推至 12px，并利用微带深色的 border-bottom 营造拟物悬浮卡片质感
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+
+    def _set_mode(self, is_think):
+        if self._is_think == is_think:
+            return
+        self._is_think = is_think
+        target_x = self.width() - self._thumb_w - self._thumb_pad - 1 if is_think else float(self._thumb_pad + 1)
+        self._anim.stop()
+        self._anim.setStartValue(self._thumb_x)
+        self._anim.setEndValue(target_x)
+        self._anim.start()
+        self.mode_changed.emit(self.get_mode())
+
+    # ── 自绘核心 ───────────────────────────────────────────────
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.setRenderHint(QPainter.TextAntialiasing, True)
+
+        w, h = self.width(), self.height()
+
+        # 配色：严格跟随全局 QSS 风格
         if self._dark_mode:
-            base_qss = "QFrame#modeSwitchBase { background: #2a2a3e; border: 1.5px solid #3a3a50; border-radius: 14px; }"
-            btn_qss = """
-                QPushButton { background: transparent; border: none; border-radius: 12px; color: #888899; font-size: 11px; font-weight: 600; }
-                QPushButton:hover { color: #ffffff; }
-                QPushButton:checked { background: #3b82f6; color: #ffffff; border: 1px solid #2563eb; border-bottom: 2px solid #1d4ed8; border-radius: 12px; font-weight: 700; }
-            """
-            self.shadow_effect.setColor(QColor(0, 0, 0, 45)) # 深色模式加深阴影突显
+            base_bg = QColor(42, 42, 62)
+            base_border = QColor(62, 62, 88)
+            inactive_text = QColor(136, 136, 153)
+            # 选中滑块：深色模式用系统强调色蓝
+            thumb_color = QColor(59, 130, 246)
+            thumb_border = QColor(37, 99, 235)
+            active_text = QColor(255, 255, 255)
         else:
-            base_qss = "QFrame#modeSwitchBase { background: #e2e8f0; border: 1px solid rgba(0,0,0,8); border-radius: 14px; }"
-            btn_qss = """
-                QPushButton { background: transparent; border: none; border-radius: 12px; color: #64748b; font-size: 11px; font-weight: 600; }
-                QPushButton:hover { color: #07c160; }
-                QPushButton:checked { background: #ffffff; color: #07c160; border: 1px solid #cbd5e1; border-bottom: 2px solid #b2c2d3; border-radius: 12px; font-weight: 700; }
-            """
-            self.shadow_effect.setColor(QColor(0, 0, 0, 18))
-        self.setStyleSheet(base_qss + btn_qss)
+            base_bg = QColor(226, 232, 240)       # 与原 #e2e8f0 一致
+            base_border = QColor(203, 213, 225)   # 与原 #cbd5e1 一致
+            inactive_text = QColor(100, 116, 139) # 与原 #64748b 一致
+            # 选中滑块：浅色模式用白底 + 强调色文字，与原先 QPushButton:checked 风格一致
+            thumb_color = QColor(255, 255, 255)
+            thumb_border = QColor(203, 213, 225)
+            active_text = QColor(7, 193, 96)      # 与原 #07c160 绿一致
+
+        # 1. 胶囊背景
+        p.setPen(base_border)
+        p.setBrush(base_bg)
+        p.drawRoundedRect(0, 0, w, h, self._radius, self._radius)
+
+        # 2. 背景文字（未选中的那一边）
+        font = QFont()
+        font.setPointSize(9)
+        font.setWeight(QFont.DemiBold)
+        font.setFamily("Microsoft YaHei")
+        p.setFont(font)
+
+        half_w = w / 2
+        p.setPen(inactive_text)
+        p.drawText(0, 0, half_w, h, Qt.AlignCenter, "快速")
+        p.drawText(half_w, 0, half_w, h, Qt.AlignCenter, "思考")
+
+        # 3. 滑块（圆角矩形，低调无多余装饰）
+        tx = int(self._thumb_x)
+        ty = self._thumb_pad
+        tw = int(self._thumb_w)
+        th = int(self._thumb_h)
+        p.setPen(thumb_border)
+        p.setBrush(thumb_color)
+        p.drawRoundedRect(tx, ty, tw, th, 12, 12)
+
+        # 4. 在滑块区域重绘选中文字
+        p.setPen(active_text)
+        label = "思考" if self._is_think else "快速"
+        p.drawText(tx, ty, tw, th, Qt.AlignCenter, label)
+
+        p.end()
 
 
 class ControlDock(QFrame):
