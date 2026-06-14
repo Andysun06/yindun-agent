@@ -33,7 +33,9 @@ class ChatDisplay(QScrollArea):
         self.setWidget(self.inner_canvas)
 
     def set_dark_mode(self, dark: bool):
-        """切换聊天区域深色/浅色主题"""
+        """切换聊天区域深色/浅色主题, 同步所有历史气泡"""
+        if self._dark_mode == dark:
+            return
         self._dark_mode = dark
         self.inner_canvas.setStyleSheet(
             f"background: {'#1a1a2e' if dark else '#f5f6f8'}; border: none;"
@@ -42,6 +44,12 @@ class ChatDisplay(QScrollArea):
         sb = self.verticalScrollBar()
         if isinstance(sb, RoundedScrollBar):
             sb.set_dark(dark)
+        # 同步所有历史气泡和状态条的主题
+        for i in range(self.chat_layout.count() - 1):  # 跳过末尾 stretch
+            item = self.chat_layout.itemAt(i)
+            w = item.widget() if item else None
+            if isinstance(w, (ChatBubble, StatusBanner)):
+                w.set_dark_mode(dark)
 
     def add_message_bubble(self, role, text, current_window_width):
         """Instantiate and inject a native chat bubble into the flow layout"""
