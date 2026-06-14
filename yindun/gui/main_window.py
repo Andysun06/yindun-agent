@@ -75,13 +75,15 @@ class MainWindow(QWidget):
         # 无边框像素级物理拖拽缩放算力参数
         self._drag_pos = None
         self._resize_edge = None
-        self._edge_px = 8
+        self._edge_px = 14
         self._resize_start_geo = QRect()
         self._resize_start_pos = QPoint()
         self._collapsed = False
         self._normal_w = EXPANDED_W
         self._normal_h = EXPANDED_H
         self._session_only = False
+        self._saved_geo = None
+        self._collapsed_w = EXPANDED_W  # 折叠态宽度记忆（本次会话内记忆，重启重置）
 
         self._sessions_file = Path(__file__).resolve().parents[2] / "chat_sessions.json"
         self._sessions = {}
@@ -269,6 +271,13 @@ class MainWindow(QWidget):
             self._show_session_only()
         self._stack.setCurrentIndex(self._workspace_index)
 
+        # 为关键子控件安装事件过滤器（确保边缘鼠标事件可达主窗口，修复边缘拖拽拉伸功能）
+        for w in [self.container, self.title_bar, self.mini_dock, self.chat_container,
+                  self.chat_display, self.status_bar, self.control_dock, self.session_page]:
+            if w is not None:
+                w.installEventFilter(self)
+                w.setMouseTracking(True)
+
     def _update_responsive_layout(self):
         """响应式分流：拉宽突破 600px 浮现双轨工作台"""
         if self._collapsed or self._session_only:
@@ -305,11 +314,16 @@ class MainWindow(QWidget):
             self.mini_dock.hide()
             self.title_bar.show()
             self._collapsible.show()
-            self._collapsed = False  
+            self._collapsed = False
             self._apply_theme()
             self._collapse_btn.setText("▸")
-            QTimer.singleShot(10, self._do_expand)
+            # 恢复折叠前保存的完整几何（位置 + 大小）
+            if self._saved_geo is not None:
+                self.setGeometry(self._saved_geo)
+            QTimer.singleShot(20, self._update_responsive_layout)
         else:
+            # 保存完整几何，用于展开时精确还原
+            self._saved_geo = self.geometry()
             self._normal_w = self.width()
             self._normal_h = self.height()
             self.title_bar.hide()
@@ -324,12 +338,12 @@ class MainWindow(QWidget):
     def _do_shrink(self):
         g = self.geometry()
         total_collapsed_h = COLLAPSED_H + 16
-        self.setGeometry(g.x(), g.y() + g.height() - total_collapsed_h, g.width(), total_collapsed_h)
-
-    def _do_expand(self):
-        g = self.geometry()
-        self.setGeometry(g.x(), g.y() - (self._normal_h - g.height()), self._normal_w, self._normal_h)
-        QTimer.singleShot(20, self._update_responsive_layout)
+        # 折叠态宽度使用记忆值（本次会话内保持，重启重置）
+        collapsed_w = max(280, self._collapsed_w)
+        # 保持底部对齐（以让折叠后的窗口与原窗口底部对齐）
+        new_x = g.x() + (g.width() - collapsed_w) // 2
+        new_y = g.y() + g.height() - total_collapsed_h
+        self.setGeometry(new_x, new_y, collapsed_w, total_collapsed_h)
 
     def _show_session_only(self):
         self._session_only = True
@@ -622,6 +636,102 @@ class MainWindow(QWidget):
             return
 
     def mouseReleaseEvent(self, event): self._drag_pos, self._resize_edge = None, None
+
+    def eventFilter(self, obj, event):
+        """🌟 事件过滤器。统一处理展开态 / 折叠态下的边缘缩放和窗口拖动。
+        折叠态：只允许左右边缘调整宽度，不允许上下调整高度；mini_dock 任意区域可拖动。
+        展开态：四边+四角完整缩放；title_bar 区域可拖动。
+        """
+        et = event.type()
+
+        # ── 左键按下：检测边缘 → 进入 resize 模式；或检测拖动区域 → 进入 drag 模式 ──
+        if et == event.Type.MouseButtonPress and event.button() == Qt.LeftButton:
+            local_pos = self.mapFromGlobal(event.globalPosition().toPoint())
+            edge = self._detect_edge(local_pos)
+
+            # 折叠态下：只允许 left/right 边缘（宽度调整），不允许 top/bottom
+            if self._collapsed:
+                if edge and edge in ("left", "right", "top-left", "top-right",
+                                      "bottom-left", "bottom-right"):
+                    # 折叠态 resize 只调整宽度（高度锁定）
+                    self._resize_edge = edge
+                    self._resize_start_pos = event.globalPosition().toPoint()
+                    self._resize_start_geo = self.geometry()
+                    self._collapsed_resize = True
+                    return True
+                # 折叠态：mini_dock 任意区域可拖动窗口
+                if obj in (self.mini_dock, self.container):
+                    self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                    return True
+            else:
+                # 展开态：完整边缘缩放
+                if edge:
+                    self._resize_edge = edge
+                    self._resize_start_pos = event.globalPosition().toPoint()
+                    self._resize_start_geo = self.geometry()
+                    self._collapsed_resize = False
+                    return True
+                # 展开态：标题栏拖动（避开边缘区）
+                if (local_pos.y() >= self._edge_px and local_pos.y() < 48
+                        and local_pos.x() >= self._edge_px and local_pos.x() < self.width() - self._edge_px
+                        and obj == self.title_bar):
+                    self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                    return True
+
+        # ── 鼠标移动：边缘悬停更新光标 / 拖拽时执行 resize 或 drag ──
+        elif et == event.Type.MouseMove:
+            # 正在 resize
+            if self._resize_edge and event.buttons() & Qt.LeftButton:
+                if getattr(self, '_collapsed_resize', False):
+                    self._do_collapsed_resize(event.globalPosition().toPoint())
+                else:
+                    self._do_resize(event.globalPosition().toPoint())
+                return True
+            # 正在拖动窗口
+            if self._drag_pos and event.buttons() & Qt.LeftButton:
+                self.move(event.globalPosition().toPoint() - self._drag_pos)
+                return True
+            # 悬停时更新光标（折叠态只处理左右边缘）
+            local_pos = self.mapFromGlobal(event.globalPosition().toPoint())
+            edge = self._detect_edge(local_pos)
+            if self._collapsed:
+                if edge in ("left", "right", "top-left", "top-right",
+                            "bottom-left", "bottom-right"):
+                    self._update_cursor(edge)
+                else:
+                    self.unsetCursor()
+            else:
+                self._update_cursor(edge)
+
+        # ── 左键释放：结束 resize / 拖动 ──
+        elif et == event.Type.MouseButtonRelease and event.button() == Qt.LeftButton:
+            if self._resize_edge or self._drag_pos:
+                self._drag_pos = None
+                self._resize_edge = None
+                self._collapsed_resize = False
+                self.unsetCursor()
+                return True
+
+        return super().eventFilter(obj, event)
+
+    def _do_collapsed_resize(self, gpos):
+        """折叠态下的 resize：只调整宽度（左右边缘），高度保持不变；同时记忆宽度。"""
+        d = gpos - self._resize_start_pos
+        g = self._resize_start_geo
+        x, y, w, h = g.x(), g.y(), g.width(), g.height()
+        e = self._resize_edge
+        min_w = 280
+
+        if "right" in e:
+            w = max(min_w, g.width() + d.x())
+        if "left" in e:
+            nw = max(min_w, g.width() - d.x())
+            x += g.width() - nw
+            w = nw
+        # 忽略 top/bottom 方向的调整（折叠态高度锁定）
+        self.setGeometry(x, y, w, h)
+        # 记忆本次会话的折叠态宽度（下次折叠时使用；重启重置）
+        self._collapsed_w = w
 
     def _do_resize(self, gpos):
         d = gpos - self._resize_start_pos
