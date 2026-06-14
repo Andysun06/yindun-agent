@@ -3,6 +3,7 @@
 from PySide6.QtWidgets import QScrollArea, QWidget, QVBoxLayout
 from PySide6.QtCore import Qt, QTimer
 from yindun.gui.chat_bubble import ChatBubble, StatusBanner
+from yindun.gui.rounded_scrollbar import RoundedScrollBar
 from datetime import datetime
 
 class ChatDisplay(QScrollArea):
@@ -12,19 +13,23 @@ class ChatDisplay(QScrollArea):
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._dark_mode = False
-        
+
+        # 替换为自定义胶囊形圆角滚动条 (Qt QSS border-radius 不够圆)
+        self.setVerticalScrollBar(RoundedScrollBar(self, dark=False))
+        self.verticalScrollBar().setFixedWidth(10)
+
         # Inner canvas with custom styling
         self.inner_canvas = QWidget()
         self.inner_canvas.setStyleSheet("background: #f5f6f8; border: none;")
-        
+
         # Vertical flow layout for bubbles
         self.chat_layout = QVBoxLayout(self.inner_canvas)
         self.chat_layout.setContentsMargins(0, 10, 0, 10)
         self.chat_layout.setSpacing(4)
-        
+
         # Base anchor spring to push messages from bottom to top
         self.chat_layout.addStretch(1)
-        
+
         self.setWidget(self.inner_canvas)
 
     def set_dark_mode(self, dark: bool):
@@ -33,6 +38,10 @@ class ChatDisplay(QScrollArea):
         self.inner_canvas.setStyleSheet(
             f"background: {'#1a1a2e' if dark else '#f5f6f8'}; border: none;"
         )
+        # 同步滚动条主题
+        sb = self.verticalScrollBar()
+        if isinstance(sb, RoundedScrollBar):
+            sb.set_dark(dark)
 
     def add_message_bubble(self, role, text, current_window_width):
         """Instantiate and inject a native chat bubble into the flow layout"""
