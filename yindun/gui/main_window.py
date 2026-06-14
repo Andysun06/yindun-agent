@@ -551,28 +551,45 @@ class MainWindow(QWidget):
     def _minimize(self): self.showMinimized()
 
     def _open_settings(self):
+        # 从会话选择模式切到设置时, 先恢复正常双栏布局, 避免设置页显示不完整
+        if self._session_only:
+            self._exit_session_only()
         self.settings_panel.load_settings_to_ui(self._settings)
         self._stack.setCurrentIndex(self._settings_index)
 
     def _open_session_selector(self):
+        # ⚠️ 关键修复: 无论当前在哪个 stack 页, 都要先切回 workspace,
+        # 否则在设置页点 💬 时, 会话列表会被设置页挡住, 表现为"无响应"
+        self._stack.setCurrentIndex(self._workspace_index)
         self._refresh_session_list()
-        if self._session_only: self._exit_session_only()
-        else: self._show_session_only()
+        if not self._session_only:
+            self._show_session_only()
 
     def _handle_settings_saved(self, new_settings):
-        """🌟 核心优化：即时数据驱动。在保存配置并刷新样式时，砍掉原本的强制切页跳回命令，安稳停留在当前设置页"""
+        """🌟 核心优化：即时数据驱动。
+        ⚠️ 重要：所有会重建原生窗口的操作 (setWindowFlags / 全局 setStyleSheet)
+        必须延迟到下一个事件循环执行，否则会打断当前 QComboBox 下拉框的事件链，
+        导致后续下拉无响应。"""
         old_model = self._settings["model"]
         old_dark = self._settings.get("dark_mode", False)
+        old_topmost = self._settings.get("topmost", True)
         self._settings.update(new_settings)
         self._save_global_config()
 
-        if self._settings.get("dark_mode", False) != old_dark:
-            self._apply_theme()
+        # 把"重型操作"全部延后到下一个事件循环, 让本次控件事件自然结束
+        def _apply_heavy_updates():
+            if self._settings.get("dark_mode", False) != old_dark:
+                self._apply_theme()
+            # 仅在置顶状态真正翻转时才改 windowFlags, 避免无谓的原生窗口重建
+            if self._settings.get("topmost", True) != old_topmost:
+                f = self.windowFlags()
+                if self._settings["topmost"]:
+                    self.setWindowFlags(f | Qt.WindowStaysOnTopHint)
+                else:
+                    self.setWindowFlags(f & ~Qt.WindowStaysOnTopHint)
+                self.show()
 
-        f = self.windowFlags()
-        if self._settings["topmost"]: self.setWindowFlags(f | Qt.WindowStaysOnTopHint)
-        else: self.setWindowFlags(f & ~Qt.WindowStaysOnTopHint)
-        self.show()
+        QTimer.singleShot(0, _apply_heavy_updates)
 
         if self._settings["model"] != old_model:
             self.llm_ready = False
