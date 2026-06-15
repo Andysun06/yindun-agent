@@ -14,7 +14,7 @@ from yindun.core.memory_manager import SummarizableChatHistory
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QStackedLayout,
     QFrame, QLabel, QPushButton, QSizeGrip, QFileDialog,
-    QInputDialog, QMessageBox, QLineEdit
+    QMessageBox, QLineEdit
 )
 from PySide6.QtCore import Qt, QTimer, Signal, QObject, QThread, QPoint, QRect
 from PySide6.QtGui import QColor, QPalette, QFont, QCursor, QMouseEvent
@@ -34,6 +34,7 @@ from yindun.gui.chat_display import ChatDisplay
 from yindun.gui.status_bar import AgentStatusBar     
 from yindun.gui.control_dock import ControlDock       
 from yindun.gui.session_selector import SessionSelectorPage
+from yindun.gui.new_session_dialog import NewSessionDialog
 
 COLLAPSED_H = 44  # 极致折叠挂件高度
 EXPANDED_W, EXPANDED_H = 420, 640
@@ -485,9 +486,15 @@ class MainWindow(QWidget):
         self.session_page.render_sessions(all_sessions, self._current_session_id)
 
     def _new_session(self):
-        title, ok = QInputDialog.getText(self, "新建对话", "请输入对话名称：")
-        if not ok: return
-        title = (title or "").strip() or f"新对话 {datetime.now().strftime('%m-%d %H:%M')}"
+        dlg = NewSessionDialog(self, dark=self._settings.get("dark_mode", False))
+        if self.window():
+            dlg.move(self.window().geometry().x() + 30, self.window().geometry().y() + 200)
+        dlg.created.connect(self._handle_new_session)
+        dlg.show()
+
+    def _handle_new_session(self, title: str):
+        # 空字符串走自动命名
+        title = title.strip() or f"新对话 {datetime.now().strftime('%m-%d %H:%M')}"
         now = datetime.now().isoformat(timespec="seconds")
         sid = uuid4().hex
         self._sessions[sid] = {"id": sid, "title": title, "created_at": now, "updated_at": now, "messages": []}
