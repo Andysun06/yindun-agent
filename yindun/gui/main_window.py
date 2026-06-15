@@ -244,7 +244,7 @@ class MainWindow(QWidget):
         # 4. 独立的高级安全参数配置面板舱
         self.settings_panel = SettingsPanel()
         self.settings_panel.settings_saved.connect(self._handle_settings_saved)
-        self.settings_panel.cancel_clicked.connect(lambda: self._stack.setCurrentIndex(self._workspace_index))
+        self.settings_panel.cancel_clicked.connect(self._on_settings_cancel)
         self._stack.addWidget(self.settings_panel)
         self._settings_index = 1
         
@@ -558,12 +558,52 @@ class MainWindow(QWidget):
         self._stack.setCurrentIndex(self._settings_index)
 
     def _open_session_selector(self):
-        # ⚠️ 关键修复: 无论当前在哪个 stack 页, 都要先切回 workspace,
-        # 否则在设置页点 💬 时, 会话列表会被设置页挡住, 表现为"无响应"
+        """💬 双模导航:
+        - 在设置页: 智能回到最近一次使用的对话 (与 ← 返回对话等价)
+        - 在工作台: 在'当前对话'和'会话选择器'之间双向切换
+        """
+        # 1) 来自设置页 → 走智能返回路径, 不会进入选择器
+        if self._stack.currentIndex() == self._settings_index:
+            self._on_settings_cancel()
+            return
+
+        # 2) 在工作台 → 执行切换
         self._stack.setCurrentIndex(self._workspace_index)
         self._refresh_session_list()
-        if not self._session_only:
+
+        if self._session_only:
+            # 当前在选择器, 回到对话
+            if self._current_session_id and self._current_session_id in self._sessions:
+                self._exit_session_only()
+            else:
+                # 没有当前会话, 尝试最近一次使用的
+                latest = self._get_most_recent_session_id()
+                if latest:
+                    self._switch_to_session(latest)  # 内部会退出 _session_only
+                # else: 真的没有历史, 保持在选择器让用户新建
+        else:
+            # 当前在对话中, 进入全屏选择器
             self._show_session_only()
+
+    def _on_settings_cancel(self):
+        """⚡ 从设置返回对话时, 自动定位到最近一次使用的对话, 无需再次手动选择"""
+        self._stack.setCurrentIndex(self._workspace_index)
+        # 优先保持当前会话; 若没有则取最近更新过的会话
+        if not self._current_session_id or self._current_session_id not in self._sessions:
+            latest = self._get_most_recent_session_id()
+            if latest:
+                self._switch_to_session(latest)
+            else:
+                # 没有任何历史对话, 退回到会话选择器让用户新建
+                self._show_session_only()
+
+    def _get_most_recent_session_id(self) -> str | None:
+        if not self._sessions:
+            return None
+        return max(
+            self._sessions.values(),
+            key=lambda s: s.get("updated_at", ""),
+        ).get("id")
 
     def _handle_settings_saved(self, new_settings):
         """🌟 核心优化：即时数据驱动。
