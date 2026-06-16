@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 # Yindun Security Agent V3.1.4 - Independent Settings Panel Component (Real-time Adaptive)
+import subprocess
+import json
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
     QScrollArea, QGroupBox, QFormLayout, QComboBox, QRadioButton, QButtonGroup, QFrame
@@ -9,6 +11,27 @@ from PySide6.QtGui import QCursor
 
 # 核心跨模块导入：引入自定义模型资产表单配置舱
 from yindun.gui.custom_model_dialog import CustomModelDialog
+
+def detect_ollama_models():
+    """检测本地 Ollama 已安装的模型列表"""
+    try:
+        result = subprocess.run(
+            ["ollama", "list", "--format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            return [m["name"] for m in data.get("models", [])]
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
+        pass
+    return []
+
+def get_first_available_model():
+    """获取第一个可用的模型，如果没有则返回 None"""
+    models = detect_ollama_models()
+    return models[0] if models else None
 
 class SlidingSwitch(QFrame):
     """高级原子级左右滑动开关组件"""
@@ -162,17 +185,24 @@ class SettingsPanel(QWidget):
 
     def load_settings_to_ui(self, settings_dict):
         """将连廊传入的数据驱动Payload安全反序列化至界面状态中"""
-        self._is_loading = True # 开启数据装填互锁，冻结保存触发
+        self._is_loading = True
         
         self.setting_model.clear()
-        self.setting_model.addItems(["qwen2.5:1.5b", "qwen2.5:7b"])
+        
+        ollama_models = detect_ollama_models()
+        if ollama_models:
+            self.setting_model.addItems(ollama_models)
         
         self.custom_models = settings_dict.get("custom_models", {})
         if self.custom_models:
             self.setting_model.addItems(list(self.custom_models.keys()))
-            
+        
+        if not ollama_models and not self.custom_models:
+            self.setting_model.addItems(["qwen2.5:7b-instruct", "qwen2.5:7b"])
+        
         idx = self.setting_model.findText(settings_dict["model"])
-        if idx >= 0: self.setting_model.setCurrentIndex(idx)
+        if idx >= 0:
+            self.setting_model.setCurrentIndex(idx)
         
         # 静默装填滑动开关状态，不抛出变化信号
         self.setting_privacy.setChecked(settings_dict["privacy"], emit_signal=False)

@@ -22,18 +22,19 @@ from PySide6.QtGui import QColor, QPalette, QFont, QCursor, QMouseEvent
 # 核心后端多算力通信隔离舱
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage, AIMessage
-from yindun.core.file_tools import list_local_files, create_local_file, delete_local_file
+from yindun.core.file_tools import list_local_files, create_local_file, delete_local_file, read_local_file, modify_local_file, run_local_command, analyze_project, search_in_files
 
 # 跨模块总线架构集成：动态引入所有的原子功能积木件
 from yindun.gui.styles import GLOBAL_QSS, DARK_QSS                                
 from yindun.worker.agent_worker import Worker                          
 from yindun.utils.document_parser import extract_file_text              
 from yindun.gui.confirm_dialog import ConfirmDialog                     
-from yindun.gui.settings_panel import SettingsPanel  
+from yindun.gui.settings_panel import SettingsPanel, detect_ollama_models, get_first_available_model
 from yindun.gui.chat_display import ChatDisplay       
 from yindun.gui.status_bar import AgentStatusBar     
 from yindun.gui.control_dock import ControlDock       
 from yindun.gui.session_selector import SessionSelectorPage
+from yindun.gui.data_dashboard import DataDashboard
 
 COLLAPSED_H = 44  # 极致折叠挂件高度
 EXPANDED_W, EXPANDED_H = 420, 640
@@ -59,6 +60,17 @@ class MainWindow(QWidget):
             "custom_models": {}
         }
         self._load_global_config()
+        
+        # 检查保存的模型是否仍然可用，如果不可用则自动切换
+        saved_model = self._settings.get("model", "")
+        custom_models = self._settings.get("custom_models", {})
+        available_models = detect_ollama_models()
+        if saved_model not in available_models and saved_model not in custom_models:
+            first_model = get_first_available_model()
+            if first_model:
+                self._settings["model"] = first_model
+                self._save_global_config()
+        
         os.environ["PERMISSION_LEVEL"] = self._settings.get("permission", "完全控制 (读/写/列表)")
 
         # 根据配置设置窗口标志
@@ -232,10 +244,14 @@ class MainWindow(QWidget):
         self.control_dock = ControlDock()
         self.control_dock.send_triggered.connect(self._on_user_submit)
         self.control_dock.file_requested.connect(self._on_file_pick_request)
-        
+
+        self.data_dashboard = DataDashboard()
+        self._dashboard_dark = False
+
         cc_layout.addWidget(self.chat_display, 1)
         cc_layout.addWidget(self.status_bar)
         cc_layout.addWidget(self.control_dock)
+        cc_layout.addWidget(self.data_dashboard)
         self.workspace_layout.addWidget(self.chat_container)
         
         self._stack.addWidget(self.workspace_page)
@@ -367,6 +383,7 @@ class MainWindow(QWidget):
         self.chat_display.set_dark_mode(dark)
         self.control_dock.set_dark_mode(dark)
         self.session_page.set_dark_mode(dark)
+        self.data_dashboard.set_dark_mode(dark)
         if not self._collapsed:
             container_bg = "#1e1e2e" if dark else "white"
             container_border = "rgba(255,255,255,12)" if dark else "rgba(0,0,0,18)"
@@ -420,6 +437,8 @@ class MainWindow(QWidget):
         self.worker.error.connect(self._on_error_caught)
         self.worker.status.connect(self.status_bar.set_static_text)
         self.worker.need_confirm.connect(self._on_intercept_confirm)
+        # 数据看板：每次发起请求 +1 次模型调用
+        self.data_dashboard.inc_model_call()
         
         self.thread.started.connect(self.worker.run)
         self.worker.finished.connect(self.thread.quit)
@@ -430,7 +449,18 @@ class MainWindow(QWidget):
         self.status_bar.stop_thinking()
         self.chat_display.add_message_bubble("assistant", r, self.width())
         self._apply_worker_messages()
+        self._refresh_dashboard()
         self._cleanup_session()
+
+    def _refresh_dashboard(self):
+        """根据当前 worker 的统计刷新数据看板"""
+        try:
+            tool_count = getattr(self.worker, "tool_call_count", 0)
+            self.data_dashboard.update_tool_calls(tool_count)
+            token_est = sum(len(str(m.get("content", ""))) for m in self.worker.result_messages) // 2
+            self.data_dashboard.update_context_tokens(token_est)
+        except Exception:
+            pass
 
     def _on_error_caught(self, e):
         self.status_bar.stop_thinking()
@@ -763,24 +793,34 @@ class MainWindow(QWidget):
         mn = self._settings["model"]
         custom_models = self._settings.get("custom_models", {})
         
-        tools_list = [list_local_files, create_local_file, delete_local_file]
+        tools_list = [list_local_files, create_local_file, delete_local_file, read_local_file, modify_local_file, run_local_command, analyze_project, search_in_files]
         
         def do_init():
-            for i in range(3):
-                try:
-                    if mn in custom_models:
-                        from langchain_openai import ChatOpenAI
-                        c_info = custom_models[mn]
-                        base_model = ChatOpenAI(model=c_info["model_id"], openai_api_base=c_info["base_url"], openai_api_key=c_info["api_key"])
-                    else:
-                        base_model = ChatOllama(model=mn, base_url="http://127.0.0.1:11434")
-                    m_bound = base_model.bind_tools(tools_list)
-                    try: m_bound.invoke("hi")
-                    except: pass
-                    return m_bound, {t.name: t for t in tools_list}, None
-                except:
-                    if i < 2: time.sleep(1)
-                    else: return None, {}, traceback.format_exc()
+            try:
+                if mn in custom_models:
+                    from langchain_openai import ChatOpenAI
+                    c_info = custom_models[mn]
+                    base_model = ChatOpenAI(model=c_info["model_id"], openai_api_base=c_info["base_url"], openai_api_key=c_info["api_key"])
+                else:
+                    base_model = ChatOllama(
+                        model=mn,
+                        base_url="http://127.0.0.1:11434",
+                        timeout=60,
+                        # Ollama 标准 options 字典，确保参数正确传递
+                        options={
+                            "num_ctx": 16384,        # 最大输入上下文 16K token
+                            "num_predict": 4096,     # 最大输出 4K token
+                            "temperature": 0.7,       # 回答温度，略低更稳定
+                            "top_p": 0.9,
+                        },
+                        keep_alive=300,           # 模型保持加载 5 分钟
+                    )
+                m_bound = base_model.bind_tools(tools_list)
+                # 快速验证模型是否可用
+                m_bound.invoke("hi")
+                return m_bound, {t.name: t for t in tools_list}, None
+            except Exception as e:
+                return None, {}, f"模型初始化失败: {str(e)}"
                     
         class IW(QObject):
             done = Signal(object, object, object)
@@ -798,7 +838,7 @@ class MainWindow(QWidget):
     def _on_llm_ready(self, llm, tm, err):
         self.status_bar.stop_thinking()
         if err:
-            self.chat_display.add_status_banner("❌ 算力集群离线，请开启 Ollama 后台进程并拉起模型")
+            self.chat_display.add_status_banner(f"❌ {err}")
             self.control_dock.update_placeholder_text("算力内核离线")
             self.control_dock.toggle_busy_lock(False)
             return
@@ -808,3 +848,5 @@ class MainWindow(QWidget):
         self.control_dock.toggle_busy_lock(False)
         self.control_dock.force_input_focus()
         self.chat_display.add_status_banner(f"✅ 安全算力联通成功 [{self._settings['model']}]")
+        # 更新数据看板
+        self.data_dashboard.update_current_model(self._settings["model"])
