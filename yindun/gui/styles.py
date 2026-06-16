@@ -36,20 +36,28 @@ QPushButton#closeBtn:hover { background: #ff5f57; color: white; }
 QTextBrowser#chatArea { background: #f5f6f8; border: none; }
 QLabel#statusLabel { color: #8895a7; font-size: 11px; background: transparent; padding: 2px 0; border: none; }
 
-/* 圆润现代滚动条 - 适配主界面 */
+/* 圆润胶囊滚动条 - 适配主界面 (10px 完美胶囊, 主题色弱化把手) */
 QScrollBar:vertical {
-    background: transparent; width: 12px; margin: 8px 2px 8px 2px; border-radius: 6px;
+    background: transparent; width: 10px; margin: 10px 2px 10px 2px; border: none; border-radius: 5px;
 }
 QScrollBar::handle:vertical {
-    background: rgba(0,0,0,18); min-height: 40px; border-radius: 6px;
+    background: rgba(0,0,0,16); min-height: 36px; border-radius: 5px;
+    margin: 0 1px; border: none;
 }
-QScrollBar::handle:vertical:hover { background: rgba(0,0,0,26); }
-QScrollBar::handle:vertical:pressed { background: rgba(0,0,0,34); }
-QScrollBar::add-line, QScrollBar::sub-line { height: 0; subcontrol-origin: content; }
-QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
-QScrollBar:horizontal { background: transparent; height: 12px; margin: 2px 8px 2px 8px; border-radius: 6px; }
-QScrollBar::handle:horizontal { background: rgba(0,0,0,18); min-width: 40px; border-radius: 6px; }
-QScrollBar::handle:horizontal:hover { background: rgba(0,0,0,26); }
+QScrollBar::handle:vertical:hover { background: rgba(0,0,0,28); }
+QScrollBar::handle:vertical:pressed { background: rgba(7,193,96,0.55); }
+QScrollBar::add-line, QScrollBar::sub-line { height: 0; background: transparent; border: none; }
+QScrollBar::add-page, QScrollBar::sub-page { background: transparent; border: none; }
+
+QScrollBar:horizontal {
+    background: transparent; height: 10px; margin: 2px 10px 2px 10px; border: none; border-radius: 5px;
+}
+QScrollBar::handle:horizontal {
+    background: rgba(0,0,0,16); min-width: 36px; border-radius: 5px;
+    margin: 1px 0; border: none;
+}
+QScrollBar::handle:horizontal:hover { background: rgba(0,0,0,28); }
+QScrollBar::handle:horizontal:pressed { background: rgba(7,193,96,0.55); }
 
 /* 下置复合多模态控制台底座 */
 QFrame#controlDock {
@@ -218,20 +226,28 @@ QPushButton#closeBtn:hover { background: #ff5f57; color: white; }
 QTextBrowser#chatArea { background: #1a1a2e; border: none; color: #e0e0e0; }
 QLabel#statusLabel { color: #aaa; font-size: 11px; background: transparent; padding: 2px 0; border: none; }
 
-/* 圆润现代滚动条 - 深色模式 */
+/* 圆润胶囊滚动条 - 深色模式 (10px 完美胶囊) */
 QScrollBar:vertical {
-    background: transparent; width: 12px; margin: 8px 2px 8px 2px; border-radius: 6px;
+    background: transparent; width: 10px; margin: 10px 2px 10px 2px; border: none; border-radius: 5px;
 }
 QScrollBar::handle:vertical {
-    background: rgba(255,255,255,12); min-height: 40px; border-radius: 6px;
+    background: rgba(255,255,255,14); min-height: 36px; border-radius: 5px;
+    margin: 0 1px; border: none;
 }
-QScrollBar::handle:vertical:hover { background: rgba(255,255,255,18); }
-QScrollBar::handle:vertical:pressed { background: rgba(255,255,255,24); }
-QScrollBar::add-line, QScrollBar::sub-line { height: 0; subcontrol-origin: content; }
-QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
-QScrollBar:horizontal { background: transparent; height: 12px; margin: 2px 8px 2px 8px; border-radius: 6px; }
-QScrollBar::handle:horizontal { background: rgba(255,255,255,12); min-width: 40px; border-radius: 6px; }
-QScrollBar::handle:horizontal:hover { background: rgba(255,255,255,18); }
+QScrollBar::handle:vertical:hover { background: rgba(255,255,255,22); }
+QScrollBar::handle:vertical:pressed { background: rgba(59,130,246,0.65); }
+QScrollBar::add-line, QScrollBar::sub-line { height: 0; background: transparent; border: none; }
+QScrollBar::add-page, QScrollBar::sub-page { background: transparent; border: none; }
+
+QScrollBar:horizontal {
+    background: transparent; height: 10px; margin: 2px 10px 2px 10px; border: none; border-radius: 5px;
+}
+QScrollBar::handle:horizontal {
+    background: rgba(255,255,255,14); min-width: 36px; border-radius: 5px;
+    margin: 1px 0; border: none;
+}
+QScrollBar::handle:horizontal:hover { background: rgba(255,255,255,22); }
+QScrollBar::handle:horizontal:pressed { background: rgba(59,130,246,0.65); }
 
 /* 下置复合多模态控制台底座 */
 QFrame#controlDock {
