@@ -14,7 +14,7 @@ from yindun.core.memory_manager import SummarizableChatHistory
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QStackedLayout,
     QFrame, QLabel, QPushButton, QSizeGrip, QFileDialog,
-    QInputDialog, QMessageBox, QLineEdit
+    QMessageBox, QLineEdit
 )
 from PySide6.QtCore import Qt, QTimer, Signal, QObject, QThread, QPoint, QRect
 from PySide6.QtGui import QColor, QPalette, QFont, QCursor, QMouseEvent
@@ -34,6 +34,7 @@ from yindun.gui.chat_display import ChatDisplay
 from yindun.gui.status_bar import AgentStatusBar     
 from yindun.gui.control_dock import ControlDock       
 from yindun.gui.session_selector import SessionSelectorPage
+from yindun.gui.new_session_dialog import NewSessionDialog
 from yindun.gui.data_dashboard import DataDashboard
 
 COLLAPSED_H = 44  # 极致折叠挂件高度
@@ -260,7 +261,7 @@ class MainWindow(QWidget):
         # 4. 独立的高级安全参数配置面板舱
         self.settings_panel = SettingsPanel()
         self.settings_panel.settings_saved.connect(self._handle_settings_saved)
-        self.settings_panel.cancel_clicked.connect(lambda: self._stack.setCurrentIndex(self._workspace_index))
+        self.settings_panel.cancel_clicked.connect(self._on_settings_cancel)
         self._stack.addWidget(self.settings_panel)
         self._settings_index = 1
         
@@ -515,9 +516,15 @@ class MainWindow(QWidget):
         self.session_page.render_sessions(all_sessions, self._current_session_id)
 
     def _new_session(self):
-        title, ok = QInputDialog.getText(self, "新建对话", "请输入对话名称：")
-        if not ok: return
-        title = (title or "").strip() or f"新对话 {datetime.now().strftime('%m-%d %H:%M')}"
+        dlg = NewSessionDialog(self, dark=self._settings.get("dark_mode", False))
+        if self.window():
+            dlg.move(self.window().geometry().x() + 30, self.window().geometry().y() + 200)
+        dlg.created.connect(self._handle_new_session)
+        dlg.show()
+
+    def _handle_new_session(self, title: str):
+        # 空字符串走自动命名
+        title = title.strip() or f"新对话 {datetime.now().strftime('%m-%d %H:%M')}"
         now = datetime.now().isoformat(timespec="seconds")
         sid = uuid4().hex
         self._sessions[sid] = {"id": sid, "title": title, "created_at": now, "updated_at": now, "messages": []}
@@ -581,28 +588,85 @@ class MainWindow(QWidget):
     def _minimize(self): self.showMinimized()
 
     def _open_settings(self):
+        # 从会话选择模式切到设置时, 先恢复正常双栏布局, 避免设置页显示不完整
+        if self._session_only:
+            self._exit_session_only()
         self.settings_panel.load_settings_to_ui(self._settings)
         self._stack.setCurrentIndex(self._settings_index)
 
     def _open_session_selector(self):
+        """💬 双模导航:
+        - 在设置页: 智能回到最近一次使用的对话 (与 ← 返回对话等价)
+        - 在工作台: 在'当前对话'和'会话选择器'之间双向切换
+        """
+        # 1) 来自设置页 → 走智能返回路径, 不会进入选择器
+        if self._stack.currentIndex() == self._settings_index:
+            self._on_settings_cancel()
+            return
+
+        # 2) 在工作台 → 执行切换
+        self._stack.setCurrentIndex(self._workspace_index)
         self._refresh_session_list()
-        if self._session_only: self._exit_session_only()
-        else: self._show_session_only()
+
+        if self._session_only:
+            # 当前在选择器, 回到对话
+            if self._current_session_id and self._current_session_id in self._sessions:
+                self._exit_session_only()
+            else:
+                # 没有当前会话, 尝试最近一次使用的
+                latest = self._get_most_recent_session_id()
+                if latest:
+                    self._switch_to_session(latest)  # 内部会退出 _session_only
+                # else: 真的没有历史, 保持在选择器让用户新建
+        else:
+            # 当前在对话中, 进入全屏选择器
+            self._show_session_only()
+
+    def _on_settings_cancel(self):
+        """⚡ 从设置返回对话时, 自动定位到最近一次使用的对话, 无需再次手动选择"""
+        self._stack.setCurrentIndex(self._workspace_index)
+        # 优先保持当前会话; 若没有则取最近更新过的会话
+        if not self._current_session_id or self._current_session_id not in self._sessions:
+            latest = self._get_most_recent_session_id()
+            if latest:
+                self._switch_to_session(latest)
+            else:
+                # 没有任何历史对话, 退回到会话选择器让用户新建
+                self._show_session_only()
+
+    def _get_most_recent_session_id(self) -> str | None:
+        if not self._sessions:
+            return None
+        return max(
+            self._sessions.values(),
+            key=lambda s: s.get("updated_at", ""),
+        ).get("id")
 
     def _handle_settings_saved(self, new_settings):
-        """🌟 核心优化：即时数据驱动。在保存配置并刷新样式时，砍掉原本的强制切页跳回命令，安稳停留在当前设置页"""
+        """🌟 核心优化：即时数据驱动。
+        ⚠️ 重要：所有会重建原生窗口的操作 (setWindowFlags / 全局 setStyleSheet)
+        必须延迟到下一个事件循环执行，否则会打断当前 QComboBox 下拉框的事件链，
+        导致后续下拉无响应。"""
         old_model = self._settings["model"]
         old_dark = self._settings.get("dark_mode", False)
+        old_topmost = self._settings.get("topmost", True)
         self._settings.update(new_settings)
         self._save_global_config()
 
-        if self._settings.get("dark_mode", False) != old_dark:
-            self._apply_theme()
+        # 把"重型操作"全部延后到下一个事件循环, 让本次控件事件自然结束
+        def _apply_heavy_updates():
+            if self._settings.get("dark_mode", False) != old_dark:
+                self._apply_theme()
+            # 仅在置顶状态真正翻转时才改 windowFlags, 避免无谓的原生窗口重建
+            if self._settings.get("topmost", True) != old_topmost:
+                f = self.windowFlags()
+                if self._settings["topmost"]:
+                    self.setWindowFlags(f | Qt.WindowStaysOnTopHint)
+                else:
+                    self.setWindowFlags(f & ~Qt.WindowStaysOnTopHint)
+                self.show()
 
-        f = self.windowFlags()
-        if self._settings["topmost"]: self.setWindowFlags(f | Qt.WindowStaysOnTopHint)
-        else: self.setWindowFlags(f & ~Qt.WindowStaysOnTopHint)
-        self.show()
+        QTimer.singleShot(0, _apply_heavy_updates)
 
         if self._settings["model"] != old_model:
             self.llm_ready = False
