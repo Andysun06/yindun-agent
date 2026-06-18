@@ -40,6 +40,24 @@ from yindun.gui.data_dashboard import DataDashboard
 COLLAPSED_H = 44  # 极致折叠挂件高度
 EXPANDED_W, EXPANDED_H = 420, 640
 
+
+class _AudioTranscriberThread(QThread):
+    """
+    后台音频转写线程：避免转写大音频时 GUI 卡死
+    """
+    finished = Signal(str)  # 转写完成，返回文本内容
+
+    def __init__(self, filepath):
+        super().__init__()
+        self.filepath = filepath
+
+    def run(self):
+        # 在后台线程执行转写，不阻塞 GUI
+        from yindun.utils.document_parser import extract_file_text
+        text = extract_file_text(self.filepath)
+        self.finished.emit(text)
+
+
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -58,7 +76,7 @@ class MainWindow(QWidget):
         self._config_file = Path(__file__).resolve().parents[2] / "global_config.json"
         self._settings = {
             "model": "qwen2.5:7b", "privacy": True, "dark_mode": False, "topmost": True,
-            "custom_models": {}
+            "custom_models": {}, "thinking_depth": 3
         }
         self._load_global_config()
         
@@ -284,6 +302,8 @@ class MainWindow(QWidget):
         
         if self._current_session_id:
             self._update_responsive_layout()
+            # 应用启动后，用聊天区域实际可用宽度更新所有气泡的宽度
+            self.chat_display.update_all_bubbles_width(self._get_chat_available_width())
         else:
             self._show_session_only()
         self._stack.setCurrentIndex(self._workspace_index)
@@ -305,6 +325,18 @@ class MainWindow(QWidget):
         else:
             self.session_page.setVisible(False)
             self.chat_container.setVisible(True)
+        # 更新气泡宽度（使用聊天区域实际可用宽度）
+        self.chat_display.update_all_bubbles_width(self._get_chat_available_width())
+
+    def _get_chat_available_width(self):
+        """计算聊天区域实际可用宽度（窗口宽度 - 会话页面宽度 - 边距）"""
+        total_width = self.width()
+        session_width = 0
+        if self.session_page.isVisible() and not self._session_only:
+            session_width = self.session_page.width()
+        # 减去外层边距和容器边框
+        available = total_width - session_width - 32
+        return max(200, available)
 
     def _handle_mini_submit(self):
         text = self.mini_input.text().strip()
@@ -405,6 +437,14 @@ class MainWindow(QWidget):
         full_context = text
         if self.attached_file:
             f = self.attached_file
+            # 检查音频是否还在转写中
+            if not f.get("text", "").strip():
+                # 音频还在转写中：记录用户请求，等待转写完成
+                self._pending_audio_request = text
+                self.chat_display.add_assistant_message("⌛ 正在解析音频，请稍候...")
+                self.is_busy = True
+                self.control_dock.toggle_busy_lock(True)
+                return
             full_context = f"[离线附件环境上下文：{f['name']}]\n{f['text']}\n\n[人类当前实时提问]：{text}"
             self.attached_file = None
             self.control_dock.update_file_button_text("📎 挂载文件")
@@ -412,21 +452,67 @@ class MainWindow(QWidget):
         self._start_worker(full_context)
 
     def _on_file_pick_request(self):
-        path, _ = QFileDialog.getOpenFileName(self, "挂载本地文件", "", "办公文件 (*.pdf *.docx *.xlsx *.txt *.md *.csv);;所有文件 (*)")
-        if path:
-            fname = os.path.basename(path)
+        path, _ = QFileDialog.getOpenFileName(
+            self, "挂载本地文件", "", 
+            "办公文件 (*.pdf *.docx *.xlsx *.txt *.md *.csv);;"
+            "音频文件 (*.mp3 *.wav *.flac *.m4a *.aac *.ogg *.opus *.wma);;"
+            "所有文件 (*)"
+        )
+        if not path:
+            return
+
+        fname = os.path.basename(path)
+        ext = path.lower()
+        _AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma")
+        is_audio = any(ext.endswith(e) for e in _AUDIO_EXTS)
+
+        if is_audio:
+            # 音频文件：后台线程转写，避免 GUI 卡死
+            self.control_dock.update_file_button_text(f"📎 {fname[:10]}...")
+            self.chat_display.add_status_banner(f"🎙️ 正在转写音频：{fname}（请稍候，后台处理中...）")
+            self._attached_file_pending = {"name": fname}
+
+            # 先设置空内容，用户发消息时如果没有转写完就提示等待
+            self.attached_file = {"name": fname, "text": ""}
+
+            # 启动后台转写线程
+            self._audio_transcriber = _AudioTranscriberThread(path)
+            self._audio_transcriber.finished.connect(self._on_audio_transcribe_done)
+            self._audio_transcriber.start()
+        else:
+            # 非音频文件：同步处理（PDF/Word/Excel/TXT 等）
             self.attached_file = {"name": fname, "text": extract_file_text(path)}
             self.control_dock.update_file_button_text(f"📎 {fname[:10]}...")
             self.chat_display.add_status_banner(f"🔒 离线机密附件就绪：{fname}")
 
+    def _on_audio_transcribe_done(self, text):
+        """音频转写完成回调"""
+        if hasattr(self, "_attached_file_pending") and self._attached_file_pending:
+            fname = self._attached_file_pending.get("name", "音频")
+            self.attached_file = {"name": fname, "text": text}
+            self.chat_display.add_status_banner(f"🔒 音频转写完成：{fname}")
+            self._attached_file_pending = None
+
+            # 检查是否有等待中的请求
+            if hasattr(self, "_pending_audio_request") and self._pending_audio_request:
+                user_input = self._pending_audio_request
+                self._pending_audio_request = None
+                # 组装完整上下文并开始处理
+                full_context = f"[离线附件环境上下文：{fname}]\n{text}\n\n[人类当前实时提问]：{user_input}"
+                self.attached_file = None
+                self.control_dock.update_file_button_text("📎 挂载文件")
+                self._start_worker(full_context)
+
     def _start_worker(self, user_input):
         self.status_bar.start_thinking("隐盾大脑研判中")
+        self._request_start_time = datetime.now()
         self.worker = Worker()
         self.worker.user_input = user_input
         sid = self._current_session_id
         self.worker.messages_snapshot = list(self._sessions.get(sid, {}).get("messages", []))
         self.worker.think_mode = self.control_dock.get_current_mode()
         self.worker.privacy_shield = self._settings["privacy"]
+        self.worker.think_depth = self._settings.get("thinking_depth", 3)
         self.worker.llm = self.llm
         self.worker.tools_map = self.tools_map
         self.worker.sandbox_path = os.environ.get("SANDBOX_PATH", os.path.abspath("."))
@@ -438,17 +524,40 @@ class MainWindow(QWidget):
         self.worker.error.connect(self._on_error_caught)
         self.worker.status.connect(self.status_bar.set_static_text)
         self.worker.need_confirm.connect(self._on_intercept_confirm)
+        self.worker.intermediate_result.connect(self._on_intermediate_result)
+        self.status_bar.cancel_requested.connect(lambda: self.worker.cancel() if self.worker else None)
         # 数据看板：每次发起请求 +1 次模型调用
         self.data_dashboard.inc_model_call()
+        
+        # 立即创建占位气泡，让用户看到"正在思考"（后续会被渐进更新覆盖）
+        self.chat_display.add_message_bubble("assistant", "⌛ 正在为您分析，请稍候...", self.width(), meta_info="")
         
         self.thread.started.connect(self.worker.run)
         self.worker.finished.connect(self.thread.quit)
         self.worker.error.connect(self.thread.quit)
         self.thread.start()
 
+    def _on_intermediate_result(self, text):
+        """渐进输出：收到模型的中间结果时，更新最后一个 AI 气泡"""
+        self.chat_display.update_last_assistant_bubble(text, meta_info=None)
+
     def _on_reply_received(self, r):
         self.status_bar.stop_thinking()
-        self.chat_display.add_message_bubble("assistant", r, self.width())
+        # 计算 meta info：模式 + 耗时
+        meta = ""
+        try:
+            mode = getattr(self.worker, 'think_mode', '')
+            elapsed = int((datetime.now() - self._request_start_time).total_seconds())
+            m, s = divmod(elapsed, 60)
+            time_str = f"{m}m{s:02d}s" if m > 0 else f"{s}s"
+            meta = f"{mode}   {time_str}"
+        except Exception:
+            pass
+        # 最终回答：更新已存在的 AI 气泡（带元信息），而不是新建一个
+        updated = self.chat_display.update_last_assistant_bubble(r, meta_info=meta)
+        if not updated:
+            # 兜底：如果没有可更新的气泡，就新建一个
+            self.chat_display.add_message_bubble("assistant", r, self.width(), meta_info=meta)
         self._apply_worker_messages()
         self._refresh_dashboard()
         self._cleanup_session()
@@ -568,6 +677,10 @@ class MainWindow(QWidget):
         self.chat_container.setVisible(True)
         self._update_responsive_layout()
         self.status_bar.set_static_text(f"当前对话：{session.get('title', '未命名对话')}")
+
+        # 切换会话后，用聊天区域实际可用宽度更新所有气泡的宽度（确保位置正确）
+        # 使用延迟调用确保所有气泡都已经添加完成
+        QTimer.singleShot(0, lambda: self.chat_display.update_all_bubbles_width(self._get_chat_available_width()))
 
     def _append_to_current_session(self, role, content):
         sid = self._current_session_id
@@ -826,6 +939,8 @@ class MainWindow(QWidget):
         self.setGeometry(x, y, w, h)
         # 记忆本次会话的折叠态宽度（下次折叠时使用；重启重置）
         self._collapsed_w = w
+        # 主动更新所有气泡的宽度（折叠态下也要同步）
+        self.chat_display.update_all_bubbles_width(self._get_chat_available_width())
 
     def _do_resize(self, gpos):
         d = gpos - self._resize_start_pos
@@ -843,10 +958,13 @@ class MainWindow(QWidget):
             y += g.height() - nh
             h = nh
         self.setGeometry(x, y, w, h)
+        # 主动更新所有气泡的宽度（使用聊天区域实际可用宽度）
+        if not self._collapsed:
+            self.chat_display.update_all_bubbles_width(self._get_chat_available_width())
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if not self._collapsed: 
+        if not self._collapsed:
             self._normal_w = self.width()
             self._normal_h = self.height()
             self._update_responsive_layout()
@@ -854,6 +972,8 @@ class MainWindow(QWidget):
     def _init_llm_async(self):
         self.status_bar.set_static_text("🔄 正在连接离线算力内核...")
         self.control_dock.toggle_busy_lock(True, "正在注入算力...")
+        # 初始化期间允许切换模式（只是不能发送消息）
+        self.control_dock.mode_switch.setEnabled(True)
         mn = self._settings["model"]
         custom_models = self._settings.get("custom_models", {})
         
@@ -880,8 +1000,7 @@ class MainWindow(QWidget):
                         keep_alive=300,           # 模型保持加载 5 分钟
                     )
                 m_bound = base_model.bind_tools(tools_list)
-                # 快速验证模型是否可用
-                m_bound.invoke("hi")
+                # 不在此验证模型可用性，延迟到首次使用时验证（加速启动）
                 return m_bound, {t.name: t for t in tools_list}, None
             except Exception as e:
                 return None, {}, f"模型初始化失败: {str(e)}"

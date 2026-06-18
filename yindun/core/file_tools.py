@@ -1,7 +1,58 @@
 import os
+import re
 import subprocess
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
+
+
+# ──────────────────────────────────────────
+# 辅助：统一解析 target_directory 参数
+# 每个工具都通过本函数解析目标路径，不再依赖 SANDBOX_PATH 环境变量
+# ──────────────────────────────────────────
+
+def _resolve_target_dir(target_directory: str, default_dir=None) -> str:
+    """
+    将工具参数 target_directory 解析为实际绝对路径。
+    支持："当前沙箱目录"、"桌面"、"系统物理桌面"、"E盘"、"D盘文档"、绝对路径等。
+    """
+    if default_dir is None:
+        default_dir = os.environ.get("SANDBOX_PATH", os.path.abspath("."))
+    if not target_directory or target_directory == "当前沙箱目录":
+        return default_dir
+    
+    p = target_directory.strip()
+    
+    # ★★★ 优先判断是否是绝对路径（最可靠）
+    if os.path.isabs(p):
+        return os.path.abspath(p)
+    
+    # 然后处理中文描述
+    if "桌面" in target_directory:
+        return os.path.join(os.path.expanduser("~"), "Desktop")
+    
+    drive_match = re.search(r"^([A-Za-z])\s*[盘盘]\s*(.*)", p)
+    if drive_match:
+        drive_letter = drive_match.group(1).upper()
+        rest = drive_match.group(2).strip()
+        if rest:
+            return os.path.abspath(f"{drive_letter}:\\" + re.sub(r"^(?:的|这个|那个|该|此)\s*", "", rest))
+        return os.path.abspath(f"{drive_letter}:\\")
+    
+    return default_dir
+
+
+def _read_file_text(file_path: str, max_bytes: int = 20000) -> str:
+    """多编码 fallback 读取文本文件，最多 max_bytes 字节。"""
+    encodings = ["utf-8", "utf-8-sig", "gbk", "gb18030", "latin-1"]
+    for enc in encodings:
+        try:
+            with open(file_path, "r", encoding=enc) as f:
+                content = f.read(max_bytes)
+            return content
+        except (UnicodeDecodeError, LookupError):
+            continue
+    with open(file_path, "rb") as f:
+        return f.read(max_bytes).decode("latin-1", errors="replace")
 
 # ==========================================
 # 1. 定义强类型参数约束表单 (Args Schema)
@@ -118,7 +169,7 @@ def list_local_files(target_directory: str = "当前沙箱目录") -> str:
     if "彻底审计" in perm:
         return "❌ 权限安全拦截：当前系统权限等级为【彻底审计】，已彻底断开大模型的所有本地物理文件访问权限！"
         
-    base_dir = os.environ.get("SANDBOX_PATH", os.path.abspath("."))
+    base_dir = _resolve_target_dir(target_directory)
     try:
         if not os.path.exists(base_dir):
             os.makedirs(base_dir, exist_ok=True)
@@ -144,7 +195,7 @@ def create_local_file(filename: str, content: str = "", target_directory: str = 
     elif "安全只读" in perm:
         return "❌ 权限安全拦截：当前系统权限等级为【安全只读】，大模型无权在当前目录进行任何写盘、修改或创建文件操作！"
 
-    base_dir = os.environ.get("SANDBOX_PATH", os.path.abspath("."))
+    base_dir = _resolve_target_dir(target_directory)
     
     # 🛡️ 边界防御：强制过滤掉路径穿越符号（如 ../../），防止 AI 乱写到系统核心区
     safe_filename = os.path.basename(filename)
@@ -168,7 +219,7 @@ def delete_local_file(filename: str, target_directory: str = "当前沙箱目录
     if "完全控制" not in perm:
         return "❌ 权限安全拦截：当前系统权限等级限制，大模型无权执行物理删除操作！"
 
-    base_dir = os.environ.get("SANDBOX_PATH", os.path.abspath("."))
+    base_dir = _resolve_target_dir(target_directory)
     safe_filename = os.path.basename(filename)
     file_path = os.path.join(base_dir, safe_filename)
     
@@ -190,23 +241,20 @@ def read_local_file(filename: str, target_directory: str = "当前沙箱目录")
     if "彻底审计" in perm:
         return "❌ 权限安全拦截：当前系统权限等级为【彻底审计】，已彻底断开大模型的所有本地物理文件访问权限！"
     
-    base_dir = os.environ.get("SANDBOX_PATH", os.path.abspath("."))
+    base_dir = _resolve_target_dir(target_directory)
     safe_filename = os.path.basename(filename)
     file_path = os.path.join(base_dir, safe_filename)
     
     try:
         if not os.path.exists(file_path):
             return f"❌ 读取失败：文件 {safe_filename} 不存在。"
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        return f"✅ 成功读取文件！\n\n文件名：{safe_filename}\n内容：\n{content}"
-    except UnicodeDecodeError:
-        try:
-            with open(file_path, "r", encoding="gbk") as f:
-                content = f.read()
-            return f"✅ 成功读取文件（GBK编码）！\n\n文件名：{safe_filename}\n内容：\n{content}"
-        except Exception as e:
-            return f"❌ 读取失败：无法解码文件内容（{str(e)}）。"
+        file_size = os.path.getsize(file_path)
+        max_bytes = 20000
+        content = _read_file_text(file_path, max_bytes)
+        size_note = ""
+        if file_size > max_bytes:
+            size_note = f"\n\n（文件过大，已截断至前 {len(content)} 字符 / 原始 {file_size} 字节。可分段读取。）"
+        return f"✅ 成功读取文件！\n\n文件名：{safe_filename}\n内容：\n{content}{size_note}"
     except Exception as e:
         return f"❌ 读取失败：{str(e)}"
 
@@ -224,7 +272,7 @@ def modify_local_file(filename: str, old_content: str = "", new_content: str = "
     elif "安全只读" in perm:
         return "❌ 权限安全拦截：当前系统权限等级为【安全只读】，大模型无权在当前目录进行任何写盘、修改或创建文件操作！"
     
-    base_dir = os.environ.get("SANDBOX_PATH", os.path.abspath("."))
+    base_dir = _resolve_target_dir(target_directory)
     safe_filename = os.path.basename(filename)
     file_path = os.path.join(base_dir, safe_filename)
     
@@ -232,8 +280,7 @@ def modify_local_file(filename: str, old_content: str = "", new_content: str = "
         if not os.path.exists(file_path):
             return f"❌ 修改失败：文件 {safe_filename} 不存在。"
         
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
+        content = _read_file_text(file_path)
         
         if old_content:
             if old_content not in content:
@@ -262,7 +309,7 @@ def run_local_command(command: str, target_directory: str = "当前沙箱目录"
     if "彻底审计" in perm or "安全只读" in perm:
         return "❌ 权限安全拦截：当前系统权限等级不允许执行命令！"
     
-    base_dir = os.environ.get("SANDBOX_PATH", os.path.abspath("."))
+    base_dir = _resolve_target_dir(target_directory)
     
     dangerous_patterns = [
         "format", "rm -rf", "del /s", "del /f", "shutdown", "reboot", "restart",
@@ -282,13 +329,15 @@ def run_local_command(command: str, target_directory: str = "当前沙箱目录"
             text=True,
             timeout=60,
         )
-        output = result.stdout if result.stdout else ""
-        error = result.stderr if result.stderr else ""
+        output = (result.stdout or "")[:3000]
+        error = (result.stderr or "")[:3000]
+        out_trim = "（已截断）" if result.stdout and len(result.stdout) > 3000 else ""
+        err_trim = "（已截断）" if result.stderr and len(result.stderr) > 3000 else ""
         
         if result.returncode == 0:
-            return f"✅ 命令执行成功！\n\n输出：\n{output}"
+            return f"✅ 命令执行成功！\n\n输出：\n{output}{out_trim}"
         else:
-            return f"❌ 命令执行失败（退出码 {result.returncode}）！\n\n标准输出：\n{output}\n\n错误输出：\n{error}"
+            return f"❌ 命令执行失败（退出码 {result.returncode}）！\n\n标准输出：\n{output}{out_trim}\n\n错误输出：\n{error}{err_trim}"
     except subprocess.TimeoutExpired:
         return f"❌ 命令执行超时（超过60秒），已终止。"
     except Exception as e:
@@ -414,7 +463,7 @@ def _collect_key_files(root_dir: str, max_depth: int) -> dict:
 
 
 def _summarize_code_files(root_dir: str, max_depth: int, focus: str) -> str:
-    """采样几个关键代码文件返回摘要（前 30 行）。"""
+    """采样几个关键代码文件返回摘要（前 max_depth*10 行）。"""
     samples = []
     # 优先读取的关键文件（配置、数据、入口）
     priority_files = {"data.js", "config.js", "settings.js", "app.js", "main.js", "boot.js", 
@@ -443,19 +492,19 @@ def _summarize_code_files(root_dir: str, max_depth: int, focus: str) -> str:
                     rel_path = os.path.relpath(full_path, root_dir)
                     samples.append((rel_path, ext, content))
                     if len(samples) >= 8:  # 增加采样数量
-                        return _format_samples(samples)
+                        return _format_samples(samples, max_depth)
                 except Exception:
                     continue
-    return _format_samples(samples)
+    return _format_samples(samples, max_depth)
 
 
-def _format_samples(samples: list) -> str:
+def _format_samples(samples: list, max_depth: int) -> str:
     if not samples:
         return "（未找到代码文件）"
+    max_lines = max_depth * 10
     parts = []
     for path, ext, content in samples:
-        # 取前 30 行
-        lines = content.split("\n")[:30]
+        lines = content.split("\n")[:max_lines]
         snippet = "\n".join(lines)
         parts.append(f"### {path} ({ext})\n```\n{snippet}\n```\n")
     return "\n".join(parts)
@@ -468,7 +517,7 @@ def analyze_project(target_directory: str = "当前沙箱目录", max_depth: int
     1. 递归列出文件树（受 max_depth 限制）
     2. 识别项目类型（Node.js / Python / Java 等）
     3. 收集关键文件清单（配置、入口、README）
-    4. 采样主要代码文件返回摘要（前 30 行）
+    4. 采样主要代码文件返回摘要（前 max_depth*10 行）
     
     适用于回答"这个项目是做什么的"、"项目结构"、"技术栈"等问题。
     """
@@ -477,10 +526,7 @@ def analyze_project(target_directory: str = "当前沙箱目录", max_depth: int
         return "❌ 权限安全拦截：当前系统权限等级为【彻底审计】，已彻底断开大模型的所有本地物理文件访问权限！"
     
     # 优先使用传入的 target_directory 参数，其次使用环境变量，最后使用当前目录
-    if target_directory and target_directory != "当前沙箱目录":
-        base_dir = os.path.abspath(target_directory)
-    else:
-        base_dir = os.environ.get("SANDBOX_PATH", os.path.abspath("."))
+    base_dir = _resolve_target_dir(target_directory)
     
     depth = max(1, min(5, max_depth))
     
@@ -497,33 +543,36 @@ def analyze_project(target_directory: str = "当前沙箱目录", max_depth: int
         # 3. 代码采样
         code_samples = _summarize_code_files(base_dir, depth, focus)
         
-        # 组装结果
-        result = f"# 项目分析报告：{base_dir}\n\n"
+        # 组装结果（结构化分段，便于 LLM 引用）
+        result_parts = []
+        result_parts.append(f"[项目根目录] {base_dir}")
         
         if focus:
-            result += f"**分析重点**：{focus}\n\n"
+            result_parts.append(f"[分析重点] {focus}")
         
         # 项目类型推断
         if key_files["configs"]:
             project_types = list(set(pt for _, pt in key_files["configs"]))
-            result += f"## 项目类型\n推断为：{', '.join(project_types)}\n\n"
+            result_parts.append(f"[项目类型] {', '.join(project_types)}")
         
         # 关键文件
-        if key_files["configs"] or key_files["readmes"] or key_files["entry_points"]:
-            result += "## 关键文件\n"
-            for path, ptype in key_files["configs"]:
-                result += f"- 📄 {path} ({ptype})\n"
-            for path, ptype in key_files["readmes"]:
-                result += f"- 📖 {path} ({ptype})\n"
-            for path, ptype in key_files["entry_points"]:
-                result += f"- 🚀 {path} ({ptype})\n"
-            result += "\n"
+        kf_lines = []
+        for path, ptype in key_files["configs"]:
+            kf_lines.append(f"- {path}  <{ptype}>")
+        for path, ptype in key_files["readmes"]:
+            kf_lines.append(f"- {path}  <{ptype}>")
+        for path, ptype in key_files["entry_points"]:
+            kf_lines.append(f"- {path}  <{ptype}>")
+        if kf_lines:
+            result_parts.append("[关键文件]\n" + "\n".join(kf_lines))
         
         # 文件树
-        result += f"## 文件结构（深度 {depth}）\n```\n{file_tree}\n```\n\n"
+        result_parts.append(f"[文件结构-深度{depth}]\n```\n{file_tree}\n```")
         
         # 代码采样
-        result += f"## 主要代码文件摘要（前 5 个）\n{code_samples}\n"
+        result_parts.append(f"[代码采样]\n{code_samples}")
+        
+        result = "\n\n".join(result_parts)
         
         # 截断过长输出
         if len(result) > 8000:
@@ -544,7 +593,7 @@ def search_in_files(pattern: str, file_pattern: str = "*", target_directory: str
     if "彻底审计" in perm:
         return "❌ 权限安全拦截：当前系统权限等级为【彻底审计】，已彻底断开大模型的所有本地物理文件访问权限！"
     
-    base_dir = os.environ.get("SANDBOX_PATH", os.path.abspath("."))
+    base_dir = _resolve_target_dir(target_directory)
     max_n = max(1, min(100, max_results))
     
     import fnmatch
@@ -578,7 +627,17 @@ def search_in_files(pattern: str, file_pattern: str = "*", target_directory: str
                                 results.append(f"{rel_path}:{line_num}: {line.rstrip()}")
                                 if len(results) >= max_n:
                                     break
-                except (UnicodeDecodeError, PermissionError, OSError):
+                except UnicodeDecodeError:
+                    try:
+                        with open(full_path, "r", encoding="gbk") as fp:
+                            for line_num, line in enumerate(fp, 1):
+                                if regex.search(line):
+                                    results.append(f"{rel_path}:{line_num}: {line.rstrip()}")
+                                    if len(results) >= max_n:
+                                        break
+                    except (PermissionError, OSError, UnicodeDecodeError):
+                        continue
+                except (PermissionError, OSError):
                     continue
                 
                 if len(results) >= max_n:

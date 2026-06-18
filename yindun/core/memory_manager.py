@@ -161,21 +161,49 @@ class SummarizableChatHistory(BaseChatMessageHistory):
             self._messages.append(HumanMessage(content=user_input))
             self._messages.append(AIMessage(content=ai_response))
 
+    def update_with_full_chain(self, messages: list):
+        """
+        在 ReAct 循环完成后保存完整消息链。
+        messages 应包含：[HumanMessage, ...(AIMessage with tool_calls + ToolMessage)*..., AIMessage final]
+        """
+        need_summary = self.is_over_threshold()
+        if need_summary:
+            keep_count = max(4, len(self._messages) // 5)
+            self._messages = list(self._messages[-keep_count:])
+        self._messages.extend(messages)
+
     # ── 序列化（兼容 chat_sessions.json）────────────────────
     def to_dict_list(self) -> list[dict]:
-        """导出为 chat_sessions.json 兼容的消息列表。摘要信息一并序列化。"""
+        """导出为 chat_sessions.json 兼容的消息列表。支持 Human/AIMessage/ToolMessage。"""
+        from langchain_core.messages import ToolMessage
         result = []
         if self._summary:
             result.append({"role": "system", "content": f"[SUMMARY]{self._summary}"})
         for m in self._messages:
-            role = "user" if isinstance(m, HumanMessage) else "assistant"
-            content = m.content if isinstance(m.content, str) else str(m.content)
-            result.append({"role": role, "content": content})
+            if isinstance(m, HumanMessage):
+                content = m.content if isinstance(m.content, str) else str(m.content)
+                result.append({"role": "user", "content": content})
+            elif isinstance(m, ToolMessage):
+                content = m.content if isinstance(m.content, str) else str(m.content)
+                result.append({"role": "tool", "content": content, "tool_call_id": getattr(m, "tool_call_id", "")})
+            elif isinstance(m, AIMessage):
+                content = m.content if isinstance(m.content, str) else str(m.content)
+                msg_dict = {"role": "assistant", "content": content}
+                tcs = getattr(m, "tool_calls", None)
+                if tcs:
+                    msg_dict["tool_calls"] = [
+                        {"name": tc.get("name", "") if isinstance(tc, dict) else getattr(tc, "name", ""),
+                         "args": tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {}),
+                         "id": tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")}
+                        for tc in tcs
+                    ]
+                result.append(msg_dict)
         return result
 
     @classmethod
     def from_dict_list(cls, messages: list[dict], max_tokens: int = 5000) -> "SummarizableChatHistory":
-        """从 chat_sessions.json 的消息列表恢复实例"""
+        """从 chat_sessions.json 的消息列表恢复实例。支持 Human/AIMessage/ToolMessage。"""
+        from langchain_core.messages import ToolMessage
         instance = cls(max_tokens=max_tokens)
         for item in messages:
             if not isinstance(item, dict):
@@ -186,6 +214,13 @@ class SummarizableChatHistory(BaseChatMessageHistory):
                 instance._summary = content[len("[SUMMARY]"):]
             elif role == "user":
                 instance.add_user_message(content)
+            elif role == "tool":
+                tc_id = item.get("tool_call_id", "")
+                instance._messages.append(ToolMessage(content=content, tool_call_id=tc_id))
             elif role == "assistant":
-                instance.add_ai_message(content)
+                ai_msg = AIMessage(content=content)
+                tool_calls = item.get("tool_calls")
+                if tool_calls:
+                    ai_msg.tool_calls = tool_calls
+                instance._messages.append(ai_msg)
         return instance

@@ -1,9 +1,9 @@
 @echo off
-title Yindun V2.2.0 - Setup
+title Yindun V3.1.4 - Setup
 cd /d "%~dp0"
 
 echo ===================================================
-echo  [Yindun V2.2.0] Environment Deployment Self-Check
+echo  [Yindun V3.1.4] Environment Deployment Self-Check
 echo ===================================================
 echo.
 
