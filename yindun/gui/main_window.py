@@ -12,7 +12,7 @@ from uuid import uuid4
 from yindun.core.memory_manager import SummarizableChatHistory
 
 from PySide6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QStackedLayout,
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QFrame, QLabel, QPushButton, QSizeGrip, QFileDialog,
     QInputDialog, QMessageBox, QLineEdit
 )
@@ -199,11 +199,12 @@ class MainWindow(QWidget):
         cl.addWidget(self.mini_dock)
         self.mini_dock.setVisible(False) # 初始未折叠时隐藏
 
-        # 核心弹性展开总画布
+        # 核心弹性展开总画布（多叉树页面管理：页面平级挂载，通过 setVisible 切换）
         self._collapsible = QWidget()
         self._collapsible.setMouseTracking(True)
-        self._stack = QStackedLayout(self._collapsible)
-        self._stack.setContentsMargins(0, 0, 0, 0)
+        self._collapsible_layout = QVBoxLayout(self._collapsible)
+        self._collapsible_layout.setContentsMargins(0, 0, 0, 0)
+        self._collapsible_layout.setSpacing(0)
 
         # 3. 建立自适应多轨画布 (Workspace Page)
         self.workspace_page = QWidget()
@@ -239,15 +240,16 @@ class MainWindow(QWidget):
         cc_layout.addWidget(self.control_dock)
         self.workspace_layout.addWidget(self.chat_container)
         
-        self._stack.addWidget(self.workspace_page)
-        self._workspace_index = 0
+        self._collapsible_layout.addWidget(self.workspace_page)
 
-        # 4. 独立的高级安全参数配置面板舱
+        # 4. 独立的高级安全参数配置面板舱（初始隐藏）
         self.settings_panel = SettingsPanel()
         self.settings_panel.settings_saved.connect(self._handle_settings_saved)
-        self.settings_panel.cancel_clicked.connect(lambda: self._stack.setCurrentIndex(self._workspace_index))
-        self._stack.addWidget(self.settings_panel)
-        self._settings_index = 1
+        self.settings_panel.cancel_clicked.connect(lambda: self._show_workspace_page())
+        self._collapsible_layout.addWidget(self.settings_panel)
+        self.settings_panel.setVisible(False)
+        
+        self._current_page = self.workspace_page  # 当前活跃页面指针
         
         cl.addWidget(self._collapsible, 1)
 
@@ -271,7 +273,7 @@ class MainWindow(QWidget):
             self._update_responsive_layout()
         else:
             self._show_session_only()
-        self._stack.setCurrentIndex(self._workspace_index)
+        self._show_workspace_page()
 
     def _update_responsive_layout(self):
         """响应式动态路由：自适应双轨显隐"""
@@ -571,9 +573,21 @@ class MainWindow(QWidget):
 
     def _minimize(self): self.showMinimized()
 
+    # ── 多叉树页面切换 ─────────────────────────────
+
+    def _show_workspace_page(self):
+        self.settings_panel.setVisible(False)
+        self.workspace_page.setVisible(True)
+        self._current_page = self.workspace_page
+
+    def _show_settings_page(self):
+        self.workspace_page.setVisible(False)
+        self.settings_panel.setVisible(True)
+        self._current_page = self.settings_panel
+
     def _open_settings(self):
         self.settings_panel.load_settings_to_ui(self._settings)
-        self._stack.setCurrentIndex(self._settings_index)
+        self._show_settings_page()
 
     def _open_session_selector(self):
         """切换会话列表显示"""
@@ -606,7 +620,7 @@ class MainWindow(QWidget):
             self._init_llm_async()
 
         self.chat_display.add_status_banner("配置已同步完成")
-        self._stack.setCurrentIndex(self._workspace_index)
+        self._show_workspace_page()
 
     def _detect_edge(self, pos):
         w, h = self.width(), self.height()
