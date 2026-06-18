@@ -3,8 +3,8 @@
 import subprocess
 import json
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
-    QScrollArea, QGroupBox, QFormLayout, QComboBox, QRadioButton, QButtonGroup, QFrame
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QScrollArea, QGroupBox, QFormLayout, QComboBox, QRadioButton, QButtonGroup, QFrame, QSlider
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QCursor
@@ -148,8 +148,52 @@ class SettingsPanel(QWidget):
         self.setting_privacy = SlidingSwitch()
         self.setting_privacy.toggled.connect(self._trigger_immediate_save)
         f1.addRow("隐私隔离网关:", self.setting_privacy)
+
+        # 🌟 思考深度滑动条（仅影响深度模式，拖动释放后生效）
+        depth_container = QHBoxLayout()
+        self.setting_depth_slider = QSlider(Qt.Horizontal)
+        self.setting_depth_slider.setRange(1, 10)
+        self.setting_depth_slider.setFixedWidth(140)
+        self.setting_depth_slider.setTickPosition(QSlider.TicksBelow)
+        self.setting_depth_slider.setTickInterval(1)
+        self.setting_depth_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                height: 4px;
+                background: #3a3a4a;
+                border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                width: 14px;
+                height: 14px;
+                margin: -5px 0;
+                background: #6e80ff;
+                border-radius: 7px;
+            }
+            QSlider::add-page:horizontal {
+                background: #3a3a4a;
+                border-radius: 2px;
+            }
+            QSlider::sub-page:horizontal {
+                background: #6e80ff;
+                border-radius: 2px;
+            }
+            QSlider::tick:below {
+                color: #666;
+            }
+        """)
+        # 拖动释放后才保存（避免频繁触发）
+        self.setting_depth_slider.sliderReleased.connect(self._trigger_immediate_save)
+        self.setting_depth_label = QLabel("3")
+        self.setting_depth_label.setFixedWidth(16)
+        self.setting_depth_slider.valueChanged.connect(
+            lambda v: self.setting_depth_label.setText(str(v))
+        )
+        depth_container.addWidget(self.setting_depth_slider)
+        depth_container.addWidget(self.setting_depth_label)
+        depth_container.addStretch()
+        f1.addRow("深度思考强度:", depth_container)
         form_layout.addWidget(g1)
-        
+
         # 舱区 2：界面偏好自定义
         g3 = QGroupBox("界面偏好")
         f3 = QFormLayout(g3)
@@ -176,7 +220,7 @@ class SettingsPanel(QWidget):
         self.setting_topmost.toggled.connect(self._trigger_immediate_save)
         f3.addRow("窗口始终置顶:", self.setting_topmost)
         form_layout.addWidget(g3)
-        
+
         # 🌟 终极破局：完全干掉底部的“保存/保存设置”确认按钮，留出极简现代的表单尾部
         form_layout.addStretch()
         
@@ -213,6 +257,10 @@ class SettingsPanel(QWidget):
             self.setting_theme_light.setChecked(True)
             
         self.setting_topmost.setChecked(settings_dict["topmost"], emit_signal=False)
+
+        depth = settings_dict.get("thinking_depth", 3)
+        self.setting_depth_slider.setValue(depth)
+        self.setting_depth_label.setText(str(depth))
         
         self._is_loading = False # 释放互锁，主逻辑恢复即时存盘状态
 
@@ -245,6 +293,7 @@ class SettingsPanel(QWidget):
             "privacy": self.setting_privacy.isChecked(),
             "dark_mode": self.setting_theme_dark.isChecked(),
             "topmost": self.setting_topmost.isChecked(),
-            "custom_models": self.custom_models
+            "custom_models": self.custom_models,
+            "thinking_depth": self.setting_depth_slider.value()
         }
         self.settings_saved.emit(payload)

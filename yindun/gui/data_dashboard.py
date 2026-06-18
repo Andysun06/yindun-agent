@@ -110,7 +110,7 @@ class DataDashboard(QFrame):
         grid.setColumnStretch(1, 1)
 
         self._lbl_model = self._make_stat("🤖", "模型调用", "0")
-        self._lbl_tool = self._make_stat("🛠️", "工具调用", "0")
+        self._lbl_tool = self._make_stat("🛠️", "对话次数", "0")
         self._lbl_model_name = self._make_stat("📦", "当前模型", "-")
         self._lbl_avg_latency = self._make_stat("⚡", "平均响应", "-")
 

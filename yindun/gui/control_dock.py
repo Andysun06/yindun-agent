@@ -46,7 +46,7 @@ class SegmentedModeSwitch(QWidget):
 
     # ── 对外 API ───────────────────────────────────────────────
     def get_mode(self) -> str:
-        return "👁️ 深度自检" if self._is_think else "⚡ 快速响应"
+        return "深度思考" if self._is_think else "快速回答"
 
     def set_dark_theme(self, dark: bool):
         if self._dark_mode != dark:

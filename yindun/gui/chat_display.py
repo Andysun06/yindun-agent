@@ -5,7 +5,6 @@ from PySide6.QtCore import Qt, QTimer
 from yindun.gui.chat_bubble import ChatBubble, StatusBanner
 from yindun.gui.rounded_scrollbar import RoundedScrollBar
 from datetime import datetime
-
 class ChatDisplay(QScrollArea):
     """Independent scrollable message board component"""
     def __init__(self, parent=None):
@@ -13,6 +12,12 @@ class ChatDisplay(QScrollArea):
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._dark_mode = False
+        # 节流：避免拖动边缘时频繁更新所有气泡（卡顿优化）
+        self._update_timer = QTimer(self)
+        self._update_timer.setSingleShot(True)
+        self._update_timer.setInterval(60)  # 60ms 节流窗口
+        self._update_timer.timeout.connect(self._do_update_all_bubbles_width)
+        self._pending_width = 0
 
         # 替换为自定义胶囊形圆角滚动条 (Qt QSS border-radius 不够圆)
         self.setVerticalScrollBar(RoundedScrollBar(self, dark=False))
@@ -51,14 +56,28 @@ class ChatDisplay(QScrollArea):
             if isinstance(w, (ChatBubble, StatusBanner)):
                 w.set_dark_mode(dark)
 
-    def add_message_bubble(self, role, text, current_window_width):
+    def add_message_bubble(self, role, text, current_window_width, meta_info=""):
         """Instantiate and inject a native chat bubble into the flow layout"""
         timestamp = datetime.now().strftime("%H:%M")
-        bubble = ChatBubble(role, text, timestamp, window_width=current_window_width, dark_mode=self._dark_mode)
+        bubble = ChatBubble(role, text, timestamp, window_width=current_window_width,
+                           dark_mode=self._dark_mode, meta_info=meta_info)
         
         # Always insert above the bottom stretch anchor spring
         self.chat_layout.insertWidget(self.chat_layout.count() - 1, bubble)
         QTimer.singleShot(40, self.auto_scroll_to_bottom)
+
+    def update_last_assistant_bubble(self, text, meta_info=None):
+        """更新最后一个 AI 气泡的内容（用于思考过程的渐进输出）
+        如果没有 AI 气泡则返回 False"""
+        # 从后往前找，跳过底部的 stretch，找到第一个 AI 气泡
+        for i in range(self.chat_layout.count() - 1, -1, -1):
+            item = self.chat_layout.itemAt(i)
+            w = item.widget() if item else None
+            if isinstance(w, ChatBubble) and not w._is_user:
+                w.update_text(text, meta_info)
+                QTimer.singleShot(40, self.auto_scroll_to_bottom)
+                return True
+        return False
 
     def add_status_banner(self, text):
         """Inject a centered system environment notice banner"""
@@ -77,3 +96,28 @@ class ChatDisplay(QScrollArea):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+
+    def update_all_bubbles_width(self, available_width):
+        """当窗口宽度变化时，更新所有气泡的宽度（保持 75% 最大宽度约束）
+        使用节流：60ms 内的多次调用只会执行最后一次
+        available_width: 聊天区域实际可用宽度（不是窗口总宽度）
+        """
+        self._pending_width = available_width
+        # 重启定时器，60ms 内只执行一次实际更新
+        self._update_timer.start()
+
+    def _do_update_all_bubbles_width(self):
+        """实际执行气泡宽度更新（节流后的真实操作）"""
+        available_width = self._pending_width
+        if available_width <= 0:
+            return
+        # 确保 inner_canvas 的宽度与可用宽度同步
+        vp_width = self.viewport().width()
+        if vp_width > 0:
+            self.inner_canvas.setFixedWidth(vp_width)
+        for i in range(self.chat_layout.count()):
+            item = self.chat_layout.itemAt(i)
+            if item:
+                widget = item.widget()
+                if isinstance(widget, ChatBubble):
+                    widget.update_width(available_width)
