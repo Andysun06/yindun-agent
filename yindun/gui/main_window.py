@@ -200,7 +200,7 @@ class MainWindow(QWidget):
         tb.addWidget(ttl)
         tb.addStretch()
         
-        for txt, nm, slot in [("💬", "titleBtn", self._open_session_selector), ("⚙", "titleBtn", self._open_settings), ("—", "titleBtn", self._minimize),
+        for txt, nm, slot in [("➕", "titleBtnNew", self._new_session), ("💬", "titleBtn", self._open_session_selector), ("⚙", "titleBtn", self._open_settings), ("—", "titleBtn", self._minimize),
                               ("▸", "titleBtn", self._toggle_collapse), ("×", "closeBtn", self.close)]:
             b = QPushButton(txt)
             b.setObjectName(nm)
