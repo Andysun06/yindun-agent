@@ -223,59 +223,41 @@ class DataDashboard(QFrame):
         self.update_tool_calls(self._tool_calls + 1)
 
     def set_dark_mode(self, dark: bool):
-        if dark:
-            self.setStyleSheet("""
-                QFrame#dataDashboard { background: #252538; border-top: 1px solid rgba(255,255,255,8); }
-                QFrame#dashboardBar { background: transparent; }
-                QLabel#dashboardBarLabel { color: #d4d4e0; font-size: 11px; font-weight: 600; }
-                QPushButton#dashboardToggle {
-                    background: transparent; color: #d4d4e0;
-                    border: 1px solid rgba(255,255,255,20);
-                    border-radius: 11px; font-size: 11px; font-weight: bold;
-                }
-                QPushButton#dashboardToggle:hover { color: #07c160; border-color: #07c160; }
-                QFrame#dashboardPanel { background: transparent; }
-                QFrame#ctxRow { background: transparent; }
-                QLabel#ctxIcon { color: #d4d4e0; font-size: 12px; }
-                QLabel#ctxText { color: #d4d4e0; font-size: 11px; font-weight: 500; min-width: 42px; }
-                QLabel#ctxPct { color: #4ade80; font-size: 11px; font-weight: bold; }
-                QProgressBar#ctxProgress {
-                    background: rgba(255,255,255,10);
-                    border: none; border-radius: 5px;
-                }
-                QProgressBar#ctxProgress::chunk {
-                    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #4ade80,stop:1 #22c55e);
-                    border-radius: 5px;
-                }
-                QFrame#statCard { background: transparent; border: 1px solid rgba(255,255,255,12); border-radius: 6px; }
-                QLabel#statLabel { color: #9aa0b0; font-size: 9px; }
-                QLabel#statValue { color: #d4d4e0; font-size: 12px; font-weight: bold; }
-            """)
-        else:
-            self.setStyleSheet("""
-                QFrame#dataDashboard { background: #f8fafc; border-top: 1px solid #e2e8f0; }
-                QFrame#dashboardBar { background: transparent; }
-                QLabel#dashboardBarLabel { color: #334155; font-size: 11px; font-weight: 600; }
-                QPushButton#dashboardToggle {
-                    background: transparent; color: #334155;
-                    border: 1px solid #cbd5e1;
-                    border-radius: 11px; font-size: 11px; font-weight: bold;
-                }
-                QPushButton#dashboardToggle:hover { color: #07c160; border-color: #07c160; }
-                QFrame#dashboardPanel { background: transparent; }
-                QFrame#ctxRow { background: transparent; }
-                QLabel#ctxIcon { color: #334155; font-size: 12px; }
-                QLabel#ctxText { color: #334155; font-size: 11px; font-weight: 500; min-width: 42px; }
-                QLabel#ctxPct { color: #16a34a; font-size: 11px; font-weight: bold; }
-                QProgressBar#ctxProgress {
-                    background: #e2e8f0;
-                    border: none; border-radius: 5px;
-                }
-                QProgressBar#ctxProgress::chunk {
-                    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #4ade80,stop:1 #22c55e);
-                    border-radius: 5px;
-                }
-                QFrame#statCard { background: transparent; border: 1px solid #e2e8f0; border-radius: 6px; }
-                QLabel#statLabel { color: #64748b; font-size: 9px; }
-                QLabel#statValue { color: #1e293b; font-size: 12px; font-weight: bold; }
-            """)
+        c = {
+            "bg": "#252538" if dark else "#f8fafc",
+            "border": "rgba(255,255,255,8)" if dark else "#e2e8f0",
+            "text": "#d4d4e0" if dark else "#334155",
+            "toggle_border": "rgba(255,255,255,20)" if dark else "#cbd5e1",
+            "pct": "#4ade80" if dark else "#16a34a",
+            "progress_bg": "rgba(255,255,255,10)" if dark else "#e2e8f0",
+            "card_border": "rgba(255,255,255,12)" if dark else "#e2e8f0",
+            "stat_label": "#9aa0b0" if dark else "#64748b",
+            "stat_value": "#d4d4e0" if dark else "#1e293b",
+        }
+        self.setStyleSheet(f"""
+            QFrame#dataDashboard {{ background: {c['bg']}; border-top: 1px solid {c['border']}; }}
+            QFrame#dashboardBar {{ background: transparent; }}
+            QLabel#dashboardBarLabel {{ color: {c['text']}; font-size: 11px; font-weight: 600; }}
+            QPushButton#dashboardToggle {{
+                background: transparent; color: {c['text']};
+                border: 1px solid {c['toggle_border']};
+                border-radius: 11px; font-size: 11px; font-weight: bold;
+            }}
+            QPushButton#dashboardToggle:hover {{ color: #07c160; border-color: #07c160; }}
+            QFrame#dashboardPanel {{ background: transparent; }}
+            QFrame#ctxRow {{ background: transparent; }}
+            QLabel#ctxIcon {{ color: {c['text']}; font-size: 12px; }}
+            QLabel#ctxText {{ color: {c['text']}; font-size: 11px; font-weight: 500; min-width: 42px; }}
+            QLabel#ctxPct {{ color: {c['pct']}; font-size: 11px; font-weight: bold; }}
+            QProgressBar#ctxProgress {{
+                background: {c['progress_bg']};
+                border: none; border-radius: 5px;
+            }}
+            QProgressBar#ctxProgress::chunk {{
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #4ade80,stop:1 #22c55e);
+                border-radius: 5px;
+            }}
+            QFrame#statCard {{ background: transparent; border: 1px solid {c['card_border']}; border-radius: 6px; }}
+            QLabel#statLabel {{ color: {c['stat_label']}; font-size: 9px; }}
+            QLabel#statValue {{ color: {c['stat_value']}; font-size: 12px; font-weight: bold; }}
+        """)

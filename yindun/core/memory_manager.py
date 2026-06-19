@@ -15,15 +15,8 @@ from langchain_core.language_models import BaseChatModel
 
 # ── Token 估算 ─────────────────────────────────────────────
 def _estimate_tokens(text: str) -> int:
-    """估算文本 token 数。优先使用 tiktoken，失败则用字符数/2.5 近似。"""
-    try:
-        import tiktoken
-        enc = tiktoken.get_encoding("cl100k_base")
-        return len(enc.encode(text))
-    except Exception:
-        # 中英文混合粗略估算：每个汉字约 1.5 token，英文单词约 1.3 token
-        # 保守取字符数/2.5
-        return max(1, len(text) // 2)
+    """估算文本 token 数。中英文混合粗略估算，每字符约 0.5 token。"""
+    return max(1, len(text) // 2)
 
 
 def _count_message_tokens(msg: BaseMessage) -> int:

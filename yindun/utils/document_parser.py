@@ -159,24 +159,13 @@ def _build_install_guide(pkg_name):
 
 
 def _get_audio_duration(filepath, ext):
-    """获取音频时长（秒）"""
-    try:
-        from mutagen import File as MutagenFile
-        audio = MutagenFile(filepath)
-        if audio and audio.info:
-            if hasattr(audio.info, "length"):
-                return audio.info.length
-            if hasattr(audio.info, "duration"):
-                return audio.info.duration
-    except:
-        pass
-
+    """获取音频时长（秒）。仅支持 WAV 格式通过 wave 标准库读取。"""
     if ext == ".wav":
         try:
             import wave
             with wave.open(filepath, "rb") as wf:
                 return wf.getnframes() / float(wf.getframerate())
-        except:
+        except Exception:
             pass
     return None
 

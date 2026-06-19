@@ -86,8 +86,10 @@ class ChatDisplay(QScrollArea):
         QTimer.singleShot(40, self.auto_scroll_to_bottom)
 
     def auto_scroll_to_bottom(self):
-        """Smoothly force the scrollbar slider to track the lowest limit"""
-        self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
+        """仅当用户已在底部时才自动滚动，避免强制拉回（翻阅历史时不受干扰）"""
+        sb = self.verticalScrollBar()
+        if sb.value() >= sb.maximum() - 20:
+            sb.setValue(sb.maximum())
 
     def clear_messages(self):
         """Remove all message widgets while keeping the bottom stretch anchor."""

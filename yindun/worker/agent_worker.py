@@ -529,17 +529,14 @@ class Worker(QObject):
     def _resolve_target_path(self, args: dict) -> str:
         """
         从工具参数中解析目标路径：
-        1. ★★★ 优先从用户原始输入中提取完整绝对路径（最可靠）
-        2. 其次使用 args 中的 target_directory（模型可能传错，仅作参考）
-        3. 如果是中文描述（如"桌面"、"E盘"），转换为实际路径
-        4. 默认返回当前沙箱目录
+        1. 优先从用户原始输入中提取完整绝对路径
+        2. 其次使用 args 中的 target_directory
+        3. 默认返回当前沙箱目录
         """
-        # ★★★ 优先从用户输入中提取完整绝对路径（模型可能传错路径）
         user_input_path = self._det(self.user_input)
         if user_input_path:
             return user_input_path
 
-        # 从工具参数中提取
         target_dir = ""
         if isinstance(args, dict):
             target_dir = args.get("target_directory", "") or args.get("directory", "") or args.get("path", "") or ""
@@ -547,9 +544,8 @@ class Worker(QObject):
         if not target_dir or target_dir == "当前沙箱目录":
             return self.sandbox_path
 
-        # 用 _dyn 解析中文描述
-        resolved = self._dyn(target_dir)
-        if resolved and resolved != self.sandbox_path:
+        resolved = self._det(target_dir)
+        if resolved:
             return resolved
 
         return self.sandbox_path
@@ -588,32 +584,6 @@ class Worker(QObject):
             return os.path.abspath(f"{d}:\\")
 
         return None
-
-    @staticmethod
-    def _dyn(desc):
-        """解析中文路径描述为实际路径"""
-        if not desc or not isinstance(desc, str):
-            return os.path.abspath(".")
-        if "项目根目录" in desc or "当前沙箱" in desc or "当前目录" in desc:
-            return os.path.abspath(".")
-        if "桌面" in desc:
-            return os.path.join(os.path.expanduser("~"), "Desktop")
-        p = desc.strip()
-        if "盘" in p:
-            parts = p.split("盘")
-            p = parts[0].upper() + ":\\" + (parts[1] if len(parts) > 1 else "")
-        for s in ["内", "中", "目录", "文件夹", "根目录", "下"]:
-            if p.endswith(s):
-                p = p[:-len(s)]
-        try:
-            p_normalized = p.strip().replace("/", "\\")
-            # 如果看起来像合法路径（包含盘符或相对路径），返回绝对路径
-            if re.match(r"^[A-Za-z]:", p_normalized) or os.path.exists(p_normalized):
-                return os.path.abspath(os.path.normpath(p_normalized))
-            # 否则返回当前目录
-            return os.path.abspath(".")
-        except Exception:
-            return os.path.abspath(".")
 
     @staticmethod
     def _is_sens(path):
