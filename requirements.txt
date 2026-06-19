@@ -9,6 +9,4 @@ pydantic>=2.0.0
 tiktoken>=0.5.0
 pyinstaller>=6.0.0
 mutagen>=1.47.0
-funasr>=1.0.0
-modelscope>=1.15.0
 huggingface_hub>=0.20.0
