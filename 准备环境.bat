@@ -1,9 +1,9 @@
 @echo off
-title Yindun V3.1.4 - Setup
+title Yindun V3.2 - Setup
 cd /d "%~dp0"
 
 echo ===================================================
-echo  [Yindun V3.1.4] Environment Deployment Self-Check
+echo  [Yindun V3.2] Environment Deployment Self-Check
 echo ===================================================
 echo.
 
@@ -36,14 +36,22 @@ echo [OK] Virtual environment created.
 echo [OK] Virtual environment ready.
 echo.
 
-echo [3/3] Installing dependencies via requirements.txt...
+echo [3/3] Installing dependencies...
 ".\secure_env\Scripts\python.exe" -m pip install --upgrade pip -q
 ".\secure_env\Scripts\python.exe" -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+echo [3/3] Installing audio dependencies...
+".\secure_env\Scripts\python.exe" -m pip install editdistance-s onnxruntime sentencepiece soundfile librosa scipy numpy torch transformers accelerate hydra-core jaconv jamo jieba kaldiio omegaconf oss2 tensorboardX umap-learn -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+echo [3/3] Installing funasr and modelscope...
+".\secure_env\Scripts\python.exe" -m pip install funasr modelscope --no-deps -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 if %errorlevel% neq 0 (
     echo.
     echo [WARN] Tsinghua mirror failed, trying default PyPI...
     ".\secure_env\Scripts\python.exe" -m pip install -r requirements.txt
+    ".\secure_env\Scripts\python.exe" -m pip install editdistance-s onnxruntime sentencepiece soundfile librosa scipy numpy torch transformers accelerate hydra-core jaconv jamo jieba kaldiio omegaconf oss2 tensorboardX umap-learn
+    ".\secure_env\Scripts\python.exe" -m pip install funasr modelscope --no-deps
     if %errorlevel% neq 0 (
         echo [ERROR] Installation failed. Check your network connection.
         pause
