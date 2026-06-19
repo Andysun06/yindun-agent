@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 # Yindun Security Agent V3.1.4 - Independent Control Dock Component (3D Rounded Edition)
-from PySide6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel, QGraphicsDropShadowEffect, QWidget
-from PySide6.QtCore import Signal, Qt, QPropertyAnimation, QEasingCurve, Property
+from PySide6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel, QGraphicsDropShadowEffect, QWidget, QApplication
+from PySide6.QtCore import Signal, Qt, QPropertyAnimation, QEasingCurve, Property, QEvent, QTimer
 from PySide6.QtGui import QCursor, QColor, QPainter, QFont
+
 
 class SegmentedModeSwitch(QWidget):
     """分段滑动式模式开关（紧凑低调风格，与整体 UI 统一）"""
@@ -141,6 +142,7 @@ class ControlDock(QFrame):
     """下置复合多模态控制台底座"""
     send_triggered = Signal(str)
     file_requested = Signal()
+    stop_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -172,7 +174,7 @@ class ControlDock(QFrame):
         self.input_line = QLineEdit()
         self.input_line.setObjectName("inputLine")
         self.input_line.setPlaceholderText("请输入涉密指令...")
-        self.input_line.returnPressed.connect(self._handle_send)
+        self.input_line.installEventFilter(self)
         inp_row.addWidget(self.input_line, 1)
         
         self.send_btn = QPushButton("➤")
@@ -180,6 +182,14 @@ class ControlDock(QFrame):
         self.send_btn.setCursor(QCursor(Qt.PointingHandCursor))
         self.send_btn.clicked.connect(self._handle_send)
         inp_row.addWidget(self.send_btn)
+        
+        self.stop_btn = QPushButton("⏹")
+        self.stop_btn.setObjectName("stopBtn")
+        self.stop_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        self.stop_btn.setFocusPolicy(Qt.NoFocus)  # 去掉焦点蓝框
+        self.stop_btn.clicked.connect(self.stop_requested.emit)
+        self.stop_btn.hide()
+        inp_row.addWidget(self.stop_btn)
         layout.addLayout(inp_row)
         
         self.set_dark_mode(False)
@@ -188,6 +198,19 @@ class ControlDock(QFrame):
         text = self.input_line.text().strip()
         if text:
             self.send_triggered.emit(text)
+
+    def eventFilter(self, obj, event):
+        """Ctrl+Enter 换行（延迟插入避免事件循环冲突），Enter 发送"""
+        if obj == self.input_line and event.type() == QEvent.KeyPress:
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                if QApplication.keyboardModifiers() & Qt.ControlModifier:
+                    # 延迟到下一事件循环插入，避免 keyPressEvent 内修改自身导致递归
+                    QTimer.singleShot(0, lambda: self.input_line.insert("\n"))
+                    return True
+                else:
+                    self._handle_send()
+                    return True
+        return super().eventFilter(obj, event)
 
     def get_current_mode(self):
         return self.mode_switch.get_mode()
@@ -206,6 +229,8 @@ class ControlDock(QFrame):
 
     def toggle_busy_lock(self, is_busy, customized_placeholder=""):
         self.send_btn.setEnabled(not is_busy)
+        self.send_btn.setVisible(not is_busy)
+        self.stop_btn.setVisible(is_busy)
         self.mode_switch.setEnabled(not is_busy)
         if is_busy:
             self.input_line.setPlaceholderText(customized_placeholder if customized_placeholder else "正在处理机密网关数据...")
@@ -214,25 +239,25 @@ class ControlDock(QFrame):
 
     def set_dark_mode(self, dark: bool):
         self.mode_switch.set_dark_theme(dark)
-        if dark:
-            self.send_btn.setStyleSheet("""
-                QPushButton#sendBtn {
-                    background: #3b82f6; color: white; border: none; border-radius: 16px;
-                    font-size: 15px; font-weight: bold;
-                    min-width: 38px; max-width: 38px; min-height: 38px; max-height: 38px;
-                }
-                QPushButton#sendBtn:hover { background: #2563eb; }
-                QPushButton#sendBtn:pressed { background: #1d4ed8; }
-                QPushButton#sendBtn:disabled { background: #3a3a50; }
-            """)
-        else:
-            self.send_btn.setStyleSheet("""
-                QPushButton#sendBtn {
-                    background: #07c160; color: white; border: none; border-radius: 16px;
-                    font-size: 15px; font-weight: bold;
-                    min-width: 38px; max-width: 38px; min-height: 38px; max-height: 38px;
-                }
-                QPushButton#sendBtn:hover { background: #06ad56; }
-                QPushButton#sendBtn:pressed { background: #059a4c; }
-                QPushButton#sendBtn:disabled { background: #c5cde0; }
-            """)
+        c = {"bg": "#3b82f6", "hover": "#2563eb", "pressed": "#1d4ed8", "disabled": "#3a3a50"} if dark else \
+            {"bg": "#07c160", "hover": "#06ad56", "pressed": "#059a4c", "disabled": "#c5cde0"}
+        self.send_btn.setStyleSheet(f"""
+            QPushButton#sendBtn {{
+                background: {c['bg']}; color: white; border: none; border-radius: 16px;
+                font-size: 15px; font-weight: bold;
+                min-width: 38px; max-width: 38px; min-height: 38px; max-height: 38px;
+            }}
+            QPushButton#sendBtn:hover {{ background: {c['hover']}; }}
+            QPushButton#sendBtn:pressed {{ background: {c['pressed']}; }}
+            QPushButton#sendBtn:disabled {{ background: {c['disabled']}; }}
+        """)
+        self.stop_btn.setStyleSheet(f"""
+            QPushButton#stopBtn {{
+                background: #ef4444; color: white; border: none; border-radius: 16px;
+                font-size: 13px; font-weight: bold; outline: none;
+                min-width: 38px; max-width: 38px; min-height: 38px; max-height: 38px;
+            }}
+            QPushButton#stopBtn:hover {{ background: #dc2626; }}
+            QPushButton#stopBtn:pressed {{ background: #b91c1c; }}
+            QPushButton#stopBtn:focus {{ border: none; outline: none; }}
+        """)

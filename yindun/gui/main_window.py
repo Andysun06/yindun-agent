@@ -59,6 +59,9 @@ class _AudioTranscriberThread(QThread):
 
 
 class MainWindow(QWidget):
+    # 后台 Ollama 模型检测完成后通知设置面板刷新
+    model_list_updated = Signal(list)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("隐盾 V3.1.4demo")
@@ -76,19 +79,18 @@ class MainWindow(QWidget):
         self._config_file = Path(__file__).resolve().parents[2] / "global_config.json"
         self._settings = {
             "model": "qwen2.5:7b", "privacy": True, "dark_mode": False, "topmost": True,
-            "custom_models": {}, "thinking_depth": 3
+            "custom_models": {}, "thinking_depth": 3,
+            "ollama_models_cache": []   # 缓存的 Ollama 模型列表，用于零阻塞启动
         }
         self._load_global_config()
-        
-        # 检查保存的模型是否仍然可用，如果不可用则自动切换
+
+        # 检查保存的模型是否仍然可用（仅当缓存非空时才校验，缓存空时信任已保存的配置）
         saved_model = self._settings.get("model", "")
         custom_models = self._settings.get("custom_models", {})
-        available_models = detect_ollama_models()
-        if saved_model not in available_models and saved_model not in custom_models:
-            first_model = get_first_available_model()
-            if first_model:
-                self._settings["model"] = first_model
-                self._save_global_config()
+        cached_models = self._settings.get("ollama_models_cache", [])
+        if cached_models and saved_model not in cached_models and saved_model not in custom_models:
+            self._settings["model"] = cached_models[0]
+            self._save_global_config()
         
         os.environ["PERMISSION_LEVEL"] = self._settings.get("permission", "完全控制 (读/写/列表)")
 
@@ -97,8 +99,7 @@ class MainWindow(QWidget):
         if self._settings.get("topmost", True):
             flags |= Qt.WindowStaysOnTopHint
         self.setWindowFlags(flags)
-        self.resize(EXPANDED_W, EXPANDED_H)
-        self._position_bottom_right()
+        self._restore_window_geometry()
         
         # 开启主窗体的全局高级鼠标轨迹追踪，激活无边框自由拉伸机制
         self.setMouseTracking(True)
@@ -106,7 +107,8 @@ class MainWindow(QWidget):
         # 无边框像素级物理拖拽缩放算力参数
         self._drag_pos = None
         self._resize_edge = None
-        self._edge_px = 14
+        self._edge_px = 22        # 单边检测宽度
+        self._corner_px = 32      # 角落检测宽度（更大，便于命中四角）
         self._resize_start_geo = QRect()
         self._resize_start_pos = QPoint()
         self._collapsed = False
@@ -131,6 +133,26 @@ class MainWindow(QWidget):
         if s: 
             g = s.availableGeometry()
             self.move(g.right() - self.width() - 14, g.bottom() - self.height() - 14)
+
+    def _restore_window_geometry(self):
+        """恢复上次关闭时的窗口位置和大小，若不可用则回退到右下角默认"""
+        geo = self._settings.get("window_geometry")
+        if geo and len(geo) == 4:
+            r = QRect(*geo)
+            for screen in QApplication.screens():
+                if screen.availableGeometry().intersects(r):
+                    self.setGeometry(r)
+                    return
+        self.resize(EXPANDED_W, EXPANDED_H)
+        self._position_bottom_right()
+
+    def closeEvent(self, event):
+        """关闭时保存窗口位置，下次启动时恢复"""
+        if not self._collapsed:
+            g = self.geometry()
+            self._settings["window_geometry"] = [g.x(), g.y(), g.width(), g.height()]
+            self._save_global_config()
+        super().closeEvent(event)
 
     def _load_global_config(self):
         if not self._config_file.exists(): return
@@ -263,6 +285,7 @@ class MainWindow(QWidget):
         self.control_dock = ControlDock()
         self.control_dock.send_triggered.connect(self._on_user_submit)
         self.control_dock.file_requested.connect(self._on_file_pick_request)
+        self.control_dock.stop_requested.connect(self._on_stop_requested)
 
         self.data_dashboard = DataDashboard()
         self._dashboard_dark = False
@@ -280,6 +303,7 @@ class MainWindow(QWidget):
         self.settings_panel = SettingsPanel()
         self.settings_panel.settings_saved.connect(self._handle_settings_saved)
         self.settings_panel.cancel_clicked.connect(self._on_settings_cancel)
+        self.model_list_updated.connect(self.settings_panel.refresh_ollama_models)
         self._stack.addWidget(self.settings_panel)
         self._settings_index = 1
         
@@ -537,6 +561,23 @@ class MainWindow(QWidget):
         self.worker.error.connect(self.thread.quit)
         self.thread.start()
 
+    def _on_stop_requested(self):
+        """停止按钮：立即取消生成并重置 UI，不等待 worker 线程"""
+        if self.worker and self.is_busy:
+            self.worker.cancel()
+            # 断开旧 worker 信号，防止 stale 回复污染 UI
+            try:
+                self.worker.finished.disconnect(self._on_reply_received)
+                self.worker.error.disconnect(self._on_error_caught)
+            except Exception:
+                pass
+            # 立即重置 UI 状态
+            self.is_busy = False
+            self.control_dock.toggle_busy_lock(False)
+            self.control_dock.force_input_focus()
+            self.status_bar.stop_thinking()
+            self.status_bar.set_static_text("⏹ 已取消生成")
+
     def _on_intermediate_result(self, text):
         """渐进输出：收到模型的中间结果时，更新最后一个 AI 气泡"""
         self.chat_display.update_last_assistant_bubble(text, meta_info=None)
@@ -793,16 +834,21 @@ class MainWindow(QWidget):
         w, h = self.width(), self.height()
         x, y = pos.x(), pos.y()
         e = self._edge_px
-        l, r, t, b = x < e, x > w - e, y < e, y > h - e
-        if not (l or r or t or b): return None
-        if t and l: return "top-left"
-        if t and r: return "top-right"
-        if b and l: return "bottom-left"
-        if b and r: return "bottom-right"
-        if t: return "top"
-        if b: return "bottom"
-        if l: return "left"
-        if r: return "right"
+        c = self._corner_px
+        # 先检测角落（用更大的检测区 c），再检测单边
+        in_left = x < c
+        in_right = x > w - c
+        in_top = y < c
+        in_bottom = y > h - c
+        if in_left and in_top: return "top-left"
+        if in_right and in_top: return "top-right"
+        if in_left and in_bottom: return "bottom-left"
+        if in_right and in_bottom: return "bottom-right"
+        # 再检测单边（用较小的检测区 e）
+        if x < e: return "left"
+        if x > w - e: return "right"
+        if y < e: return "top"
+        if y > h - e: return "bottom"
         return None
 
     def _update_cursor(self, edge):
@@ -972,44 +1018,61 @@ class MainWindow(QWidget):
     def _init_llm_async(self):
         self.status_bar.set_static_text("🔄 正在连接离线算力内核...")
         self.control_dock.toggle_busy_lock(True, "正在注入算力...")
-        # 初始化期间允许切换模式（只是不能发送消息）
         self.control_dock.mode_switch.setEnabled(True)
         mn = self._settings["model"]
         custom_models = self._settings.get("custom_models", {})
-        
+
         tools_list = [list_local_files, create_local_file, delete_local_file, read_local_file, modify_local_file, run_local_command, analyze_project, search_in_files]
-        
+
         def do_init():
+            import json as _json
+            from pathlib import Path as _Path
+            # 在后台线程中检测 Ollama 模型列表并更新缓存
+            _fresh = detect_ollama_models()
+            _cfg = _Path(__file__).resolve().parents[2] / "global_config.json"
+            try:
+                with _cfg.open("r", encoding="utf-8") as _f:
+                    _saved = _json.load(_f)
+            except Exception:
+                _saved = {}
+            if _saved.get("ollama_models_cache") != _fresh:
+                _saved["ollama_models_cache"] = _fresh
+                try:
+                    with _cfg.open("w", encoding="utf-8") as _f:
+                        _json.dump(_saved, _f, ensure_ascii=False, indent=2)
+                except Exception:
+                    pass
             try:
                 if mn in custom_models:
                     from langchain_openai import ChatOpenAI
                     c_info = custom_models[mn]
-                    base_model = ChatOpenAI(model=c_info["model_id"], openai_api_base=c_info["base_url"], openai_api_key=c_info["api_key"])
+                    base_model = ChatOpenAI(
+                        model=c_info["model_id"], openai_api_base=c_info["base_url"],
+                        openai_api_key=c_info["api_key"]
+                    )
                 else:
                     base_model = ChatOllama(
                         model=mn,
                         base_url="http://127.0.0.1:11434",
                         timeout=60,
-                        # Ollama 标准 options 字典，确保参数正确传递
                         options={
-                            "num_ctx": 16384,        # 最大输入上下文 16K token
-                            "num_predict": 4096,     # 最大输出 4K token
-                            "temperature": 0.7,       # 回答温度，略低更稳定
+                            "num_ctx": 16384,
+                            "num_predict": 4096,
+                            "temperature": 0.7,
                             "top_p": 0.9,
                         },
-                        keep_alive=300,           # 模型保持加载 5 分钟
+                        keep_alive=300,
                     )
                 m_bound = base_model.bind_tools(tools_list)
-                # 不在此验证模型可用性，延迟到首次使用时验证（加速启动）
-                return m_bound, {t.name: t for t in tools_list}, None
+                return m_bound, {t.name: t for t in tools_list}, _fresh, None
             except Exception as e:
-                return None, {}, f"模型初始化失败: {str(e)}"
-                    
+                return None, {}, [], f"模型初始化失败: {str(e)}"
+
         class IW(QObject):
-            done = Signal(object, object, object)
+            done = Signal(object, object, list, object)
             def __init__(s, fn): super().__init__(); s.fn = fn
             def run(s): s.done.emit(*s.fn())
-            
+
         self._it = QThread()
         self._iw = IW(do_init)
         self._iw.moveToThread(self._it)
@@ -1018,8 +1081,13 @@ class MainWindow(QWidget):
         self._iw.done.connect(self._it.quit)
         self._it.start()
 
-    def _on_llm_ready(self, llm, tm, err):
+    def _on_llm_ready(self, llm, tm, fresh_models, err):
         self.status_bar.stop_thinking()
+        # 更新 settings 中的缓存
+        if fresh_models:
+            self._settings["ollama_models_cache"] = fresh_models
+            # 通知设置面板刷新模型列表（如果设置页已打开）
+            self.model_list_updated.emit(fresh_models)
         if err:
             self.chat_display.add_status_banner(f"❌ {err}")
             self.control_dock.update_placeholder_text("算力内核离线")
@@ -1031,5 +1099,4 @@ class MainWindow(QWidget):
         self.control_dock.toggle_busy_lock(False)
         self.control_dock.force_input_focus()
         self.chat_display.add_status_banner(f"✅ 安全算力联通成功 [{self._settings['model']}]")
-        # 更新数据看板
         self.data_dashboard.update_current_model(self._settings["model"])

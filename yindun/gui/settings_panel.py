@@ -227,34 +227,51 @@ class SettingsPanel(QWidget):
         scroll.setWidget(sc)
         layout.addWidget(scroll, 1)
 
+    def refresh_ollama_models(self, models: list):
+        """供 MainWindow 后台检测完成后调用，刷新下拉列表中的 Ollama 模型"""
+        if self._is_loading:
+            return
+        # 清除可能残留的占位默认项
+        for item in ["qwen2.5:7b-instruct", "qwen2.5:7b"]:
+            idx = self.setting_model.findText(item)
+            if idx >= 0 and item not in self.custom_models:
+                self.setting_model.removeItem(idx)
+        # 在 custom_models 之前插入新的 Ollama 模型
+        for i, m in enumerate(models):
+            self.setting_model.insertItem(i, m)
+
     def load_settings_to_ui(self, settings_dict):
         """将连廊传入的数据驱动Payload安全反序列化至界面状态中"""
         self._is_loading = True
-        
+
         self.setting_model.clear()
-        
-        ollama_models = detect_ollama_models()
+
+        # 优先使用缓存的模型列表（零阻塞），后台检测完成后会通过 refresh_ollama_models 更新
+        cached = settings_dict.get("ollama_models_cache", [])
+        ollama_models = cached if cached else detect_ollama_models()
         if ollama_models:
             self.setting_model.addItems(ollama_models)
-        
+
         self.custom_models = settings_dict.get("custom_models", {})
         if self.custom_models:
             self.setting_model.addItems(list(self.custom_models.keys()))
-        
+
         if not ollama_models and not self.custom_models:
             self.setting_model.addItems(["qwen2.5:7b-instruct", "qwen2.5:7b"])
-        
+
         idx = self.setting_model.findText(settings_dict["model"])
         if idx >= 0:
             self.setting_model.setCurrentIndex(idx)
-        
+
         # 静默装填滑动开关状态，不抛出变化信号
         self.setting_privacy.setChecked(settings_dict["privacy"], emit_signal=False)
-        
+
         if settings_dict.get("dark_mode", False):
             self.setting_theme_dark.setChecked(True)
         else:
             self.setting_theme_light.setChecked(True)
+
+        self._is_loading = False
             
         self.setting_topmost.setChecked(settings_dict["topmost"], emit_signal=False)
 
