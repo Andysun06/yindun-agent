@@ -1,8 +1,74 @@
 # -*- coding: utf-8 -*-
-# Yindun Security Agent V3.1.4 - Independent Control Dock Component (3D Rounded Edition)
-from PySide6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel, QGraphicsDropShadowEffect, QWidget, QApplication
-from PySide6.QtCore import Signal, Qt, QPropertyAnimation, QEasingCurve, Property, QEvent, QTimer
-from PySide6.QtGui import QCursor, QColor, QPainter, QFont
+# Yindun Security Agent V3.x - Control Dock (多行自动扩展输入框版)
+from PySide6.QtWidgets import (
+    QFrame, QVBoxLayout, QHBoxLayout, QPushButton,
+    QTextEdit, QLabel, QGraphicsDropShadowEffect, QWidget, QApplication
+)
+from PySide6.QtCore import Signal, Qt, QPropertyAnimation, QEasingCurve, Property, QEvent, QTimer, QSize
+from PySide6.QtGui import QCursor, QColor, QPainter, QFont, QTextCursor, QShowEvent
+
+
+class AutoResizingTextEdit(QTextEdit):
+    """自适应高度多行文本框 (最大 4 行, 向上扩展; 圆角胶囊风)"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("autoInput")
+        self.setLineWrapMode(QTextEdit.WidgetWidth)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._single_line_h = 38   # 单行基准高度 (与发送按钮一致)
+        self._max_lines = 4
+        self.textChanged.connect(self._adjust_height)
+
+    def _line_height(self) -> int:
+        """当前字体的一行像素高"""
+        fm = self.fontMetrics()
+        return fm.lineSpacing() + fm.descent() // 2  # 行间距微调
+
+    def _target_height(self) -> int:
+        """根据内容计算目标高度 (clamp 到 1~max_lines 行)"""
+        doc = self.document()
+        # document().size().height() 返回文档总像素高度
+        content_h = int(doc.size().height())
+        lh = self._line_height()
+        target = max(self._single_line_h, min(content_h + lh, lh * self._max_lines))
+        return target
+
+    def _adjust_height(self):
+        h = self._target_height()
+        if h != self.height():
+            self.setFixedHeight(h)
+
+    def keyPressEvent(self, event: QEvent):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if event.modifiers() & Qt.ControlModifier:
+                # Ctrl+Enter → 换行
+                super().keyPressEvent(event)
+            else:
+                # Enter → 发送 (由父组件的 eventFilter 拦截, 这里也做兜底)
+                super().keyPressEvent(event)
+                return
+        super().keyPressEvent(event)
+
+    def get_text(self) -> str:
+        return self.toPlainText()
+
+    def set_text(self, text: str):
+        self.setPlainText(text)
+
+    def showEvent(self, event: QShowEvent):
+        """冷启动修复: 强制刷新内部 viewport 的 QSS + 延迟重算高度,
+        解决打开文件时输入框宽度/样式未就绪的问题"""
+        super().showEvent(event)
+        # 1) 强制 repolish: 让 QSS 完整渗透到 QTextEdit 内部 viewport
+        st = self.style()
+        st.unpolish(self)
+        st.polish(self)
+        st.unpolish(self.viewport())
+        st.polish(self.viewport())
+        # 2) 延迟一帧重算高度, 确保布局树已稳定
+        QTimer.singleShot(0, self._adjust_height)
 
 
 class SegmentedModeSwitch(QWidget):
@@ -170,9 +236,8 @@ class ControlDock(QFrame):
         
         inp_row = QHBoxLayout()
         inp_row.setSpacing(8)
-        
-        self.input_line = QLineEdit()
-        self.input_line.setObjectName("inputLine")
+
+        self.input_line = AutoResizingTextEdit()
         self.input_line.setPlaceholderText("请输入涉密指令...")
         self.input_line.installEventFilter(self)
         inp_row.addWidget(self.input_line, 1)
@@ -195,17 +260,18 @@ class ControlDock(QFrame):
         self.set_dark_mode(False)
 
     def _handle_send(self):
-        text = self.input_line.text().strip()
+        text = self.input_line.get_text().strip()
         if text:
             self.send_triggered.emit(text)
 
     def eventFilter(self, obj, event):
-        """Ctrl+Enter 换行（延迟插入避免事件循环冲突），Enter 发送"""
+        """Enter 发送, Ctrl+Enter 换行"""
         if obj == self.input_line and event.type() == QEvent.KeyPress:
             if event.key() in (Qt.Key_Return, Qt.Key_Enter):
-                if QApplication.keyboardModifiers() & Qt.ControlModifier:
-                    # 延迟到下一事件循环插入，避免 keyPressEvent 内修改自身导致递归
-                    QTimer.singleShot(0, lambda: self.input_line.insert("\n"))
+                if event.modifiers() & Qt.ControlModifier:
+                    # Ctrl+Enter → 在光标处插入换行
+                    cursor = self.input_line.textCursor()
+                    cursor.insertText("\n")
                     return True
                 else:
                     self._handle_send()
@@ -216,7 +282,7 @@ class ControlDock(QFrame):
         return self.mode_switch.get_mode()
 
     def clear_input_field(self):
-        self.input_line.clear()
+        self.input_line.set_text("")
 
     def update_file_button_text(self, text):
         self.file_btn.setText(text)
@@ -241,6 +307,28 @@ class ControlDock(QFrame):
         self.mode_switch.set_dark_theme(dark)
         c = {"bg": "#3b82f6", "hover": "#2563eb", "pressed": "#1d4ed8", "disabled": "#3a3a50"} if dark else \
             {"bg": "#07c160", "hover": "#06ad56", "pressed": "#059a4c", "disabled": "#c5cde0"}
+
+        # 输入框圆角胶囊样式 (与发送按钮 16px 圆角同体系)
+        if dark:
+            input_qss = """
+                QTextEdit#autoInput {
+                    background: #1a1a2e; border: 1.5px solid #3a3a50; border-radius: 16px;
+                    padding: 8px 12px; font-size: 13px; color: #e0e0e0;
+                    selection-background-color: #3b82f6;
+                }
+                QTextEdit#autoInput:focus { border-color: #3b82f6; background: #20203a; }
+            """
+        else:
+            input_qss = """
+                QTextEdit#autoInput {
+                    background: #f8f9fc; border: 1.5px solid #e0e3ea; border-radius: 16px;
+                    padding: 8px 12px; font-size: 13px; color: #1e293b;
+                    selection-background-color: #07c160;
+                }
+                QTextEdit#autoInput:focus { border-color: #07c160; background: #ffffff; }
+            """
+        self.input_line.setStyleSheet(input_qss)
+
         self.send_btn.setStyleSheet(f"""
             QPushButton#sendBtn {{
                 background: {c['bg']}; color: white; border: none; border-radius: 16px;
