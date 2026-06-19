@@ -26,6 +26,12 @@ QPushButton#titleBtn {
     min-width: 24px; max-width: 24px; min-height: 24px; max-height: 24px;
 }
 QPushButton#titleBtn:hover { background: rgba(0,0,0,10); color: #666; }
+QPushButton#titleBtnNew {
+    background: transparent; border: none; border-radius: 12px;
+    font-size: 13px; color: #07c160;
+    min-width: 24px; max-width: 24px; min-height: 24px; max-height: 24px;
+}
+QPushButton#titleBtnNew:hover { background: rgba(0,0,0,10); color: #059a4c; }
 QPushButton#closeBtn {
     background: transparent; border: none; border-radius: 12px; font-size: 15px; color: #bbb;
     min-width: 24px; max-width: 24px; min-height: 24px; max-height: 24px;
@@ -216,6 +222,12 @@ QPushButton#titleBtn {
     min-width: 24px; max-width: 24px; min-height: 24px; max-height: 24px;
 }
 QPushButton#titleBtn:hover { background: rgba(255,255,255,10); color: #ccc; }
+QPushButton#titleBtnNew {
+    background: transparent; border: none; border-radius: 12px;
+    font-size: 13px; color: #3b82f6;
+    min-width: 24px; max-width: 24px; min-height: 24px; max-height: 24px;
+}
+QPushButton#titleBtnNew:hover { background: rgba(255,255,255,10); color: #60a5fa; }
 QPushButton#closeBtn {
     background: transparent; border: none; border-radius: 12px; font-size: 15px; color: #999;
     min-width: 24px; max-width: 24px; min-height: 24px; max-height: 24px;
