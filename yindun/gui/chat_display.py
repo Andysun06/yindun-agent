@@ -1,16 +1,19 @@
 # -*- coding: utf-8 -*-
 # Yindun Security Agent V2.0 - Independent Chat Display Component
 from PySide6.QtWidgets import QScrollArea, QWidget, QVBoxLayout
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from yindun.gui.chat_bubble import ChatBubble, StatusBanner
 from yindun.gui.rounded_scrollbar import RoundedScrollBar
 from datetime import datetime
 class ChatDisplay(QScrollArea):
     """Independent scrollable message board component"""
+    file_dropped = Signal(list)  # 拖放文件时发出，参数为本地文件路径列表
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setAcceptDrops(True)  # 启用拖放接收
         self._dark_mode = False
         # 节流：避免拖动边缘时频繁更新所有气泡（卡顿优化）
         self._update_timer = QTimer(self)
@@ -123,3 +126,27 @@ class ChatDisplay(QScrollArea):
                 widget = item.widget()
                 if isinstance(widget, ChatBubble):
                     widget.update_width(available_width)
+
+    # ──────────────────────────────────────────
+    # 拖放文件支持
+    # ──────────────────────────────────────────
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        """放下：收集所有本地文件路径，发出 file_dropped 信号"""
+        paths = [u.toLocalFile() for u in event.mimeData().urls() if u.isLocalFile()]
+        if paths:
+            self.file_dropped.emit(paths)
+            event.acceptProposedAction()
+        else:
+            event.ignore()

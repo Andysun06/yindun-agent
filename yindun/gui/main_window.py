@@ -14,7 +14,7 @@ from yindun.core.memory_manager import SummarizableChatHistory
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QStackedLayout,
     QFrame, QLabel, QPushButton, QSizeGrip, QFileDialog,
-    QMessageBox, QLineEdit
+    QMessageBox, QLineEdit, QMenu
 )
 from PySide6.QtCore import Qt, QTimer, Signal, QObject, QThread, QPoint, QRect
 from PySide6.QtGui import QColor, QPalette, QFont, QCursor, QMouseEvent
@@ -73,7 +73,7 @@ class MainWindow(QWidget):
         self.tools_map = {}
         self.llm_ready = False
         self.is_busy = False
-        self.attached_file = None
+        self.attached_files = []  # 多文件挂载列表 [{"name": str, "text": str}]
         
         # 全局安全隔离配置树
         self._config_file = Path(__file__).resolve().parents[2] / "global_config.json"
@@ -285,6 +285,8 @@ class MainWindow(QWidget):
         self.control_dock = ControlDock()
         self.control_dock.send_triggered.connect(self._on_user_submit)
         self.control_dock.file_requested.connect(self._on_file_pick_request)
+        self.chat_display.file_dropped.connect(self._mount_files)
+        self.control_dock.manage_requested.connect(self._show_file_manager)
         self.control_dock.stop_requested.connect(self._on_stop_requested)
 
         self.data_dashboard = DataDashboard()
@@ -455,83 +457,130 @@ class MainWindow(QWidget):
         self.control_dock.clear_input_field()
         self.control_dock.toggle_busy_lock(True, "正在调度隐盾核心引擎...")
         
-        display_text = f"📎 附件: {self.attached_file['name']}\n{text}" if self.attached_file else text
+        # 显示用户消息（含附件名摘要）
+        if self.attached_files:
+            names = ", ".join(f["name"] for f in self.attached_files)
+            display_text = f"📎 附件: {names}\n{text}"
+        else:
+            display_text = text
         self.chat_display.add_message_bubble("user", display_text, self.width())
-        
+
         full_context = text
-        if self.attached_file:
-            f = self.attached_file
-            # 检查音频是否还在转写中
-            if not f.get("text", "").strip():
-                # 音频还在转写中：记录用户请求，等待转写完成
+        if self.attached_files:
+            # 检查是否有音频还在转写中
+            if any(not f.get("text", "").strip() for f in self.attached_files):
                 self._pending_audio_request = text
                 self.chat_display.add_assistant_message("⌛ 正在解析音频，请稍候...")
                 self.is_busy = True
                 self.control_dock.toggle_busy_lock(True)
                 return
-            # 修复：PDF/Word 文本可能很长，超过模型 num_ctx(16384) 会导致回答空白
-            # 这里做软截断：保留前 12000 字符（约 4000-6000 token），并附加提示
-            _doc_text = f['text'] or ''
-            _MAX_DOC_CHARS = 12000
-            if len(_doc_text) > _MAX_DOC_CHARS:
-                _doc_text = _doc_text[:_MAX_DOC_CHARS] + "\n\n[注：文档较长，已截断前 %d 字符，如需分析后续内容请分段提问]" % _MAX_DOC_CHARS
-            full_context = "[离线附件环境上下文：" + f['name'] + "]\n" + _doc_text + "\n\n[人类当前实时提问]：" + text
-            self.attached_file = None
-            self.control_dock.update_file_button_text("📎 挂载文件")
-            
+            full_context = self._build_attachment_context(text)
+            self._clear_attachments()
+
         self._start_worker(full_context)
 
     def _on_file_pick_request(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "挂载本地文件", "", 
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "挂载本地文件", "",
             "办公文件 (*.pdf *.docx *.xlsx *.txt *.md *.csv);;"
             "音频文件 (*.mp3 *.wav *.flac *.m4a *.aac *.ogg *.opus *.wma);;"
             "所有文件 (*)"
         )
-        if not path:
-            return
+        if paths:
+            self._mount_files(paths)
 
-        fname = os.path.basename(path)
-        ext = path.lower()
+    def _mount_files(self, paths):
+        """批量挂载本地文件（支持多文件拖放/多选）"""
         _AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma")
-        is_audio = any(ext.endswith(e) for e in _AUDIO_EXTS)
-
-        if is_audio:
-            # 音频文件：后台线程转写，避免 GUI 卡死
-            self.control_dock.update_file_button_text(f"📎 {fname[:10]}...")
-            self.chat_display.add_status_banner(f"🎙️ 正在转写音频：{fname}（请稍候，后台处理中...）")
-            self._attached_file_pending = {"name": fname}
-
-            # 先设置空内容，用户发消息时如果没有转写完就提示等待
-            self.attached_file = {"name": fname, "text": ""}
-
-            # 启动后台转写线程
-            self._audio_transcriber = _AudioTranscriberThread(path)
-            self._audio_transcriber.finished.connect(self._on_audio_transcribe_done)
-            self._audio_transcriber.start()
-        else:
-            # 非音频文件：同步处理（PDF/Word/Excel/TXT 等）
-            self.attached_file = {"name": fname, "text": extract_file_text(path)}
-            self.control_dock.update_file_button_text(f"📎 {fname[:10]}...")
-            self.chat_display.add_status_banner(f"🔒 离线机密附件就绪：{fname}")
+        for path in paths:
+            fname = os.path.basename(path)
+            if path.lower().endswith(_AUDIO_EXTS):
+                self.chat_display.add_status_banner(f"🎙️ 正在转写音频：{fname}（请稍候...）")
+                self._attached_file_pending = fname
+                self.attached_files.append({"name": fname, "text": ""})
+                self._audio_transcriber = _AudioTranscriberThread(path)
+                self._audio_transcriber.finished.connect(self._on_audio_transcribe_done)
+                self._audio_transcriber.start()
+            else:
+                self.attached_files.append({"name": fname, "text": extract_file_text(path)})
+                self.chat_display.add_status_banner(f"🔒 离线机密附件就绪：{fname}")
+        self.control_dock.update_file_count(len(self.attached_files))
 
     def _on_audio_transcribe_done(self, text):
-        """音频转写完成回调"""
-        if hasattr(self, "_attached_file_pending") and self._attached_file_pending:
-            fname = self._attached_file_pending.get("name", "音频")
-            self.attached_file = {"name": fname, "text": text}
-            self.chat_display.add_status_banner(f"🔒 音频转写完成：{fname}")
-            self._attached_file_pending = None
+        """音频转写完成回调：在 attached_files 列表中回填文本"""
+        if not (hasattr(self, "_attached_file_pending") and self._attached_file_pending):
+            return
+        fname = self._attached_file_pending
+        self._attached_file_pending = None
+        for f in self.attached_files:
+            if f["name"] == fname:
+                f["text"] = text
+                break
+        self.chat_display.add_status_banner(f"🔒 音频转写完成：{fname}")
+        # 检查是否有等待中的请求
+        if hasattr(self, "_pending_audio_request") and self._pending_audio_request:
+            user_input = self._pending_audio_request
+            self._pending_audio_request = None
+            full_context = self._build_attachment_context(user_input)
+            self._clear_attachments()
+            self._start_worker(full_context)
 
-            # 检查是否有等待中的请求
-            if hasattr(self, "_pending_audio_request") and self._pending_audio_request:
-                user_input = self._pending_audio_request
-                self._pending_audio_request = None
-                # 组装完整上下文并开始处理
-                full_context = f"[离线附件环境上下文：{fname}]\n{text}\n\n[人类当前实时提问]：{user_input}"
-                self.attached_file = None
-                self.control_dock.update_file_button_text("📎 挂载文件")
-                self._start_worker(full_context)
+    # ──────────────────────────────────────────
+    # 附件管理
+    # ──────────────────────────────────────────
+    _MAX_DOC_CHARS = 12000
+
+    def _build_attachment_context(self, user_text: str) -> str:
+        """拼接所有附件上下文 + 用户提问"""
+        contexts = []
+        for f in self.attached_files:
+            t = (f['text'] or '')[:self._MAX_DOC_CHARS]
+            if len(f['text'] or '') > self._MAX_DOC_CHARS:
+                t += f"\n\n[注：文档较长，已截断前 {self._MAX_DOC_CHARS} 字符，如需分析后续内容请分段提问]"
+            contexts.append(f"[离线附件环境上下文：{f['name']}]\n{t}")
+        return "\n\n".join(contexts) + f"\n\n[人类当前实时提问]：{user_text}"
+
+    def _clear_attachments(self):
+        self.attached_files = []
+        self.control_dock.update_file_count(0)
+
+    def _show_file_manager(self):
+        """弹出文件管理菜单"""
+        if not self.attached_files:
+            return
+        dark = self._settings.get("dark_mode", False)
+        accent = "#3b82f6" if dark else "#07c160"
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{ background: {'#2a2a3e' if dark else '#fff'}; border: 1px solid {'#3a3a50' if dark else '#e0e3ea'};
+                      border-radius: 10px; padding: 6px; }}
+            QMenu::item {{ padding: 8px 24px; border-radius: 6px; color: {'#e0e0e0' if dark else '#1a1a2e'}; }}
+            QMenu::item:selected {{ background: {accent}; color: white; }}
+            QMenu::separator {{ height: 1px; background: {'#3a3a50' if dark else '#e0e3ea'}; margin: 4px 8px; }}
+            QMenu::item:disabled {{ color: #888; }}
+        """)
+        title = menu.addAction("🗂️ 已挂载附件")
+        title.setEnabled(False)
+        menu.addSeparator()
+        for i, f in enumerate(self.attached_files):
+            icon = "⏳" if not f.get("text", "").strip() else "📄"
+            act = menu.addAction(f"{icon}  {f['name']}")
+            act.triggered.connect(lambda _, idx=i: self._remove_file(idx))
+        menu.addSeparator()
+        menu.addAction("🗑️  清空全部附件").triggered.connect(
+            lambda: (self.chat_display.add_status_banner(f"🗑️ 已清空 {len(self.attached_files)} 个附件"),
+                     self._clear_attachments()))
+        menu.addSeparator()
+        menu.addAction("📎  挂载新文件...").triggered.connect(self._on_file_pick_request)
+        btn = self.control_dock.manage_btn
+        menu.exec(btn.mapToGlobal(QPoint(0, btn.height() + 4)))
+
+    def _remove_file(self, idx):
+        """删除指定索引的附件"""
+        if 0 <= idx < len(self.attached_files):
+            name = self.attached_files.pop(idx)["name"]
+            self.chat_display.add_status_banner(f"✕ 已移除附件：{name}")
+            self.control_dock.update_file_count(len(self.attached_files))
 
     def _start_worker(self, user_input):
         self.status_bar.start_thinking("隐盾大脑研判中")
