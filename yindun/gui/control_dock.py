@@ -208,6 +208,7 @@ class ControlDock(QFrame):
     """下置复合多模态控制台底座"""
     send_triggered = Signal(str)
     file_requested = Signal()
+    manage_requested = Signal()
     stop_requested = Signal()
 
     def __init__(self, parent=None):
@@ -231,6 +232,14 @@ class ControlDock(QFrame):
         self.file_btn.setCursor(QCursor(Qt.PointingHandCursor))
         self.file_btn.clicked.connect(self.file_requested.emit)
         toolbar.addWidget(self.file_btn)
+
+        self.manage_btn = QPushButton("🗂️")
+        self.manage_btn.setObjectName("titleBtn")
+        self.manage_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        self.manage_btn.setFixedSize(24, 24)
+        self.manage_btn.clicked.connect(self.manage_requested.emit)
+        self.manage_btn.hide()
+        toolbar.addWidget(self.manage_btn)
         toolbar.addStretch()
         layout.addLayout(toolbar)
         
@@ -286,6 +295,15 @@ class ControlDock(QFrame):
 
     def update_file_button_text(self, text):
         self.file_btn.setText(text)
+
+    def update_file_count(self, count):
+        """更新文件按钮显示和管理按钮可见性"""
+        if count == 0:
+            self.file_btn.setText("📎 挂载文件")
+            self.manage_btn.hide()
+        else:
+            self.file_btn.setText(f"📎 {count} 个附件")
+            self.manage_btn.show()
 
     def force_input_focus(self):
         self.input_line.setFocus()

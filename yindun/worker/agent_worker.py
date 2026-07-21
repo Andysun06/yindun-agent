@@ -42,6 +42,24 @@ _SYSTEM_PROMPT = (
     "4. 如果用户提到文件名但没指定目录，target_directory 留空表示使用当前工作目录。\n"
     "5. 支持多步推理：例如「先列出文件，再读取关键文件，最后分析项目结构」，可以连续调用多个工具。\n"
     "6. 工具返回结果后，请根据结果和用户的原始需求给出清晰、专业、易懂的中文总结。\n\n"
+    "【附件文档处理规范】\n"
+    "当用户消息中出现 [离线附件环境上下文：xxx] 标记时，说明已挂载离线文档/音频转写文本。你必须按以下流程处理：\n"
+    "1. 类型识别：先判断附件类型（PDF/Word/Excel/TXT/音频转写），并推断文档主题。\n"
+    "2. 结构化提取（非音频）：\n"
+    "   - 提取标题、章节层级、关键术语表\n"
+    "   - 表格数据用 Markdown 表格还原，保留行列对应关系\n"
+    "   - 列表/编号项保持原序\n"
+    "3. 音频转写处理：\n"
+    "   - 推断说话人角色（如'会议主持/参会者A/参会者B'），用 [说话人]: 文本 格式重组\n"
+    "   - 识别问答环节、决议结论、待办事项\n"
+    "   - 如转写文本无标点或断句混乱，先做句子边界恢复再分析\n"
+    "4. 多维度分析（按用户提问意图选择）：\n"
+    "   - 摘要：3句话核心 + 要点列表\n"
+    "   - 关键信息抽取：人名/机构/日期/金额/条款编号/数据指标\n"
+    "   - 风险扫描：标注敏感数据（手机号/身份证/财务数字/密钥）出现位置\n"
+    "   - 对比问答：基于文档内容回答，引用原文片段为证，标注'见第X段'\n"
+    "5. 输出格式：先给【附件概览】（类型/主题/字数/敏感项计数），再给用户问题的回答。\n"
+    "6. 局限告知：若文档含表格/图片/公式导致解析缺失，明确告知用户'该部分未解析到，建议补充原文'，不要编造内容。\n\n"
     "【回答要求】\n"
     "1. 使用中文回答\n"
     "2. 不要输出工具调用过程的内部细节，只输出最终给用户的结果\n"
@@ -133,7 +151,9 @@ class Worker(QObject):
                     _is_audio_request = any(_resolved_path.lower().endswith(ext) for ext in _AUDIO_EXTS)
 
             # 简单问答或音频文件请求直接跳过工具调用，最快响应
-            if self._is_simple_question(ai_input) or _is_audio_request:
+            # 附件场景（含 [离线附件环境上下文] 标记）必须走 ReAct 循环，使用带附件规范的系统提示词
+            _has_attachment = "[离线附件环境上下文" in ai_input
+            if (self._is_simple_question(ai_input) or _is_audio_request) and not _has_attachment:
                 self.status.emit("[快速回答] 直接回答问题...")
                 reply = self._clean(self._direct_answer(ai_input, memory))
                 if self.privacy_shield and box:
@@ -274,6 +294,7 @@ class Worker(QObject):
         round_start_idx = len(messages) - 1  # 从 HumanMessage 开始记录
         round_count = 0
         consecutive_failures = 0
+        last_tool_result = ""  # 初始化，防止循环结束时 NameError
 
         while round_count < max_rounds:
             # 取消检测
@@ -333,6 +354,16 @@ class Worker(QObject):
                 self.status.emit("[模型] 未给出明确回答，重新生成...")
                 reply_msg = self._direct_answer(ai_input, memory)
                 final_reply = self._clean(reply_msg)
+                # 兜底：如果仍然为空，给用户一个明确提示，避免静默返回空白
+                if not final_reply.strip():
+                    final_reply = (
+                        "抱歉，模型未能针对该附件生成有效回答。\n"
+                        "可能原因：\n"
+                        "1. 附件文本过长超出模型上下文，请尝试截取片段或换更小的 PDF\n"
+                        "2. 附件内容为扫描件/图片，无文字可提取\n"
+                        "3. 模型当前状态异常，请重试或切换模型\n"
+                        "请尝试：精简提问、切换深度思考模式、或挂载更小的文档。"
+                    )
                 chain = messages[round_start_idx:]
                 memory.update_with_full_chain(chain)
                 self.result_messages = memory.to_dict_list()
@@ -619,10 +650,21 @@ class Worker(QObject):
 
     @staticmethod
     def _clean(text):
-        """清理模型输出中的工具调用残留标签"""
+        """清理模型输出中的工具调用残留标签
+        修复点：原贪婪正则会把正文里第一个左花括号到最后一个右花括号之间的所有
+        内容全部删除（PDF 附件回答常用 JSON 概览，会被整段吃掉导致回答空白）。
+        现在改为只清理真正的 tool_call 标签块，绝不删除正文中的 JSON 或花括号。
+        """
         if not text:
             return ""
         if not isinstance(text, str):
             return str(text)
-        t = re.sub(r"(?i)(?:brtc|portun|tool_call)?\s*\{.*\}\s*</tool_call>?", "", text)
-        return re.sub(r"(?i)</?tool_call>", "", t).strip()
+        # 用 chr 拼接构造尖括号，避免被外部解析器误判
+        _TC_OPEN = chr(60) + "tool_call" + chr(62)
+        _TC_CLOSE = chr(60) + "/tool_call" + chr(62)
+        _TC_PAIR = re.escape(_TC_OPEN) + r".*?" + re.escape(_TC_CLOSE)
+        # 仅清理成对的标签块（DOTALL 让 . 匹配换行）
+        t = re.sub(_TC_PAIR, "", text, flags=re.DOTALL)
+        # 清理孤立的开/闭标签
+        t = re.sub(re.escape(_TC_OPEN) + r"|" + re.escape(_TC_CLOSE), "", t)
+        return t.strip()
