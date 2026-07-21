@@ -469,7 +469,13 @@ class MainWindow(QWidget):
                 self.is_busy = True
                 self.control_dock.toggle_busy_lock(True)
                 return
-            full_context = f"[离线附件环境上下文：{f['name']}]\n{f['text']}\n\n[人类当前实时提问]：{text}"
+            # 修复：PDF/Word 文本可能很长，超过模型 num_ctx(16384) 会导致回答空白
+            # 这里做软截断：保留前 12000 字符（约 4000-6000 token），并附加提示
+            _doc_text = f['text'] or ''
+            _MAX_DOC_CHARS = 12000
+            if len(_doc_text) > _MAX_DOC_CHARS:
+                _doc_text = _doc_text[:_MAX_DOC_CHARS] + "\n\n[注：文档较长，已截断前 %d 字符，如需分析后续内容请分段提问]" % _MAX_DOC_CHARS
+            full_context = "[离线附件环境上下文：" + f['name'] + "]\n" + _doc_text + "\n\n[人类当前实时提问]：" + text
             self.attached_file = None
             self.control_dock.update_file_button_text("📎 挂载文件")
             
