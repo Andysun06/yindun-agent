@@ -37,8 +37,10 @@ class SummarizableChatHistory(BaseChatMessageHistory):
 
     # ── 摘要提示词模板 ──────────────────────────────────────
     SUMMARY_PROMPT = (
-        "请用一段中文简要总结以下对话的核心内容和关键结论（控制在 200 字以内），"
-        "只输出总结文本，不要附加任何额外说明：\n\n"
+        "请用一段中文简要总结以下对话的核心内容和关键结论（控制在 200 字以内）。"
+        "特别注意：如果对话中出现过 [离线附件环境上下文：文件名] 标记，"
+        "必须在摘要中明确列出附件文件名、类型、主题以及讨论过的关键结论，"
+        "以便后续追问能据此回溯。只输出总结文本，不要附加任何额外说明：\n\n"
     )
 
     def __init__(self, max_tokens: int = 5000):
@@ -109,6 +111,12 @@ class SummarizableChatHistory(BaseChatMessageHistory):
         若 token 超阈值且提供了 llm，自动触发摘要压缩：
         - 生成摘要后清空早期消息，保留最近若干条
         - 摘要以 SystemMessage 形式置于列表首部
+
+        ★★★ 附件消息智能裁剪：
+        - 包含 [离线附件环境上下文] 标记的消息必须保留（避免附件上下文彻底丢失）
+        - 但若附件消息 > 5000 字符，只保留头部 2000 字符 + 截断提示
+          （完整内容可通过 read_attachment_chunk 工具检索）
+        - 避免 2-3 条大附件消息把 token 预算撑爆导致反复触发摘要
         """
         if not self._messages:
             return []
@@ -118,8 +126,50 @@ class SummarizableChatHistory(BaseChatMessageHistory):
         if need_summary and llm is not None:
             # 保留最近 20% 的消息（最少 4 条）
             keep_count = max(4, len(self._messages) // 5)
-            old_msgs = self._messages[:-keep_count]
-            recent_msgs = self._messages[-keep_count:]
+            recent_msgs = list(self._messages[-keep_count:])
+            # ★★★ 附件上下文保护：包含 [离线附件环境上下文] 标记的消息必须保留
+            existing_ids = set(id(m) for m in recent_msgs)
+            attachment_msgs_to_add = []
+            for m in self._messages:
+                content = m.content if isinstance(m.content, str) else str(m.content)
+                if "[离线附件环境上下文" in content and id(m) not in existing_ids:
+                    attachment_msgs_to_add.append(m)
+                    existing_ids.add(id(m))
+
+            # ★★★ 附件消息智能裁剪：超过 5000 字符的附件消息只保留头部 2000 字符
+            # 避免几条大附件消息把 token 预算撑爆
+            _ATT_KEEP_CHARS = 2000  # 保留前 2000 字符
+            _ATT_THRESHOLD = 5000   # 超过 5000 字符才裁剪
+            trimmed_attachment_msgs = []
+            for m in attachment_msgs_to_add:
+                content = m.content if isinstance(m.content, str) else str(m.content)
+                if len(content) > _ATT_THRESHOLD:
+                    # 提取附件文件名用于截断提示
+                    import re as _re
+                    fname_match = _re.search(r'\[离线附件环境上下文：([^\]]+)\]', content)
+                    fname = fname_match.group(1) if fname_match else "未知文件"
+                    total_len = len(content)
+                    head = content[:_ATT_KEEP_CHARS]
+                    trimmed_content = (
+                        f"{head}\n\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"【附件上下文已裁剪】原消息总长 {total_len} 字符，"
+                        f"此处仅保留前 {_ATT_KEEP_CHARS} 字符。"
+                        f"完整内容可通过 read_attachment_chunk(file='{fname}', ...) 工具检索。\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                    )
+                    # 创建同类型的裁剪后消息
+                    if isinstance(m, HumanMessage):
+                        trimmed_attachment_msgs.append(HumanMessage(content=trimmed_content))
+                    elif isinstance(m, AIMessage):
+                        trimmed_attachment_msgs.append(AIMessage(content=trimmed_content))
+                    else:
+                        trimmed_attachment_msgs.append(SystemMessage(content=trimmed_content))
+                else:
+                    trimmed_attachment_msgs.append(m)
+
+            recent_msgs.extend(trimmed_attachment_msgs)
+            old_msgs = [m for m in self._messages if id(m) not in existing_ids]
 
             # 生成摘要
             saved = self._messages[:]

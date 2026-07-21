@@ -3,28 +3,75 @@
 隐盾 V3.x — 📂 离线机密文档解析舱
 专门处理离线 PDF、Word、Excel、文本文件及音频文件的全自动内容读取
 音频转写使用 FunASR (Paraformer-large) — 中文高精度语音识别
+PDF 扫描件使用 RapidOCR (ONNX) — 离线中文 OCR
 """
 import os
+import re
 
 _AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma")
 
 
 # ──────────────────────────────────────────────
-# PDF 解析器：PyMuPDF 主文字 + pdfplumber 表格
+# PDF 解析器：PyMuPDF 主文字 + pdfplumber 表格 + RapidOCR 扫描件回退
 # ──────────────────────────────────────────────
 class PdfParser:
     """PDF 文档解析器
     - PyMuPDF (fitz) 提取主文字，按页输出
     - pdfplumber 专门抽表格，转 Markdown 格式
-    - 扫描件（无文字）返回明确提示
+    - 扫描件（无文字层）自动渲染图片 → RapidOCR 离线中文识别
     """
+
+    # OCR 引擎懒加载（首次使用时初始化，避免无 OCR 需求时的启动开销）
+    _ocr_engine = None
+    _ocr_init_failed = False  # 标记 OCR 初始化是否已失败（避免每页重复报错）
+
+    @classmethod
+    def _get_ocr_engine(cls):
+        """懒加载 RapidOCR 引擎。返回引擎实例或 None（不可用时）。"""
+        if cls._ocr_engine is not None:
+            return cls._ocr_engine
+        if cls._ocr_init_failed:
+            return None
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+            cls._ocr_engine = RapidOCR()
+            return cls._ocr_engine
+        except Exception:
+            cls._ocr_init_failed = True
+            return None
+
+    @staticmethod
+    def _ocr_page(page) -> str:
+        """
+        将 PyMuPDF 页面对象渲染为图片并执行 OCR 识别。
+        返回识别到的纯文本（按行拼接，已去重空白）。
+        若 OCR 引擎不可用或识别失败，返回空字符串。
+        """
+        engine = PdfParser._get_ocr_engine()
+        if engine is None:
+            return ""
+        try:
+            # 渲染为高分辨率图片（DPI=300 兼顾精度与速度）
+            pix = page.get_pixmap(dpi=300)
+            img_bytes = pix.tobytes("png")
+            # RapidOCR 接受文件路径或字节；字节需包装为类文件对象
+            result, _elapsed = engine(img_bytes)
+            if not result:
+                return ""
+            # result 是 list of [box, text, score]，只取 text
+            lines = [item[1] for item in result if item and len(item) >= 2 and item[1]]
+            return "\n".join(lines).strip()
+        except Exception:
+            return ""
 
     def parse(self, filepath: str) -> str:
         text_parts = []
         table_parts = []
-        had_text = False  # 是否抽到过任何文字
+        had_text = False  # 是否抽到过任何文字（含 OCR）
+        had_ocr_fallback = False  # 是否走过 OCR 回退
+        ocr_unavailable_warned = False  # 是否已提示 OCR 不可用
 
-        # 1) PyMuPDF 抽文字（缺失时回退到 PyPDF2）
+        # 1) PyMuPDF 抽文字（缺失时回退到 PyPDF2）；空页自动 OCR 回退
         try:
             import fitz  # PyMuPDF
             doc = fitz.open(filepath)
@@ -35,11 +82,28 @@ class PdfParser:
                     had_text = True
                     text_parts.append(page_text.strip())
                 else:
-                    text_parts.append("[本页无可提取文字]")
+                    # 文字层为空 → 尝试 OCR 回退
+                    ocr_text = self._ocr_page(page)
+                    if ocr_text:
+                        had_text = True
+                        had_ocr_fallback = True
+                        text_parts.append(ocr_text)
+                    else:
+                        # OCR 不可用或未识别到内容：给出准确提示
+                        if self._ocr_init_failed and not ocr_unavailable_warned:
+                            text_parts.append(
+                                "[本页为扫描图片，文字层为空；OCR 引擎未安装，无法识别图片文字。"
+                                "请运行: pip install rapidocr-onnxruntime]"
+                            )
+                            ocr_unavailable_warned = True
+                        else:
+                            text_parts.append(
+                                "[本页为扫描图片/空白页，OCR 未识别到文字内容]"
+                            )
                 text_parts.append("")
             doc.close()
         except ImportError:
-            # PyMuPDF 未装，回退到 PyPDF2（兜底）
+            # PyMuPDF 未装，回退到 PyPDF2（兜底，无 OCR 能力）
             try:
                 from PyPDF2 import PdfReader
                 reader = PdfReader(filepath)
@@ -50,7 +114,10 @@ class PdfParser:
                         had_text = True
                         text_parts.append(page_text.strip())
                     else:
-                        text_parts.append("[本页无可提取文字]")
+                        text_parts.append(
+                            "[本页文字层为空；PyMuPDF 未安装，无法 OCR 识别扫描图片。"
+                            "请运行: pip install PyMuPDF rapidocr-onnxruntime]"
+                        )
                     text_parts.append("")
             except ImportError:
                 raise RuntimeError("未安装 PyMuPDF 或 PyPDF2，请运行: pip install PyMuPDF")
@@ -77,14 +144,179 @@ class PdfParser:
             # 表格抽取失败不阻断主文字
             pass
 
-        # 3) 扫描件兜底
+        # 3) 扫描件兜底：所有页均无文字且无表格 → 明确告知（不再编造"建议 OCR"）
         if not had_text and not table_parts:
-            return "[PDF 无可提取文字，可能是扫描件，建议 OCR]"
+            if self._ocr_init_failed:
+                return (
+                    "[PDF 全文无可提取文字，OCR 引擎未安装。"
+                    "请运行: pip install rapidocr-onnxruntime 后重试]"
+                )
+            return (
+                "[PDF 全文无可提取文字，OCR 也未识别到内容。"
+                "可能是空白页或图片质量过差，建议人工核对原文]"
+            )
 
         result = "\n".join(text_parts)
+        if had_ocr_fallback:
+            # 在结果头部插入 OCR 处理标记，让下游 LLM 知道本文档含 OCR 识别内容
+            result = "[本文档部分页面通过 OCR 识别，可能存在识别误差]\n\n" + result
         if table_parts:
             result += "\n【表格数据】\n" + "\n".join(table_parts)
+        # ★★★ 题号修复后处理：把 PDF 抽取时被换行打散的题号还原
+        # 让下游 _inject_question_anchors 能稳定匹配行首题号
+        result = self._fix_question_numbering(result)
         return result
+
+    @staticmethod
+    def _fix_question_numbering(text: str) -> str:
+        """
+        修复 PDF 抽取时题号被换行打散的问题。
+
+        常见 PDF 抽取错误模式：
+        1. 题号独占一行，题干在下一行：
+           "1.\n下列哪个选项正确？"  →  "1. 下列哪个选项正确？"
+        2. 选项 A/B/C/D 独占一行，选项内容在下一行：
+           "A.\n三角函数"  →  "A. 三角函数"
+        3. 题号与题干之间被多余空格分开：
+           "1.    下列..."  →  "1. 下列..."
+        4. "第N题" 与题干分行：
+           "第5题\n阅读理解"  →  "第5题 阅读理解"
+
+        注意：
+        - 只合并"行首编号 + 空行/换行 + 内容"的模式
+        - 不破坏正常排版（如表格、代码块）
+        - 题号范围限制 1-100，避免误匹配年份/金额
+        """
+        if not text:
+            return text
+
+        lines = text.split('\n')
+        out_lines = []
+        i = 0
+        n = len(lines)
+
+        # 题号独占一行的模式（行首 + 编号 + 标点 + 仅空白）
+        # 支持：1. / 1、 / 1) / 1） / 第5题 / 题目5 / Q5
+        q_solo_patterns = [
+            re.compile(r'^(\s*)(\d{1,3})\s*[.、)）]\s*$'),                       # 1. / 1、 / 1)
+            re.compile(r'^(\s*)第\s*([一二三四五六七八九十百零\d]{1,4})\s*题\s*[.、:：)）]?\s*$'),  # 第5题
+            re.compile(r'^(\s*)题目\s*([一二三四五六七八九十百零\d]{1,4})\s*[.、:：)）]?\s*$'),     # 题目5
+            re.compile(r'^(\s*)Q\s*(\d{1,3})\s*[.、)）]?\s*$', re.IGNORECASE),    # Q5
+        ]
+        # 选项独占一行的模式（A. / B、 / C) / D））
+        opt_solo_pattern = re.compile(r'^(\s*)([A-Da-d])\s*[.、)）]\s*$')
+
+        # 中文数字转阿拉伯（与 main_window._cn_to_arabic 保持一致逻辑）
+        cn_digits = {'零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+                     '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
+
+        def cn_to_arabic(s):
+            if not s:
+                return None
+            if s.isdigit():
+                try:
+                    return int(s)
+                except ValueError:
+                    return None
+            if '十' in s:
+                parts = s.split('十')
+                if len(parts) == 2:
+                    tens = cn_digits.get(parts[0], 1) if parts[0] else 1
+                    ones = cn_digits.get(parts[1], 0) if parts[1] else 0
+                    return tens * 10 + ones
+            return cn_digits.get(s)
+
+        def is_question_solo(line):
+            """若该行是题号独占行，返回 (题号数字, 原始编号字符串)，否则返回 None"""
+            for pat in q_solo_patterns:
+                m = pat.match(line)
+                if not m:
+                    continue
+                num_str = m.group(2)
+                num = cn_to_arabic(num_str)
+                if num is None:
+                    continue
+                if not (1 <= num <= 100):
+                    continue
+                return num, num_str
+            return None
+
+        while i < n:
+            cur = lines[i]
+            # 模式 1：题号独占行 + 下一行有内容 → 合并
+            q_info = is_question_solo(cur)
+            if q_info and i + 1 < n:
+                next_line = lines[i + 1].strip()
+                # 跳过空行/页眉标记/表格标记，找到真正的内容行
+                j = i + 1
+                while j < n and not lines[j].strip():
+                    j += 1
+                if j < n:
+                    next_content = lines[j].strip()
+                    # 避免合并到下一个题号（如 "1.\n2." 这种异常情况）
+                    if next_content and not is_question_solo(lines[j]) and not next_content.startswith('---') and not next_content.startswith('【') and not next_content.startswith('第 ') and not next_content.startswith('表格'):
+                        # 保留原缩进，合并题号与内容
+                        indent_match = re.match(r'^(\s*)', cur)
+                        indent = indent_match.group(1) if indent_match else ""
+                        # 提取题号标点（. 、 ) 等）
+                        punct_match = re.search(r'([.、)）])\s*$', cur)
+                        punct = punct_match.group(1) if punct_match else "."
+                        # 提取题号数字部分
+                        num_part_match = re.search(r'(\d{1,3}|第\s*[一二三四五六七八九十百零\d]{1,4}\s*题|题目\s*[一二三四五六七八九十百零\d]{1,4}|Q\s*\d{1,3})', cur, re.IGNORECASE)
+                        if num_part_match:
+                            num_part = num_part_match.group(1).strip()
+                            # 标准化为 "数字." 格式（保留原始编号但加标点）
+                            # 对"第N题"格式不加额外标点
+                            if '第' in num_part or '题目' in num_part or num_part.lower().startswith('q'):
+                                merged = f"{indent}{num_part} {next_content}"
+                            else:
+                                merged = f"{indent}{num_part}{punct} {next_content}"
+                            out_lines.append(merged)
+                            # 跳过已合并的行（包括中间的空行）
+                            i = j + 1
+                            continue
+
+            # 模式 2：选项独占行 + 下一行有内容 → 合并
+            opt_m = opt_solo_pattern.match(cur)
+            if opt_m and i + 1 < n:
+                j = i + 1
+                while j < n and not lines[j].strip():
+                    j += 1
+                if j < n:
+                    next_content = lines[j].strip()
+                    if next_content and not opt_solo_pattern.match(lines[j]) and not next_content.startswith('---') and not next_content.startswith('【'):
+                        indent = opt_m.group(1)
+                        opt_letter = opt_m.group(2).upper()
+                        punct_match = re.search(r'([.、)）])\s*$', cur)
+                        punct = punct_match.group(1) if punct_match else "."
+                        merged = f"{indent}{opt_letter}{punct} {next_content}"
+                        out_lines.append(merged)
+                        i = j + 1
+                        continue
+
+            # 模式 3：题号与题干在同一行但被多余空格分开 → 压缩空格
+            # "1.    下列..."  →  "1. 下列..."
+            # 只处理行首，避免误伤正文
+            m_compress = re.match(r'^(\s*)(\d{1,3})\s*([.、)）])\s{2,}(\S.*)$', cur)
+            if m_compress:
+                indent = m_compress.group(1)
+                num = m_compress.group(2)
+                punct = m_compress.group(3)
+                rest = m_compress.group(4)
+                try:
+                    num_val = int(num)
+                    if 1 <= num_val <= 100:
+                        out_lines.append(f"{indent}{num}{punct} {rest}")
+                        i += 1
+                        continue
+                except ValueError:
+                    pass
+
+            # 默认：原样保留
+            out_lines.append(cur)
+            i += 1
+
+        return '\n'.join(out_lines)
 
     @staticmethod
     def _table_to_markdown(table) -> str:
