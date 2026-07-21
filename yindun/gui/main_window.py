@@ -2,6 +2,7 @@
 # Yindun Security Agent V3.1.4 - MainWindow Framework (Extreme Adaptive & Responsive Edition)
 import json
 import os
+import re
 import sys
 import time
 import traceback
@@ -22,12 +23,13 @@ from PySide6.QtGui import QColor, QPalette, QFont, QCursor, QMouseEvent
 # 核心后端多算力通信隔离舱
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage, AIMessage
-from yindun.core.file_tools import list_local_files, create_local_file, delete_local_file, read_local_file, modify_local_file, run_local_command, analyze_project, search_in_files
+from yindun.core.file_tools import list_local_files, create_local_file, delete_local_file, read_local_file, modify_local_file, run_local_command, analyze_project, search_in_files, read_attachment_chunk
 
 # 跨模块总线架构集成：动态引入所有的原子功能积木件
 from yindun.gui.styles import GLOBAL_QSS, DARK_QSS                                
-from yindun.worker.agent_worker import Worker                          
-from yindun.utils.document_parser import extract_file_text              
+from yindun.worker.agent_worker import Worker
+# 注：extract_file_text 已改为在 _FileTextExtractorThread.run() 内局部 import，
+# 避免顶部 import 触发 RapidOCR 等重型依赖的提前加载
 from yindun.gui.confirm_dialog import ConfirmDialog                     
 from yindun.gui.settings_panel import SettingsPanel, detect_ollama_models, get_first_available_model
 from yindun.gui.chat_display import ChatDisplay       
@@ -41,21 +43,131 @@ COLLAPSED_H = 44  # 极致折叠挂件高度
 EXPANDED_W, EXPANDED_H = 420, 640
 
 
+# ──────────────────────────────────────────
+# 附件题号锚点注入工具（模块级私有函数）
+# 解决：几万字纯文本里 LLM 难以精确定位"第 5 题"
+# 做法：扫描每行行首，识别题号格式，在行首注入 [Q<n>] 锚点
+# ──────────────────────────────────────────
+
+# 中文数字映射（支持 1-99）
+_CN_DIGITS = {'零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+              '六': 6, '七': 7, '八': 8, '九': 9, '壹': 1, '贰': 2,
+              '叁': 3, '肆': 4, '伍': 5, '陆': 6, '柒': 7, '捌': 8, '玖': 9}
+
+
+def _cn_to_arabic(s: str):
+    """中文数字转阿拉伯数字，支持 1-99。纯数字字符串返回 None（让调用方自行 int()）。"""
+    if not s:
+        return None
+    if s.isdigit():
+        return None
+    if '十' in s:
+        parts = s.split('十')
+        if len(parts) == 2:
+            tens = _CN_DIGITS.get(parts[0], 1) if parts[0] else 1
+            ones = _CN_DIGITS.get(parts[1], 0) if parts[1] else 0
+            return tens * 10 + ones
+    if s in _CN_DIGITS:
+        return _CN_DIGITS[s]
+    return None
+
+
+# 题号正则（行首，允许前导空白）
+# 顺序：先匹配"第N题"这种最明确的格式，再匹配"N." "N、" 等
+_QUESTION_PATTERNS = [
+    re.compile(r'^(\s*)(\d{1,3})\s*[.、)）]\s*(.+)$'),                               # 1. xxx / 1、xxx / 1) xxx
+    re.compile(r'^(\s*)第\s*([一二三四五六七八九十百零\d]{1,4})\s*题\s*[.、:：)）]?\s*(.*)$'),  # 第5题 / 第五题
+    re.compile(r'^(\s*)题目\s*([一二三四五六七八九十百零\d]{1,4})\s*[.、:：)）]?\s*(.*)$'),     # 题目5
+    re.compile(r'^(\s*)Q\s*(\d{1,3})\s*[.、)）]?\s*(.+)$', re.IGNORECASE),              # Q5 xxx / q5 xxx
+]
+
+
+def _inject_question_anchors(text: str) -> str:
+    """
+    给附件文本注入题号锚点 [Q<n>]。
+
+    扫描每行行首，若匹配题号格式（1./1、/1)/第N题/题目N/Q N），
+    在该行行首（保留原缩进）插入 [Q<n>] 锚点标记。
+
+    例：
+      原文: "  5. 下列哪个选项是正确的？"
+      注入: "  [Q5] 5. 下列哪个选项是正确的？"
+
+    这样模型在初始上下文中看到 [Q5] 就能秒级定位第 5 题，
+    而不需要在大段纯文本中模糊匹配。
+
+    注意：
+    - 只处理行首题号，避免误匹配正文中的数字（如"答案选5"）
+    - 题号范围限制 1-200，避免误匹配年份/金额
+    - 选项 A/B/C/D 不视为题号，不注入锚点
+    """
+    if not text:
+        return text
+
+    lines = text.split('\n')
+    result_lines = []
+    matched_count = 0
+
+    for line in lines:
+        matched = False
+        for cp in _QUESTION_PATTERNS:
+            m = cp.match(line)
+            if not m:
+                continue
+            indent = m.group(1)
+            num_str = m.group(2)
+            rest = m.group(3) if m.lastindex >= 3 else ""
+
+            # 中文数字 -> 阿拉伯数字
+            num = _cn_to_arabic(num_str)
+            if num is None:
+                try:
+                    num = int(num_str)
+                except ValueError:
+                    continue
+
+            # 题号范围 1-100，过滤年份/金额/页码等
+            # 绝大多数试卷题目数不超过 100，超过的几乎都是误匹配
+            if not (1 <= num <= 100):
+                continue
+
+            # 至少要有题干内容（rest 非空或长度合理），避免误匹配
+            # 但允许"第5题"这种独立成行的情况（rest 可为空）
+            # 不强制 rest 非空，因为有些题号独占一行，题干在下一行
+
+            # 注入锚点：保留原行内容，只在缩进后插入 [Qn] 标记
+            original_content = line[len(indent):]
+            result_lines.append(f"{indent}[Q{num}] {original_content}")
+            matched = True
+            matched_count += 1
+            break
+
+        if not matched:
+            result_lines.append(line)
+
+    return '\n'.join(result_lines)
+
+
 class _AudioTranscriberThread(QThread):
     """
-    后台音频转写线程：避免转写大音频时 GUI 卡死
+    后台文件解析线程：避免解析大 PDF/Word/音频时 GUI 卡死。
+    （原为音频专用，现泛化为所有附件类型的后台解析器）
     """
-    finished = Signal(str)  # 转写完成，返回文本内容
+    finished = Signal(str)  # 解析完成，返回文本内容
 
     def __init__(self, filepath):
         super().__init__()
         self.filepath = filepath
 
     def run(self):
-        # 在后台线程执行转写，不阻塞 GUI
+        # 在后台线程执行解析（含 PDF OCR、音频转写等耗时操作），不阻塞 GUI
         from yindun.utils.document_parser import extract_file_text
         text = extract_file_text(self.filepath)
         self.finished.emit(text)
+
+
+# 兼容别名：让代码语义更准确
+_FileTextExtractorThread = _AudioTranscriberThread
 
 
 class MainWindow(QWidget):
@@ -67,13 +179,15 @@ class MainWindow(QWidget):
         self.setWindowTitle("隐盾 V3.1.4demo")
         self.setObjectName("mainWindow")
         self.setAttribute(Qt.WA_TranslucentBackground)
-        
+
         # 核心业务内存与状态锁阵列
         self.llm = None
         self.tools_map = {}
         self.llm_ready = False
         self.is_busy = False
         self.attached_files = []  # 多文件挂载列表 [{"name": str, "text": str}]
+        # 后台文件解析线程列表：支持多文件并行解析，避免大 PDF/音频阻塞 GUI
+        self._file_extractor_threads = []
         
         # 全局安全隔离配置树
         self._config_file = Path(__file__).resolve().parents[2] / "global_config.json"
@@ -467,10 +581,10 @@ class MainWindow(QWidget):
 
         full_context = text
         if self.attached_files:
-            # 检查是否有音频还在转写中
+            # 检查是否有附件还在解析中（PDF OCR / 音频转写等）
             if any(not f.get("text", "").strip() for f in self.attached_files):
                 self._pending_audio_request = text
-                self.chat_display.add_assistant_message("⌛ 正在解析音频，请稍候...")
+                self.chat_display.add_assistant_message("⌛ 正在解析附件（PDF OCR / 音频转写可能需要数十秒），请稍候...")
                 self.is_busy = True
                 self.control_dock.toggle_busy_lock(True)
                 return
@@ -490,54 +604,120 @@ class MainWindow(QWidget):
             self._mount_files(paths)
 
     def _mount_files(self, paths):
-        """批量挂载本地文件（支持多文件拖放/多选）"""
+        """批量挂载本地文件（支持多文件拖放/多选）
+
+        所有附件类型（PDF/Word/Excel/TXT/音频）统一走后台线程解析，
+        避免 PDF OCR / 音频转写等耗时操作阻塞 GUI 主线程。
+        """
         _AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma")
         for path in paths:
             fname = os.path.basename(path)
             if path.lower().endswith(_AUDIO_EXTS):
                 self.chat_display.add_status_banner(f"🎙️ 正在转写音频：{fname}（请稍候...）")
-                self._attached_file_pending = fname
-                self.attached_files.append({"name": fname, "text": ""})
-                self._audio_transcriber = _AudioTranscriberThread(path)
-                self._audio_transcriber.finished.connect(self._on_audio_transcribe_done)
-                self._audio_transcriber.start()
             else:
-                self.attached_files.append({"name": fname, "text": extract_file_text(path)})
-                self.chat_display.add_status_banner(f"🔒 离线机密附件就绪：{fname}")
+                self.chat_display.add_status_banner(f"📄 正在解析附件：{fname}（PDF/扫描件可能需要数十秒...）")
+            # 所有附件都走后台线程：先占位，解析完成后回填
+            self._attached_file_pending = fname
+            self.attached_files.append({"name": fname, "text": ""})
+            extractor = _FileTextExtractorThread(path)
+            # 用 lambda 捕获 fname，避免多文件并发时回调混淆
+            extractor.finished.connect(lambda text, fn=fname: self._on_file_extract_done(text, fn))
+            self._file_extractor_threads.append(extractor)  # 防止线程对象被 GC
+            extractor.start()
         self.control_dock.update_file_count(len(self.attached_files))
 
-    def _on_audio_transcribe_done(self, text):
-        """音频转写完成回调：在 attached_files 列表中回填文本"""
-        if not (hasattr(self, "_attached_file_pending") and self._attached_file_pending):
-            return
-        fname = self._attached_file_pending
-        self._attached_file_pending = None
+    def _on_file_extract_done(self, text, fname):
+        """文件解析完成回调：在 attached_files 列表中回填文本
+
+        参数:
+            text: 解析得到的文本内容
+            fname: 对应的文件名（用于在 attached_files 中定位）
+        """
         for f in self.attached_files:
             if f["name"] == fname:
                 f["text"] = text
                 break
-        self.chat_display.add_status_banner(f"🔒 音频转写完成：{fname}")
-        # 检查是否有等待中的请求
+        self.chat_display.add_status_banner(f"🔒 附件解析完成：{fname}")
+        # 清理已完成的线程对象（防止列表无限增长）
+        self._file_extractor_threads = [t for t in self._file_extractor_threads if t.isRunning()]
+        # 检查是否有等待中的请求（用户在解析未完成时已点发送）
+        # 所有解析线程都结束 = 所有附件都解析完成，可以继续
         if hasattr(self, "_pending_audio_request") and self._pending_audio_request:
-            user_input = self._pending_audio_request
-            self._pending_audio_request = None
-            full_context = self._build_attachment_context(user_input)
-            self._clear_attachments()
-            self._start_worker(full_context)
+            if all(not t.isRunning() for t in self._file_extractor_threads):
+                user_input = self._pending_audio_request
+                self._pending_audio_request = None
+                full_context = self._build_attachment_context(user_input)
+                self._clear_attachments()
+                self._start_worker(full_context)
+
+    # 兼容旧名（防止其他地方仍在调用）
+    _on_audio_transcribe_done = _on_file_extract_done
 
     # ──────────────────────────────────────────
     # 附件管理
     # ──────────────────────────────────────────
-    _MAX_DOC_CHARS = 12000
+    _MAX_DOC_CHARS = 30000  # 截断阈值提升到 3 万字（原 12000），覆盖大多数试卷
+    # 全文快照：超长文档的完整文本会在 _start_worker 时传给 Worker，
+    # 供 read_attachment_chunk 工具按需检索任意题号
 
     def _build_attachment_context(self, user_text: str) -> str:
-        """拼接所有附件上下文 + 用户提问"""
+        """拼接所有附件上下文 + 用户提问
+
+        改造点（解决长文档题目被截断 + 题号定位难 + 跨轮次上下文丢失的问题）：
+        - 截断阈值从 12000 提升到 30000
+        - 超长文档不仅截断前 30000 字，还会在末尾注入【全文索引提示】
+          告诉模型：后续内容可通过调用 read_attachment_chunk 工具按题号/关键词检索
+        - ★★★ 跨轮次持久化：本轮附件全文合并到 session 的累积快照
+          （self._sessions[sid]["attachment_fulltext"]），后续轮次即使不挂载新附件
+          也能通过 read_attachment_chunk 工具检索历史附件
+        - ★★★ 题号锚点注入：对初始上下文（前 30000 字）调用 _inject_question_anchors
+          在每道题前注入 [Q<n>] 锚点，让模型秒级定位题号
+          注意：快照保留原文（不加锚点），工具检索原文，避免锚点污染匹配
+        """
         contexts = []
+        sid = self._current_session_id
+        # 从 session 取累积快照（包含所有历史轮次挂载过的附件）
+        session_snapshot = {}
+        if sid and sid in self._sessions:
+            session_snapshot = dict(self._sessions[sid].get("attachment_fulltext", {}))
+
+        # 本轮新挂载的附件合并到累积快照
         for f in self.attached_files:
-            t = (f['text'] or '')[:self._MAX_DOC_CHARS]
-            if len(f['text'] or '') > self._MAX_DOC_CHARS:
-                t += f"\n\n[注：文档较长，已截断前 {self._MAX_DOC_CHARS} 字符，如需分析后续内容请分段提问]"
-            contexts.append(f"[离线附件环境上下文：{f['name']}]\n{t}")
+            full_text = f['text'] or ''
+            fname = f['name']
+            session_snapshot[fname] = full_text  # 覆盖同名旧文件
+            if len(full_text) <= self._MAX_DOC_CHARS:
+                # 短文档：注入锚点后整篇展示
+                anchored = _inject_question_anchors(full_text)
+                contexts.append(f"[离线附件环境上下文：{fname}]\n{anchored}")
+            else:
+                # 超长文档：截取前 30000 字 + 注入锚点 + 全文索引提示
+                head = full_text[:self._MAX_DOC_CHARS]
+                anchored_head = _inject_question_anchors(head)
+                total_len = len(full_text)
+                contexts.append(
+                    f"[离线附件环境上下文：{fname}]\n"
+                    f"{anchored_head}\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"【长文档分块提示】该文档总长 {total_len} 字符，"
+                    f"上方仅展示前 {self._MAX_DOC_CHARS} 字符。"
+                    f"如需读取后续内容（例如某道题目），请调用工具：\n"
+                    f"  read_attachment_chunk(file='{fname}', question='题号')  "
+                    f"# 如 question='5' 或 '第5题'\n"
+                    f"  read_attachment_chunk(file='{fname}', keyword='题干关键词')  "
+                    f"# 模糊定位\n"
+                    f"  read_attachment_chunk(file='{fname}', char_start=30000)  "
+                    f"# 从第 30000 字符继续读取\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                )
+
+        # 把累积快照写回 session（持久化）
+        if sid and sid in self._sessions:
+            self._sessions[sid]["attachment_fulltext"] = session_snapshot
+            self._persist_sessions_store()
+
+        # 同时暂存到实例属性，供 _start_worker 取用
+        self._attachment_fulltext_snapshot = session_snapshot
         return "\n\n".join(contexts) + f"\n\n[人类当前实时提问]：{user_text}"
 
     def _clear_attachments(self):
@@ -595,7 +775,17 @@ class MainWindow(QWidget):
         self.worker.llm = self.llm
         self.worker.tools_map = self.tools_map
         self.worker.sandbox_path = os.environ.get("SANDBOX_PATH", os.path.abspath("."))
-        
+        # ★★★ 跨轮次附件快照传递：
+        # - 若本轮挂载了新附件，_build_attachment_context 已把累积快照存到 _attachment_fulltext_snapshot
+        # - 若本轮无新附件（纯文本追问），从 session 取累积快照（包含所有历史轮次挂载过的附件）
+        # 这样 worker 即使本轮无附件，也能通过 read_attachment_chunk 工具检索历史附件
+        snapshot = getattr(self, "_attachment_fulltext_snapshot", None)
+        if not snapshot and sid and sid in self._sessions:
+            snapshot = self._sessions[sid].get("attachment_fulltext", {})
+        self.worker.attachment_fulltext = dict(snapshot) if snapshot else {}
+        # 同时把 session id 传给 worker，便于回写
+        self.worker.session_id = sid
+
         self.thread = QThread()
         self.worker.moveToThread(self.thread)
         
@@ -702,7 +892,17 @@ class MainWindow(QWidget):
                 for msg in messages if isinstance(messages, list) else []:
                     if isinstance(msg, dict) and msg.get("role") in {"user", "assistant", "system"} and isinstance(msg.get("content"), str):
                         safe_messages.append({"role": msg["role"], "content": msg["content"]})
-                sessions[sid] = {"id": sid, "title": title, "created_at": str(item.get("created_at", "")), "updated_at": str(item.get("updated_at", "")), "messages": safe_messages}
+                # ★★★ 兼容老 session：补充 attachment_fulltext 字段
+                safe_attachments = item.get("attachment_fulltext", {})
+                if not isinstance(safe_attachments, dict):
+                    safe_attachments = {}
+                sessions[sid] = {
+                    "id": sid, "title": title,
+                    "created_at": str(item.get("created_at", "")),
+                    "updated_at": str(item.get("updated_at", "")),
+                    "messages": safe_messages,
+                    "attachment_fulltext": safe_attachments,
+                }
             self._sessions = sessions
             sid = payload.get("current_session_id")
             self._current_session_id = sid if sid in self._sessions else None
@@ -732,7 +932,12 @@ class MainWindow(QWidget):
         title = title.strip() or f"新对话 {datetime.now().strftime('%m-%d %H:%M')}"
         now = datetime.now().isoformat(timespec="seconds")
         sid = uuid4().hex
-        self._sessions[sid] = {"id": sid, "title": title, "created_at": now, "updated_at": now, "messages": []}
+        # ★★★ session 级别持久化附件全文快照：跨轮次保留，供 read_attachment_chunk 工具检索
+        self._sessions[sid] = {
+            "id": sid, "title": title, "created_at": now, "updated_at": now,
+            "messages": [],
+            "attachment_fulltext": {},  # {文件名: 全文} 累积所有挂载过的附件
+        }
         self._persist_sessions_store()
         self._refresh_session_list()
         self._switch_to_session(sid)
@@ -1077,7 +1282,7 @@ class MainWindow(QWidget):
         mn = self._settings["model"]
         custom_models = self._settings.get("custom_models", {})
 
-        tools_list = [list_local_files, create_local_file, delete_local_file, read_local_file, modify_local_file, run_local_command, analyze_project, search_in_files]
+        tools_list = [list_local_files, create_local_file, delete_local_file, read_local_file, modify_local_file, run_local_command, analyze_project, search_in_files, read_attachment_chunk]
 
         def do_init():
             import json as _json

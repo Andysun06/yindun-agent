@@ -647,8 +647,59 @@ def search_in_files(pattern: str, file_pattern: str = "*", target_directory: str
         
         if not results:
             return f"🔍 在 {base_dir} 中未找到匹配 '{pattern}' 的内容。"
-        
+
         header = f"🔍 搜索结果：'{pattern}'（文件模式: {file_pattern}，共 {len(results)} 条）\n\n"
         return header + "\n".join(results)
     except Exception as e:
         return f"❌ 搜索失败：{str(e)}"
+
+
+# ==========================================
+# 附件分块读取工具（解决长文档题目被截断的问题）
+# ==========================================
+
+class ReadAttachmentChunkInput(BaseModel):
+    file: str = Field(
+        ...,
+        description="要读取的附件文件名（必须与之前挂载的文件名一致，例如 '数学试卷.pdf'）"
+    )
+    question: str = Field(
+        default="",
+        description="可选：题号或题号关键词（如 '5'、'第5题'、'12'）。传入后会返回该题及其上下文片段。"
+    )
+    keyword: str = Field(
+        default="",
+        description="可选：题干中的关键词（如 '三角函数'、'假设'），用于模糊定位不含题号的题目。"
+    )
+    char_start: int = Field(
+        default=-1,
+        description="可选：从全文第 N 个字符开始读取（用于按顺序浏览长文档），默认 -1 表示不使用此模式。"
+    )
+    char_length: int = Field(
+        default=6000,
+        description="可选：读取的字符长度，默认 6000。范围 500~12000。"
+    )
+
+
+@tool(args_schema=ReadAttachmentChunkInput)
+def read_attachment_chunk(file: str, question: str = "", keyword: str = "",
+                          char_start: int = -1, char_length: int = 6000) -> str:
+    """
+    📄 读取长附件文档的指定片段。
+
+    适用场景：
+    - 当附件文档较长（超过 30000 字符），初始上下文只截取了开头部分，
+      后续问题涉及的题目/内容可能落在截断之外。
+    - 当需要精确定位某道题（如"第 5 题"）的完整原文时。
+
+    使用方式（任选其一）：
+    1. 传 question='5' 或 '第5题'：返回该题号的完整题干及前后各 1 道题作为上下文。
+    2. 传 keyword='三角函数'：返回首次出现该关键词的片段（前后各 3000 字符）。
+    3. 传 char_start=30000：从全文第 30000 字符开始读取 char_length 字符。
+
+    返回：原文片段字符串。若未找到匹配，返回提示信息。
+    """
+    # 该工具的实际逻辑由 Worker 在 _execute_tool 中拦截执行
+    # （因为附件文本存放在 Worker 内存中，工具自身无法访问）
+    # 此处仅作为占位实现，确保 LangChain 能正确绑定工具 schema
+    return "[占位] read_attachment_chunk 的实际执行由 Worker 拦截处理。若你看到此消息，说明 Worker 拦截逻辑未生效。"

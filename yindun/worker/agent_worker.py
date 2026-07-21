@@ -34,7 +34,8 @@ _SYSTEM_PROMPT = (
     "5. 删除指定文件（delete_local_file）\n"
     "6. 执行系统命令（run_local_command）\n"
     "7. 递归分析整个项目的结构和关键代码（analyze_project）\n"
-    "8. 在文件中搜索特定内容（search_in_files）\n\n"
+    "8. 在文件中搜索特定内容（search_in_files）\n"
+    "9. ★★★ 读取长附件文档的指定片段（read_attachment_chunk）——按题号/关键词/字符区间检索附件原文，详见下方【长文档分块检索规范】\n\n"
     "【工具使用规范】\n"
     "1. 当用户请求涉及文件操作、目录查询、项目分析、命令执行等任务时，优先调用工具，不要凭空回答。\n"
     "2. 工具参数中的 target_directory 表示目标路径，可以是绝对路径（如 E:\\qwen、C:\\Users\\test），也可以是中文描述（如桌面、E盘、D盘的文档目录）。\n"
@@ -59,7 +60,44 @@ _SYSTEM_PROMPT = (
     "   - 风险扫描：标注敏感数据（手机号/身份证/财务数字/密钥）出现位置\n"
     "   - 对比问答：基于文档内容回答，引用原文片段为证，标注'见第X段'\n"
     "5. 输出格式：先给【附件概览】（类型/主题/字数/敏感项计数），再给用户问题的回答。\n"
-    "6. 局限告知：若文档含表格/图片/公式导致解析缺失，明确告知用户'该部分未解析到，建议补充原文'，不要编造内容。\n\n"
+    "6. 局限告知：若文档含表格/图片/公式导致解析缺失，明确告知用户'该部分未解析到，建议补充原文'，不要编造内容。\n"
+    "   ★★★ OCR 相关规则（禁止编造'OCR 失败'话术）：\n"
+    "   - 若附件开头出现 [本文档部分页面通过 OCR 识别，可能存在识别误差] 标记，说明 OCR 已成功执行并提取到文字，可以正常引用 OCR 识别出的内容作答，必要时在引用处提示'（OCR 识别，可能存在误差）'。\n"
+    "   - 仅当某页明确标注 [本页为扫描图片/空白页，OCR 未识别到文字内容] 时，才说明该页 OCR 确实未识别到文字；此时应说'该页未识别到文字内容'，不要说'OCR 技术失败/未通过 OCR 识别/OCR 未能识别'等夸大话术。\n"
+    "   - 严禁把 [本文档部分页面通过 OCR 识别] 这一成功标记曲解为失败信号，严禁在附件概览中写'主题：未知（因前 N 页均未通过 OCR 识别出文字）'。\n"
+    "   - 若附件标注 [OCR 引擎未安装]，提示用户运行 `pip install rapidocr-onnxruntime` 后重新挂载。\n"
+    "7. ★★★ 跨轮次附件上下文联系（关键规则）：\n"
+    "   - 当本轮用户消息中没有 [离线附件环境上下文：xxx] 标记，但用户提问明显是在追问上一篇文档的内容时（例如出现'上面''刚才''这个文档''那个文件''文中''上文''文档里''它''这份'等指代词，或问题主题与上一轮附件主题高度相关），你必须主动回溯对话历史中的 [离线附件环境上下文：xxx] 标记块，从中提取附件原文作为本轮回答依据。\n"
+    "   - 回答时无需再次输出【附件概览】，直接基于历史附件原文作答，并在结尾用一行注明'（参考：历史挂载文档《文件名》）'。\n"
+    "   - 如果历史附件原文已不在上下文窗口内（被摘要压缩），需明确告知用户：'该文档原文已超出记忆窗口，请重新挂载《文件名》后再提问'，不要凭空编造文档内容。\n"
+    "   - 如果用户追问涉及历史多个附件，需指明本次回答引用的是哪一份文档。\n"
+    "   - 禁止以'您没有上传文件''请上传文件后再提问'为由拒绝基于历史附件的追问。\n"
+    "8. ★★★ 题号定位规范（试卷/题库场景强制执行）：\n"
+    "   当附件为试卷/题库/练习册/考试文档，且用户问的是某一道具体题目时（如'第5题''题目12''第3题选什么'），你必须按以下流程回答，禁止跳过定位步骤直接作答：\n"
+    "   步骤 A：在当前上下文中查找 [Q<题号>] 锚点标记（系统会在每道题前自动注入 [Q5]、[Q12] 等锚点）。\n"
+    "   步骤 B：若找到 [Q<题号>] 锚点，先输出一行定位标记：\n"
+    "     【定位】Q<题号> 原文：「此处粘贴该题完整题干原文，含选项」\n"
+    "   步骤 C：再输出答案与解析：\n"
+    "     【答案】<选项或答案>\n"
+    "     【解析】<详细解析>\n"
+    "   步骤 D：若上下文中没有 [Q<题号>] 锚点（可能题目在截断之外，或文档未自动识别到题号），必须调用 read_attachment_chunk 工具检索：\n"
+    "     read_attachment_chunk(file='附件文件名', question='题号')\n"
+    "     工具返回该题完整原文后，再按步骤 B、C 输出。\n"
+    "   步骤 E：若工具也未找到该题号（返回未命中提示），明确告知用户'未在文档中定位到第 N 题，请确认题号或文档是否正确'，禁止凭空编造题干和答案。\n"
+    "   补充说明：\n"
+    "   - 若用户问的是'第5题到第8题'，需对每道题分别执行定位流程，不能只答第一题。\n"
+    "   - 若用户问的是'含某关键词的题目'（如'三角函数那道题'），用 keyword 参数调用工具：\n"
+    "     read_attachment_chunk(file='附件文件名', keyword='三角函数')\n"
+    "   - 禁止仅凭题号数字猜测题干内容，必须以原文片段为准。\n"
+    "9. ★★★ 长文档分块检索规范：\n"
+    "   当附件上下文末尾出现【长文档分块提示】时，说明文档已截断，后续内容需通过工具检索：\n"
+    "   - 工具 read_attachment_chunk 支持三种检索方式（按需任选）：\n"
+    "     a. 题号检索：read_attachment_chunk(file='文件名', question='5')  → 返回第5题完整题干+前后各1道题\n"
+    "     b. 关键词检索：read_attachment_chunk(file='文件名', keyword='三角函数')  → 返回首次出现该词的片段（前后各3000字符）\n"
+    "     c. 字符区间检索：read_attachment_chunk(file='文件名', char_start=30000)  → 从第30000字符继续读取6000字符\n"
+    "   - 当用户问的题目/内容不在已展示的前30000字符中，必须主动调用工具检索，不要回答'文档中未找到'。\n"
+    "   - 工具可多次调用：例如用户问'第35题和第60题'，需分别调用两次工具检索两道题。\n"
+    "   - char_length 参数可调整单次读取长度（500~12000），默认6000。\n\n"
     "【回答要求】\n"
     "1. 使用中文回答\n"
     "2. 不要输出工具调用过程的内部细节，只输出最终给用户的结果\n"
@@ -94,6 +132,12 @@ class Worker(QObject):
         self.think_depth = 3  # 1~10，深度思考模式专用，默认为3（对应6轮推理）
         self.result_messages: list[dict] = []
         self.tool_call_count = 0
+        # ★★★ 附件全文快照：由 main_window._start_worker 注入
+        # 结构：{文件名: 全文文本}，供 read_attachment_chunk 工具检索
+        # 跨轮次保留：main_window 会把所有历史轮次挂载过的附件累积到 session，再传给 worker
+        self.attachment_fulltext: dict = {}
+        # 当前 session id（由 main_window 注入，用于回写附件快照）
+        self.session_id = None
 
     def approve(self, ok):
         """人工审批回调：ok=True 表示批准，ok=False 表示驳回"""
@@ -153,6 +197,41 @@ class Worker(QObject):
             # 简单问答或音频文件请求直接跳过工具调用，最快响应
             # 附件场景（含 [离线附件环境上下文] 标记）必须走 ReAct 循环，使用带附件规范的系统提示词
             _has_attachment = "[离线附件环境上下文" in ai_input
+
+            # ★★★ 历史附件回溯：本轮未挂载附件，但 session 中有累积的附件快照
+            # 全局索引已在 SystemMessage 中（_build_attachment_index），LLM 能看到所有附件的题号列表
+            # 这里只需要：检测到有历史附件 → 强制走 ReAct 循环（避免被 _is_simple_question 短路）
+            # 并给一个轻量提示，让 LLM 知道本轮问题可能针对历史附件
+            _has_snapshot = bool(self.attachment_fulltext)
+
+            # 同时扫描历史消息中的附件标记（用于检测历史曾挂载过附件，即使快照已丢失）
+            _has_history_attachment = False
+            for m in self.messages_snapshot:
+                if isinstance(m, dict):
+                    c = m.get("content", "")
+                    if isinstance(c, str) and "[离线附件环境上下文" in c:
+                        _has_history_attachment = True
+                        break
+
+            # 若本轮无附件但有历史附件或快照，注入轻量提示
+            if (not _has_attachment) and (_has_snapshot or _has_history_attachment):
+                if _has_snapshot:
+                    # 快照可用：LLM 可直接调用工具检索（全局索引已在 SystemMessage 中）
+                    ai_input = (
+                        f"[提示] 本轮未挂载新附件，但当前会话有历史附件资源（见上方系统提示中的"
+                        f"【当前会话附件资源】索引表）。如需检索某道题，请调用 "
+                        f"read_attachment_chunk 工具。\n\n"
+                        f"[本轮用户提问]：{ai_input}"
+                    )
+                else:
+                    # 快照不可用（可能 session 切换或重启后未恢复）
+                    ai_input = (
+                        f"[提示] 检测到此前对话曾挂载过附件，但附件全文已不在当前会话快照中。"
+                        f"如需精确检索，请告知用户重新挂载附件。\n\n"
+                        f"[本轮用户提问]：{ai_input}"
+                    )
+                _has_attachment = True  # 强制走 ReAct 循环，避免被 _is_simple_question 短路
+
             if (self._is_simple_question(ai_input) or _is_audio_request) and not _has_attachment:
                 self.status.emit("[快速回答] 直接回答问题...")
                 reply = self._clean(self._direct_answer(ai_input, memory))
@@ -264,7 +343,13 @@ class Worker(QObject):
         min_rounds = max(2, int(self.think_depth * 0.8)) if "深度" in self.think_mode else 0
 
         # 初始消息列表：系统提示 + 历史上下文 + 当前用户输入
-        messages = [SystemMessage(content=_SYSTEM_PROMPT)]
+        # ★★★ 把附件全局索引注入 SystemMessage，让 LLM 每轮对话都能看到所有附件的题号列表
+        # 这样挂载文件成为整个 session 的全局资源，无需用户每轮重复挂载
+        _attachment_index = self._build_attachment_index()
+        _system_content = _SYSTEM_PROMPT
+        if _attachment_index:
+            _system_content = _SYSTEM_PROMPT + "\n" + _attachment_index
+        messages = [SystemMessage(content=_system_content)]
         context_msgs = memory.get_context_messages(self.llm)
         messages.extend(context_msgs)
         human_msg = HumanMessage(content=ai_input)
@@ -360,7 +445,7 @@ class Worker(QObject):
                         "抱歉，模型未能针对该附件生成有效回答。\n"
                         "可能原因：\n"
                         "1. 附件文本过长超出模型上下文，请尝试截取片段或换更小的 PDF\n"
-                        "2. 附件内容为扫描件/图片，无文字可提取\n"
+                        "2. 附件为扫描件/图片，且 OCR 未识别到文字（已安装 rapidocr-onnxruntime 仍可能因图片质量过差失败）\n"
                         "3. 模型当前状态异常，请重试或切换模型\n"
                         "请尝试：精简提问、切换深度思考模式、或挂载更小的文档。"
                     )
@@ -495,10 +580,120 @@ class Worker(QObject):
         return final_reply
 
     # ──────────────────────────────────────────
+    # 附件全局索引构建：从 attachment_fulltext 生成题号索引表
+    # 注入 SystemMessage，让 LLM 每轮对话都能看到所有附件的题号列表
+    # ──────────────────────────────────────────
+    def _build_attachment_index(self) -> str:
+        """
+        从 self.attachment_fulltext 生成附件全局索引表。
+
+        返回一段文本，格式如下：
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        【当前会话附件资源】（全局可用，每轮对话均可引用）
+        文件1：《试卷.pdf》  总长 45000 字符
+          题号索引（共 50 题）：
+          [Q1] 1. 下列哪个是正确的？...
+          [Q2] 2、计算题：2+2=?...
+          ...
+          如需某题完整原文，调用：read_attachment_chunk(file='试卷.pdf', question='题号')
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+        设计要点：
+        - 只放题号索引（每题前 80 字预览），不放全文，控制 token 开销
+        - 题号索引让 LLM 知道"有哪些题、每题大概讲什么"，能直接回答简单问题
+        - 需要完整题干时，LLM 调用 read_attachment_chunk 按需检索
+        - 索引表注入 SystemMessage，每轮对话都存在，实现"全局资源"
+        """
+        if not self.attachment_fulltext:
+            return ""
+
+        import re as _re
+
+        # 题号正则（与 main_window._inject_question_anchors 保持一致）
+        _CN_DIGITS_LOCAL = {'零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+                            '六': 6, '七': 7, '八': 8, '九': 9}
+
+        def _cn_to_arabic_local(s):
+            if not s:
+                return None
+            if s.isdigit():
+                try:
+                    return int(s)
+                except ValueError:
+                    return None
+            if '十' in s:
+                parts = s.split('十')
+                if len(parts) == 2:
+                    tens = _CN_DIGITS_LOCAL.get(parts[0], 1) if parts[0] else 1
+                    ones = _CN_DIGITS_LOCAL.get(parts[1], 0) if parts[1] else 0
+                    return tens * 10 + ones
+            return _CN_DIGITS_LOCAL.get(s)
+
+        q_patterns = [
+            _re.compile(r'^(\s*)(\d{1,3})\s*[.、)）]\s*(.+)$'),
+            _re.compile(r'^(\s*)第\s*([一二三四五六七八九十百零\d]{1,4})\s*题\s*[.、:：)）]?\s*(.*)$'),
+            _re.compile(r'^(\s*)题目\s*([一二三四五六七八九十百零\d]{1,4})\s*[.、:：)）]?\s*(.*)$'),
+            _re.compile(r'^(\s*)Q\s*(\d{1,3})\s*[.、)）]?\s*(.+)$', _re.IGNORECASE),
+        ]
+
+        lines = []
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("【当前会话附件资源】（全局可用，每轮对话均可引用，无需用户重复挂载）")
+
+        for fname, full_text in self.attachment_fulltext.items():
+            total_len = len(full_text)
+            lines.append(f"文件：《{fname}》  总长 {total_len} 字符")
+
+            # 扫描题号
+            questions = []  # [(题号, 题干预览)]
+            for line in full_text.split('\n'):
+                for pat in q_patterns:
+                    m = pat.match(line)
+                    if not m:
+                        continue
+                    num_str = m.group(2)
+                    rest = m.group(3) if m.lastindex >= 3 else ""
+                    num = _cn_to_arabic_local(num_str)
+                    if num is None:
+                        try:
+                            num = int(num_str)
+                        except ValueError:
+                            continue
+                    if not (1 <= num <= 100):
+                        continue
+                    # 题干预览：取前 80 字符
+                    preview = rest.strip()[:80] if rest else ""
+                    questions.append((num, preview))
+                    break
+
+            if questions:
+                lines.append(f"  题号索引（共 {len(questions)} 题）：")
+                for qnum, preview in questions:
+                    if preview:
+                        lines.append(f"  [Q{qnum}] {preview}...")
+                    else:
+                        lines.append(f"  [Q{qnum}]（题干在下一行，需调用工具获取完整内容）")
+            else:
+                lines.append("  （未识别到标准题号，建议用关键词检索）")
+
+            lines.append(f"  如需某题完整原文，调用：read_attachment_chunk(file='{fname}', question='题号')")
+            lines.append("")
+
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        return "\n".join(lines)
+
+    # ──────────────────────────────────────────
     # 工具执行层：统一处理所有工具的调用
     # ──────────────────────────────────────────
     def _execute_tool(self, tool_name: str, args: dict) -> str:
         """根据工具名调用对应的工具对象，返回工具执行结果"""
+
+        # ──────────────────────────────────────────
+        # ★★★ 附件分块读取工具拦截：在 Worker 内部处理，访问 self.attachment_fulltext
+        # 该工具的 @tool 占位实现只用于 LLM schema 绑定，实际逻辑在这里
+        # ──────────────────────────────────────────
+        if tool_name == "read_attachment_chunk":
+            return self._execute_read_attachment_chunk(args)
 
         # ──────────────────────────────────────────
         # ★ 关键修复：始终以用户原始输入中的路径为准，
@@ -506,7 +701,7 @@ class Worker(QObject):
         # ──────────────────────────────────────────
         user_path = self._det(self.user_input)
         effective_args = dict(args)
-        
+
         # 如果用户输入中包含明确路径，强制覆盖模型传的任何路径
         if user_path:
             effective_args["target_directory"] = user_path
@@ -540,6 +735,174 @@ class Worker(QObject):
         # 工具不存在，返回错误信息
         return f"[错误] 工具 '{tool_name}' 未找到。可用工具: {list(self.tools_map.keys())}"
 
+    # ──────────────────────────────────────────
+    # 附件分块读取引擎：按题号/关键词/字符区间检索长文档
+    # ──────────────────────────────────────────
+    def _execute_read_attachment_chunk(self, args: dict) -> str:
+        """
+        实现 read_attachment_chunk 工具的实际逻辑。
+        从 self.attachment_fulltext 中按题号/关键词/字符区间检索附件原文片段。
+
+        支持三种检索模式（按优先级）：
+        1. 题号检索（question）：识别"第N题"、"N."、"N、"等题号格式，
+           返回该题完整题干 + 前后各 1 道题作为上下文。
+        2. 关键词检索（keyword）：返回首次出现该关键词的片段（前后各 3000 字符）。
+        3. 字符区间检索（char_start + char_length）：从指定位置读取指定长度。
+
+        若三种模式均未指定或未命中，返回错误提示。
+        """
+        file_name = args.get("file", "").strip()
+        question = args.get("question", "").strip()
+        keyword = args.get("keyword", "").strip()
+        char_start = args.get("char_start", -1)
+        char_length = args.get("char_length", 6000)
+
+        # 参数校验
+        if not file_name:
+            return "❌ [附件读取] 缺少 file 参数，请提供附件文件名。"
+
+        # 在快照中查找附件（支持文件名模糊匹配）
+        full_text = ""
+        matched_name = ""
+        if file_name in self.attachment_fulltext:
+            full_text = self.attachment_fulltext[file_name]
+            matched_name = file_name
+        else:
+            # 模糊匹配：用户传文件名可能不完整（如省略扩展名）
+            for name, text in self.attachment_fulltext.items():
+                if file_name.lower() in name.lower() or name.lower() in file_name.lower():
+                    full_text = text
+                    matched_name = name
+                    break
+
+        if not full_text:
+            available = list(self.attachment_fulltext.keys()) if self.attachment_fulltext else "无"
+            return (
+                f"❌ [附件读取] 未找到附件 '{file_name}'。\n"
+                f"可能原因：\n"
+                f"  1. 文件名拼写错误（当前快照可用文件：{available}）\n"
+                f"  2. 该附件为历史挂载，当前轮未挂载（read_attachment_chunk 仅支持当前轮附件全文检索）\n"
+                f"建议：请用户重新挂载该文件后再提问。"
+            )
+
+        total_len = len(full_text)
+
+        # ── 模式 3：字符区间检索 ──────────────────────
+        if isinstance(char_start, int) and char_start >= 0:
+            # 限制 char_length 范围
+            try:
+                length = int(char_length)
+            except (TypeError, ValueError):
+                length = 6000
+            length = max(500, min(12000, length))
+            start = max(0, min(char_start, total_len))
+            end = min(start + length, total_len)
+            chunk = full_text[start:end]
+            return (
+                f"📄 [附件片段] 《{matched_name}》字符区间 [{start}, {end})，"
+                f"共 {len(chunk)} 字符（全文 {total_len} 字符）：\n\n"
+                f"{chunk}"
+            )
+
+        # ── 模式 1：题号检索 ──────────────────────────
+        if question:
+            # 从 question 中提取纯数字题号
+            qnum_match = re.search(r"(\d+)", question)
+            if qnum_match:
+                qnum = qnum_match.group(1)
+                # 题号匹配模式：支持 "5." "5、" "5)" "5）" "第5题" "题目5" 等
+                # 用正则在全文中查找该题号的边界
+                # 关键：题号前必须是行首或换行，避免匹配到正文中的数字
+                patterns = [
+                    rf"(?:^|\n)\s*第\s*{qnum}\s*题[^\n]*",      # 第5题
+                    rf"(?:^|\n)\s*{qnum}\s*[.、)）][^\n]*",       # 5. / 5、 / 5) / 5）
+                    rf"(?:^|\n)\s*题目\s*{qnum}[^\n]*",           # 题目5
+                    rf"(?:^|\n)\s*Q\s*{qnum}[^\n]*",              # Q5
+                ]
+                # 找到该题号的起始位置
+                target_start = -1
+                target_pattern = ""
+                for pat in patterns:
+                    m = re.search(pat, full_text)
+                    if m:
+                        target_start = m.start()
+                        target_pattern = pat
+                        break
+
+                if target_start >= 0:
+                    # 找下一道题的起始位置（题号+1 或任意题号模式）
+                    next_qnum = str(int(qnum) + 1)
+                    next_patterns = [
+                        rf"(?:^|\n)\s*第\s*{next_qnum}\s*题",
+                        rf"(?:^|\n)\s*{next_qnum}\s*[.、)）]",
+                        rf"(?:^|\n)\s*题目\s*{next_qnum}",
+                        rf"(?:^|\n)\s*Q\s*{next_qnum}",
+                        # 兜底：任意下一题题号
+                        rf"(?:^|\n)\s*\d+\s*[.、)）]",
+                        rf"(?:^|\n)\s*第\s*\d+\s*题",
+                    ]
+                    end_pos = total_len
+                    for npat in next_patterns:
+                        nm = re.search(npat, full_text[target_start + 1:])
+                        if nm:
+                            end_pos = target_start + 1 + nm.start()
+                            break
+
+                    # 同时尝试包含前一道题作为上下文
+                    prev_qnum = str(max(1, int(qnum) - 1))
+                    prev_patterns = [
+                        rf"(?:^|\n)\s*第\s*{prev_qnum}\s*题[^\n]*",
+                        rf"(?:^|\n)\s*{prev_qnum}\s*[.、)）][^\n]*",
+                    ]
+                    prev_start = 0
+                    for ppat in prev_patterns:
+                        pm = re.search(ppat, full_text[:target_start])
+                        if pm:
+                            prev_start = pm.start()
+
+                    chunk = full_text[prev_start:end_pos].strip()
+                    return (
+                        f"📄 [附件片段·题号定位] 《{matched_name}》第 {qnum} 题"
+                        f"（含前第 {prev_qnum} 题作为上下文，区间 [{prev_start}, {end_pos})，"
+                        f"共 {len(chunk)} 字符）：\n\n"
+                        f"{chunk}"
+                    )
+                else:
+                    return (
+                        f"⚠️ [附件读取] 在《{matched_name}》中未找到题号 {qnum}。\n"
+                        f"可能原因：题号格式不标准（如使用字母 A/B/C 编号）、"
+                        f"或该题号超出文档范围。\n"
+                        f"建议：尝试用 keyword 参数传入题干关键词，或用 char_start 按顺序浏览。"
+                    )
+            else:
+                return f"⚠️ [附件读取] question 参数 '{question}' 未识别出数字题号，请传入纯数字如 '5' 或 '第5题'。"
+
+        # ── 模式 2：关键词检索 ────────────────────────
+        if keyword:
+            # 大小写不敏感查找
+            idx = full_text.lower().find(keyword.lower())
+            if idx >= 0:
+                # 前后各 3000 字符
+                start = max(0, idx - 3000)
+                end = min(total_len, idx + len(keyword) + 3000)
+                chunk = full_text[start:end]
+                return (
+                    f"📄 [附件片段·关键词定位] 《{matched_name}》关键词 '{keyword}'"
+                    f"首次出现于位置 {idx}（区间 [{start}, {end})，共 {len(chunk)} 字符）：\n\n"
+                    f"{chunk}"
+                )
+            else:
+                return (
+                    f"⚠️ [附件读取] 在《{matched_name}》中未找到关键词 '{keyword}'。\n"
+                    f"建议：换一个关键词，或用 char_start 按顺序浏览全文。"
+                )
+
+        # 三种模式均未指定
+        return (
+            f"⚠️ [附件读取] 请至少提供一种检索条件：question（题号）、keyword（关键词）或 char_start（起始字符位置）。\n"
+            f"当前附件《{matched_name}》全文共 {total_len} 字符。"
+        )
+
     def _map_tool_display_name(self, tool_name: str) -> str:
         """将工具名映射为更易懂的中文名（用于状态显示和审批提示）"""
         name_map = {
@@ -551,6 +914,7 @@ class Worker(QObject):
             "run_local_command": "执行命令",
             "analyze_project": "分析项目",
             "search_in_files": "文件搜索",
+            "read_attachment_chunk": "读取附件片段",
         }
         return name_map.get(tool_name, tool_name)
 
