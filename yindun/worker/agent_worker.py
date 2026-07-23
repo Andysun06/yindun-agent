@@ -19,6 +19,7 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, Tool
 from langchain_core.tools import BaseTool
 from yindun.core.privacy_engine import PrivacyEngine
 from yindun.core.memory_manager import SummarizableChatHistory
+from yindun.core.audit_log import AuditLog
 
 # ──────────────────────────────────────────────
 # Agent 系统提示词：告诉模型它能做什么，以及工具使用规范
@@ -548,6 +549,9 @@ class Worker(QObject):
                 self.status.emit(
                     f"[思考 {round_count}/{max_rounds}] 执行工具: {tool_display_name}（{target_path}）"
                 )
+                
+                AuditLog().log_tool_call(tool_name, tool_args)
+                
                 try:
                     self.tool_call_count += 1
 
@@ -561,10 +565,13 @@ class Worker(QObject):
                         if isinstance(tool_result, str):
                             tool_result = engine.anonymize(tool_result)[0]
 
+                    AuditLog().log_tool_result(tool_name, str(tool_result)[:500], True)
+
                 except Exception as e:
                     tool_result = f"[工具执行错误] {type(e).__name__}: {e}"
                     round_had_failure = True
                     all_success = False
+                    AuditLog().log_tool_result(tool_name, str(e), False)
 
                 # 4. 将工具执行结果追加到消息列表
                 tool_msg = ToolMessage(content=str(tool_result), tool_call_id=tool_call_id)

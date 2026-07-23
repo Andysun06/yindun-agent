@@ -38,6 +38,7 @@ from yindun.gui.control_dock import ControlDock
 from yindun.gui.session_selector import SessionSelectorPage
 from yindun.gui.new_session_dialog import NewSessionDialog
 from yindun.gui.data_dashboard import DataDashboard
+from yindun.gui.audit_panel import AuditPanel
 
 COLLAPSED_H = 44  # 极致折叠挂件高度
 EXPANDED_W, EXPANDED_H = 420, 640
@@ -314,7 +315,7 @@ class MainWindow(QWidget):
         tb.addWidget(ttl)
         tb.addStretch()
         
-        for txt, nm, slot in [("➕", "titleBtnNew", self._new_session), ("💬", "titleBtn", self._open_session_selector), ("⚙", "titleBtn", self._open_settings), ("—", "titleBtn", self._minimize),
+        for txt, nm, slot in [("➕", "titleBtnNew", self._new_session), ("💬", "titleBtn", self._open_session_selector), ("📊", "titleBtn", self._open_audit), ("⚙", "titleBtn", self._open_settings), ("—", "titleBtn", self._minimize),
                               ("▸", "titleBtn", self._toggle_collapse), ("×", "closeBtn", self.close)]:
             b = QPushButton(txt)
             b.setObjectName(nm)
@@ -422,6 +423,12 @@ class MainWindow(QWidget):
         self.model_list_updated.connect(self.settings_panel.refresh_ollama_models)
         self._stack.addWidget(self.settings_panel)
         self._settings_index = 1
+
+        # 5. 审计日志查看面板
+        self.audit_panel = AuditPanel()
+        self.audit_panel.back_requested.connect(self._on_audit_back)
+        self._stack.addWidget(self.audit_panel)
+        self._audit_index = 2
         
         cl.addWidget(self._collapsible, 1)
 
@@ -557,6 +564,7 @@ class MainWindow(QWidget):
         self.control_dock.set_dark_mode(dark)
         self.session_page.set_dark_mode(dark)
         self.data_dashboard.set_dark_mode(dark)
+        self.audit_panel.set_dark_mode(dark)
         if not self._collapsed:
             container_bg = "#1e1e2e" if dark else "white"
             container_border = "rgba(255,255,255,12)" if dark else "rgba(0,0,0,18)"
@@ -1009,6 +1017,14 @@ class MainWindow(QWidget):
             self._exit_session_only()
         self.settings_panel.load_settings_to_ui(self._settings)
         self._stack.setCurrentIndex(self._settings_index)
+
+    def _open_audit(self):
+        if self._session_only:
+            self._exit_session_only()
+        self._stack.setCurrentIndex(self._audit_index)
+
+    def _on_audit_back(self):
+        self._stack.setCurrentIndex(self._workspace_index)
 
     def _open_session_selector(self):
         """💬 双模导航:
