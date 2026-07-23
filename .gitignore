@@ -5,3 +5,17 @@ __pycache__/
 .vscode/
 *.json
 yindun/models/
+
+# ── 本地模型 & 向量库数据（体积大，不应入库）──
+# Ollama 本地模型存储
+ollama_models/
+# Chroma 向量库持久化数据
+yindun/data/
+# 测试生成的向量库数据
+test_kb_data/
+# 测试文档（含敏感示例文本，不应入库）
+test_kb_docs/
+# 旧版备份文件
+*.bak
+# 测试脚本生成的 __pycache__
+test_*.pyc

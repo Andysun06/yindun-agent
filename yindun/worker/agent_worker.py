@@ -138,6 +138,11 @@ class Worker(QObject):
         self.attachment_fulltext: dict = {}
         # 当前 session id（由 main_window 注入，用于回写附件快照）
         self.session_id = None
+        # ★ 知识库实例（脱敏 RAG）：懒加载，首次调用 search_knowledge_base 时初始化
+        self._kb_instance = None
+        # ★ 知识库检索返回的全局映射表：供输出层 deanonymize 合并使用
+        # 每次 ReAct 循环开始时清空，结束时用后即焚
+        self._kb_mapping: dict = {}
 
     def approve(self, ok):
         """人工审批回调：ok=True 表示批准，ok=False 表示驳回"""
@@ -173,6 +178,8 @@ class Worker(QObject):
     # ──────────────────────────────────────────
     def run(self):
         try:
+            # ★ 每轮对话开始时清空知识库映射表（上轮的已用后即焚）
+            self._kb_mapping = {}
             memory = SummarizableChatHistory.from_dict_list(
                 self.messages_snapshot, max_tokens=5000
             )
@@ -292,6 +299,11 @@ class Worker(QObject):
 
             if self.privacy_shield and box:
                 final_reply = engine.deanonymize(final_reply, box)
+            # ★ 合并知识库映射表：如果本轮调用了 search_knowledge_base，
+            # LLM 回答中会含知识库检索的占位符，需要用 _kb_mapping 还原
+            if self._kb_mapping:
+                final_reply = engine.deanonymize(final_reply, self._kb_mapping)
+                self._kb_mapping.clear()  # 用后即焚
 
             # 注：ReAct 循环内部已经通过 update_with_full_chain 保存完整工具调用链
             # 这里只需要把 final_reply 的 de-anonymized 版本 emit 给用户
@@ -528,7 +540,8 @@ class Worker(QObject):
                     last_tool_result = str(tool_result)[:2000]
 
                     # 脱敏工具返回内容
-                    if self.privacy_shield and box:
+                    # 注意：search_knowledge_base 返回的已是脱敏文本，跳过避免二次脱敏
+                    if self.privacy_shield and box and tool_name != "search_knowledge_base":
                         if isinstance(tool_result, str):
                             tool_result = engine.anonymize(tool_result)[0]
 
@@ -694,6 +707,13 @@ class Worker(QObject):
         # ──────────────────────────────────────────
         if tool_name == "read_attachment_chunk":
             return self._execute_read_attachment_chunk(args)
+
+        # ──────────────────────────────────────────
+        # ★ 知识库语义检索工具拦截：脱敏 RAG
+        # 检索结果已是脱敏文本，映射表存入 self._kb_mapping 供输出层还原
+        # ──────────────────────────────────────────
+        if tool_name == "search_knowledge_base":
+            return self._execute_search_knowledge_base(args)
 
         # ──────────────────────────────────────────
         # ★ 关键修复：始终以用户原始输入中的路径为准，
@@ -903,6 +923,77 @@ class Worker(QObject):
             f"当前附件《{matched_name}》全文共 {total_len} 字符。"
         )
 
+    # ──────────────────────────────────────────
+    # 知识库语义检索引擎（脱敏 RAG）
+    # ──────────────────────────────────────────
+    def _get_knowledge_base(self):
+        """懒加载知识库实例。依赖未安装时返回 None。"""
+        if self._kb_instance is not None:
+            return self._kb_instance
+        try:
+            from yindun.core.knowledge_base import KnowledgeBase
+            self._kb_instance = KnowledgeBase()
+            if not self._kb_instance.is_available():
+                self._kb_instance = None
+                return None
+            return self._kb_instance
+        except Exception:
+            self._kb_instance = None
+            return None
+
+    def _execute_search_knowledge_base(self, args: dict) -> str:
+        """
+        实现 search_knowledge_base 工具的实际逻辑。
+        调用 KnowledgeBase.search() 进行脱敏语义检索。
+
+        返回脱敏片段给 LLM，同时把映射表存入 self._kb_mapping 供输出层还原。
+        """
+        query = args.get("query", "").strip()
+        top_k = args.get("top_k", 4)
+
+        if not query:
+            return "❌ [知识库检索] 缺少 query 参数，请提供检索问题。"
+
+        kb = self._get_knowledge_base()
+        if kb is None:
+            return (
+                "❌ [知识库检索] 知识库功能不可用。\n"
+                "可能原因：\n"
+                "  1. 依赖未安装（请运行: pip install chromadb langchain-chroma langchain-ollama langchain-text-splitters）\n"
+                "  2. Ollama 服务未启动\n"
+                "  3. 未安装 embedding 模型（请运行: ollama pull nomic-embed-text）"
+            )
+
+        try:
+            result = kb.search(query, top_k=top_k)
+        except Exception as e:
+            return f"❌ [知识库检索] 检索失败: {type(e).__name__}: {e}"
+
+        chunks = result.get("chunks", [])
+        global_mapping = result.get("global_mapping", {})
+
+        if not chunks:
+            return (
+                "🔍 [知识库检索] 未找到相关内容。\n"
+                "建议：\n"
+                "  1. 换一种提问方式\n"
+                "  2. 确认文档已入库（可用知识库管理功能查看）\n"
+                "  3. 尝试增大 top_k 参数"
+            )
+
+        # 合并映射表到本轮全局映射（供输出层 deanonymize 使用）
+        self._kb_mapping.update(global_mapping)
+
+        # 格式化检索结果给 LLM
+        parts = [f"🔍 [知识库检索] 找到 {len(chunks)} 个相关片段（已脱敏）：\n"]
+        for i, chunk in enumerate(chunks, 1):
+            source = chunk.get("source", "未知")
+            score = chunk.get("score", 0)
+            content = chunk.get("content", "")
+            parts.append(f"--- 片段 {i}（来源: {source}，相似度: {score:.2f}）---\n{content}\n")
+
+        return "\n".join(parts)
+
     def _map_tool_display_name(self, tool_name: str) -> str:
         """将工具名映射为更易懂的中文名（用于状态显示和审批提示）"""
         name_map = {
@@ -915,6 +1006,7 @@ class Worker(QObject):
             "analyze_project": "分析项目",
             "search_in_files": "文件搜索",
             "read_attachment_chunk": "读取附件片段",
+            "search_knowledge_base": "知识库检索",
         }
         return name_map.get(tool_name, tool_name)
 

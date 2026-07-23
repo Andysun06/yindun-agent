@@ -23,7 +23,7 @@ from PySide6.QtGui import QColor, QPalette, QFont, QCursor, QMouseEvent
 # 核心后端多算力通信隔离舱
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage, AIMessage
-from yindun.core.file_tools import list_local_files, create_local_file, delete_local_file, read_local_file, modify_local_file, run_local_command, analyze_project, search_in_files, read_attachment_chunk
+from yindun.core.file_tools import list_local_files, create_local_file, delete_local_file, read_local_file, modify_local_file, run_local_command, analyze_project, search_in_files, read_attachment_chunk, search_knowledge_base
 
 # 跨模块总线架构集成：动态引入所有的原子功能积木件
 from yindun.gui.styles import GLOBAL_QSS, DARK_QSS                                
@@ -1282,7 +1282,7 @@ class MainWindow(QWidget):
         mn = self._settings["model"]
         custom_models = self._settings.get("custom_models", {})
 
-        tools_list = [list_local_files, create_local_file, delete_local_file, read_local_file, modify_local_file, run_local_command, analyze_project, search_in_files, read_attachment_chunk]
+        tools_list = [list_local_files, create_local_file, delete_local_file, read_local_file, modify_local_file, run_local_command, analyze_project, search_in_files, read_attachment_chunk, search_knowledge_base]
 
         def do_init():
             import json as _json

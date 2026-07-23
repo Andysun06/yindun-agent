@@ -703,3 +703,40 @@ def read_attachment_chunk(file: str, question: str = "", keyword: str = "",
     # （因为附件文本存放在 Worker 内存中，工具自身无法访问）
     # 此处仅作为占位实现，确保 LangChain 能正确绑定工具 schema
     return "[占位] read_attachment_chunk 的实际执行由 Worker 拦截处理。若你看到此消息，说明 Worker 拦截逻辑未生效。"
+
+
+# ==========================================
+# 知识库语义检索工具（脱敏 RAG）
+# ==========================================
+
+class SearchKnowledgeBaseInput(BaseModel):
+    query: str = Field(
+        ...,
+        description="要在知识库中检索的问题或关键词。例如'合同违约金条款'、'张三的联系方式'。"
+    )
+    top_k: int = Field(
+        default=4,
+        description="返回的相关片段数量，默认4，范围1~8。问题复杂时可增大。"
+    )
+
+
+@tool(args_schema=SearchKnowledgeBaseInput)
+def search_knowledge_base(query: str, top_k: int = 4) -> str:
+    """
+    🔍 在本地知识库中进行语义检索（脱敏 RAG）。
+
+    适用场景：
+    - 当用户询问已入库文档中的内容时（如"合同里的违约金是多少"）
+    - 当需要跨多份文档对比信息时（如"哪份合同金额最高"）
+    - 当关键词匹配找不到时（如问"提前终止"但文档写的是"解除协议"）
+
+    特点：
+    - 语义检索：按意思匹配，不依赖精确关键词
+    - 全程脱敏：检索结果已脱敏，敏感信息以占位符显示
+    - 多文档支持：可跨所有已入库文档检索
+
+    返回：相关的脱敏文本片段（含来源标注）。
+    """
+    # 该工具的实际逻辑由 Worker 在 _execute_tool 中拦截执行
+    # （因为知识库实例由 Worker 管理，工具自身无法访问）
+    return "[占位] search_knowledge_base 的实际执行由 Worker 拦截处理。"
