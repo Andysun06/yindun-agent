@@ -766,6 +766,8 @@ class MainWindow(QWidget):
         self.status_bar.start_thinking("隐盾大脑研判中")
         self._request_start_time = datetime.now()
         self.worker = Worker()
+        # 注入 worker 给知识库管理面板（每次新建 worker 后刷新引用）
+        self.settings_panel.set_kb_worker(self.worker)
         self.worker.user_input = user_input
         sid = self._current_session_id
         self.worker.messages_snapshot = list(self._sessions.get(sid, {}).get("messages", []))

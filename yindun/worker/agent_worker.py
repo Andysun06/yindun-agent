@@ -35,7 +35,8 @@ _SYSTEM_PROMPT = (
     "6. 执行系统命令（run_local_command）\n"
     "7. 递归分析整个项目的结构和关键代码（analyze_project）\n"
     "8. 在文件中搜索特定内容（search_in_files）\n"
-    "9. ★★★ 读取长附件文档的指定片段（read_attachment_chunk）——按题号/关键词/字符区间检索附件原文，详见下方【长文档分块检索规范】\n\n"
+    "9. ★★★ 读取长附件文档的指定片段（read_attachment_chunk）——按题号/关键词/字符区间检索附件原文，详见下方【长文档分块检索规范】\n"
+    "10. ★★★ 知识库语义检索（search_knowledge_base）——在已入库的本地知识库中进行语义检索，详见下方【知识库检索规范】\n\n"
     "【工具使用规范】\n"
     "1. 当用户请求涉及文件操作、目录查询、项目分析、命令执行等任务时，优先调用工具，不要凭空回答。\n"
     "2. 工具参数中的 target_directory 表示目标路径，可以是绝对路径（如 E:\\qwen、C:\\Users\\test），也可以是中文描述（如桌面、E盘、D盘的文档目录）。\n"
@@ -98,6 +99,21 @@ _SYSTEM_PROMPT = (
     "   - 当用户问的题目/内容不在已展示的前30000字符中，必须主动调用工具检索，不要回答'文档中未找到'。\n"
     "   - 工具可多次调用：例如用户问'第35题和第60题'，需分别调用两次工具检索两道题。\n"
     "   - char_length 参数可调整单次读取长度（500~12000），默认6000。\n\n"
+    "【知识库检索规范】\n"
+    "当用户询问的内容可能来自已入库的文档（如合同、报表、员工信息、规章等），优先使用 search_knowledge_base 工具进行语义检索。\n"
+    "1. 适用场景：\n"
+    "   - 用户问及合同条款、金额、当事人、日期等信息\n"
+    "   - 用户问及员工联系方式、薪资、部门等信息\n"
+    "   - 跨多份文档对比信息（如'哪份合同金额最高'）\n"
+    "   - 语义近似检索（如问'提前终止'，文档写的是'解除协议'）\n"
+    "2. 调用方式：search_knowledge_base(query='用户的实际问题', top_k=4)\n"
+    "   - query 用自然语言描述，不要只填关键词\n"
+    "   - top_k 默认4，问题复杂时可增至6~8\n"
+    "3. 与 read_attachment_chunk 的区别：\n"
+    "   - search_knowledge_base：跨所有入库文档的语义检索，适合'找相关内容'\n"
+    "   - read_attachment_chunk：单文档精确字符定位，适合'读某文档第N段'\n"
+    "   - 若不确定用哪个，优先用 search_knowledge_base\n"
+    "4. 返回内容已脱敏（敏感信息以 [KB_NAME_0]/[KB_PHONE_0] 等占位符显示，前缀 KB_ 表示来自知识库），你应基于占位符文本正常作答，占位符会在最终展示时自动还原给用户，无需你处理。\n\n"
     "【回答要求】\n"
     "1. 使用中文回答\n"
     "2. 不要输出工具调用过程的内部细节，只输出最终给用户的结果\n"
@@ -941,6 +957,90 @@ class Worker(QObject):
             self._kb_instance = None
             return None
 
+    # ──────────────────────────────────────────
+    # ★ 知识库管理接口（供 GUI 调用）
+    # ──────────────────────────────────────────
+    def add_to_knowledge_base(self, file_paths, progress_callback=None) -> dict:
+        """将文档加入知识库。支持单个路径或路径列表。
+
+        返回 {"total": N, "success": M, "failed": K, "details": [...], "total_chunks": X}
+        依赖未就绪时返回 {"error": "...", "available": False}
+        """
+        if isinstance(file_paths, str):
+            file_paths = [file_paths]
+        if not file_paths:
+            return {"error": "未提供文件路径", "available": True}
+
+        kb = self._get_knowledge_base()
+        if kb is None:
+            return {
+                "error": "知识库功能不可用，请检查依赖（chromadb/langchain-chroma/langchain-ollama）和 Ollama 服务",
+                "available": False,
+            }
+        try:
+            return kb.add_documents(file_paths, progress_callback=progress_callback)
+        except Exception as e:
+            return {"error": f"{type(e).__name__}: {e}", "available": True}
+
+    def list_knowledge_base(self) -> dict:
+        """列出已入库文档。返回 {"available": bool, "documents": [...], "total_chunks": N}"""
+        kb = self._get_knowledge_base()
+        if kb is None:
+            return {"available": False, "documents": [], "total_chunks": 0,
+                    "error": "知识库功能不可用"}
+        try:
+            docs = kb.list_documents()
+            stats = kb.get_stats()
+            return {
+                "available": True,
+                "documents": docs,
+                "total_chunks": stats.get("total_chunks", 0),
+                "total_documents": stats.get("total_documents", 0),
+                "embed_model": stats.get("embed_model", ""),
+                "persist_dir": stats.get("persist_dir", ""),
+            }
+        except Exception as e:
+            return {"available": True, "documents": [], "total_chunks": 0,
+                    "error": f"{type(e).__name__}: {e}"}
+
+    def remove_from_knowledge_base(self, file_name: str) -> dict:
+        """从知识库删除指定文档。返回 {"success": bool, "message": str}"""
+        kb = self._get_knowledge_base()
+        if kb is None:
+            return {"success": False, "message": "知识库功能不可用"}
+        try:
+            ok = kb.remove_document(file_name)
+            return {"success": ok,
+                    "message": f"已删除《{file_name}》" if ok else f"未找到《{file_name}》"}
+        except Exception as e:
+            return {"success": False, "message": f"{type(e).__name__}: {e}"}
+
+    def get_knowledge_base_status(self) -> dict:
+        """获取知识库可用性状态。供 GUI 显示依赖检查结果。"""
+        try:
+            from yindun.core.knowledge_base import KnowledgeBase
+            kb = KnowledgeBase()
+            available = kb.is_available()
+            result = {"available": available}
+            # 检查 Ollama 服务
+            try:
+                import requests
+                r = requests.get("http://localhost:11434/api/tags", timeout=2)
+                if r.status_code == 200:
+                    models = [m["name"] for m in r.json().get("models", [])]
+                    result["ollama_running"] = True
+                    result["has_embed_model"] = any("nomic-embed-text" in m for m in models)
+                    result["ollama_models"] = models
+                else:
+                    result["ollama_running"] = False
+                    result["has_embed_model"] = False
+            except Exception:
+                result["ollama_running"] = False
+                result["has_embed_model"] = False
+            return result
+        except Exception as e:
+            return {"available": False, "error": f"{type(e).__name__}: {e}"}
+
     def _execute_search_knowledge_base(self, args: dict) -> str:
         """
         实现 search_knowledge_base 工具的实际逻辑。
@@ -982,14 +1082,24 @@ class Worker(QObject):
             )
 
         # 合并映射表到本轮全局映射（供输出层 deanonymize 使用）
-        self._kb_mapping.update(global_mapping)
+        # ★ 关键：对占位符加 KB_ 前缀，避免与用户输入脱敏的 box 占位符冲突
+        # 例如 [NAME_0] -> [KB_NAME_0]，确保输出层还原时不会误替换
+        import re as _re
+        kb_prefix_pattern = _re.compile(r"\[([A-Z]+)_(\d+)\]")
 
-        # 格式化检索结果给 LLM
+        for placeholder, real_value in global_mapping.items():
+            # 转换占位符：[NAME_0] -> [KB_NAME_0]
+            new_placeholder = kb_prefix_pattern.sub(r"[KB_\1_\2]", placeholder)
+            self._kb_mapping[new_placeholder] = real_value
+
+        # 格式化检索结果给 LLM（同时把片段内的占位符也加 KB_ 前缀）
         parts = [f"🔍 [知识库检索] 找到 {len(chunks)} 个相关片段（已脱敏）：\n"]
         for i, chunk in enumerate(chunks, 1):
             source = chunk.get("source", "未知")
             score = chunk.get("score", 0)
             content = chunk.get("content", "")
+            # 片段内容占位符也加前缀，保持与映射表一致
+            content = kb_prefix_pattern.sub(r"[KB_\1_\2]", content)
             parts.append(f"--- 片段 {i}（来源: {source}，相似度: {score:.2f}）---\n{content}\n")
 
         return "\n".join(parts)
