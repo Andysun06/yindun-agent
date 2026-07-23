@@ -194,6 +194,64 @@ class KnowledgeBase:
             "sensitive": total_sensitive,
         }
 
+    def add_documents(self, file_paths, progress_callback=None) -> dict:
+        """
+        批量入库多个文档。
+
+        参数：
+            file_paths: 文件路径列表
+            progress_callback: 回调函数 callback(current, total, file_name, status, detail)
+                              status 取值："processing" / "success" / "failed"
+
+        返回统计 dict：
+            {"total": 3, "success": 2, "failed": 1, "details": [...], "total_chunks": 12}
+        """
+        total = len(file_paths)
+        details = []
+        success_count = 0
+        total_chunks = 0
+
+        for i, path in enumerate(file_paths, 1):
+            fname = os.path.basename(path)
+            # 通知开始处理
+            if progress_callback:
+                try:
+                    progress_callback(i, total, fname, "processing", "")
+                except Exception:
+                    pass
+
+            try:
+                stats = self.add_document(path)
+                success_count += 1
+                total_chunks += stats.get("chunks", 0)
+                details.append({
+                    "file": fname, "status": "success",
+                    "chunks": stats.get("chunks", 0),
+                    "sensitive": stats.get("sensitive", {}),
+                })
+                if progress_callback:
+                    try:
+                        progress_callback(i, total, fname, "success",
+                                          f"{stats.get('chunks', 0)} 个片段")
+                    except Exception:
+                        pass
+            except Exception as e:
+                err_msg = f"{type(e).__name__}: {e}"
+                details.append({"file": fname, "status": "failed", "error": err_msg})
+                if progress_callback:
+                    try:
+                        progress_callback(i, total, fname, "failed", err_msg)
+                    except Exception:
+                        pass
+
+        return {
+            "total": total,
+            "success": success_count,
+            "failed": total - success_count,
+            "details": details,
+            "total_chunks": total_chunks,
+        }
+
     # ──────────────────────────────────────────
     # 2. 检索：问题脱敏 → 向量检索 → 返回脱敏片段 + 全局映射表
     # ──────────────────────────────────────────
