@@ -163,25 +163,67 @@ class AuditLog:
             }
         )
 
-    def log_llm_input(self, content: str, has_privacy: bool = False):
+    def log_llm_input(self, content: str, has_privacy: bool = False, preview: str = ""):
+        """记录 LLM 输入。
+
+        参数：
+            content: 输入内容（脱敏后）
+            has_privacy: 是否经过隐私脱敏
+            preview: 可选的内容预览（前200字符，脱敏态），便于审计回看
+        """
+        details = {
+            "content_length": len(content),
+            "has_privacy": has_privacy
+        }
+        if preview:
+            details["preview"] = preview[:200]
         return self.add_entry(
             AuditEventType.LLM_INPUT,
             AuditSeverity.INFO,
             f"LLM输入{'(含隐私脱敏)' if has_privacy else ''}",
-            {
-                "content_length": len(content),
-                "has_privacy": has_privacy
-            }
+            details
         )
 
-    def log_llm_output(self, content: str, token_count: int = 0):
+    def log_llm_output(self, content: str, token_count: int = 0, preview: str = ""):
+        """记录 LLM 输出。
+
+        参数：
+            content: 输出内容
+            token_count: token 数（可选）
+            preview: 可选的内容预览（前200字符），便于审计回看
+        """
+        details = {
+            "content_length": len(content),
+            "token_count": token_count
+        }
+        if preview:
+            details["preview"] = preview[:200]
         return self.add_entry(
             AuditEventType.LLM_OUTPUT,
             AuditSeverity.INFO,
             "LLM输出",
+            details
+        )
+
+    def log_privacy_batch(self, stats: dict, action: str = "detected"):
+        """批量记录隐私敏感事件，避免每个实体一条日志。
+
+        参数：
+            stats: {实体类型: 数量}，如 {"PHONE": 2, "NAME": 1}
+            action: "detected"(检测到) / "anonymized"(已脱敏) / "restored"(已还原)
+        """
+        if not stats:
+            return None
+        severity = AuditSeverity.SECURITY if action == "detected" else AuditSeverity.INFO
+        action_cn = {"detected": "检测到", "anonymized": "已脱敏", "restored": "已还原"}.get(action, action)
+        return self.add_entry(
+            AuditEventType.PRIVACY_SENSITIVE,
+            severity,
+            f"隐私事件[{action_cn}]: {dict(stats)}",
             {
-                "content_length": len(content),
-                "token_count": token_count
+                "stats": dict(stats),
+                "total": sum(stats.values()),
+                "action": action
             }
         )
 

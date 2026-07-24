@@ -39,6 +39,7 @@ from yindun.gui.session_selector import SessionSelectorPage
 from yindun.gui.new_session_dialog import NewSessionDialog
 from yindun.gui.data_dashboard import DataDashboard
 from yindun.gui.audit_panel import AuditPanel
+from yindun.core.audit_log import AuditLog
 
 COLLAPSED_H = 44  # 极致折叠挂件高度
 EXPANDED_W, EXPANDED_H = 420, 640
@@ -263,6 +264,11 @@ class MainWindow(QWidget):
 
     def closeEvent(self, event):
         """关闭时保存窗口位置，下次启动时恢复"""
+        # ★ 审计：记录会话结束
+        try:
+            AuditLog().log_session_end()
+        except Exception:
+            pass
         if not self._collapsed:
             g = self.geometry()
             self._settings["window_geometry"] = [g.x(), g.y(), g.width(), g.height()]
@@ -969,6 +975,13 @@ class MainWindow(QWidget):
         session = self._sessions.get(sid)
         if session is None: return
         self._current_session_id = sid
+        # ★ 审计：记录会话开始
+        try:
+            _audit = AuditLog()
+            _audit.set_session_id(sid)
+            _audit.log_session_start(sid)
+        except Exception:
+            pass
         self.chat_display.clear_messages()
         for m in session.get("messages", []):
             role = m.get("role", "")
