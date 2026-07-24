@@ -208,6 +208,20 @@ class Worker(QObject):
                 if self.privacy_shield
                 else (self.user_input, {})
             )
+            # ★ 审计：记录用户输入脱敏情况
+            try:
+                _audit = AuditLog()
+                if self.privacy_shield and box:
+                    _stats = engine.get_last_stats()
+                    if _stats:
+                        _audit.log_privacy_batch(_stats, "detected")
+                    _audit.log_llm_input(self.user_input, has_privacy=True,
+                                         preview=ai_input[:200])
+                else:
+                    _audit.log_llm_input(self.user_input, has_privacy=False,
+                                         preview=self.user_input[:200])
+            except Exception:
+                pass  # 审计失败不影响主流程
 
             # 检查是否为音频文件请求（音频文件已作为上下文注入，不需要工具调用）
             _AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma")
@@ -316,11 +330,28 @@ class Worker(QObject):
 
             if self.privacy_shield and box:
                 final_reply = engine.deanonymize(final_reply, box)
+                # ★ 审计：记录隐私还原（统计还原的实体类型数）
+                try:
+                    # box 结构：{占位符: 真实值}，统计各类型数量
+                    _type_counts = {}
+                    for _ph in box.keys():
+                        _m = re.match(r"\[([A-Z]+)_?\d*\]", _ph)
+                        _t = _m.group(1) if _m else "OTHER"
+                        _type_counts[_t] = _type_counts.get(_t, 0) + 1
+                    if _type_counts:
+                        AuditLog().log_privacy_batch(_type_counts, "restored")
+                except Exception:
+                    pass
             # ★ 合并知识库映射表：如果本轮调用了 search_knowledge_base，
             # LLM 回答中会含知识库检索的占位符，需要用 _kb_mapping 还原
             if self._kb_mapping:
                 final_reply = engine.deanonymize(final_reply, self._kb_mapping)
                 self._kb_mapping.clear()  # 用后即焚
+            # ★ 审计：记录最终还原后的 LLM 输出（展示给用户的版本）
+            try:
+                AuditLog().log_llm_output(final_reply, preview=final_reply[:200])
+            except Exception:
+                pass
 
             # 注：ReAct 循环内部已经通过 update_with_full_chain 保存完整工具调用链
             # 这里只需要把 final_reply 的 de-anonymized 版本 emit 给用户
@@ -422,6 +453,25 @@ class Worker(QObject):
             # 让模型决定：回答或调用工具
             ai_msg = self._invoke_llm_with_cancel_check(messages)
             messages.append(ai_msg)
+            # ★ 审计：记录本轮 LLM 输入(脱敏态)与输出
+            try:
+                _audit = AuditLog()
+                # 输入：最后一条 HumanMessage 的内容
+                _last_human = ""
+                for _m in reversed(messages[:-1]):
+                    _mc = getattr(_m, "content", "")
+                    if isinstance(_m, HumanMessage) and isinstance(_mc, str) and _mc.strip():
+                        _last_human = _mc
+                        break
+                if _last_human:
+                    _audit.log_llm_input(_last_human, has_privacy=self.privacy_shield,
+                                         preview=_last_human[:200])
+                # 输出：模型本轮回答
+                _ai_content = getattr(ai_msg, "content", "") or ""
+                if _ai_content:
+                    _audit.log_llm_output(_ai_content, preview=_ai_content[:200])
+            except Exception:
+                pass  # 审计失败不影响主流程
 
             # 检查模型是否请求工具调用
             tool_calls = getattr(ai_msg, "tool_calls", None)
@@ -456,6 +506,15 @@ class Worker(QObject):
                     # 渐进输出：把总结也先发给用户
                     if content and isinstance(content, str) and content.strip():
                         self.intermediate_result.emit(self._clean(content))
+                    # ★ 审计：记录总结轮 LLM 输出
+                    try:
+                        _audit = AuditLog()
+                        _audit.log_llm_input(summary_prompt, has_privacy=self.privacy_shield,
+                                             preview=summary_prompt[:200])
+                        if content:
+                            _audit.log_llm_output(content, preview=content[:200])
+                    except Exception:
+                        pass
 
                 if content and isinstance(content, str) and content.strip():
                     final_reply = self._clean(content)
@@ -543,15 +602,27 @@ class Worker(QObject):
                         tool_msg = ToolMessage(content=tool_result, tool_call_id=tool_call_id)
                         messages.append(tool_msg)
                         all_success = False
+                        # ★ 审计：记录访问控制驳回
+                        try:
+                            AuditLog().log_access_control(
+                                f"{tool_display_name}({tool_name})", target_path, approved=False)
+                        except Exception:
+                            pass
                         continue
+                    # ★ 审计：记录访问控制通过
+                    try:
+                        AuditLog().log_access_control(
+                            f"{tool_display_name}({tool_name})", target_path, approved=True)
+                    except Exception:
+                        pass
 
                 # 3. 执行工具
                 self.status.emit(
                     f"[思考 {round_count}/{max_rounds}] 执行工具: {tool_display_name}（{target_path}）"
                 )
-                
-                AuditLog().log_tool_call(tool_name, tool_args)
-                
+
+                AuditLog().log_tool_call(tool_name, tool_args, target_path)
+
                 try:
                     self.tool_call_count += 1
 
@@ -564,6 +635,13 @@ class Worker(QObject):
                     if self.privacy_shield and box and tool_name != "search_knowledge_base":
                         if isinstance(tool_result, str):
                             tool_result = engine.anonymize(tool_result)[0]
+                            # ★ 审计：记录工具结果脱敏
+                            try:
+                                _r_stats = engine.get_last_stats()
+                                if _r_stats:
+                                    AuditLog().log_privacy_batch(_r_stats, "anonymized")
+                            except Exception:
+                                pass
 
                     AuditLog().log_tool_result(tool_name, str(tool_result)[:500], True)
 
