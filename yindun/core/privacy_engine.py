@@ -9,8 +9,17 @@
 2. 实体类型从 3 类扩展到 9 类（正则）+ 人名识别（轻量姓氏触发方案）
 3. 映射表"用后即焚"：destroy() 主动清空
 4. 审计统计：get_last_stats() 返回本轮脱敏类型计数，便于上层展示
+
+【安全增强：映射表加密存储】
+- 映射表真实值采用 Fernet 对称加密存储（AES-128-CBC + HMAC-SHA256）
+- 密钥由 SecretManager 统一管理，首次运行自动生成并持久化到 yindun/cache/.secret_key
+- anonymize 写入 mapping 时对真实值 encrypt，占位符本身（如 [PHONE_0]）保持明文，方便 LLM 识别
+- deanonymize 时透明解密还原，对调用方完全无感
+- 兼容旧版明文 mapping：decrypt 失败时回退为原值，保证已存盘的知识库数据不会因升级而损坏
 """
 import re
+
+from yindun.core.secret_manager import SecretManager
 
 
 class PrivacyEngine:
@@ -21,6 +30,31 @@ class PrivacyEngine:
         新增 6 类（正则）：BANKCARD / IP / MONEY / APIKEY / WECHAT / ADDRESS
         新增 1 类（轻量）：NAME（姓氏表 + 上下文触发）
     """
+
+    # ──────────────────────────────────────────
+    # 0. 数据分级标签（参照 GB/T 35273 个人信息安全规范 + 办公场景实践）
+    #    用于风险量化与审计展示，不影响脱敏逻辑
+    # ──────────────────────────────────────────
+    DATA_CLASSIFICATION = {
+        "IDCARD":   "绝密",   # 身份证号
+        "BANKCARD": "绝密",   # 银行卡号
+        "APIKEY":   "机密",   # API密钥
+        "PHONE":    "机密",   # 手机号
+        "EMAIL":    "内部",   # 邮箱
+        "ADDRESS":  "内部",   # 地址
+        "WECHAT":   "内部",   # 微信号
+        "IP":       "内部",   # IP地址
+        "MONEY":    "内部",   # 金额（视场景可调）
+        "NAME":     "内部",   # 人名
+    }
+
+    # 分级权重（用于风险评分）
+    CLASSIFICATION_WEIGHT = {
+        "绝密": 10,
+        "机密": 5,
+        "内部": 2,
+        "公开": 0,
+    }
 
     # ──────────────────────────────────────────
     # 1. 正则实体规则表
@@ -94,6 +128,8 @@ class PrivacyEngine:
         self._custom_names: set = set()  # 用户补充的已知人名
         self._last_stats: dict = {}      # 上次 anonymize 的统计
         self._mapping: dict = {}         # 当前映射表（供 destroy 使用）
+        # 加密器：用于对 mapping 中真实值进行 Fernet 对称加密
+        self._crypto = SecretManager.get_instance()
 
     # ──────────────────────────────────────────
     # 正向脱敏（接口完全保持兼容）
@@ -105,7 +141,10 @@ class PrivacyEngine:
 
         返回格式（与原版完全一致）：
             (anonymized_text, mapping_dict)
-            mapping_dict = {"[PHONE_0]": "13812345678", ...}
+            mapping_dict = {"[PHONE_0]": "<base64 密文>", ...}
+            - 占位符（key）保持明文，方便 LLM 识别
+            - 真实值（value）已通过 SecretManager.encrypt 加密为 base64 密文
+            - deanonymize 时会透明解密还原，对调用方无感
         """
         if not text:
             self._last_stats = {}
@@ -127,7 +166,7 @@ class PrivacyEngine:
                     return anonymized_local
                 idx = counts.get(key, 0)
                 placeholder = f"[{key}_{idx}]"
-                mapping[placeholder] = match
+                mapping[placeholder] = self._crypto.encrypt(match)
                 value_to_placeholder[match] = placeholder
                 counts[key] = idx + 1
 
@@ -155,7 +194,7 @@ class PrivacyEngine:
                             continue
                         idx = counts.get(key, 0)
                         placeholder = f"[{key}_{idx}]"
-                        mapping[placeholder] = wx
+                        mapping[placeholder] = self._crypto.encrypt(wx)
                         value_to_placeholder[wx] = placeholder
                         counts[key] = idx + 1
                         # 只替换微信号部分，保留"微信:"前缀
@@ -169,7 +208,7 @@ class PrivacyEngine:
                         else:
                             idx = counts.get(key, 0)
                             placeholder = f"[{key}_{idx}]"
-                            mapping[placeholder] = match
+                            mapping[placeholder] = self._crypto.encrypt(match)
                             value_to_placeholder[match] = placeholder
                             counts[key] = idx + 1
                             anonymized = anonymized.replace(match, placeholder)
@@ -199,7 +238,7 @@ class PrivacyEngine:
             if name in text and name not in value_to_placeholder:
                 idx = counts.get("NAME", 0)
                 placeholder = f"[NAME_{idx}]"
-                mapping[placeholder] = name
+                mapping[placeholder] = self._crypto.encrypt(name)
                 value_to_placeholder[name] = placeholder
                 counts["NAME"] = idx + 1
                 text = text.replace(name, placeholder)
@@ -238,7 +277,7 @@ class PrivacyEngine:
                             if name_candidate not in value_to_placeholder:
                                 idx = counts.get("NAME", 0)
                                 placeholder = f"[NAME_{idx}]"
-                                mapping[placeholder] = name_candidate
+                                mapping[placeholder] = self._crypto.encrypt(name_candidate)
                                 value_to_placeholder[name_candidate] = placeholder
                                 counts["NAME"] = idx + 1
                             else:
@@ -296,11 +335,19 @@ class PrivacyEngine:
         【逆向还原】
         将回复中的占位符替换回真实敏感数据。
         接口与原版完全一致。
+
+        内部实现：mapping 中的值可能是加密密文（新版）或明文（旧版兼容）。
+        对每个值尝试 decrypt 还原；解密失败则回退为原值，保证已存盘的旧数据不受影响。
         """
         if not text or not mapping:
             return text
         restored = text
-        for placeholder, original_value in mapping.items():
+        for placeholder, encrypted_value in mapping.items():
+            try:
+                original_value = self._crypto.decrypt(encrypted_value)
+            except Exception:
+                # 兼容旧版明文 mapping（向后兼容已存盘的知识库数据）
+                original_value = encrypted_value
             restored = restored.replace(placeholder, original_value)
         return restored
 
@@ -319,6 +366,35 @@ class PrivacyEngine:
     def get_last_stats(self) -> dict:
         """返回上次 anonymize 的脱敏类型计数，如 {"PHONE": 1, "NAME": 2}。"""
         return dict(self._last_stats)
+
+    # ──────────────────────────────────────────
+    # 新增：数据分级统计
+    # ──────────────────────────────────────────
+    def get_last_classification(self) -> dict:
+        """
+        返回上次 anonymize 的分级统计。
+        格式：{"绝密": {"IDCARD": 1, "BANKCARD": 1}, "机密": {"PHONE": 2}, "内部": {...}}
+        没有命中的级别不出现。
+        """
+        result = {}
+        for entity_type, count in self._last_stats.items():
+            level = self.DATA_CLASSIFICATION.get(entity_type, "内部")
+            result.setdefault(level, {})[entity_type] = count
+        return result
+
+    # ──────────────────────────────────────────
+    # 新增：风险评分（加权求和）
+    # ──────────────────────────────────────────
+    def get_last_risk_score(self) -> int:
+        """
+        返回上次 anonymize 的风险评分（加权求和）。
+        用于上层（审计日志/看板）量化本轮数据敏感程度。
+        """
+        score = 0
+        for level, entities in self.get_last_classification().items():
+            weight = self.CLASSIFICATION_WEIGHT.get(level, 0)
+            score += weight * sum(entities.values())
+        return score
 
     # ──────────────────────────────────────────
     # 新增：补充已知人名（供上层导入通讯录等）
@@ -351,12 +427,26 @@ if __name__ == "__main__":
 
     safe_text, secret_box = engine.anonymize(raw_text)
     print("\n【2. 脱敏后（发给AI的文本）】:", safe_text)
-    print("\n【3. 本地密文保险箱】:", secret_box)
+    # secret_box 的 value 现在是 base64 密文（以 gAAAAA 开头）
+    print("\n【3. 本地密文保险箱（已加密）】:")
+    for placeholder, cipher in secret_box.items():
+        print(f"    {placeholder} -> {cipher}")
     print("\n【4. 脱敏统计】:", engine.get_last_stats())
+    print("\n【4.1 数据分级】:", engine.get_last_classification())
+    print("\n【4.2 风险评分】:", engine.get_last_risk_score())
 
+    # 验证：即使 mapping 里是密文，deanonymize 也能正确还原
     ai_reply = f"已收到，{engine.deanonymize('[NAME_0]', secret_box)}的合同金额已记录。"
     restored = engine.deanonymize(ai_reply, secret_box)
     print("\n【5. 最终还原（展示给用户的文本）】:", restored)
 
+    # 6. 兼容性验证：用旧版明文 mapping 喂给 deanonymize，应同样能还原
+    legacy_mapping = {"[PHONE_LEGACY_0]": "13800000000"}
+    legacy_text = "电话是[PHONE_LEGACY_0]，请回拨。"
+    legacy_restored = engine.deanonymize(legacy_text, legacy_mapping)
+    print("\n【6. 旧版明文 mapping 兼容验证】:", legacy_restored)
+    assert legacy_restored == "电话是13800000000，请回拨。", "旧版明文 mapping 兼容失败！"
+    print("    ✓ 旧版明文 mapping 兼容通过（decrypt 失败回退为原值）")
+
     engine.destroy()
-    print("\n【6. 映射表已销毁】")
+    print("\n【7. 映射表已销毁】")

@@ -12,6 +12,10 @@
   【建库】文档 → 解析全文 → 切块(500字+50重叠) → 每块脱敏 → 向量化 → 存入 Chroma
   【检索】问题 → 脱敏 → 向量化 → Chroma 检索 top-K → 返回脱敏片段 + 全局映射表
   【还原】LLM 回答(含占位符) → 用全局映射表替换 → 展示真实内容给用户
+
+【安全机制：双层加密】
+chunk 的敏感数据映射表采用双层加密：PrivacyEngine 层加密真实值（Fernet），
+SecretManager 层整体加密映射表，metadata 中只存密文，磁盘上无任何明文对应关系。
 """
 import os
 import re
@@ -21,6 +25,7 @@ import hashlib
 from typing import Optional
 
 from yindun.core.privacy_engine import PrivacyEngine
+from yindun.core.secret_manager import SecretManager
 from yindun.utils.document_parser import extract_file_text
 
 
@@ -69,6 +74,8 @@ class KnowledgeBase:
 
         # 脱敏引擎实例（入库和检索时复用）
         self.engine = PrivacyEngine()
+        # 加密器：用于对 metadata 中的 mapping 整体加密（双层加密的外层）
+        self._crypto = SecretManager.get_instance()
 
         # 懒加载：首次使用时才初始化向量库和 embedding
         self._embeddings = None
@@ -174,13 +181,17 @@ class KnowledgeBase:
 
             chunk_id = f"{file_hash}_{idx:04d}"
             documents.append(anon_text)
+            # 把整个 mapping dict 序列化后再整体加密，metadata 只存密文
+            mapping_json = json.dumps(mapping, ensure_ascii=False)
+            encrypted_mapping = self._crypto.encrypt(mapping_json)
             metadatas.append({
                 "source": file_name,
                 "file_path": file_path,
                 "chunk_index": idx,
                 "total_chunks": len(chunks),
                 "added_at": int(time.time()),
-                "mapping": json.dumps(mapping, ensure_ascii=False),
+                "mapping_encrypted": encrypted_mapping,
+                "has_mapping": bool(mapping),  # 标记是否有敏感数据，便于检索时快速判断
             })
             ids.append(chunk_id)
 
@@ -300,11 +311,24 @@ class KnowledgeBase:
         for doc, score in results:
             content = doc.page_content
             meta = doc.metadata or {}
-            chunk_mapping_str = meta.get("mapping", "{}")
-            try:
-                chunk_mapping = json.loads(chunk_mapping_str)
-            except (json.JSONDecodeError, TypeError):
-                chunk_mapping = {}
+
+            # 还原 chunk 的 mapping：优先读加密字段，兼容旧版明文字段
+            chunk_mapping = {}
+            raw_encrypted = meta.get("mapping_encrypted", "")
+            if raw_encrypted:
+                # 新版：密文 mapping，先解密再反序列化
+                try:
+                    mapping_json = self._crypto.decrypt(raw_encrypted)
+                    chunk_mapping = json.loads(mapping_json)
+                except Exception:
+                    # 解密失败跳过，不阻断检索
+                    chunk_mapping = {}
+            elif meta.get("mapping"):
+                # 兼容旧数据：metadata 里还有旧的明文 "mapping" 字段
+                try:
+                    chunk_mapping = json.loads(meta["mapping"])
+                except (json.JSONDecodeError, TypeError):
+                    chunk_mapping = {}
 
             # 对该 chunk 的占位符做全局重命名
             for placeholder, real_value in chunk_mapping.items():
