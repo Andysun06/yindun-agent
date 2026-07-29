@@ -876,7 +876,7 @@ class MainWindow(QWidget):
 
     def _on_error_caught(self, e):
         self.status_bar.stop_thinking()
-        self.chat_display.add_message_bubble("assistant", f"⚠️ 算力中断: {e}", self.width())
+        self.chat_display.add_message_bubble("assistant", str(e), self.width())
         self._apply_worker_messages()
         self._cleanup_session()
 
