@@ -20,6 +20,7 @@ from langchain_core.tools import BaseTool
 from yindun.core.privacy_engine import PrivacyEngine
 from yindun.core.memory_manager import SummarizableChatHistory
 from yindun.core.audit_log import AuditLog
+from yindun.core.policy_manager import PolicyManager
 
 # ──────────────────────────────────────────────
 # Agent 系统提示词：告诉模型它能做什么，以及工具使用规范
@@ -363,7 +364,85 @@ class Worker(QObject):
             self.finished.emit("推理已取消。")
         except Exception as e:
             self.result_messages = self.messages_snapshot
-            self.error.emit(f"{type(e).__name__}: {e}")
+            friendly = self._translate_error(e)
+            self.error.emit(friendly)
+
+    # ──────────────────────────────────────────
+    # 错误翻译：将技术异常转为用户可理解的中文提示
+    # ──────────────────────────────────────────
+    @staticmethod
+    def _translate_error(exc: Exception) -> str:
+        ename = type(exc).__name__
+        emsg = str(exc).lower()
+
+        if any(kw in emsg for kw in ("connection refused", "积极拒绝", "无法连接",
+                                       "winerror 10061", "connectionerror")):
+            return (
+                "❌ 无法连接模型服务\n\n"
+                "模型（Ollama / API）未启动或已崩溃，请检查：\n"
+                "1. Ollama 是否正在运行（托盘图标 / ollama serve）\n"
+                "2. 远程 API 地址是否可达（VPN / 防火墙）\n"
+                "3. 端口是否被其他程序占用\n\n"
+                f"原始错误：{ename}"
+            )
+
+        if any(kw in emsg for kw in ("401", "unauthorized",
+                                       "invalid api key", "authentication")):
+            return (
+                "❌ API 密钥无效或未配置\n\n"
+                "请检查设置中的 API Key 是否正确，或重新生成密钥。\n\n"
+                f"原始错误：{ename}"
+            )
+
+        if any(kw in emsg for kw in ("timeout", "timed out", "connect timeout")):
+            return (
+                "⏱ 请求超时\n\n"
+                "模型服务响应太慢或网络不稳定，请稍后重试。\n"
+                "如果使用远程 API，请检查网络连接和 VPN。\n\n"
+                f"原始错误：{ename}"
+            )
+
+        if any(kw in emsg for kw in ("429", "rate limit", "too many requests")):
+            return (
+                "⏳ 请求过于频繁\n\n"
+                "模型 API 限流，请等待片刻后再发送消息。\n\n"
+                f"原始错误：{ename}"
+            )
+
+        if any(kw in emsg for kw in ("context length", "max token",
+                                       "token limit", "too long")):
+            return (
+                "📄 上下文过长\n\n"
+                "对话历史 + 附件内容超出了模型的上下文窗口。\n"
+                "建议：开启新会话 / 缩短附件内容 / 切换更大上下文的模型。\n\n"
+                f"原始错误：{ename}"
+            )
+
+        if any(kw in emsg for kw in ("modulenotfound", "no module", "import",
+                                       "dll load", "onnxruntime")):
+            return (
+                "🔧 缺少必要的组件或依赖\n\n"
+                "程序运行环境不完整，请联系管理员修复。\n\n"
+                f"原始错误：{ename}: {exc}"
+            )
+
+        if any(kw in emsg for kw in ("permission", "access denied", "拒绝访问")):
+            return (
+                "🔒 权限不足\n\n"
+                "操作被系统拒绝，请以管理员身份运行，或检查目标路径的读写权限。\n\n"
+                f"原始错误：{ename}"
+            )
+
+        if any(kw in emsg for kw in ("file not found", "no such file",
+                                       "找不到", "does not exist")):
+            return (
+                "📁 文件或路径不存在\n\n"
+                "指定的文件或目录不存在，请检查路径是否正确。\n\n"
+                f"原始错误：{ename}"
+            )
+
+        # 兜底：保留原始异常信息，方便排查
+        return f"⚠️ 回答生成失败\n\n{ename}: {exc}"
 
     # ──────────────────────────────────────────
     # 简单问答检测
@@ -582,11 +661,28 @@ class Worker(QObject):
 
                 # 2. 敏感操作检测与人工审批
                 tool_display_name = self._map_tool_display_name(tool_name)
-                is_sensitive = self._is_sens(target_path)
+                pm = PolicyManager()
+                policy_result = pm.check(tool_name, target_path)
 
-                if is_sensitive:
+                if policy_result == "deny":
+                    # ★ 策略直接拒绝：不询问用户，直接驳回
+                    tool_result = f"已拦截：安全策略禁止在 {target_path} 执行 {tool_display_name}"
+                    tool_msg = ToolMessage(content=tool_result, tool_call_id=tool_call_id)
+                    messages.append(tool_msg)
+                    all_success = False
                     self.status.emit(
-                        f"[思考 {round_count}/{max_rounds}] 🚨 检测到跨目录操作 "
+                        f"[思考 {round_count}/{max_rounds}] 🚫 安全策略已拦截: {tool_display_name}"
+                    )
+                    try:
+                        AuditLog().log_access_control(
+                            f"{tool_display_name}({tool_name})", target_path, approved=False)
+                    except Exception:
+                        pass
+                    continue
+
+                elif policy_result == "confirm":
+                    self.status.emit(
+                        f"[思考 {round_count}/{max_rounds}] 🚨 检测到敏感操作 "
                         f"{tool_display_name}，等待人工审批..."
                     )
                     self.need_confirm.emit({
@@ -1269,14 +1365,13 @@ class Worker(QObject):
 
     @staticmethod
     def _is_sens(path):
-        """检测路径是否为跨目录操作（敏感操作）"""
+        """检测路径是否需要审批（委托给 PolicyManager）"""
         if not path or not isinstance(path, str):
             return True
-        allowed = [
-            os.path.abspath(".").lower(),
-            os.path.join(os.path.expanduser("~"), "Desktop").lower()
-        ]
-        return path.lower() not in allowed
+        pm = PolicyManager()
+        result = pm.check("", path)
+        # "deny" → 视为敏感（直接拒绝），"confirm" → 视为敏感（需审批）
+        return result in ("confirm", "deny")
 
     # ──────────────────────────────────────────
     # 直接回答：不调用工具的纯问答模式

@@ -16,6 +16,9 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QFont, QBrush, QCursor
 from yindun.core.audit_log import AuditLog, AuditEventType, AuditSeverity
+from yindun.core.health_scanner import HealthScanner, ScanReport
+from yindun.core.behavior_analyzer import BehaviorAnalyzer
+from yindun.core.flow_builder import FlowBuilder
 
 
 class AuditPanel(QFrame):
@@ -185,6 +188,25 @@ class AuditPanel(QFrame):
         flow_layout.addWidget(self._flow_tree)
 
         left_layout.addWidget(flow_group)
+
+        # ★ 新增：健康体检 & 行为画像入口 ──────────────────
+        actions_group = QGroupBox("安全工具")
+        actions_group.setObjectName("auditActionsGroup")
+        act_layout = QVBoxLayout(actions_group)
+
+        health_btn = QPushButton("🔍 隐私健康体检")
+        health_btn.setObjectName("auditHealthBtn")
+        health_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        health_btn.clicked.connect(self._run_health_scan)
+        act_layout.addWidget(health_btn)
+
+        behavior_btn = QPushButton("📊 模型行为画像")
+        behavior_btn.setObjectName("auditBehaviorBtn")
+        behavior_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        behavior_btn.clicked.connect(self._run_behavior_analysis)
+        act_layout.addWidget(behavior_btn)
+
+        left_layout.addWidget(actions_group)
 
         left_layout.addStretch()
         splitter.addWidget(left_panel)
@@ -555,13 +577,20 @@ class AuditPanel(QFrame):
                 border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 500;
             }}
             QPushButton#auditClearBtn:hover {{ background: {c['btn_hover']}; color: white; }}
+            QPushButton#auditHealthBtn, QPushButton#auditBehaviorBtn {{
+                background: transparent; color: {c['btn_text']}; border: 1px solid {c['border']};
+                border-radius: 6px; padding: 6px 10px; font-size: 11px; font-weight: 500; text-align: left;
+            }}
+            QPushButton#auditHealthBtn:hover, QPushButton#auditBehaviorBtn:hover {{
+                background: {c['btn_hover']}; color: white; border-color: {c['btn_hover']};
+            }}
             QFrame#auditLeftPanel, QFrame#auditRightPanel {{ background: {c['panel_bg']}; }}
             QSplitter#auditSplitter {{ border: none; }}
             QFrame#auditAlertBar {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #fef3c7,stop:1 #fde68a); border-bottom: 1px solid #f59e0b; }}
             QLabel#auditAlertIcon {{ font-size: 16px; }}
             QLabel#auditAlertLabel {{ color: #92400e; font-size: 12px; font-weight: 600; }}
             QLabel#auditAlertCount {{ color: #f59e0b; font-size: 12px; font-weight: bold; }}
-            QGroupBox#auditStatsGroup, QGroupBox#auditChainGroup, QGroupBox#auditFlowGroup, QGroupBox#auditTabsGroup, QGroupBox#auditDetailGroup {{
+            QGroupBox#auditStatsGroup, QGroupBox#auditChainGroup, QGroupBox#auditFlowGroup, QGroupBox#auditActionsGroup, QGroupBox#auditTabsGroup, QGroupBox#auditDetailGroup {{
                 background: transparent; border: 1px solid {c['border']}; border-radius: 8px;
                 font-size: 11px; font-weight: 600; color: {c['group_title']};
             }}
@@ -599,3 +628,249 @@ class AuditPanel(QFrame):
             QLabel#auditStatusLabel {{ color: {c['stat_label']}; font-size: 11px; }}
             QLabel#auditChainValidLabel {{ color: {c['success']}; font-size: 11px; font-weight: 600; }}
         """)
+
+    # ── 隐私健康体检 ──────────────────────────
+
+    def _run_health_scan(self):
+        """打开隐私健康体检对话框，扫描指定目录"""
+        from PySide6.QtWidgets import QProgressDialog
+        from threading import Thread
+
+        dir_path = QFileDialog.getExistingDirectory(self, "选择要扫描的目录", os.path.expanduser("~"))
+        if not dir_path:
+            return
+
+        self._status_label.setText("正在扫描...")
+        progress = QProgressDialog("正在扫描目录...", "取消", 0, 0, self)
+        progress.setWindowTitle("隐私健康体检")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+
+        report = [None]
+
+        def scan_worker():
+            scanner = HealthScanner()
+            report[0] = scanner.scan(dir_path, depth=3)
+
+        def on_finished():
+            progress.close()
+            self._status_label.setText("就绪")
+            if report[0]:
+                self._show_scan_report(report[0])
+
+        thread = Thread(target=scan_worker, daemon=True)
+        thread.start()
+
+        # 轮询等待
+        def check_thread():
+            if thread.is_alive():
+                QTimer.singleShot(200, check_thread)
+            else:
+                on_finished()
+
+        QTimer.singleShot(100, check_thread)
+
+    def _show_scan_report(self, report: ScanReport):
+        """显示扫描报告弹窗"""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("隐私健康体检报告")
+        dlg.resize(600, 480)
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        # 摘要
+        summary = QTextEdit()
+        summary.setReadOnly(True)
+        summary.setPlainText(report.summary())
+        summary.setStyleSheet("""
+            QTextEdit { font-family: Consolas, monospace; font-size: 12px;
+                       background: #1e1e2e; color: #d4d4e0; border: 1px solid #333; border-radius: 8px; }
+        """)
+        layout.addWidget(summary)
+
+        # 导出按钮
+        btn_row = QHBoxLayout()
+        export_json_btn = QPushButton("导出 JSON")
+        export_json_btn.clicked.connect(lambda: self._save_report_json(report))
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(dlg.close)
+        btn_row.addStretch()
+        btn_row.addWidget(export_json_btn)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        dlg.exec()
+
+    def _save_report_json(self, report: ScanReport):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "保存报告", "health_report.json", "JSON文件 (*.json)")
+        if path:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(report.to_json())
+            self._status_label.setText(f"报告已保存: {os.path.basename(path)}")
+
+    # ── 模型行为画像 ──────────────────────────
+
+    def _run_behavior_analysis(self):
+        """显示当前会话的行为画像"""
+        entries = self._audit_log.get_entries()
+        if not entries:
+            self._status_label.setText("暂无日志数据")
+            return
+
+        # 按 session_id 分组
+        sessions = {}
+        for e in entries:
+            sid = getattr(e, "session_id", "") if hasattr(e, "session_id") else ""
+            if not sid:
+                continue
+            sessions.setdefault(sid, []).append(e)
+
+        if not sessions:
+            self._status_label.setText("无会话数据")
+            return
+
+        analyzer = BehaviorAnalyzer()
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("模型行为画像")
+        dlg.resize(660, 520)
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        text = QTextEdit()
+        text.setReadOnly(True)
+        lines = []
+
+        for sid, session_entries in list(sessions.items())[-5:]:  # 最近5个会话
+            profile = analyzer.build_profile(session_entries, sid)
+            anomalies = analyzer.detect_anomalies(session_entries, sid)
+            lines.append(profile.summary())
+            if anomalies:
+                lines.append(f"\n异常记录: {len(anomalies)} 条")
+                for a in anomalies:
+                    lines.append(f"  [{a.severity}] {a.anomaly_type}: {a.description}")
+            lines.append("")
+
+        text.setPlainText("\n".join(lines))
+        text.setStyleSheet("""
+            QTextEdit { font-family: Consolas, monospace; font-size: 12px;
+                       background: #1e1e2e; color: #d4d4e0; border: 1px solid #333; border-radius: 8px; }
+        """)
+        layout.addWidget(text)
+
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(dlg.close)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        dlg.exec()
+
+    # ── 增强数据流向（集成 FlowBuilder）──────────
+
+    def _populate_flow_tree(self):
+        self._flow_tree.clear()
+        entries = self._audit_log.get_entries()
+
+        # ★ 使用 FlowBuilder 构建有向数据流图
+        builder = FlowBuilder()
+        # 将 AuditEntry 对象转为 dict
+        entry_dicts = [
+            {
+                "event_type": getattr(e, "event_type", ""),
+                "details": getattr(e, "details", {}),
+                "timestamp": getattr(e, "timestamp", ""),
+                "session_id": getattr(e, "session_id", "")
+            }
+            for e in entries
+        ]
+        graph = builder.build(entry_dicts, session_id="all")
+
+        # 数据流概览
+        overview_item = QTreeWidgetItem(["📊 数据流概览", f"{graph.total_flows} 条流, {len(graph.nodes)} 个节点"])
+        overview_item.setBackground(1, QBrush(QColor("#07c160")))
+        overview_item.setForeground(1, QBrush(QColor("#ffffff")))
+        self._flow_tree.addTopLevelItem(overview_item)
+
+        # 工具分布
+        for tool, count in sorted(graph.tool_distribution.items(), key=lambda x: -x[1])[:8]:
+            item = QTreeWidgetItem([f"  ⚙️ {tool}", f"{count} 次"])
+            self._flow_tree.addTopLevelItem(item)
+
+        # 敏感度分布
+        for sens, count in sorted(graph.sensitivity_distribution.items(),
+                                   key=lambda x: {"绝密": 4, "机密": 3, "内部": 2, "公开": 1}.get(x[0], 0),
+                                   reverse=True):
+            color = {"绝密": "#ef4444", "机密": "#f59e0b", "内部": "#3b82f6", "公开": "#22c55e"}.get(sens, "#94a3b8")
+            item = QTreeWidgetItem([f"  🔒 {sens}", f"{count} 条"])
+            item.setBackground(1, QBrush(QColor(color)))
+            item.setForeground(1, QBrush(QColor("#ffffff")))
+            self._flow_tree.addTopLevelItem(item)
+
+        # 泄露风险
+        if graph.leak_risks:
+            risk_header = QTreeWidgetItem([f"⚠️ 泄露风险", f"{len(graph.leak_risks)} 条"])
+            risk_header.setBackground(1, QBrush(QColor("#ef4444")))
+            risk_header.setForeground(1, QBrush(QColor("#ffffff")))
+            self._flow_tree.addTopLevelItem(risk_header)
+            for risk in graph.leak_risks[:5]:
+                item = QTreeWidgetItem([f"  {risk['source']}", risk['reason']])
+                item.setForeground(0, QBrush(QColor("#fca5a5")))
+                self._flow_tree.addTopLevelItem(item)
+
+        # 回退：保留原流程节点（兼容旧视图）
+        flow_data = {
+            "user_input": {"count": 0, "status": "未活跃"},
+            "privacy_filter": {"count": 0, "status": "未检测"},
+            "llm_process": {"count": 0, "status": "未调用"},
+            "tool_exec": {"count": 0, "status": "未执行"},
+            "result_output": {"count": 0, "status": "无输出"}
+        }
+        for entry in entries:
+            if hasattr(entry, "event_type"):
+                if entry.event_type == "llm_input":
+                    flow_data["user_input"]["count"] += 1
+                    flow_data["user_input"]["status"] = "活跃"
+                    if hasattr(entry, "details") and entry.details.get("has_privacy", False):
+                        flow_data["privacy_filter"]["count"] += 1
+                        flow_data["privacy_filter"]["status"] = "检测到敏感数据"
+                    else:
+                        flow_data["privacy_filter"]["status"] = "安全"
+                elif entry.event_type == "llm_output":
+                    flow_data["llm_process"]["count"] += 1
+                    flow_data["llm_process"]["status"] = "已响应"
+                    flow_data["result_output"]["count"] += 1
+                    flow_data["result_output"]["status"] = "已生成"
+                elif entry.event_type == "tool_call":
+                    flow_data["tool_exec"]["count"] += 1
+                    flow_data["tool_exec"]["status"] = "执行中"
+                elif entry.event_type == "tool_result":
+                    success = entry.details.get("success") if hasattr(entry, "details") else True
+                    flow_data["tool_exec"]["status"] = "完成" if success else "失败"
+
+        process_sep = QTreeWidgetItem(["── 处理流程 ──", ""])
+        self._flow_tree.addTopLevelItem(process_sep)
+
+        flow_nodes = [
+            ("👤 用户输入", "user_input"),
+            ("🛡️ 隐私过滤", "privacy_filter"),
+            ("🧠 LLM处理", "llm_process"),
+            ("⚙️ 工具执行", "tool_exec"),
+            ("📤 结果输出", "result_output")
+        ]
+        for label, key in flow_nodes:
+            data = flow_data[key]
+            color_map = {"安全": "#4ade80", "活跃": "#22c55e", "完成": "#4ade80",
+                         "已响应": "#22c55e", "已生成": "#4ade80"}
+            fallback = "#f59e0b"
+            if "失败" in data["status"]:
+                fallback = "#ef4444"
+            status_color = color_map.get(data["status"].split("(")[0], fallback)
+
+            item = QTreeWidgetItem([label, f"{data['status']} ({data['count']})"])
+            item.setBackground(1, QBrush(QColor(status_color)))
+            item.setForeground(1, QBrush(QColor("#ffffff")))
+            self._flow_tree.addTopLevelItem(item)
