@@ -67,7 +67,7 @@ class PrivacyEngine:
     # 业务分组（按数据所属业务域归类，与风险分级是正交维度）
     # - 分级回答"多敏感"，分组回答"属于哪类业务数据"
     ENTITY_GROUPS = {
-        "PII":   ["PHONE", "EMAIL", "IDCARD", "NAME", "ADDRESS", "WECHAT"],  # WECHAT 改归 PII（个人社交账号）
+        "PII":   ["PHONE", "EMAIL", "IDCARD", "NAME", "ADDRESS", "WECHAT", "IP"],  # WECHAT 改归 PII（个人社交账号）；IP 属个人/设备网络标识
         "PHI":   ["MEDICAL_RECORD", "MEDICAL_INSURANCE"],
         "财务":  ["BANKCARD", "MONEY"],
         "密钥":  ["APIKEY", "PRIVATE_KEY", "JWT"],   # 高危密钥凭证

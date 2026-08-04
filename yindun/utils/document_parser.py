@@ -25,6 +25,16 @@ class PdfParser:
     _ocr_engine = None
     _ocr_init_failed = False  # 标记 OCR 初始化是否已失败（避免每页重复报错）
 
+    def __init__(self):
+        self._scanner = None  # 懒加载，避免无扫描需求时初始化开销
+
+    def _get_scanner(self):
+        """懒加载 PrivacyScanner"""
+        if self._scanner is None:
+            from yindun.utils.privacy_scanner import PrivacyScanner
+            self._scanner = PrivacyScanner()
+        return self._scanner
+
     @classmethod
     def _get_ocr_engine(cls):
         """懒加载 RapidOCR 引擎。返回引擎实例或 None（不可用时）。"""
@@ -64,9 +74,10 @@ class PdfParser:
         except Exception:
             return ""
 
-    def parse(self, filepath: str) -> str:
+    def parse(self, filepath: str, scan_privacy: bool = False):
         text_parts = []
         table_parts = []
+        all_scan_results = []  # 收集所有页的隐私扫描结果
         had_text = False  # 是否抽到过任何文字（含 OCR）
         had_ocr_fallback = False  # 是否走过 OCR 回退
         ocr_unavailable_warned = False  # 是否已提示 OCR 不可用
@@ -81,6 +92,10 @@ class PdfParser:
                 if page_text.strip():
                     had_text = True
                     text_parts.append(page_text.strip())
+                    # 隐私扫描
+                    if scan_privacy:
+                        page_results = self._get_scanner().scan(page_text.strip(), page=str(i), line_start=1, source_type="page")
+                        all_scan_results.extend(page_results)
                 else:
                     # 文字层为空 → 尝试 OCR 回退
                     ocr_text = self._ocr_page(page)
@@ -88,6 +103,10 @@ class PdfParser:
                         had_text = True
                         had_ocr_fallback = True
                         text_parts.append(ocr_text)
+                        # OCR 结果也扫描
+                        if scan_privacy:
+                            ocr_results = self._get_scanner().scan(ocr_text, page=str(i), line_start=1, source_type="page")
+                            all_scan_results.extend(ocr_results)
                     else:
                         # OCR 不可用或未识别到内容：给出准确提示
                         if self._ocr_init_failed and not ocr_unavailable_warned:
@@ -113,6 +132,10 @@ class PdfParser:
                     if page_text.strip():
                         had_text = True
                         text_parts.append(page_text.strip())
+                        # 隐私扫描
+                        if scan_privacy:
+                            page_results = self._get_scanner().scan(page_text.strip(), page=str(i), line_start=1, source_type="page")
+                            all_scan_results.extend(page_results)
                     else:
                         text_parts.append(
                             "[本页文字层为空；PyMuPDF 未安装，无法 OCR 识别扫描图片。"
@@ -137,6 +160,12 @@ class PdfParser:
                             continue
                         md = self._table_to_markdown(tbl)
                         table_parts.append(f"第 {i} 页 表格 {j}\n{md}\n")
+                        # 表格内容隐私扫描
+                        if scan_privacy:
+                            table_results = self._get_scanner().scan(
+                                md, page=f"第{i}页 表格{j}", line_start=1, source_type="table"
+                            )
+                            all_scan_results.extend(table_results)
         except ImportError:
             # pdfplumber 未装不算致命，表格部分跳过即可
             pass
@@ -165,6 +194,10 @@ class PdfParser:
         # ★★★ 题号修复后处理：把 PDF 抽取时被换行打散的题号还原
         # 让下游 _inject_question_anchors 能稳定匹配行首题号
         result = self._fix_question_numbering(result)
+        # 隐私风险报告拼接
+        if scan_privacy and all_scan_results:
+            report = self._get_scanner().generate_report(all_scan_results)
+            result = result + "\n\n" + report
         return result
 
     @staticmethod
@@ -348,7 +381,17 @@ class DocxParser:
     - 统计内嵌图片数量
     """
 
-    def parse(self, filepath: str) -> str:
+    def __init__(self):
+        self._scanner = None  # 懒加载，避免无扫描需求时初始化开销
+
+    def _get_scanner(self):
+        """懒加载 PrivacyScanner"""
+        if self._scanner is None:
+            from yindun.utils.privacy_scanner import PrivacyScanner
+            self._scanner = PrivacyScanner()
+        return self._scanner
+
+    def parse(self, filepath: str, scan_privacy: bool = False):
         try:
             from docx import Document
             from docx.oxml.ns import qn
@@ -358,7 +401,9 @@ class DocxParser:
         doc = Document(filepath)
         body = doc.element.body
         parts = []
+        all_scan_results = []  # 收集所有段落/表格的隐私扫描结果
         table_idx = 0
+        para_idx = 0  # 非空段落计数器（仅非空段落递增，扫描时 page=str(para_idx)）
         image_count = 0
 
         # 遍历 body 下的所有子元素，保留原始顺序
@@ -370,6 +415,11 @@ class DocxParser:
                 text = "".join(t.text or "" for t in child.iter(qn('w:t')))
                 if text.strip():
                     parts.append(text)
+                    para_idx += 1
+                    # 隐私扫描（page=段落号）
+                    if scan_privacy:
+                        results = self._get_scanner().scan(text, page=str(para_idx), line_start=1, source_type="paragraph")
+                        all_scan_results.extend(results)
                 # 统计段落内嵌图片 (w:drawing / pic:pic)
                 for _ in child.iter(qn('w:drawing')):
                     image_count += 1
@@ -381,10 +431,18 @@ class DocxParser:
                     tbl = doc.tables[table_idx - 1]
                     md = self._table_to_markdown(tbl)
                     parts.append(f"表格 {table_idx}\n{md}")
+                    # 隐私扫描（page 用 "表格N" 标识）
+                    if scan_privacy:
+                        results = self._get_scanner().scan(md, page=f"表格{table_idx}", line_start=1, source_type="table")
+                        all_scan_results.extend(results)
 
         if image_count > 0:
             parts.append(f"[文档含 {image_count} 张内嵌图片，未自动解析]")
 
+        # 隐私风险报告拼接
+        if scan_privacy and all_scan_results:
+            report = self._get_scanner().generate_report(all_scan_results)
+            return "\n".join(parts) + "\n\n" + report
         return "\n".join(parts)
 
     @staticmethod
@@ -416,14 +474,7 @@ def extract_file_text(filepath):
             return _transcribe_audio(filepath)
 
         if name.endswith((".txt", ".md", ".csv")):
-            for enc in ["utf-8", "gbk", "gb2312", "latin-1"]:
-                try:
-                    with open(filepath, "r", encoding=enc) as f:
-                        return f.read()
-                except:
-                    continue
-            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-                return f.read()
+            return _read_text_file(filepath)
 
         if name.endswith(".pdf"):
             return PdfParser().parse(filepath)
@@ -432,15 +483,7 @@ def extract_file_text(filepath):
             return DocxParser().parse(filepath)
 
         if name.endswith((".xlsx", ".xls")):
-            import openpyxl
-            wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
-            lines = []
-            for ws in wb.worksheets:
-                lines.append(f"=== 工作表: {ws.title} ===")
-                for row in ws.iter_rows(values_only=True):
-                    lines.append(" | ".join(str(c) if c else "" for c in row))
-            wb.close()
-            return "\n".join(lines)
+            return _extract_excel(filepath, scan_privacy=False)  # 默认不扫描，保持向后兼容
 
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             return f.read()
@@ -449,6 +492,117 @@ def extract_file_text(filepath):
         # 区分文档类型给出更友好的错误信息
         ext = os.path.splitext(filepath)[1].lower().lstrip('.')
         return f"[文档解析失败: {ext or '未知'} -> {type(e).__name__}: {e}]"
+
+
+def _read_text_file(filepath) -> str:
+    """读取文本文件，自动尝试多种编码"""
+    for enc in ["utf-8", "gbk", "gb2312", "latin-1"]:
+        try:
+            with open(filepath, "r", encoding=enc) as f:
+                return f.read()
+        except:
+            continue
+    with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
+def extract_file_text_with_report(filepath, scan_privacy: bool = True) -> str:
+    """
+    统一入口：解析文件 + 可选隐私风险报告。
+
+    与 extract_file_text 的区别：
+    - extract_file_text：只返回纯文本（向后兼容）
+    - extract_file_text_with_report：默认 scan_privacy=True，返回"文本 + 隐私风险报告"
+
+    支持 PDF/DOCX/XLSX/XLS/TXT/MD/CSV。
+    音频文件不支持隐私扫描（转写文本已含在结果中，但不附加报告）。
+    """
+    try:
+        name = filepath.lower()
+
+        # 音频文件：不扫描，直接走原逻辑
+        if name.endswith(_AUDIO_EXTS):
+            return _transcribe_audio(filepath)
+
+        # TXT/MD/CSV：读取后扫描
+        if name.endswith((".txt", ".md", ".csv")):
+            text = _read_text_file(filepath)
+            if scan_privacy:
+                from yindun.utils.privacy_scanner import PrivacyScanner
+                scanner = PrivacyScanner()
+                results = scanner.scan(text, page="1", line_start=1, source_type="page")
+                if results:
+                    report = scanner.generate_report(results)
+                    text = text + "\n\n" + report
+            return text
+
+        # PDF
+        if name.endswith(".pdf"):
+            return PdfParser().parse(filepath, scan_privacy=scan_privacy)
+
+        # DOCX
+        if name.endswith(".docx"):
+            return DocxParser().parse(filepath, scan_privacy=scan_privacy)
+
+        # Excel
+        if name.endswith((".xlsx", ".xls")):
+            return _extract_excel(filepath, scan_privacy=scan_privacy)
+
+        # 其他文件：按文本处理
+        text = _read_text_file(filepath)
+        if scan_privacy:
+            from yindun.utils.privacy_scanner import PrivacyScanner
+            scanner = PrivacyScanner()
+            results = scanner.scan(text, page="1", line_start=1, source_type="page")
+            if results:
+                report = scanner.generate_report(results)
+                text = text + "\n\n" + report
+        return text
+    except Exception as e:
+        # 扫描失败时回退到纯文本模式，并附加错误提示
+        try:
+            base_text = extract_file_text(filepath)
+            return base_text + f"\n\n[隐私扫描失败，已回退纯文本模式: {type(e).__name__}: {e}]"
+        except Exception:
+            ext = os.path.splitext(filepath)[1].lower().lstrip('.')
+            return f"[文档解析失败: {ext or '未知'} -> {type(e).__name__}: {e}]"
+
+
+def _extract_excel(filepath, scan_privacy: bool = False) -> str:
+    """解析 Excel 文件，可选隐私扫描。
+
+    scan_privacy=False（默认）时仅返回文本，与原内联逻辑完全等价；
+    scan_privacy=True 时按工作表独立扫描（page=工作表名，line_start=1），
+    并在文本末尾追加隐私风险报告。
+    """
+    import openpyxl
+
+    scanner = None
+    if scan_privacy:
+        from yindun.utils.privacy_scanner import PrivacyScanner
+        scanner = PrivacyScanner()
+
+    all_scan_results = []
+
+    wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
+    lines = []
+    for ws in wb.worksheets:
+        lines.append(f"=== 工作表: {ws.title} ===")
+        for row_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
+            row_str = " | ".join(str(c) if c else "" for c in row)
+            lines.append(row_str)
+            if scan_privacy and row_str.strip():
+                # 每行单独扫描，line=row_idx 精确定位，跨工作表不会冲突
+                results = scanner.scan(row_str, page=ws.title, line_start=row_idx, source_type="sheet")
+                all_scan_results.extend(results)
+
+    wb.close()
+
+    result = "\n".join(lines)
+    if scan_privacy and all_scan_results:
+        report = scanner.generate_report(all_scan_results)
+        result = result + "\n\n" + report
+    return result
 
 
 def _transcribe_audio(filepath):
