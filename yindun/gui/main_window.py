@@ -39,6 +39,7 @@ from yindun.gui.session_selector import SessionSelectorPage
 from yindun.gui.new_session_dialog import NewSessionDialog
 from yindun.gui.data_dashboard import DataDashboard
 from yindun.gui.audit_panel import AuditPanel
+from yindun.gui.workflow_panel import WorkflowPanel
 from yindun.core.audit_log import AuditLog
 
 COLLAPSED_H = 44  # 极致折叠挂件高度
@@ -321,14 +322,15 @@ class MainWindow(QWidget):
         tb.addWidget(ttl)
         tb.addStretch()
         
-        for txt, nm, slot in [("➕", "titleBtnNew", self._new_session), ("💬", "titleBtn", self._open_session_selector), ("📊", "titleBtn", self._open_audit), ("⚙", "titleBtn", self._open_settings), ("—", "titleBtn", self._minimize),
-                              ("▸", "titleBtn", self._toggle_collapse), ("×", "closeBtn", self.close)]:
+        for txt, nm, slot in [("➕", "titleBtnNew", self._new_session), ("💬", "titleBtn", self._open_session_selector), ("📊", "titleBtn", self._open_audit), ("🔀", "titleBtn", self._open_workflow), ("⚙", "titleBtn", self._open_settings), ("—", "titleBtn", self._minimize),
+                              ("⛶", "titleBtn", self._toggle_fullscreen), ("▸", "titleBtn", self._toggle_collapse), ("×", "closeBtn", self.close)]:
             b = QPushButton(txt)
             b.setObjectName(nm)
             b.setCursor(QCursor(Qt.PointingHandCursor))
             b.clicked.connect(slot)
             b.setFixedSize(24, 24)
             if txt == "▸": self._collapse_btn = b
+            if txt == "⛶": self._fullscreen_btn = b
             tb.addWidget(b)
         cl.addWidget(self.title_bar)
 
@@ -435,6 +437,12 @@ class MainWindow(QWidget):
         self.audit_panel.back_requested.connect(self._on_audit_back)
         self._stack.addWidget(self.audit_panel)
         self._audit_index = 2
+
+        # 6. 协同工作流编排面板
+        self.workflow_panel = WorkflowPanel()
+        self.workflow_panel.back_requested.connect(self._on_workflow_back)
+        self._stack.addWidget(self.workflow_panel)
+        self._workflow_index = 3
         
         cl.addWidget(self._collapsible, 1)
 
@@ -571,6 +579,7 @@ class MainWindow(QWidget):
         self.session_page.set_dark_mode(dark)
         self.data_dashboard.set_dark_mode(dark)
         self.audit_panel.set_dark_mode(dark)
+        self.workflow_panel.set_dark_mode(dark)
         if not self._collapsed:
             container_bg = "#1e1e2e" if dark else "white"
             container_border = "rgba(255,255,255,12)" if dark else "rgba(0,0,0,18)"
@@ -1024,6 +1033,17 @@ class MainWindow(QWidget):
 
     def _minimize(self): self.showMinimized()
 
+    def _toggle_fullscreen(self):
+        # 使用最大化代替真全屏, 使窗口铺满可用区域但保留系统任务栏可见
+        if self.isMaximized():
+            self.showNormal()
+            self._fullscreen_btn.setText("⛶")
+            self._fullscreen_btn.setToolTip("全屏")
+        else:
+            self.showMaximized()
+            self._fullscreen_btn.setText("🗗")
+            self._fullscreen_btn.setToolTip("退出全屏")
+
     def _open_settings(self):
         # 从会话选择模式切到设置时, 先恢复正常双栏布局, 避免设置页显示不完整
         if self._session_only:
@@ -1037,6 +1057,14 @@ class MainWindow(QWidget):
         self._stack.setCurrentIndex(self._audit_index)
 
     def _on_audit_back(self):
+        self._stack.setCurrentIndex(self._workspace_index)
+
+    def _open_workflow(self):
+        if self._session_only:
+            self._exit_session_only()
+        self._stack.setCurrentIndex(self._workflow_index)
+
+    def _on_workflow_back(self):
         self._stack.setCurrentIndex(self._workspace_index)
 
     def _open_session_selector(self):

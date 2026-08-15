@@ -118,6 +118,23 @@ QComboBox#modeSelector QAbstractItemView::item, QComboBox#settingCombo QAbstract
 QComboBox QAbstractItemView::item:selected { background: #f0faf4; color: #07c160; }
 QComboBox QAbstractItemView::item:hover { background: #f5f6f8; }
 
+/* ---- 通用 QInputDialog / QDialog 文字可见性修复 ---- */
+QInputDialog, QDialog { background: #ffffff; color: #1e293b; }
+QInputDialog QLabel, QDialog QLabel { color: #1e293b; font-size: 13px; }
+QInputDialog QComboBox, QDialog QComboBox { color: #1e293b; background: #ffffff; }
+QInputDialog QComboBox QAbstractItemView, QDialog QComboBox QAbstractItemView {
+    background: #ffffff; color: #1e293b; selection-background-color: #8b5cf6; selection-color: #ffffff;
+}
+QInputDialog QComboBox QAbstractItemView::item, QDialog QComboBox QAbstractItemView::item {
+    color: #1e293b; padding: 4px;
+}
+QInputDialog QPushButton, QDialog QPushButton {
+    background: #8b5cf6; color: #ffffff; border: none; border-radius: 6px;
+    padding: 6px 18px; font-weight: 600; min-width: 80px;
+}
+QInputDialog QPushButton:hover, QDialog QPushButton:hover { background: #7c3aed; }
+QInputDialog QPushButton:disabled, QDialog QPushButton:disabled { background: #cbd5e1; color: #64748b; }
+
 /* ---- 高定制隔离网关复选框样式（未选为空框，选中带打勾对齐✔） ---- */
 QCheckBox#settingCheck { font-size: 12px; color: #444; spacing: 8px; background: transparent; }
 QCheckBox#settingCheck::indicator {
@@ -309,6 +326,23 @@ QComboBox#modeSelector QAbstractItemView::item, QComboBox#settingCombo QAbstract
 }
 QComboBox QAbstractItemView::item:selected { background: #1a3a5c; color: #60a5fa; }
 QComboBox QAbstractItemView::item:hover { background: #303050; }
+
+/* ---- 通用 QInputDialog / QDialog 文字可见性修复 (深色) ---- */
+QInputDialog, QDialog { background: #1a1a2e; color: #e2e8f0; }
+QInputDialog QLabel, QDialog QLabel { color: #e2e8f0; font-size: 13px; }
+QInputDialog QComboBox, QDialog QComboBox { color: #e2e8f0; background: #252538; }
+QInputDialog QComboBox QAbstractItemView, QDialog QComboBox QAbstractItemView {
+    background: #252538; color: #e2e8f0; selection-background-color: #8b5cf6; selection-color: #ffffff;
+}
+QInputDialog QComboBox QAbstractItemView::item, QDialog QComboBox QAbstractItemView::item {
+    color: #e2e8f0; padding: 4px;
+}
+QInputDialog QPushButton, QDialog QPushButton {
+    background: #8b5cf6; color: #ffffff; border: none; border-radius: 6px;
+    padding: 6px 18px; font-weight: 600; min-width: 80px;
+}
+QInputDialog QPushButton:hover, QDialog QPushButton:hover { background: #7c3aed; }
+QInputDialog QPushButton:disabled, QDialog QPushButton:disabled { background: #3a3a4e; color: #64748b; }
 
 /* 复选框 */
 QCheckBox#settingCheck { font-size: 12px; color: #ccc; spacing: 8px; background: transparent; }
