@@ -796,6 +796,9 @@ class MainWindow(QWidget):
         self.worker.user_input = user_input
         sid = self._current_session_id
         self.worker.messages_snapshot = list(self._sessions.get(sid, {}).get("messages", []))
+        # ★ 跨轮脱敏映射恢复：把会话中保存的历史映射注入 worker，
+        # 保证历史消息里的占位符在本轮能正确还原
+        self.worker._box_mapping_restore = dict(self._sessions.get(sid, {}).get("box_mapping", {}) or {})
         self.worker.think_mode = self.control_dock.get_current_mode()
         self.worker.privacy_shield = self._settings["privacy"]
         self.worker.think_depth = self._settings.get("thinking_depth", 3)
@@ -896,6 +899,9 @@ class MainWindow(QWidget):
         sid = self._current_session_id
         if sid not in self._sessions: return
         self._sessions[sid]["messages"] = self.worker.result_messages
+        # ★ 跨轮脱敏映射持久化：保存本轮累积的映射表，供后续轮次还原历史占位符
+        if hasattr(self.worker, "_box_mapping") and self.worker._box_mapping:
+            self._sessions[sid]["box_mapping"] = dict(self.worker._box_mapping)
         self._sessions[sid]["updated_at"] = datetime.now().isoformat(timespec="seconds")
         self._persist_sessions_store()
 
