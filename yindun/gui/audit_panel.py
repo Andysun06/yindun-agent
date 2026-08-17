@@ -49,7 +49,7 @@ class AuditPanel(QFrame):
         back_btn = QPushButton("← 返回")
         back_btn.setObjectName("auditBackBtn")
         back_btn.setCursor(QCursor(Qt.PointingHandCursor))
-        back_btn.clicked.connect(self.back_requested)
+        back_btn.clicked.connect(self.back_requested.emit)
         tb_layout.addWidget(back_btn)
 
         title_label = QLabel("🛡️ 审计日志")
@@ -314,59 +314,6 @@ class AuditPanel(QFrame):
             self._alert_count.setText(f"共 {total_alerts} 条")
         else:
             self._alert_bar.setVisible(False)
-
-    def _populate_flow_tree(self):
-        self._flow_tree.clear()
-        entries = self._audit_log.get_entries()
-        
-        flow_data = {
-            "user_input": {"count": 0, "status": "未活跃"},
-            "privacy_filter": {"count": 0, "status": "未检测"},
-            "llm_process": {"count": 0, "status": "未调用"},
-            "tool_exec": {"count": 0, "status": "未执行"},
-            "result_output": {"count": 0, "status": "无输出"}
-        }
-
-        for entry in entries:
-            if entry.event_type == "llm_input":
-                flow_data["user_input"]["count"] += 1
-                flow_data["user_input"]["status"] = "活跃"
-                if entry.details.get("has_privacy", False):
-                    flow_data["privacy_filter"]["count"] += 1
-                    flow_data["privacy_filter"]["status"] = "检测到敏感数据"
-                else:
-                    flow_data["privacy_filter"]["status"] = "安全"
-            elif entry.event_type == "llm_output":
-                flow_data["llm_process"]["count"] += 1
-                flow_data["llm_process"]["status"] = "已响应"
-                flow_data["result_output"]["count"] += 1
-                flow_data["result_output"]["status"] = "已生成"
-            elif entry.event_type == "tool_call":
-                flow_data["tool_exec"]["count"] += 1
-                flow_data["tool_exec"]["status"] = "执行中"
-            elif entry.event_type == "tool_result":
-                flow_data["tool_exec"]["status"] = "完成" if entry.details.get("success") else "失败"
-
-        flow_nodes = [
-            ("👤 用户输入", "user_input"),
-            ("🛡️ 隐私过滤", "privacy_filter"),
-            ("🧠 LLM处理", "llm_process"),
-            ("⚙️ 工具执行", "tool_exec"),
-            ("📤 结果输出", "result_output")
-        ]
-
-        for label, key in flow_nodes:
-            data = flow_data[key]
-            status_color = "#4ade80" if "安全" in data["status"] or "活跃" in data["status"] or "完成" in data["status"] or "已" in data["status"] else "#f59e0b"
-            if "失败" in data["status"]:
-                status_color = "#ef4444"
-            elif "检测到" in data["status"]:
-                status_color = "#f59e0b"
-
-            item = QTreeWidgetItem([label, f"{data['status']} ({data['count']})"])
-            item.setBackground(1, QBrush(QColor(status_color)))
-            item.setForeground(1, QBrush(QColor("#ffffff")))
-            self._flow_tree.addTopLevelItem(item)
 
     def _populate_chain_tree(self):
         self._chain_tree.clear()
@@ -722,7 +669,7 @@ class AuditPanel(QFrame):
         # 按 session_id 分组
         sessions = {}
         for e in entries:
-            sid = getattr(e, "session_id", "") if hasattr(e, "session_id") else ""
+            sid = getattr(e, "session_id", "")
             if not sid:
                 continue
             sessions.setdefault(sid, []).append(e)
