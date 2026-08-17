@@ -161,6 +161,11 @@ class Worker(QObject):
         # ★ 知识库检索返回的全局映射表：供输出层 deanonymize 合并使用
         # 每次 ReAct 循环开始时清空，结束时用后即焚
         self._kb_mapping: dict = {}
+        # ★ 跨轮脱敏映射表：累积所有历史轮次的脱敏映射，
+        # 保证历史消息里的占位符（如 [PHONE_0]）在后续轮次也能正确还原
+        self._box_mapping: dict = {}
+        # 由 main_window 注入的上轮映射快照（从会话数据恢复，供本轮合并还原）
+        self._box_mapping_restore: dict = {}
 
     def approve(self, ok):
         """人工审批回调：ok=True 表示批准，ok=False 表示驳回"""
@@ -198,6 +203,10 @@ class Worker(QObject):
         try:
             # ★ 每轮对话开始时清空知识库映射表（上轮的已用后即焚）
             self._kb_mapping = {}
+            # ★ 恢复跨轮脱敏映射表（从会话数据恢复，保证历史占位符可还原）
+            if self._box_mapping_restore:
+                self._box_mapping = dict(self._box_mapping_restore)
+                self._box_mapping_restore.clear()
             memory = SummarizableChatHistory.from_dict_list(
                 self.messages_snapshot, max_tokens=5000
             )
@@ -275,7 +284,10 @@ class Worker(QObject):
                 self.status.emit("[快速回答] 直接回答问题...")
                 reply = self._clean(self._direct_answer(ai_input, memory))
                 if self.privacy_shield and box:
-                    reply = engine.deanonymize(reply, box)
+                    # ★ 合并跨轮映射表：用「历史映射 + 本轮映射」还原，避免历史占位符无法还原
+                    merged_mapping = {**self._box_mapping, **box}
+                    reply = engine.deanonymize(reply, merged_mapping)
+                    self._box_mapping.update(box)  # 累积本轮映射，供后续轮次还原
                 memory.update_with_context_result(self.user_input, reply)
                 self.result_messages = memory.to_dict_list()
                 self.finished.emit(reply)
@@ -330,7 +342,10 @@ class Worker(QObject):
             )
 
             if self.privacy_shield and box:
-                final_reply = engine.deanonymize(final_reply, box)
+                # ★ 合并跨轮映射表：用「历史映射 + 本轮映射」还原，避免历史占位符无法还原
+                merged_mapping = {**self._box_mapping, **box}
+                final_reply = engine.deanonymize(final_reply, merged_mapping)
+                self._box_mapping.update(box)  # 累积本轮映射，供后续轮次还原
                 # ★ 审计：记录隐私还原（统计还原的实体类型数）
                 try:
                     # box 结构：{占位符: 真实值}，统计各类型数量

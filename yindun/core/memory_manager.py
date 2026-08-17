@@ -15,8 +15,23 @@ from langchain_core.language_models import BaseChatModel
 
 # ── Token 估算 ─────────────────────────────────────────────
 def _estimate_tokens(text: str) -> int:
-    """估算文本 token 数。中英文混合粗略估算，每字符约 0.5 token。"""
-    return max(1, len(text) // 2)
+    """估算文本 token 数。中英混合分权重：中文每字约 1 token，英文/数字/符号约 4 字符 1 token。
+
+    比旧的 len(text)//2 更接近主流 tokenizer 的实际表现，
+    避免中文对话过早、英文对话过晚触发摘要。
+    """
+    if not text:
+        return 0
+    cjk = 0
+    other = 0
+    for ch in text:
+        # CJK 统一表意文字 + 中文标点（全角）
+        if ('\u4e00' <= ch <= '\u9fff' or '\u3000' <= ch <= '\u303f'
+                or '\uff00' <= ch <= '\uffef'):
+            cjk += 1
+        else:
+            other += 1
+    return max(1, cjk + other // 4)
 
 
 def _count_message_tokens(msg: BaseMessage) -> int:
@@ -79,6 +94,47 @@ class SummarizableChatHistory(BaseChatMessageHistory):
     def is_over_threshold(self) -> bool:
         return self.total_tokens() > self.max_tokens
 
+    # ── 工具调用对配平 ─────────────────────────────────────
+    @staticmethod
+    def _ensure_tool_pair_ids(retained_ids: set, full_history: list) -> set:
+        """把保留窗口内不完整的工具调用对补全，返回更新后的消息 id 集合。
+
+        背景：ReAct 循环会产生 AIMessage(tool_calls) → ToolMessage 的配对序列，
+        若摘要裁剪切散了配对（只留请求没响应，或只有响应没请求），
+        部分模型会在下一轮调用时报错。这里把缺失的另一半补回保留窗口。
+        """
+        from langchain_core.messages import ToolMessage
+        req_ids = set()  # 保留窗口内 AIMessage.tool_calls[].id
+        res_ids = set()  # 保留窗口内 ToolMessage.tool_call_id
+        for m in full_history:
+            if id(m) not in retained_ids:
+                continue
+            if isinstance(m, AIMessage):
+                for tc in (getattr(m, "tool_calls", None) or []):
+                    tc_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
+                    if tc_id:
+                        req_ids.add(tc_id)
+            elif isinstance(m, ToolMessage):
+                tcid = getattr(m, "tool_call_id", "")
+                if tcid:
+                    res_ids.add(tcid)
+
+        # 补全缺失配对：有响应无请求 → 补请求；有请求无响应 → 补响应
+        for m in full_history:
+            if id(m) in retained_ids:
+                continue
+            if isinstance(m, AIMessage):
+                for tc in (getattr(m, "tool_calls", None) or []):
+                    tc_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
+                    if tc_id and tc_id in res_ids:
+                        retained_ids.add(id(m))
+                        break
+            elif isinstance(m, ToolMessage):
+                tcid = getattr(m, "tool_call_id", "")
+                if tcid and tcid in req_ids:
+                    retained_ids.add(id(m))
+        return retained_ids
+
     # ── 摘要压缩 ───────────────────────────────────────────
     def summarize(self, llm: BaseChatModel) -> str:
         """
@@ -102,6 +158,15 @@ class SummarizableChatHistory(BaseChatMessageHistory):
             # LLM 不可用时，取前 500 字作为退化摘要
             self._summary = conversation_text[:500] + "…"
 
+        # ★★★ 摘要二次脱敏：防止真实敏感值被复制进摘要并落盘
+        # 即使上游脱敏有遗漏，这里再过滤一次，确保持久化的摘要不含真实敏感数据
+        try:
+            from yindun.core.privacy_engine import PrivacyEngine
+            anon_summary, _ = PrivacyEngine().anonymize(self._summary)
+            self._summary = anon_summary
+        except Exception:
+            pass
+
         return self._summary
 
     # ── 获取 LLM 上下文消息（核心方法）─────────────────────
@@ -117,6 +182,10 @@ class SummarizableChatHistory(BaseChatMessageHistory):
         - 但若附件消息 > 5000 字符，只保留头部 2000 字符 + 截断提示
           （完整内容可通过 read_attachment_chunk 工具检索）
         - 避免 2-3 条大附件消息把 token 预算撑爆导致反复触发摘要
+
+        ★★★ 工具调用对配平：
+        - 保留最近消息时自动补全被裁散的 AIMessage(tool_calls) ↔ ToolMessage 配对，
+          避免模型在下一轮收到不完整的工具调用序列而报错
         """
         if not self._messages:
             return []
@@ -126,24 +195,27 @@ class SummarizableChatHistory(BaseChatMessageHistory):
         if need_summary and llm is not None:
             # 保留最近 20% 的消息（最少 4 条）
             keep_count = max(4, len(self._messages) // 5)
-            recent_msgs = list(self._messages[-keep_count:])
+            recent_ids = {id(m) for m in self._messages[-keep_count:]}
+            # ★★★ 工具调用对配平：保证 tool_call(AIMessage) 与 ToolMessage 成对保留
+            recent_ids = self._ensure_tool_pair_ids(recent_ids, self._messages)
             # ★★★ 附件上下文保护：包含 [离线附件环境上下文] 标记的消息必须保留
-            existing_ids = set(id(m) for m in recent_msgs)
-            attachment_msgs_to_add = []
             for m in self._messages:
                 content = m.content if isinstance(m.content, str) else str(m.content)
-                if "[离线附件环境上下文" in content and id(m) not in existing_ids:
-                    attachment_msgs_to_add.append(m)
-                    existing_ids.add(id(m))
+                if "[离线附件环境上下文" in content:
+                    recent_ids.add(id(m))
 
             # ★★★ 附件消息智能裁剪：超过 5000 字符的附件消息只保留头部 2000 字符
             # 避免几条大附件消息把 token 预算撑爆
             _ATT_KEEP_CHARS = 2000  # 保留前 2000 字符
             _ATT_THRESHOLD = 5000   # 超过 5000 字符才裁剪
-            trimmed_attachment_msgs = []
-            for m in attachment_msgs_to_add:
+
+            # 按原顺序重建保留列表（保证消息顺序与原始一致）
+            recent_msgs = []
+            for m in self._messages:
+                if id(m) not in recent_ids:
+                    continue
                 content = m.content if isinstance(m.content, str) else str(m.content)
-                if len(content) > _ATT_THRESHOLD:
+                if "[离线附件环境上下文" in content and len(content) > _ATT_THRESHOLD:
                     # 提取附件文件名用于截断提示
                     import re as _re
                     fname_match = _re.search(r'\[离线附件环境上下文：([^\]]+)\]', content)
@@ -160,16 +232,15 @@ class SummarizableChatHistory(BaseChatMessageHistory):
                     )
                     # 创建同类型的裁剪后消息
                     if isinstance(m, HumanMessage):
-                        trimmed_attachment_msgs.append(HumanMessage(content=trimmed_content))
+                        recent_msgs.append(HumanMessage(content=trimmed_content))
                     elif isinstance(m, AIMessage):
-                        trimmed_attachment_msgs.append(AIMessage(content=trimmed_content))
+                        recent_msgs.append(AIMessage(content=trimmed_content))
                     else:
-                        trimmed_attachment_msgs.append(SystemMessage(content=trimmed_content))
+                        recent_msgs.append(SystemMessage(content=trimmed_content))
                 else:
-                    trimmed_attachment_msgs.append(m)
+                    recent_msgs.append(m)
 
-            recent_msgs.extend(trimmed_attachment_msgs)
-            old_msgs = [m for m in self._messages if id(m) not in existing_ids]
+            old_msgs = [m for m in self._messages if id(m) not in recent_ids]
 
             # 生成摘要
             saved = self._messages[:]
@@ -195,9 +266,10 @@ class SummarizableChatHistory(BaseChatMessageHistory):
 
         if need_summary:
             keep_count = max(4, len(self._messages) // 5)
-            recent = self._messages[-keep_count:]
-            # 重建：摘要不存储为独立消息，保留在 _summary 中
-            self._messages = list(recent)
+            recent_ids = {id(m) for m in self._messages[-keep_count:]}
+            # 工具调用对配平：避免截断后残留孤立的 tool_call / ToolMessage
+            recent_ids = self._ensure_tool_pair_ids(recent_ids, self._messages)
+            self._messages = [m for m in self._messages if id(m) in recent_ids]
             self._messages.append(HumanMessage(content=user_input))
             self._messages.append(AIMessage(content=ai_response))
         else:
@@ -212,7 +284,10 @@ class SummarizableChatHistory(BaseChatMessageHistory):
         need_summary = self.is_over_threshold()
         if need_summary:
             keep_count = max(4, len(self._messages) // 5)
-            self._messages = list(self._messages[-keep_count:])
+            recent_ids = {id(m) for m in self._messages[-keep_count:]}
+            # 工具调用对配平：避免截断后残留孤立的 tool_call / ToolMessage
+            recent_ids = self._ensure_tool_pair_ids(recent_ids, self._messages)
+            self._messages = [m for m in self._messages if id(m) in recent_ids]
         self._messages.extend(messages)
 
     # ── 序列化（兼容 chat_sessions.json）────────────────────
