@@ -231,6 +231,8 @@ class MainWindow(QWidget):
         self._collapsed = False
         self._normal_w = EXPANDED_W
         self._normal_h = EXPANDED_H
+        self._fullscreen_btn = None
+        self._collapse_btn = None
         self._session_only = False
         self._saved_geo = None
         self._collapsed_w = EXPANDED_W  # 折叠态宽度记忆（本次会话内记忆，重启重置）

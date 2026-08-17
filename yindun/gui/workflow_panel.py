@@ -652,7 +652,6 @@ class WorkflowPanel(QFrame):
         card = QFrame()
         card.setObjectName(f"stepCard_{step_id}")
         card.setCursor(QCursor(Qt.PointingHandCursor))
-        card.setData = lambda k: None
 
         card_layout = QHBoxLayout(card)
         card_layout.setContentsMargins(12, 8, 12, 8)
