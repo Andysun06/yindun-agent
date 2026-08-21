@@ -998,6 +998,34 @@ class MainWindow(QWidget):
         self._persist_sessions_store()
         self._refresh_session_list()
 
+    def _format_restored_attachment_message(self, content: str) -> str:
+        """恢复会话时格式化含附件的 user 消息：只显示文件名+格式，不显示全文。"""
+        import re
+        files = re.findall(r'\[离线附件环境上下文：([^\]$]+)\]', content)
+        if not files:
+            return content  # 普通消息，原样返回（保持现有行为）
+
+        # 扩展名 → (emoji, 格式标签)
+        def _tag(fn):
+            ext = fn.rsplit('.', 1)[-1].lower() if '.' in fn else ''
+            m = {'.pdf': ('📄', 'PDF'), '.doc': ('📝', 'Word'), '.docx': ('📝', 'Word'),
+                 '.xlsx': ('📊', 'Excel'), '.xls': ('📊', 'Excel'), '.csv': ('📊', 'CSV'),
+                 '.txt': ('📃', '文本'), '.md': ('📃', 'Markdown'),
+                 '.mp3': ('🎵', '音频'), '.wav': ('🎵', '音频'), '.flac': ('🎵', '音频'),
+                 '.m4a': ('🎵', '音频'), '.aac': ('🎵', '音频'), '.ogg': ('🎵', '音频'),
+                 '.opus': ('🎵', '音频'), '.wma': ('🎵', '音频')}
+            return m.get('.' + ext, ('📎', '文件'))
+
+        parts = []
+        for fn in files:
+            ico, label = _tag(fn)
+            parts.append(f"{ico} {fn}（{label}）")
+        display = "📎 附件：" + "、".join(parts)
+        q = re.search(r'\[人类当前实时提问\]：(.*)', content, re.S)
+        if q:
+            display += "\n\n" + q.group(1).strip()
+        return display
+
     def _switch_to_session(self, sid):
         session = self._sessions.get(sid)
         if session is None: return
@@ -1018,6 +1046,8 @@ class MainWindow(QWidget):
                     summary_text = content[len("[SUMMARY]"):]
                     self.chat_display.add_status_banner(f"历史摘要: {summary_text[:80]}…")
                 continue
+            if role == "user":
+                content = self._format_restored_attachment_message(content)
             if role in ("user", "assistant"):
                 self.chat_display.add_message_bubble(role, content, self.width())
         self._persist_sessions_store()
