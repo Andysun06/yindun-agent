@@ -12,3 +12,5 @@ yindun/data/
 yindun/cache/
 test_kb_data/
 test_kb_docs/
+# 个人 SSH 隧道脚本（含服务器地址，勿提交）
+tunnel.bat

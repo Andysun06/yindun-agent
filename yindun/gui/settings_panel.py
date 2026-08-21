@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 # Yindun Security Agent V3.1.4 - Independent Settings Panel Component (Real-time Adaptive)
+import os
 import subprocess
 import json
 from PySide6.QtWidgets import (
@@ -356,7 +357,8 @@ class SettingsPanel(QWidget):
                 # 检查 Ollama
                 import requests
                 try:
-                    r = requests.get("http://localhost:11434/api/tags", timeout=2)
+                    ollama_host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+                    r = requests.get(f"{ollama_host}/api/tags", timeout=2)
                     if r.status_code != 200:
                         raise Exception("ollama not running")
                     models = [m["name"] for m in r.json().get("models", [])]

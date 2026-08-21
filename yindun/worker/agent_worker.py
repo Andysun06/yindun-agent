@@ -1221,7 +1221,8 @@ class Worker(QObject):
             # 检查 Ollama 服务
             try:
                 import requests
-                r = requests.get("http://localhost:11434/api/tags", timeout=2)
+                ollama_host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+                r = requests.get(f"{ollama_host}/api/tags", timeout=2)
                 if r.status_code == 200:
                     models = [m["name"] for m in r.json().get("models", [])]
                     result["ollama_running"] = True

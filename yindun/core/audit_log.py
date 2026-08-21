@@ -21,6 +21,7 @@ class AuditEventType(Enum):
     ACCESS_CONTROL = "access_control"
     SESSION_START = "session_start"
     SESSION_END = "session_end"
+    WORKFLOW_STEP_EXECUTED = "workflow_step_executed"
 
 
 class AuditSeverity(Enum):
@@ -248,6 +249,38 @@ class AuditLog:
                 "action": action,
                 "path": path,
                 "approved": approved
+            }
+        )
+
+    def log_workflow_step(self, workflow_name: str, step_name: str,
+                          tool_name: str, success: bool, error: str = ""):
+        """记录工作流步骤执行结果。"""
+        return self.add_entry(
+            AuditEventType.WORKFLOW_STEP_EXECUTED,
+            AuditSeverity.INFO if success else AuditSeverity.WARNING,
+            f"工作流步骤{'成功' if success else '失败'}: {step_name}",
+            {
+                "workflow_name": workflow_name,
+                "step_name": step_name,
+                "tool_name": tool_name,
+                "success": success,
+                "error": error
+            }
+        )
+
+    def log_workflow_approval(self, workflow_name: str, step_name: str,
+                              approved: bool, reviewer: str = "", comment: str = ""):
+        """记录工作流步骤审批结果。"""
+        return self.add_entry(
+            AuditEventType.ACCESS_CONTROL,
+            AuditSeverity.SECURITY if approved else AuditSeverity.CRITICAL,
+            f"工作流审批{'通过' if approved else '拒绝'}: {step_name}",
+            {
+                "workflow_name": workflow_name,
+                "step_name": step_name,
+                "approved": approved,
+                "reviewer": reviewer,
+                "comment": comment
             }
         )
 
