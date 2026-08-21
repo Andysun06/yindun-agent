@@ -15,7 +15,7 @@ from yindun.core.memory_manager import SummarizableChatHistory
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QStackedLayout,
     QFrame, QLabel, QPushButton, QSizeGrip, QFileDialog,
-    QMessageBox, QLineEdit, QMenu
+    QMessageBox, QLineEdit, QMenu, QSplitter
 )
 from PySide6.QtCore import Qt, QTimer, Signal, QObject, QThread, QPoint, QRect
 from PySide6.QtGui import QColor, QPalette, QFont, QCursor, QMouseEvent
@@ -390,14 +390,20 @@ class MainWindow(QWidget):
         self.workspace_layout = QHBoxLayout(self.workspace_page)
         self.workspace_layout.setContentsMargins(0, 0, 0, 0)
         self.workspace_layout.setSpacing(0)
-        
+
+        # QSplitter 分隔左栏(会话)与右栏(对话)，左栏固定最小宽、右栏为主拉伸
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.setObjectName("workspaceSplitter")
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(0)
+        self.workspace_layout.addWidget(self.splitter)
+
         self.session_page = SessionSelectorPage()
-        self.session_page.setMinimumWidth(160)
-        self.session_page.setMaximumWidth(260)
+        self.session_page.setMinimumWidth(240)
         self.session_page.new_session_requested.connect(self._new_session)
         self.session_page.open_session_requested.connect(self._switch_to_session)
         self.session_page.delete_session_requested.connect(self._delete_session_by_id)
-        self.workspace_layout.addWidget(self.session_page)
+        self.splitter.addWidget(self.session_page)
         
         self.chat_container = QWidget()
         self.chat_container.setMouseTracking(True)
@@ -421,7 +427,11 @@ class MainWindow(QWidget):
         cc_layout.addWidget(self.status_bar)
         cc_layout.addWidget(self.control_dock)
         cc_layout.addWidget(self.data_dashboard)
-        self.workspace_layout.addWidget(self.chat_container)
+        self.splitter.addWidget(self.chat_container)
+
+        # 左栏固定较小拉伸(0)，右栏作为主区吸收宽度(1)
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
         
         self._stack.addWidget(self.workspace_page)
         self._workspace_index = 0
@@ -1047,6 +1057,10 @@ class MainWindow(QWidget):
             self._fullscreen_btn.setToolTip("退出全屏")
 
     def _open_settings(self):
+        # ★ 已在设置页 → 再点一次返回对话
+        if self._stack.currentIndex() == self._settings_index:
+            self._go_back_to_conversation()
+            return
         # 从会话选择模式切到设置时, 先恢复正常双栏布局, 避免设置页显示不完整
         if self._session_only:
             self._exit_session_only()
@@ -1054,6 +1068,10 @@ class MainWindow(QWidget):
         self._stack.setCurrentIndex(self._settings_index)
 
     def _open_audit(self):
+        # ★ 已在审计页 → 再点一次返回对话
+        if self._stack.currentIndex() == self._audit_index:
+            self._go_back_to_conversation()
+            return
         if self._session_only:
             self._exit_session_only()
         self._stack.setCurrentIndex(self._audit_index)
@@ -1062,6 +1080,10 @@ class MainWindow(QWidget):
         self._stack.setCurrentIndex(self._workspace_index)
 
     def _open_workflow(self):
+        # ★ 已在工作流页 → 再点一次返回对话
+        if self._stack.currentIndex() == self._workflow_index:
+            self._go_back_to_conversation()
+            return
         if self._session_only:
             self._exit_session_only()
         self._stack.setCurrentIndex(self._workflow_index)
@@ -1097,8 +1119,8 @@ class MainWindow(QWidget):
             # 当前在对话中, 进入全屏选择器
             self._show_session_only()
 
-    def _on_settings_cancel(self):
-        """⚡ 从设置返回对话时, 自动定位到最近一次使用的对话, 无需再次手动选择"""
+    def _go_back_to_conversation(self):
+        """统一返回到对话界面：切回工作台并定位到最近一次使用的会话"""
         self._stack.setCurrentIndex(self._workspace_index)
         # 优先保持当前会话; 若没有则取最近更新过的会话
         if not self._current_session_id or self._current_session_id not in self._sessions:
@@ -1108,6 +1130,10 @@ class MainWindow(QWidget):
             else:
                 # 没有任何历史对话, 退回到会话选择器让用户新建
                 self._show_session_only()
+
+    def _on_settings_cancel(self):
+        """⚡ 从设置返回对话时, 自动定位到最近一次使用的对话, 无需再次手动选择"""
+        self._go_back_to_conversation()
 
     def _get_most_recent_session_id(self) -> str | None:
         if not self._sessions:
