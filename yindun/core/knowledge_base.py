@@ -52,7 +52,7 @@ class KnowledgeBase:
         self,
         persist_dir: Optional[str] = None,
         embed_model: Optional[str] = None,
-        ollama_base_url: str = "http://localhost:11434",
+        ollama_base_url: str = None,
     ):
         """
         初始化知识库。
@@ -70,7 +70,7 @@ class KnowledgeBase:
         os.makedirs(self.persist_dir, exist_ok=True)
 
         self.embed_model = embed_model or self.DEFAULT_EMBED_MODEL
-        self.ollama_base_url = ollama_base_url
+        self.ollama_base_url = ollama_base_url or os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 
         # 脱敏引擎实例（入库和检索时复用）
         self.engine = PrivacyEngine()
@@ -114,7 +114,6 @@ class KnowledgeBase:
             from langchain_ollama import OllamaEmbeddings
             self._embeddings = OllamaEmbeddings(
                 model=self.embed_model,
-                base_url=self.ollama_base_url,
             )
         if self._vectorstore is None:
             from langchain_chroma import Chroma

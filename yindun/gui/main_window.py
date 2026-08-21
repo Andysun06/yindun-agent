@@ -197,9 +197,13 @@ class MainWindow(QWidget):
         self._settings = {
             "model": "qwen2.5:7b", "privacy": True, "dark_mode": False, "topmost": True,
             "custom_models": {}, "thinking_depth": 3,
-            "ollama_models_cache": []   # 缓存的 Ollama 模型列表，用于零阻塞启动
+            "ollama_models_cache": [],  # 缓存的 Ollama 模型列表，用于零阻塞启动
+            "ollama_host": "http://127.0.0.1:11434"  # Ollama 服务地址，可改为远程服务器地址
         }
         self._load_global_config()
+
+        # 将配置的 Ollama 地址写入环境变量，使 ollama CLI 和 langchain_ollama 自动识别
+        os.environ["OLLAMA_HOST"] = self._settings.get("ollama_host", "http://127.0.0.1:11434")
 
         # 检查保存的模型是否仍然可用（仅当缓存非空时才校验，缓存空时信任已保存的配置）
         saved_model = self._settings.get("model", "")
@@ -1436,7 +1440,6 @@ class MainWindow(QWidget):
                 else:
                     base_model = ChatOllama(
                         model=mn,
-                        base_url="http://127.0.0.1:11434",
                         timeout=60,
                         options={
                             "num_ctx": 16384,

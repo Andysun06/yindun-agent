@@ -240,10 +240,44 @@ def test_workflow_export():
     return True
 
 
+def _install_mock_handlers(engine):
+    """为流程测试注入 mock 工具，避免依赖真实文件和远程 Ollama LLM。"""
+    def _mock_read(args, context=None):
+        return {"ok": True, "tool": "read_local_file", "path": args.get("path", ""),
+                "file_content": "（测试合同文本）甲方/乙方/付款条款/违约条款/保密条款/交付条款/争议解决",
+                "summary": "文件读取成功（mock）"}
+
+    def _mock_analyze(args, context=None):
+        focus = args.get("focus", "")
+        if focus == "risks":
+            return {"ok": True, "tool": "analyze_contract", "focus": focus,
+                    "risks": [{"level": "低风险", "item": "测试风险", "detail": "mock"}],
+                    "summary": "识别出 1 项风险点（mock）"}
+        return {"ok": True, "tool": "analyze_contract", "focus": focus,
+                "key_clauses": [{"type": "付款条款", "value": "mock 条款"}],
+                "summary": "成功提取 1 项关键条款（mock）"}
+
+    def _mock_analyze_project(args, context=None):
+        return {"ok": True, "tool": "analyze_project", "target": args.get("target", ""),
+                "result": "（测试代码结构）", "summary": "分析完成（mock）"}
+
+    def _mock_security_scan(args, context=None):
+        return {"ok": True, "tool": "security_scan", "findings": [], "summary": "扫描完成（mock）"}
+
+    engine.register_execution_handler("read_local_file", _mock_read)
+    engine.register_execution_handler("analyze_contract", _mock_analyze)
+    engine.register_execution_handler("analyze_project", _mock_analyze_project)
+    engine.register_execution_handler("security_scan", _mock_security_scan)
+
+
 def main():
     print("\n" + "🧪" * 30)
     print("  隐盾 V3.2 - 协同工作流编排引擎 功能测试")
     print("🧪" * 30 + "\n")
+
+    # 注入 mock 工具，让流程测试只验证编排/审批/导出的机制，
+    # 不依赖真实文件路径和远程 Ollama LLM。
+    _install_mock_handlers(get_workflow_engine())
 
     tests = [
         ("模板列表查询", test_template_listing),

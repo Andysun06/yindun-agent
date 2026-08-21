@@ -181,6 +181,7 @@ class WorkflowEngine:
         self._execution_handlers: Dict[str, Callable] = {}
         self._after_step_hook: Optional[Callable] = None
         self._after_approval_hook: Optional[Callable] = None
+        self._instance_context: Dict[str, Dict[str, Any]] = {}
         self._register_builtin_templates()
 
     def register_execution_handler(self, tool_name: str, handler: Callable):
@@ -216,6 +217,13 @@ class WorkflowEngine:
 
     def get_instance(self, instance_id: str) -> Optional[WorkflowTemplate]:
         return self._instances.get(instance_id)
+
+    def set_instance_context(self, instance_id: str, context: Dict[str, Any]):
+        """设置工作流实例的上下文变量（如合同路径、项目路径）。"""
+        self._instance_context[instance_id] = dict(context or {})
+
+    def get_instance_context(self, instance_id: str) -> Dict[str, Any]:
+        return self._instance_context.get(instance_id, {})
 
     def list_templates(self) -> List[Dict]:
         """列出所有可用模板"""
@@ -263,6 +271,20 @@ class WorkflowEngine:
                 return True
         return False
 
+    def _mark_step_failed(self, instance: WorkflowTemplate, step: WorkflowStep,
+                          error: str):
+        """标记步骤失败，触发审计回调，并对必须步骤做后续跳过处理。"""
+        step.fail(error)
+        try:
+            if self._after_step_hook:
+                self._after_step_hook(instance, step, False)
+        except Exception:
+            pass
+        if step.required:
+            for s in instance.steps:
+                if s.status in (StepStatus.PENDING, StepStatus.WAITING_APPROVAL):
+                    s.status = StepStatus.SKIPPED
+
     def execute_step(self, instance_id: str, step_id: str,
                      context: Dict[str, Any] = None) -> Dict[str, Any]:
         """
@@ -308,6 +330,12 @@ class WorkflowEngine:
         # 执行步骤
         step.start_execution()
         context = context or {}
+        # 合并实例级上下文变量（GUI 新建实例时收集的 contract_path / project_path 等）
+        inst_ctx = self._instance_context.get(instance_id)
+        if inst_ctx:
+            merged = dict(inst_ctx)
+            merged.update(context)
+            context = merged
 
         # 自动注入前面所有已完成步骤的 result 列表供 handler 组合使用
         prev_results = [s.result for s in instance.steps
@@ -339,6 +367,17 @@ class WorkflowEngine:
                 # 默认识别器（用于演示和简单测试）
                 result = self._default_executor(step, context)
 
+            # 业务失败检测：handler 可用 ok=False 表示执行失败（而非抛异常）
+            if isinstance(result, dict) and result.get("ok") is False:
+                error_msg = str(result.get("error") or "步骤执行失败")
+                self._mark_step_failed(instance, step, error_msg)
+                return {"success": False, "result": result, "error": error_msg}
+
+            # 成功：统一结果结构，保证调用方读到一致的 status / summary 字段
+            if isinstance(result, dict):
+                result.setdefault("status", "success")
+                result.setdefault("summary", f"{step.name} 执行成功")
+
             step.complete(result)
             # 执行成功回调
             try:
@@ -349,17 +388,7 @@ class WorkflowEngine:
             return {"success": True, "result": result, "error": None}
 
         except Exception as e:
-            step.fail(str(e))
-            try:
-                if self._after_step_hook:
-                    self._after_step_hook(instance, step, False)
-            except Exception:
-                pass
-            if step.required:
-                # 必须步骤失败，整个工作流标记为失败
-                for s in instance.steps:
-                    if s.status in (StepStatus.PENDING, StepStatus.WAITING_APPROVAL):
-                        s.status = StepStatus.SKIPPED
+            self._mark_step_failed(instance, step, str(e))
             return {"success": False, "result": None, "error": str(e)}
 
     def _resolve_args(self, template_args: Dict, context: Dict) -> Dict:
@@ -588,6 +617,80 @@ def get_workflow_engine() -> WorkflowEngine:
     return _workflow_engine
 
 
+_wf_llm = None
+_wf_llm_signature = None
+
+
+def _load_workflow_llm_config():
+    """从 global_config.json 读取工作流专用 LLM 的模型与 Ollama 地址。"""
+    import os as _os
+    from pathlib import Path as _Path
+    cfg = {}
+    try:
+        cfg_path = _Path(__file__).resolve().parents[2] / "global_config.json"
+        with cfg_path.open("r", encoding="utf-8") as _f:
+            cfg = json.load(_f)
+    except Exception:
+        pass
+    model = cfg.get("model") or "qwen2.5:7b"
+    host = cfg.get("ollama_host") or _os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434"
+    return model, host
+
+
+def _get_workflow_llm():
+    """懒加载并缓存工作流专用 LLM 客户端（ChatOllama）。"""
+    global _wf_llm, _wf_llm_signature
+    model, host = _load_workflow_llm_config()
+    sig = (model, host)
+    if _wf_llm is not None and _wf_llm_signature == sig:
+        return _wf_llm
+    from langchain_ollama import ChatOllama
+    _wf_llm = ChatOllama(
+        model=model,
+        base_url=host,
+        timeout=120,
+        options={"num_ctx": 16384, "num_predict": 2048, "temperature": 0.2},
+        keep_alive=300,
+    )
+    _wf_llm_signature = sig
+    return _wf_llm
+
+
+def _parse_json_from_llm(text):
+    """从 LLM 返回文本中稳健地解析出 JSON 对象/数组。"""
+    if not text:
+        return None
+    s = str(text).strip()
+    # 去掉可能的 markdown 代码块
+    if s.startswith("```"):
+        s = s.strip("`")
+        if s.lower().startswith("json"):
+            s = s[4:].strip()
+        s = s.rstrip("`").strip()
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+    start = -1
+    for i, ch in enumerate(s):
+        if ch in "{[":
+            start = i
+            break
+    if start < 0:
+        return None
+    end = -1
+    for i in range(len(s) - 1, start, -1):
+        if s[i] in "}]":
+            end = i
+            break
+    if end < 0:
+        return None
+    try:
+        return json.loads(s[start:end + 1])
+    except Exception:
+        return None
+
+
 def init_workflow_integration(engine: WorkflowEngine):
     """
     初始化工作流引擎和真实文件工具、审计日志、报告生成器的集成。
@@ -609,7 +712,7 @@ def init_workflow_integration(engine: WorkflowEngine):
 
     # ---------------- 2. 审计日志 ----------------
     try:
-        from yindun.core.audit_log import AuditLog, AuditEventType, AuditSeverity
+        from yindun.core.audit_log import AuditLog
         HAS_AUDIT = True
     except Exception:
         HAS_AUDIT = False
@@ -712,6 +815,10 @@ def init_workflow_integration(engine: WorkflowEngine):
                 from yindun.core.file_tools import _read_file_text
                 result = _read_file_text(path)
             text = _safe_to_str(result, 6000)
+            # 工具内部用字符串返回错误（如文件不存在），需识别为失败，避免后续基于空内容误判
+            if isinstance(result, str) and result.strip().startswith("❌"):
+                return {"ok": False, "tool": "read_local_file", "path": path,
+                        "error": result.strip()}
             # 存入上下文（供下一步提取条款/生成报告使用）
             return {
                 "ok": True, "tool": "read_local_file", "path": path,
@@ -772,6 +879,9 @@ def init_workflow_integration(engine: WorkflowEngine):
             else:
                 result = f"[演示模式] 项目分析: {target}"
             text = _safe_to_str(result, 8000)
+            if isinstance(result, str) and result.strip().startswith("❌"):
+                return {"ok": False, "tool": "analyze_project", "target": target,
+                        "error": result.strip()}
             return {
                 "ok": True, "tool": "analyze_project", "target": target,
                 "result": text,
@@ -782,9 +892,8 @@ def init_workflow_integration(engine: WorkflowEngine):
 
     engine.register_execution_handler("analyze_project", _h_analyze_project)
 
-    # 3.4 analyze_contract（合同模板 步骤2/3）
+    # 3.4 analyze_contract（合同模板 步骤2/3）—— 调用 LLM 真实提取/分析
     def _h_analyze_contract(args: dict, prev_results: list) -> dict:
-        """基于上一步读取的文件内容，进行模拟条款提取和风险分析"""
         focus = str(args.get("focus") or "key_clauses")
         # 找前置结果里的 file_content
         content = ""
@@ -798,66 +907,90 @@ def init_workflow_integration(engine: WorkflowEngine):
                     content = r["file_content"]
                     break
 
-        if not content:
-            content = "(空合同, 基于通用模板生成分析示例)\n" \
-                      "甲方: XX有限公司, 乙方: YY有限公司\n" \
-                      "合同金额: 1,000,000 元\n违约责任: 每日0.5‰\n" \
-                      "合同期限: 2026-01-01 至 2026-12-31\n" \
-                      "保密条款: 两年保密期"
+        if not content or "读取失败" in content:
+            return {"ok": False, "tool": "analyze_contract", "focus": focus,
+                    "error": "没有可分析的合同内容，请先在执行前指定有效的合同文件路径"}
 
-        if focus == "key_clauses":
-            clauses = [
-                {"type": "付款条款", "value": "合同签订后30日内甲方向乙方支付首付款30%，验收后10日内付70%尾款。"},
-                {"type": "违约条款", "value": "逾期付款每日按未付金额的0.5‰支付违约金，逾期超30日乙方有权解除合同。"},
-                {"type": "保密条款", "value": "双方对本合同项下所知悉对方的商业秘密承担两年保密义务。"},
-                {"type": "交付条款", "value": "合同签订后90日内完成交付，交付标准以附件一为准。"},
-                {"type": "争议解决", "value": "因本合同产生的争议由合同签订地人民法院管辖。"},
-            ]
-            return {"ok": True, "tool": "analyze_contract",
-                    "focus": focus, "key_clauses": clauses,
-                    "summary": f"成功提取 {len(clauses)} 项关键条款"}
-        elif focus == "risks":
-            risks = [
-                {"level": "中风险", "item": "违约金比例偏低", "detail": "当前0.5‰/日低于行业常见的1‰/日，建议提高。"},
-                {"level": "低风险", "item": "交付标准模糊", "detail": "附件一没有定义可量化验收标准，建议补充SLA。"},
-                {"level": "高风险", "item": "管辖地选择不利", "detail": "若签订地为甲方所在地，异地诉讼成本较高，可改双方所在地均可。"},
-            ]
-            return {"ok": True, "tool": "analyze_contract",
-                    "focus": focus, "risks": risks,
-                    "summary": f"识别出 {len(risks)} 项风险点"}
-        else:
-            return {"ok": True, "tool": "analyze_contract",
-                    "focus": focus, "raw_content_length": len(content),
-                    "summary": f"完成合同内容分析, 原文 {len(content)} 字符"}
+        try:
+            llm = _get_workflow_llm()
+            if focus == "key_clauses":
+                prompt = (
+                    "你是专业的合同审查助手。请从下面的合同文本中提取关键条款，"
+                    "只输出 JSON 数组，每个元素形如 "
+                    '{"type": "条款类型", "value": "条款内容"}，不要输出任何其他解释。\n\n'
+                    "合同文本：\n" + content
+                )
+                raw = llm.invoke(prompt)
+                data = _parse_json_from_llm(raw.content if hasattr(raw, "content") else raw)
+                clauses = data if isinstance(data, list) else []
+                if not clauses:
+                    return {"ok": False, "tool": "analyze_contract", "focus": focus,
+                            "error": "LLM 未能从中提取到有效条款（返回格式异常）"}
+                return {"ok": True, "tool": "analyze_contract", "focus": focus,
+                        "key_clauses": clauses,
+                        "summary": f"成功提取 {len(clauses)} 项关键条款"}
+            elif focus == "risks":
+                prompt = (
+                    "你是专业的合同审查助手。请分析下面合同文本中的潜在风险，"
+                    "只输出 JSON 数组，每个元素形如 "
+                    '{"level": "高/中/低风险", "item": "风险项", "detail": "详细说明"}，'
+                    "不要输出任何其他解释。\n\n合同文本：\n" + content
+                )
+                raw = llm.invoke(prompt)
+                data = _parse_json_from_llm(raw.content if hasattr(raw, "content") else raw)
+                risks = data if isinstance(data, list) else []
+                if not risks:
+                    return {"ok": False, "tool": "analyze_contract", "focus": focus,
+                            "error": "LLM 未能识别到风险（返回格式异常）"}
+                return {"ok": True, "tool": "analyze_contract", "focus": focus,
+                        "risks": risks,
+                        "summary": f"识别出 {len(risks)} 项风险点"}
+            else:
+                return {"ok": True, "tool": "analyze_contract", "focus": focus,
+                        "raw_content_length": len(content),
+                        "summary": f"完成合同内容分析, 原文 {len(content)} 字符"}
+        except Exception as e:
+            return {"ok": False, "tool": "analyze_contract", "focus": focus,
+                    "error": f"LLM 分析失败: {str(e)}"}
 
-    engine.register_execution_handler("analyze_contract",
-                                      lambda a, _engine=engine, _ir_prev=None: 
-                                      _actual_run_analyze(a, _engine))
-
-    # 因为上面 lambda 没法直接带上下文 prev_results，改用一个内部注册表
-    # 所以我们重新设计：通过 Step 级别调用时，把前面 step.result 列表拼起来传
-    # 已在 execute_step 的 context 里注入 __prev_results，这里在 handler 里读 context
-
-    # ---------- 重新注册 analyze_contract ----------
+    # 通过 Step 级别调用时，把前面 step.result 列表拼起来传：
+    # execute_step 的 context 里注入了 __prev_results，这里在 handler 里读取。
     def _h_analyze(args: dict, context: dict) -> dict:
         prev = context.get("__prev_results", []) if isinstance(context, dict) else []
         return _h_analyze_contract(args, prev)
 
     engine.register_execution_handler("analyze_contract", _h_analyze)
 
-    # 3.5 security_scan（代码安全检查 步骤2）
+    # 3.5 security_scan（代码安全检查 步骤2）—— 调用 LLM 真实扫描
     def _h_security_scan(args: dict, context: dict) -> dict:
         prev = context.get("__prev_results", []) if isinstance(context, dict) else []
-        find = [
-            {"id": "VUL-001", "cwe": "CWE-79", "name": "跨站脚本 XSS",
-             "level": "高风险", "detail": "login_page.py 第42行用户输入直接拼接进 HTML。"},
-            {"id": "VUL-002", "cwe": "CWE-89", "name": "SQL 注入",
-             "level": "高风险", "detail": "db.py 第 132 行使用 f-string 构造 SQL 语句。"},
-            {"id": "VUL-003", "cwe": "CWE-798", "name": "硬编码密钥",
-             "level": "中风险", "detail": "config.py 第 9 行存在写死的 API_KEY。"},
-        ]
-        return {"ok": True, "tool": "security_scan", "findings": find,
-                "summary": f"扫描完成，共发现 {len(find)} 项安全问题"}
+        content = ""
+        for pr in prev:
+            if isinstance(pr, dict) and pr.get("tool") == "analyze_project":
+                content = pr.get("result") or pr.get("summary", "")
+                break
+
+        if not content or "失败" in content:
+            return {"ok": False, "tool": "security_scan",
+                    "error": "没有可分析的代码内容，请先在执行前指定有效的项目路径"}
+
+        try:
+            llm = _get_workflow_llm()
+            prompt = (
+                "你是资深的安全审计专家。请根据下面的代码结构分析结果，"
+                "识别其中可能存在的安全漏洞。只输出 JSON 数组，每个元素形如 "
+                '{"id": "VUL-001", "cwe": "CWE-编号", "name": "漏洞名称", '
+                '"level": "高/中/低风险", "detail": "位置与说明"}，'
+                "若未发现漏洞则输出 []。不要输出任何其他解释。\n\n"
+                "代码分析结果：\n" + content
+            )
+            raw = llm.invoke(prompt)
+            data = _parse_json_from_llm(raw.content if hasattr(raw, "content") else raw)
+            findings = data if isinstance(data, list) else []
+            return {"ok": True, "tool": "security_scan", "findings": findings,
+                    "summary": f"扫描完成，共发现 {len(findings)} 项安全问题"}
+        except Exception as e:
+            return {"ok": False, "tool": "security_scan", "error": f"LLM 安全扫描失败: {str(e)}"}
 
     engine.register_execution_handler("security_scan", _h_security_scan)
 
@@ -1085,49 +1218,27 @@ def init_workflow_integration(engine: WorkflowEngine):
 
         def _after_step(instance, step, succeeded: bool):
             try:
-                msg = (f"[工作流 {instance.name}] 步骤 #{instance.steps.index(step) + 1} "
-                       f"{step.name}: {'成功' if succeeded else '失败: ' + str(step.error)}")
-                sev = AuditSeverity.INFO if succeeded else AuditSeverity.WARNING
-                event = AuditEventType.WORKFLOW_STEP_EXECUTED \
-                    if hasattr(AuditEventType, "WORKFLOW_STEP_EXECUTED") \
-                    else AuditEventType.TOOL_CALL
-                meta = {
-                    "workflow_instance": instance.template_id,
-                    "step_id": step.step_id,
-                    "step_name": step.name,
-                    "tool": step.tool_name,
-                    "success": succeeded,
-                    "error": step.error,
-                }
-                audit.add_entry(event=event, severity=sev, description=msg,
-                                actor="workflow_engine", metadata=meta)
+                audit.log_workflow_step(
+                    workflow_name=instance.name,
+                    step_name=step.name,
+                    tool_name=step.tool_name,
+                    success=succeeded,
+                    error=step.error if not succeeded else "",
+                )
             except Exception:
                 pass
 
         def _after_approval(instance, step, approved: bool, reviewer: str, comment: str):
             try:
-                msg = (f"[工作流 {instance.name}] 步骤 #{instance.steps.index(step) + 1} "
-                       f"{step.name}: {'审批通过' if approved else '审批拒绝'} "
-                       f"by {reviewer}")
-                sev = AuditSeverity.INFO if approved else AuditSeverity.WARNING
-                event = AuditEventType.ACCESS_CONTROL
-                meta = {
-                    "workflow_instance": instance.template_id,
-                    "step_id": step.step_id,
-                    "step_name": step.name,
-                    "approved": approved,
-                    "reviewer": reviewer,
-                    "comment": comment,
-                }
-                audit.add_entry(event=event, severity=sev, description=msg,
-                                actor=reviewer or "workflow_engine", metadata=meta)
+                audit.log_workflow_approval(
+                    workflow_name=instance.name,
+                    step_name=step.name,
+                    approved=approved,
+                    reviewer=reviewer or "workflow_engine",
+                    comment=comment,
+                )
             except Exception:
                 pass
 
         engine._after_step_hook = _after_step
         engine._after_approval_hook = _after_approval
-
-
-def _actual_run_analyze(args, engine):
-    """兼容旧 lambda 实现，不会实际用到"""
-    return {"ok": True, "tool": "analyze_contract", "summary": "兼容占位"}

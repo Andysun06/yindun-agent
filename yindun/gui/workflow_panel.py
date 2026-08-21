@@ -248,6 +248,63 @@ class StyledCommentDialog(QDialog):
         return self._input.text().strip()
 
 
+class StyledInputDialog(QDialog):
+    """自定义单行文本输入对话框 - 显式深色字体，避免继承全局样式导致文字透明"""
+    def __init__(self, parent=None, title="填写", prompt="请输入："):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setFixedSize(420, 180)
+        self.setObjectName("wfStyledDialog")
+        self._text = ""
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        prompt_lbl = QLabel(prompt)
+        prompt_lbl.setWordWrap(True)
+        prompt_lbl.setStyleSheet("color: #1e293b; font-size: 12px;")
+        layout.addWidget(prompt_lbl)
+
+        self._input = QLineEdit()
+        self._input.setStyleSheet(
+            "QLineEdit{background:#ffffff;color:#1e293b;border:1px solid #cbd5e1;"
+            "border-radius:6px;padding:8px 10px;font-size:13px;}"
+            "QLineEdit:focus{border:1px solid #8b5cf6;}"
+        )
+        layout.addWidget(self._input)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+
+        cancel_btn = QPushButton("取消")
+        cancel_btn.setStyleSheet(
+            "QPushButton{background:#f1f5f9;color:#475569;border:none;border-radius:6px;"
+            "padding:6px 16px;font-weight:600;}"
+            "QPushButton:hover{background:#e2e8f0;}"
+        )
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+
+        ok_btn = QPushButton("确定")
+        ok_btn.setStyleSheet(
+            "QPushButton{background:#8b5cf6;color:white;border:none;border-radius:6px;"
+            "padding:6px 16px;font-weight:600;}"
+            "QPushButton:hover{background:#7c3aed;}"
+        )
+        ok_btn.clicked.connect(self._accept)
+        btn_row.addWidget(ok_btn)
+
+        layout.addLayout(btn_row)
+
+    def _accept(self):
+        self._text = self._input.text().strip()
+        self.accept()
+
+    def get_text(self):
+        return self._text
+
+
 class StyledConfirmDialog(QMessageBox):
     """自定义确认对话框"""
     def __init__(self, parent=None):
@@ -390,7 +447,7 @@ class WorkflowPanel(QFrame):
         tg_layout = QVBoxLayout(templates_group)
         self._template_list = QListWidget()
         self._template_list.setObjectName("wfTemplateList")
-        self._template_list.itemClicked.connect(self._on_template_selected)
+        self._template_list.itemClicked.connect(self._on_template_preview)
         tg_layout.addWidget(self._template_list)
         left_layout.addWidget(templates_group)
 
@@ -533,17 +590,13 @@ class WorkflowPanel(QFrame):
             item.setToolTip(t['description'])
             self._template_list.addItem(item)
 
-    def _on_template_selected(self, item):
-        template_id = item.data(Qt.UserRole)
+    def _on_template_preview(self, item):
+        """点击左侧「可用模板」只做预览提示，不创建实例。实例仅通过「➕ 新建工作流」按钮创建。"""
         template_name = item.text().strip().replace("📋 ", "").strip()
-        instance = self._engine.create_instance(template_id)
-        if instance:
-            self._current_instance_id = instance.template_id
-            self._refresh_current()
-            self._status_label.setText(
-                f"✅ 已创建工作流: {instance.name}"
-            )
-            self._status_label.setStyleSheet("color: #22c55e; font-weight: bold;")
+        self._status_label.setText(
+            f"👁 已选中模板: {template_name}（点击「➕ 新建工作流」开始）"
+        )
+        self._status_label.setStyleSheet("color: #06b6d4; font-weight: bold;")
 
     def _refresh_current(self):
         if not self._current_instance_id:
@@ -1184,9 +1237,33 @@ class WorkflowPanel(QFrame):
             except:
                 pass
 
+    def _collect_step_vars(self, instance) -> dict:
+        """从模板步骤参数中提取 {{变量}}，弹窗让用户填写真实参数。"""
+        import re
+        vars_found = []
+        for step in instance.steps:
+            for val in (step.tool_args or {}).values():
+                if isinstance(val, str):
+                    for m in re.findall(r"\{\{(\w+)\}\}", val):
+                        if m not in vars_found:
+                            vars_found.append(m)
+        ctx = {}
+        for var in vars_found:
+            dlg = StyledInputDialog(
+                self, title="填写工作流参数",
+                prompt=f"请输入「{var}」的值（例如文件/目录的全路径）："
+            )
+            if dlg.exec() == QDialog.Accepted and dlg.get_text():
+                ctx[var] = dlg.get_text()
+        return ctx
+
     def _on_template_id_selected(self, template_id: str, custom_name: str = ""):
         instance = self._engine.create_instance(template_id, custom_name=custom_name)
         if instance:
+            # 收集模板所需的真实输入参数（如合同路径、项目路径）
+            ctx = self._collect_step_vars(instance)
+            if ctx:
+                self._engine.set_instance_context(instance.template_id, ctx)
             self._current_instance_id = instance.template_id
             self._refresh_current()
             # 更明显的成功反馈

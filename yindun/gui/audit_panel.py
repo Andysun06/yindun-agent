@@ -372,7 +372,8 @@ class AuditPanel(QFrame):
             "privacy_sensitive": "#ef4444",
             "access_control": "#6366f1",
             "session_start": "#14b8a6",
-            "session_end": "#94a3b8"
+            "session_end": "#94a3b8",
+            "workflow_step_executed": "#06b6d4"
         }
         return colors.get(event_type, "#64748b")
 
