@@ -5,3 +5,10 @@ __pycache__/
 .vscode/
 *.json
 audit_logs/
+ollama_models/
+*.bak
+# 运行时生成数据（不入库）
+yindun/data/
+yindun/cache/
+test_kb_data/
+test_kb_docs/
