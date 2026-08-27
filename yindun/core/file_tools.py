@@ -1,8 +1,37 @@
 import os
 import re
+import shlex
 import subprocess
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
+
+
+# ──────────────────────────────────────────
+# 沙箱根目录与越界校验
+# 所有能解析出可访问路径的工具，解析出 base_dir 后都必须经 _enforce_sandbox 校验，
+# 防止绕过沙箱读取/写入系统任意目录。
+# ──────────────────────────────────────────
+
+# 沙箱根目录：优先读环境变量 SANDBOX_PATH，否则回退到项目根目录
+SANDBOX = os.path.abspath(
+    os.environ.get("SANDBOX_PATH",
+                   os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
+)
+
+
+def _enforce_sandbox(path: str):
+    """
+    将路径解析为真实物理路径，并判定其是否位于沙箱根目录内。
+    返回 (resolved, within)：resolved 为 realpath 后的绝对路径，
+    within 布尔值表示是否在沙箱内（用 commonpath 归一化比较，先破解符号链接/junction）。
+    """
+    real = os.path.realpath(path)
+    base = os.path.realpath(SANDBOX)
+    try:
+        within = os.path.commonpath([os.path.normcase(base), os.path.normcase(real)]) == os.path.normcase(base)
+    except ValueError:
+        within = False
+    return real, within
 
 
 # ──────────────────────────────────────────
@@ -16,7 +45,7 @@ def _resolve_target_dir(target_directory: str, default_dir=None) -> str:
     支持："当前沙箱目录"、"桌面"、"系统物理桌面"、"E盘"、"D盘文档"、绝对路径等。
     """
     if default_dir is None:
-        default_dir = os.environ.get("SANDBOX_PATH", os.path.abspath("."))
+        default_dir = SANDBOX
     if not target_directory or target_directory == "当前沙箱目录":
         return default_dir
     
@@ -170,6 +199,9 @@ def list_local_files(target_directory: str = "当前沙箱目录") -> str:
         return "❌ 权限安全拦截：当前系统权限等级为【彻底审计】，已彻底断开大模型的所有本地物理文件访问权限！"
         
     base_dir = _resolve_target_dir(target_directory)
+    _, within = _enforce_sandbox(base_dir)
+    if not within:
+        return "⚠️ 指定路径超出安全沙箱，已回退到默认目录。"
     try:
         if not os.path.exists(base_dir):
             os.makedirs(base_dir, exist_ok=True)
@@ -196,6 +228,9 @@ def create_local_file(filename: str, content: str = "", target_directory: str = 
         return "❌ 权限安全拦截：当前系统权限等级为【安全只读】，大模型无权在当前目录进行任何写盘、修改或创建文件操作！"
 
     base_dir = _resolve_target_dir(target_directory)
+    _, within = _enforce_sandbox(base_dir)
+    if not within:
+        return f"❌ 安全拦截：目标路径超出安全沙箱（{base_dir}），已拒绝执行，未写入任何文件。"
     
     # 🛡️ 边界防御：强制过滤掉路径穿越符号（如 ../../），防止 AI 乱写到系统核心区
     safe_filename = os.path.basename(filename)
@@ -220,6 +255,9 @@ def delete_local_file(filename: str, target_directory: str = "当前沙箱目录
         return "❌ 权限安全拦截：当前系统权限等级限制，大模型无权执行物理删除操作！"
 
     base_dir = _resolve_target_dir(target_directory)
+    _, within = _enforce_sandbox(base_dir)
+    if not within:
+        return f"❌ 安全拦截：目标路径超出安全沙箱（{base_dir}），已拒绝执行，未删除任何文件。"
     safe_filename = os.path.basename(filename)
     file_path = os.path.join(base_dir, safe_filename)
     
@@ -242,6 +280,9 @@ def read_local_file(filename: str, target_directory: str = "当前沙箱目录")
         return "❌ 权限安全拦截：当前系统权限等级为【彻底审计】，已彻底断开大模型的所有本地物理文件访问权限！"
     
     base_dir = _resolve_target_dir(target_directory)
+    _, within = _enforce_sandbox(base_dir)
+    if not within:
+        return "⚠️ 指定路径超出安全沙箱，已回退到默认目录。"
     safe_filename = os.path.basename(filename)
     file_path = os.path.join(base_dir, safe_filename)
     
@@ -273,6 +314,9 @@ def modify_local_file(filename: str, old_content: str = "", new_content: str = "
         return "❌ 权限安全拦截：当前系统权限等级为【安全只读】，大模型无权在当前目录进行任何写盘、修改或创建文件操作！"
     
     base_dir = _resolve_target_dir(target_directory)
+    _, within = _enforce_sandbox(base_dir)
+    if not within:
+        return f"❌ 安全拦截：目标路径超出安全沙箱（{base_dir}），已拒绝执行，未修改任何文件。"
     safe_filename = os.path.basename(filename)
     file_path = os.path.join(base_dir, safe_filename)
     
@@ -303,27 +347,50 @@ def modify_local_file(filename: str, old_content: str = "", new_content: str = "
 def run_local_command(command: str, target_directory: str = "当前沙箱目录") -> str:
     """
     在指定安全沙箱目录下执行系统命令（如 python 脚本、pip 安装、git 操作等）。
-    仅限在当前沙箱目录内执行，禁止执行危险命令（如 format、rm -rf / 等）。
+    仅允许白名单命令（python/python3/pip/git/echo），去 shell 化执行并拦截危险参数，
+    从根本上杜绝命令注入。
     """
     perm = os.environ.get("PERMISSION_LEVEL", "完全控制 (读/写/列表)")
     if "彻底审计" in perm or "安全只读" in perm:
         return "❌ 权限安全拦截：当前系统权限等级不允许执行命令！"
     
     base_dir = _resolve_target_dir(target_directory)
+    _, within = _enforce_sandbox(base_dir)
+    if not within:
+        return f"❌ 安全拦截：工作目录超出安全沙箱（{base_dir}），已拒绝执行命令。"
     
-    dangerous_patterns = [
-        "format", "rm -rf", "del /s", "del /f", "shutdown", "reboot", "restart",
-        "> /dev", "> /sys", "> /etc", "chmod -R", "chown -R",
-    ]
-    cmd_lower = command.lower()
-    for pattern in dangerous_patterns:
-        if pattern in cmd_lower:
-            return f"❌ 安全拦截：检测到危险命令模式 '{pattern}'，已拒绝执行。"
+    # 白名单许可：仅命令名 basename 命中时才允许执行
+    allowed_commands = {"python", "python3", "pip", "git", "echo"}
+    shell_operators = {"|", ";", "&", ">", "<"}
+    absolute_path_pattern = re.compile(r"^[A-Za-z]:[\\/]|^\\\\|^/")
+    
+    # 1. 用 shlex 拆解为 argv 列表（posix=True 以正确识别引号分组，保证 -c 代码整体传入）
+    try:
+        parts = shlex.split(command)
+    except ValueError as e:
+        return f"❌ 安全拦截：命令解析失败（{e}），已拒绝执行。"
+    if not parts:
+        return "❌ 安全拦截：命令为空，已拒绝执行。"
+    
+    # 2. 白名单校验：命令名必须命中允许清单
+    cmd_name = os.path.basename(parts[0]).lower()
+    if cmd_name not in allowed_commands:
+        return (f"❌ 安全拦截：命令 '{parts[0]}' 不在允许清单"
+                f"（python/python3/pip/git/echo）内，已拒绝执行。")
+    
+    # 3. 参数级纵深防御：拦截 shell 操作符、路径穿越与绝对系统路径
+    for arg in parts[1:]:
+        if arg in shell_operators:
+            return f"❌ 安全拦截：检测到 shell 操作符 '{arg}'，已拒绝执行。"
+        if ".." in arg:
+            return f"❌ 安全拦截：参数 '{arg}' 含路径穿越 '..'，已拒绝执行。"
+        if absolute_path_pattern.match(arg) or os.path.isabs(arg):
+            return f"❌ 安全拦截：参数 '{arg}' 为绝对系统路径，已拒绝执行。"
     
     try:
         result = subprocess.run(
-            command,
-            shell=True,
+            parts,
+            shell=False,
             cwd=base_dir,
             capture_output=True,
             text=True,
@@ -527,6 +594,9 @@ def analyze_project(target_directory: str = "当前沙箱目录", max_depth: int
     
     # 优先使用传入的 target_directory 参数，其次使用环境变量，最后使用当前目录
     base_dir = _resolve_target_dir(target_directory)
+    _, within = _enforce_sandbox(base_dir)
+    if not within:
+        return "⚠️ 指定路径超出安全沙箱，已回退到默认目录。"
     
     depth = max(1, min(5, max_depth))
     
@@ -594,6 +664,9 @@ def search_in_files(pattern: str, file_pattern: str = "*", target_directory: str
         return "❌ 权限安全拦截：当前系统权限等级为【彻底审计】，已彻底断开大模型的所有本地物理文件访问权限！"
     
     base_dir = _resolve_target_dir(target_directory)
+    _, within = _enforce_sandbox(base_dir)
+    if not within:
+        return "⚠️ 指定路径超出安全沙箱，已回退到默认目录。"
     max_n = max(1, min(100, max_results))
     
     import fnmatch

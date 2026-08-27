@@ -1,15 +1,68 @@
 # -*- coding: utf-8 -*-
 """
 隐盾审计日志模块 - 全链路审计黑匣子
-基于哈希链的不可篡改审计日志系统
+基于 HMAC-SHA256 哈希链的不可篡改审计日志系统
 """
 import json
+import hmac
 import hashlib
 import os
+import secrets
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional
 from enum import Enum
+
+# 审计 HMAC 密钥缓存（模块级，进程内只需加载一次）
+_HMAC_KEY = b""
+_HMAC_KEY_LOADED = False
+
+
+def _get_hmac_key() -> Optional[bytes]:
+    """加载审计 HMAC 密钥（32 字节）；首次运行自动生成并持久化到 yindun/cache/.audit_hmac_key。
+
+    加载失败不静默：打印错误并返回 None，由调用方显式降级。
+    密钥绝不明文写入 audit_chain.json 本身。
+    """
+    global _HMAC_KEY, _HMAC_KEY_LOADED
+    if _HMAC_KEY_LOADED:
+        return _HMAC_KEY or None
+    key_file = Path(__file__).resolve().parent.parent / "cache" / ".audit_hmac_key"
+    try:
+        if key_file.exists():
+            data = key_file.read_bytes()
+        else:
+            data = secrets.token_bytes(32)
+            key_file.parent.mkdir(parents=True, exist_ok=True)
+            key_file.write_bytes(data)
+            try:
+                os.chmod(key_file, 0o600)
+            except OSError:
+                pass
+            print(f"[AuditLog] 审计 HMAC 密钥已生成：{key_file}")
+        if len(data) < 32:
+            raise ValueError("审计 HMAC 密钥长度不足 32 字节")
+        _HMAC_KEY = data
+    except Exception as e:
+        print(f"[AuditLog] 审计 HMAC 密钥加载失败：{e}")
+        _HMAC_KEY = b""
+        return None
+    _HMAC_KEY_LOADED = True
+    return _HMAC_KEY
+
+
+def _canonical(entry: "AuditEntry", previous_hash: str) -> bytes:
+    """审计条目的规范化字节串（compute_hash 与 verify_chain 共用，保证一致）"""
+    return json.dumps({
+        "timestamp": entry.timestamp,
+        "event_type": entry.event_type,
+        "severity": entry.severity,
+        "message": entry.message,
+        "details": entry.details,
+        "session_id": entry.session_id,
+        "previous_hash": previous_hash
+    }, ensure_ascii=False, sort_keys=True).encode('utf-8')
 
 
 class AuditEventType(Enum):
@@ -42,19 +95,18 @@ class AuditEntry:
         self.session_id = session_id
         self.previous_hash = ""
         self.entry_hash = ""
+        self.legacy = False     # 旧版无 HMAC 条目标记
 
     def compute_hash(self, previous_hash: str = "") -> str:
         self.previous_hash = previous_hash
-        data = json.dumps({
-            "timestamp": self.timestamp,
-            "event_type": self.event_type,
-            "severity": self.severity,
-            "message": self.message,
-            "details": self.details,
-            "session_id": self.session_id,
-            "previous_hash": previous_hash
-        }, ensure_ascii=False, sort_keys=True)
-        self.entry_hash = hashlib.sha256(data.encode('utf-8')).hexdigest()
+        canonical = _canonical(self, previous_hash)
+        key = _get_hmac_key()
+        if key is None:
+            # 密钥缺失：无法计算 HMAC，条目置空哈希（校验将失败），显式告警而非静默
+            print("[AuditLog] 审计 HMAC 密钥缺失，无法计算哈希，条目将无法通过校验")
+            self.entry_hash = ""
+            return self.entry_hash
+        self.entry_hash = hmac.new(key, canonical, hashlib.sha256).hexdigest()
         return self.entry_hash
 
     def to_dict(self) -> dict:
@@ -66,7 +118,8 @@ class AuditEntry:
             "details": self.details,
             "session_id": self.session_id,
             "previous_hash": self.previous_hash,
-            "entry_hash": self.entry_hash
+            "entry_hash": self.entry_hash,
+            "hash_algo": "hmac-sha256"
         }
 
     @classmethod
@@ -81,6 +134,8 @@ class AuditEntry:
         entry.timestamp = data.get("timestamp", "")
         entry.previous_hash = data.get("previous_hash", "")
         entry.entry_hash = data.get("entry_hash", "")
+        # 旧版（无 hash_algo=hmac-sha256 标记）→ 兼容读取，标记 legacy
+        entry.legacy = data.get("hash_algo") != "hmac-sha256"
         return entry
 
 
@@ -99,6 +154,8 @@ class AuditLog:
         self._storage_path = Path(__file__).resolve().parents[2] / "audit_logs"
         self._storage_path.mkdir(exist_ok=True)
         self._current_session_id = None
+        # 并发安全锁（RLock：add_entry 会在持锁状态下调用 _save_logs）
+        self._lock = threading.RLock()
         self._load_logs()
         self._initialized = True
 
@@ -111,34 +168,44 @@ class AuditLog:
                     for entry_data in data:
                         entry = AuditEntry.from_dict(entry_data)
                         self._entries.append(entry)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[AuditLog] 审计日志加载失败：{e}")
 
     def _save_logs(self):
         log_file = self._storage_path / "audit_chain.json"
+        tmp_file = log_file.with_suffix(".json.tmp")
         try:
-            with open(log_file, 'w', encoding='utf-8') as f:
-                json.dump([e.to_dict() for e in self._entries], f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+            with self._lock:
+                # 先写临时文件，再原子替换，避免写一半崩溃留下损坏文件
+                with open(tmp_file, 'w', encoding='utf-8') as f:
+                    json.dump([e.to_dict() for e in self._entries],
+                              f, ensure_ascii=False, indent=2)
+                os.replace(tmp_file, log_file)
+        except Exception as e:
+            print(f"[AuditLog] 审计日志保存失败：{e}")
 
     def set_session_id(self, session_id: str):
         self._current_session_id = session_id
 
     def add_entry(self, event_type: AuditEventType, severity: AuditSeverity,
                   message: str, details: dict = None):
-        entry = AuditEntry(
-            event_type=event_type,
-            severity=severity,
-            message=message,
-            details=details,
-            session_id=self._current_session_id
-        )
-        prev_hash = self._entries[-1].entry_hash if self._entries else ""
-        entry.compute_hash(prev_hash)
-        self._entries.append(entry)
-        self._save_logs()
-        return entry
+        try:
+            with self._lock:
+                entry = AuditEntry(
+                    event_type=event_type,
+                    severity=severity,
+                    message=message,
+                    details=details,
+                    session_id=self._current_session_id
+                )
+                prev_hash = self._entries[-1].entry_hash if self._entries else ""
+                entry.compute_hash(prev_hash)
+                self._entries.append(entry)
+                self._save_logs()
+                return entry
+        except Exception as e:
+            print(f"[AuditLog] 审计条目写入失败：{e}")
+        return None
 
     def log_tool_call(self, tool_name: str, tool_args: dict, target_path: str = ""):
         return self.add_entry(
@@ -304,34 +371,25 @@ class AuditLog:
         return entry
 
     def verify_chain(self) -> bool:
-        for i, entry in enumerate(self._entries):
-            if i == 0:
-                expected_hash = hashlib.sha256(
-                    json.dumps({
-                        "timestamp": entry.timestamp,
-                        "event_type": entry.event_type,
-                        "severity": entry.severity,
-                        "message": entry.message,
-                        "details": entry.details,
-                        "session_id": entry.session_id,
-                        "previous_hash": ""
-                    }, ensure_ascii=False, sort_keys=True).encode('utf-8')
-                ).hexdigest()
+        key = _get_hmac_key()
+        if key is None:
+            print("[AuditLog] 审计链无法校验（密钥缺失）")
+            return False
+        prev_hash = ""
+        warned_legacy = False
+        for entry in self._entries:
+            canonical = _canonical(entry, prev_hash)
+            if entry.legacy:
+                # 旧版无 HMAC 条目：按旧 sha256 校验，并提示已降级
+                if not warned_legacy:
+                    print("[AuditLog] 发现旧版(无HMAC)审计条目，按旧 sha256 校验（已降级）")
+                    warned_legacy = True
+                expected_hash = hashlib.sha256(canonical).hexdigest()
             else:
-                prev_entry = self._entries[i - 1]
-                expected_hash = hashlib.sha256(
-                    json.dumps({
-                        "timestamp": entry.timestamp,
-                        "event_type": entry.event_type,
-                        "severity": entry.severity,
-                        "message": entry.message,
-                        "details": entry.details,
-                        "session_id": entry.session_id,
-                        "previous_hash": prev_entry.entry_hash
-                    }, ensure_ascii=False, sort_keys=True).encode('utf-8')
-                ).hexdigest()
+                expected_hash = hmac.new(key, canonical, hashlib.sha256).hexdigest()
             if entry.entry_hash != expected_hash:
                 return False
+            prev_hash = entry.entry_hash
         return True
 
     def get_entries(self, filters: dict = None) -> List[AuditEntry]:

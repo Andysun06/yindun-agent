@@ -88,6 +88,23 @@ DEFAULT_ANONYMIZE_RULES = {
 # 用户自定义库（用户额外添加的敏感路径模式）
 DEFAULT_CUSTOM_SENSITIVE_PATHS = []
 
+# ── 免审批白名单（fail-closed 下仅以下"只读"工具在沙箱内才自动放行）──
+# 其余所有未命中规则的调用一律退回人工审批（confirm），不再默认 approve。
+APPROVE_READ_WHITELIST = {
+    "list_local_files",
+    "read_local_file",
+    "search_in_files",
+    "analyze_project",
+}
+
+# 沙箱根目录：优先读环境变量 SANDBOX_PATH，否则回退到项目根目录
+SANDBOX_ROOT = os.path.abspath(
+    os.environ.get(
+        "SANDBOX_PATH",
+        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+    )
+)
+
 
 class PolicyManager:
     """
@@ -180,13 +197,17 @@ class PolicyManager:
         """
         normalized_path = self._normalize_path(target_path)
 
-        # 按规则列表顺序逐条匹配
+        # 按规则列表顺序逐条匹配（优先级：deny > confirm > approve，先命中先返回）
         for rule in self._approval_rules:
             if self._match_rule(rule, tool_name, normalized_path):
                 return rule["policy"]  # type: ignore
 
-        # 无规则匹配：安全回退，所有操作自动通过（沙箱内）
-        return "approve"
+        # 白名单免审批：仅"只读"白名单工具且路径在沙箱内时才自动放行
+        if tool_name in APPROVE_READ_WHITELIST and PolicyManager._within_sandbox(target_path):
+            return "approve"
+
+        # 无规则命中且不在白名单：一律人工审批（fail-closed，不再默认放行）
+        return "confirm"
 
     def _match_rule(self, rule: dict, tool_name: str, path: str) -> bool:
         """检查单条规则是否匹配"""
@@ -286,6 +307,16 @@ class PolicyManager:
             return ""
         p = os.path.normpath(path).replace("\\", "/")
         return p.rstrip("/")
+
+    @staticmethod
+    def _within_sandbox(path: str) -> bool:
+        """判定路径是否位于沙箱根目录内（先解析符号链接/junction，再做 commonpath 归一化比较）"""
+        try:
+            base = os.path.normcase(os.path.realpath(SANDBOX_ROOT))
+            real = os.path.normcase(os.path.realpath(path))
+            return os.path.commonpath([base, real]) == base
+        except (ValueError, TypeError):
+            return False
 
     @staticmethod
     def get_operation_category(tool_name: str) -> str:

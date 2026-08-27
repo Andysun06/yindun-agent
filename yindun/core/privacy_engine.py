@@ -14,13 +14,32 @@
 【安全增强：映射表加密存储】
 - 映射表真实值采用 Fernet 对称加密存储（AES-128-CBC + HMAC-SHA256）
 - 密钥由 SecretManager 统一管理，首次运行自动生成并持久化到 yindun/cache/.secret_key
-- anonymize 写入 mapping 时对真实值 encrypt，占位符本身（如 [PHONE_0]）保持明文，方便 LLM 识别
+- anonymize 写入 mapping 时对真实值 encrypt，占位符本身（如 [PHONE_0_a3f9]）保持明文，方便 LLM 识别
+- 占位符含 4 位随机 nonce，消除固定可预测格式导致的"还原劫持"（原文字面量与映射占位符碰撞）
 - deanonymize 时透明解密还原，对调用方完全无感
 - 兼容旧版明文 mapping：decrypt 失败时回退为原值（strict=True 时不回退，直接跳过），保证已存盘的知识库数据不会因升级而损坏
 """
 import re
+import secrets
 
 from yindun.core.secret_manager import SecretManager
+
+
+# 占位符 nonce 字符集：小写字母 + 数字（不含 ']' 等易与占位符结构冲突的字符）
+NONCE_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+# 新格式占位符：[TYPE_N_nonce]（含 4 位随机 nonce，消除固定可预测的碰撞面）
+# 旧格式占位符：[TYPE_N]（历史数据，deanonymize 时保持兼容）
+_NEW_PLACEHOLDER_RE = re.compile(r"^\[(.+?)_(\d+)_([a-z0-9]{4})\]$")
+
+
+def _generate_nonce(used: set, length: int = 4) -> str:
+    """生成不与 used 集合重复的随机 nonce（保证同一批 anonymize 内唯一）。"""
+    while True:
+        nonce = "".join(secrets.choice(NONCE_CHARS) for _ in range(length))
+        if nonce not in used:
+            used.add(nonce)
+            return nonce
 
 
 class PrivacyEngine:
@@ -91,8 +110,11 @@ class PrivacyEngine:
 
     PATTERNS = {
         # === 原有 3 类（保持兼容） ===
-        "IDCARD": r"[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]",
-        "PHONE": r"1[3-9]\d{9}",
+        # (P1 加固) IDCARD：加 lookaround 边界，避免从更长数字串中截取 18 位误检
+        "IDCARD": r"(?<![\dXx])[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?![\dXx])",
+        # (P1 加固) PHONE：加边界；支持 '-'/空格/全角'-' 分隔符分支与全角数字（１３８...）。
+        # 命中后由 _normalize_digits + _is_valid_phone 程序化校验（精确 11 位），避免截取/漏检。
+        "PHONE": r"(?<![\d])((?:1|１)[3-9３-９][\d０-９\s\-－]{2,13}[\d０-９])(?![\d])",
         "EMAIL": r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
 
         # === 新增 6 类（正则） ===
@@ -109,7 +131,8 @@ class PrivacyEngine:
 
         # API 密钥：sk-xxx / api_key=xxx / APIKEY: xxx
         # 用 lookaround 替代 \b，适配中文前缀场景（如"密钥sk-xxx"）
-        "APIKEY": r"(?<![A-Za-z0-9])sk-[A-Za-z0-9]{20,}(?![A-Za-z0-9])|api[_-]?key\s*[=:]\s*['\"]?[A-Za-z0-9]{16,}['\"]?",
+        # (P1 加固) sk- 分支字符集加入 -/_，覆盖 sk-proj-xxx 系列；api[_-]?key= 分支值字符集同样允许 -/_
+        "APIKEY": r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}(?![A-Za-z0-9])|api[_-]?key\s*[=:]\s*['\"]?[A-Za-z0-9_-]{16,}['\"]?",
 
         # 微信号：需"微信"前缀触发，避免误伤（微信号格式：字母开头 6-20 位）
         "WECHAT": r"(?:微信|微信号|wechat|WeChat)\s*[:：]?\s*([a-zA-Z][a-zA-Z0-9_-]{5,19})",
@@ -164,6 +187,72 @@ class PrivacyEngine:
     }
 
     # ──────────────────────────────────────────
+    # 1.1 命中后校验开关
+    # ──────────────────────────────────────────
+    # (P1 加固) IDCARD 可选增强：GB11643-1999 18 位校验位算法。
+    # 默认关闭——既有测试数据（如 110101199001011234）校验位不合法，若强制校验会导致历史数据不命中；
+    # 置 True 启用后，身份证正则命中后需通过 _idcard_valid 才记为命中。
+    IDCARD_CHECKSUM = False
+
+    # ──────────────────────────────────────────
+    # 1.2 命中后程序化校验（正则粗筛 + 算法精验）
+    # ──────────────────────────────────────────
+    @staticmethod
+    def _normalize_digits(text: str) -> str:
+        """统一数字字符：全角数字→半角，其余非数字字符（分隔符等）剔除。"""
+        return "".join(
+            ch if '0' <= ch <= '9' else chr(ord(ch) - 0xFEE0)
+            for ch in text
+            if ('0' <= ch <= '9') or ('０' <= ch <= '９')
+        )
+
+    @staticmethod
+    def _is_valid_phone(raw: str) -> bool:
+        """PHONE 程序化精验：去除分隔符/全角转半角后必须恰为 11 位，且以 1[3-9] 开头。"""
+        digits = PrivacyEngine._normalize_digits(raw)
+        return len(digits) == 11 and digits[0] == "1" and digits[1] in "3456789"
+
+    @staticmethod
+    def _luhn_valid(number: str) -> bool:
+        """Luhn 校验（ISO/IEC 7812）：银行卡号最后一位为校验位，用于过滤随机数字串。"""
+        digits = PrivacyEngine._normalize_digits(number)
+        if len(digits) < 13:
+            return False
+        total = 0
+        for i, d in enumerate(reversed(digits)):
+            d = int(d)
+            if i % 2 == 1:
+                d *= 2
+                if d > 9:
+                    d -= 9
+            total += d
+        return total % 10 == 0
+
+    @staticmethod
+    def _idcard_valid(idcard: str) -> bool:
+        """GB11643-1999 18 位身份证校验位校验（可选增强，默认不启用）。"""
+        digits = PrivacyEngine._normalize_digits(idcard)
+        if len(digits) != 17:
+            return False
+        weights = (7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2)
+        check_codes = "10X98765432"
+        s = sum(int(d) * w for d, w in zip(digits, weights))
+        expect = check_codes[s % 11]
+        last = idcard[-1].upper() if idcard else ""
+        return expect == last
+
+    @staticmethod
+    def _validate_entity(key: str, match: str) -> bool:
+        """正则命中后的精验调度：PHONE 位数、BANKCARD Luhn、IDCARD 可选校验位。"""
+        if key == "PHONE":
+            return PrivacyEngine._is_valid_phone(match)
+        if key == "BANKCARD":
+            return PrivacyEngine._luhn_valid(match)
+        if key == "IDCARD" and PrivacyEngine.IDCARD_CHECKSUM:
+            return PrivacyEngine._idcard_valid(match)
+        return True
+
+    # ──────────────────────────────────────────
     # 2. 人名识别（轻量方案）
     #    姓氏表（百家姓前 100）+ 上下文触发词
     # ──────────────────────────────────────────
@@ -209,7 +298,7 @@ class PrivacyEngine:
 
         返回格式（与原版完全一致）：
             (anonymized_text, mapping_dict)
-            mapping_dict = {"[PHONE_0]": "<base64 密文>", ...}
+            mapping_dict = {"[PHONE_0_a3f9]": "<base64 密文>", ...}   # 占位符含随机 nonce
             - 占位符（key）保持明文，方便 LLM 识别
             - 真实值（value）已通过 SecretManager.encrypt 加密为 base64 密文
             - deanonymize 时会透明解密还原，对调用方无感
@@ -223,6 +312,8 @@ class PrivacyEngine:
         anonymized = text
         # 用于去重：同一真实值只分配一个占位符
         value_to_placeholder = {}
+        # 同批 anonymize 内 nonce 去重（防止两个占位符使用相同 nonce）
+        used_nonces = set()
 
         # === 阶段 1：正则实体脱敏 ===
         # 按固定顺序处理，避免相互干扰
@@ -257,7 +348,7 @@ class PrivacyEngine:
                             anonymized = anonymized.replace(target, placeholder, 1)
                             continue
                         idx = counts.get(key, 0)
-                        placeholder = f"[{key}_{idx}]"
+                        placeholder = f"[{key}_{idx}_{_generate_nonce(used_nonces)}]"
                         mapping[placeholder] = self._crypto.encrypt(target)
                         value_to_placeholder[target] = placeholder
                         counts[key] = idx + 1
@@ -265,14 +356,16 @@ class PrivacyEngine:
                         anonymized = anonymized.replace(target, placeholder, 1)
                 else:
                     # 原有通用分支（无捕获组）
-                    matches = list(set(re.findall(pattern, anonymized, flags)))
+                    matches = list(dict.fromkeys(m.group(0) for m in re.finditer(pattern, anonymized, flags)))
+                    # (P1 加固) 正则命中后精验：PHONE 位数 / BANKCARD Luhn / IDCARD 可选校验位
+                    matches = [m for m in matches if self._validate_entity(key, m)]
                     for match in matches:
                         if match in value_to_placeholder:
                             placeholder = value_to_placeholder[match]
                             anonymized = anonymized.replace(match, placeholder)
                         else:
                             idx = counts.get(key, 0)
-                            placeholder = f"[{key}_{idx}]"
+                            placeholder = f"[{key}_{idx}_{_generate_nonce(used_nonces)}]"
                             mapping[placeholder] = self._crypto.encrypt(match)
                             value_to_placeholder[match] = placeholder
                             counts[key] = idx + 1
@@ -283,14 +376,14 @@ class PrivacyEngine:
         # === 阶段 2：人名脱敏（轻量方案） ===
         # 通过返回值重新赋值（Python 字符串不可变，无法在方法内改外部变量）
         anonymized = self._apply_name_anonymize(
-            anonymized, mapping, counts, value_to_placeholder
+            anonymized, mapping, counts, value_to_placeholder, used_nonces
         )
 
         self._mapping = mapping
         self._last_stats = dict(counts)
         return anonymized, mapping
 
-    def _apply_name_anonymize(self, text, mapping, counts, value_to_placeholder):
+    def _apply_name_anonymize(self, text, mapping, counts, value_to_placeholder, used_nonces):
         """
         人名脱敏：基于姓氏表 + 上下文触发词。
         触发词出现后，在其后 20 字符窗口内匹配"姓氏+1~2字"作为人名。
@@ -302,7 +395,7 @@ class PrivacyEngine:
         for name in self._custom_names:
             if name in text and name not in value_to_placeholder:
                 idx = counts.get("NAME", 0)
-                placeholder = f"[NAME_{idx}]"
+                placeholder = f"[NAME_{idx}_{_generate_nonce(used_nonces)}]"
                 mapping[placeholder] = self._crypto.encrypt(name)
                 value_to_placeholder[name] = placeholder
                 counts["NAME"] = idx + 1
@@ -341,7 +434,7 @@ class PrivacyEngine:
                         if not any(s <= abs_start < e or s < abs_end <= e for s, e in matched_spans):
                             if name_candidate not in value_to_placeholder:
                                 idx = counts.get("NAME", 0)
-                                placeholder = f"[NAME_{idx}]"
+                                placeholder = f"[NAME_{idx}_{_generate_nonce(used_nonces)}]"
                                 mapping[placeholder] = self._crypto.encrypt(name_candidate)
                                 value_to_placeholder[name_candidate] = placeholder
                                 counts["NAME"] = idx + 1
@@ -405,6 +498,12 @@ class PrivacyEngine:
         对每个值尝试 decrypt 还原；解密失败则回退为原值，保证已存盘的旧数据不受影响。
         strict=True 时，decrypt 失败的占位符直接跳过，不回退明文（生产环境推荐）。
         strict=False 时，decrypt 失败回退为原值（兼容旧版知识库数据）。
+
+        新旧格式兼容：
+        - 新格式（[TYPE_N_nonce]，含 nonce）：value 必为 Fernet 密文，
+          解密失败时无论 strict 与否都保留占位符、不写入密文垃圾（防注入/防误还原）。
+        - 旧格式（[TYPE_N]，无 nonce）：解密失败时按 strict 语义处理，
+          strict=False 回退为原值（兼容旧版明文 mapping），strict=True 跳过保留占位符。
         """
         if not text or not mapping:
             return text
@@ -415,7 +514,11 @@ class PrivacyEngine:
             except Exception:
                 if strict:
                     continue
-                # 兼容旧版明文 mapping（向后兼容已存盘的知识库数据）
+                # 新格式（含 nonce）占位符：value 必为 Fernet 密文，
+                # 解密失败时保留占位符、不写回密文垃圾（默认模式同样如此）
+                if _NEW_PLACEHOLDER_RE.match(placeholder):
+                    continue
+                # 旧格式（[TYPE_N] 无 nonce）兼容旧版明文 mapping
                 original_value = encrypted_value
             restored = restored.replace(placeholder, original_value)
         return restored
@@ -515,7 +618,7 @@ if __name__ == "__main__":
 
     raw_text = (
         "员工老王的邮箱是 test@qq.com，报销手机号是13988889999。"
-        "甲方张伟签约金额85万元，乙方账号6222020200112345678，"
+        "甲方张伟签约金额85万元，乙方账号6228480402564890018，"
         "地址北京市海淀区中关村大街1号，对接微信zhangwei_88。"
         "理赔材料：病历号 MRN12345678，医保卡号 1234567890123456789。"
         "服务配置：API密钥 sk-abcdefghijklmnopqrstuvwxyz，"
@@ -539,7 +642,11 @@ if __name__ == "__main__":
     print("\n【4.3 业务分组统计】:", engine.get_last_group_stats())
 
     # 验证：即使 mapping 里是密文，deanonymize 也能正确还原
-    ai_reply = f"已收到，{engine.deanonymize('[NAME_0]', secret_box)}的合同金额已记录。"
+    name_placeholder = next(
+        (p for p in secret_box if p.startswith("[NAME_")), None
+    )
+    name_display = engine.deanonymize(name_placeholder, secret_box) if name_placeholder else "(无人名)"
+    ai_reply = f"已收到，{name_display}的合同金额已记录。"
     restored = engine.deanonymize(ai_reply, secret_box)
     print("\n【5. 最终还原（展示给用户的文本）】:", restored)
 
@@ -558,6 +665,40 @@ if __name__ == "__main__":
     print("\n【6.1 strict 模式验证（解密失败应跳过）】:", strict_restored)
     assert strict_restored == "电话是[PHONE_STRICT_0]，请回拨。", "strict 模式未跳过解密失败项！"
     print("    ✓ strict 模式通过（占位符保留，未回退明文）")
+
+    # 8. nonce 防劫持验证：原文含字面量占位符（与映射同格式）时不应被误还原
+    print("\n【8. nonce 防劫持验证（原文含字面量占位符）】")
+    nonce_text = "我的手机是13812345678，占位符样例[PHONE_0_a3f9]"
+    anon_nonce, nonce_box = engine.anonymize(nonce_text)
+    print("   脱敏后:", anon_nonce)
+    assert "13812345678" not in anon_nonce, "真实手机号应被替换！"
+    assert "[PHONE_0_a3f9]" in anon_nonce, "原文字面量占位符应保持不变！"
+    ph_key = next(p for p in nonce_box if p.startswith("[PHONE_"))
+    assert len(ph_key.split("_")) == 3, f"应为含 nonce 的新格式占位符: {ph_key}"
+    restored_nonce = engine.deanonymize(anon_nonce, nonce_box)
+    print("   还原后:", restored_nonce)
+    assert restored_nonce == nonce_text, "还原后应与原文一致！"
+    print("   ✓ 字面量占位符未被误还原（nonce 已将碰撞概率降为不可行）")
+
+    # 9. 同批 nonce 去重验证
+    print("\n【9. 同批 nonce 去重验证】")
+    multi_text = "手机号13812345678，备用13987654321，工作13711112222"
+    anon_multi, multi_box = engine.anonymize(multi_text)
+    ph_list = [p for p in multi_box if p.startswith("[PHONE_")]
+    nonces = [p[:-1].rsplit("_", 1)[1] for p in ph_list]
+    print(f"   同一批 {len(ph_list)} 个 PHONE 占位符 nonce: {nonces}")
+    assert len(nonces) == len(set(nonces)), "同批 nonce 不应重复！"
+    print("   ✓ 同批 nonce 去重通过")
+
+    # 10. 新格式占位符解密失败：不写入密文垃圾
+    print("\n【10. 新格式占位符解密失败防护】")
+    fail_text = "电话是[PHONE_0_a3f9]，请回拨。"
+    fail_mapping = {"[PHONE_0_a3f9]": "not-a-valid-ciphertext"}
+    fail_restored = engine.deanonymize(fail_text, fail_mapping)
+    assert fail_restored == fail_text, "新格式解密失败不应写回密文！"
+    fail_strict = engine.deanonymize(fail_text, fail_mapping, strict=True)
+    assert fail_strict == fail_text, "strict 模式应保留占位符！"
+    print("   ✓ 新格式解密失败时保留占位符，不写入密文垃圾（默认与 strict 一致）")
 
     engine.destroy()
     print("\n【7. 映射表已销毁】")

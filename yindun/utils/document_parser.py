@@ -7,8 +7,17 @@ PDF 扫描件使用 RapidOCR (ONNX) — 离线中文 OCR
 """
 import os
 import re
+import zipfile
+from typing import Optional
 
 _AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma")
+
+# ── 资源预检上限（防恶意文档耗尽内存）──────────────────────
+MAX_FILE_SIZE = 50 * 1024 * 1024      # 文件大小上限：50MB
+MAX_PDF_PAGES = 200                   # PDF 页数上限
+MAX_PDF_PAGE_SIZE = 20000             # 页面任一边尺寸上限（pt），超限跳过该页 OCR 渲染
+MAX_ZIP_ENTRIES = 10000               # zip 容器条目数上限
+MAX_ZIP_RATIO = 100                   # 解压后大小 / 压缩前大小 比值上限
 
 
 # ──────────────────────────────────────────────
@@ -86,6 +95,10 @@ class PdfParser:
         try:
             import fitz  # PyMuPDF
             doc = fitz.open(filepath)
+            # 页数预检：超上限拒绝整份，避免逐页渲染耗尽内存
+            if doc.page_count > MAX_PDF_PAGES:
+                doc.close()
+                return f"[文档解析拒绝: PDF 页数超过上限 {MAX_PDF_PAGES}]"
             for i, page in enumerate(doc, start=1):
                 page_text = page.get_text("text") or ""
                 text_parts.append(f"--- 第 {i} 页 ---")
@@ -97,28 +110,31 @@ class PdfParser:
                         page_results = self._get_scanner().scan(page_text.strip(), page=str(i), line_start=1, source_type="page")
                         all_scan_results.extend(page_results)
                 else:
-                    # 文字层为空 → 尝试 OCR 回退
-                    ocr_text = self._ocr_page(page)
-                    if ocr_text:
-                        had_text = True
-                        had_ocr_fallback = True
-                        text_parts.append(ocr_text)
-                        # OCR 结果也扫描
-                        if scan_privacy:
-                            ocr_results = self._get_scanner().scan(ocr_text, page=str(i), line_start=1, source_type="page")
-                            all_scan_results.extend(ocr_results)
+                    # 文字层为空 → 尝试 OCR 回退（先做页面尺寸预检，防止超大页面渲染耗尽内存）
+                    if page.rect.width > MAX_PDF_PAGE_SIZE or page.rect.height > MAX_PDF_PAGE_SIZE:
+                        text_parts.append(f"[第 {i} 页尺寸过大，已跳过 OCR]")
                     else:
-                        # OCR 不可用或未识别到内容：给出准确提示
-                        if self._ocr_init_failed and not ocr_unavailable_warned:
-                            text_parts.append(
-                                "[本页为扫描图片，文字层为空；OCR 引擎未安装，无法识别图片文字。"
-                                "请运行: pip install rapidocr-onnxruntime]"
-                            )
-                            ocr_unavailable_warned = True
+                        ocr_text = self._ocr_page(page)
+                        if ocr_text:
+                            had_text = True
+                            had_ocr_fallback = True
+                            text_parts.append(ocr_text)
+                            # OCR 结果也扫描
+                            if scan_privacy:
+                                ocr_results = self._get_scanner().scan(ocr_text, page=str(i), line_start=1, source_type="page")
+                                all_scan_results.extend(ocr_results)
                         else:
-                            text_parts.append(
-                                "[本页为扫描图片/空白页，OCR 未识别到文字内容]"
-                            )
+                            # OCR 不可用或未识别到内容：给出准确提示
+                            if self._ocr_init_failed and not ocr_unavailable_warned:
+                                text_parts.append(
+                                    "[本页为扫描图片，文字层为空；OCR 引擎未安装，无法识别图片文字。"
+                                    "请运行: pip install rapidocr-onnxruntime]"
+                                )
+                                ocr_unavailable_warned = True
+                            else:
+                                text_parts.append(
+                                    "[本页为扫描图片/空白页，OCR 未识别到文字内容]"
+                                )
                 text_parts.append("")
             doc.close()
         except ImportError:
@@ -126,6 +142,9 @@ class PdfParser:
             try:
                 from PyPDF2 import PdfReader
                 reader = PdfReader(filepath)
+                # 页数预检：超上限拒绝整份
+                if len(reader.pages) > MAX_PDF_PAGES:
+                    return f"[文档解析拒绝: PDF 页数超过上限 {MAX_PDF_PAGES}]"
                 for i, page in enumerate(reader.pages, start=1):
                     page_text = page.extract_text() or ""
                     text_parts.append(f"--- 第 {i} 页 ---")
@@ -153,6 +172,9 @@ class PdfParser:
         try:
             import pdfplumber
             with pdfplumber.open(filepath) as pdf:
+                # 页数预检：超上限拒绝整份
+                if len(pdf.pages) > MAX_PDF_PAGES:
+                    return f"[文档解析拒绝: PDF 页数超过上限 {MAX_PDF_PAGES}]"
                 for i, page in enumerate(pdf.pages, start=1):
                     tables = page.extract_tables() or []
                     for j, tbl in enumerate(tables, start=1):
@@ -398,6 +420,11 @@ class DocxParser:
         except ImportError:
             raise RuntimeError("未安装 python-docx，请运行: pip install python-docx")
 
+        # zip 炸弹预检：条目数或解压比异常直接拒绝，防止一次性加载 DOM 撑爆内存
+        rejected = _check_zip_bomb(filepath)
+        if rejected:
+            return rejected
+
         doc = Document(filepath)
         body = doc.element.body
         parts = []
@@ -463,6 +490,51 @@ class DocxParser:
         return "\n".join(md)
 
 
+# ──────────────────────────────────────────────
+# 资源预检工具：zip 炸弹 / 二进制文件检测
+# ──────────────────────────────────────────────
+def _check_zip_bomb(filepath) -> Optional[str]:
+    """预检 zip 容器（DOCX/XLSX），识别 zip 炸弹。
+
+    仅读取 zip 中央目录（不实际解压），统计条目数与估算解压比：
+    - 条目数 > MAX_ZIP_ENTRIES
+    - 解压后总大小 / 压缩后总大小 > MAX_ZIP_RATIO
+    命中任一条件返回拒绝提示字符串；正常返回 None。
+    """
+    try:
+        with zipfile.ZipFile(filepath) as zf:
+            infos = zf.infolist()
+            if len(infos) > MAX_ZIP_ENTRIES:
+                return "[文档解析拒绝: 疑似 zip 炸弹（条目过多/压缩比异常）]"
+            compressed = sum(i.compress_size for i in infos)
+            decompressed = sum(i.file_size for i in infos)
+            if compressed > 0 and decompressed / compressed > MAX_ZIP_RATIO:
+                return "[文档解析拒绝: 疑似 zip 炸弹（条目过多/压缩比异常）]"
+    except Exception:
+        # 预检失败不阻断正式解析（交由正式解析器报错）
+        pass
+    return None
+
+
+def _looks_binary(filepath, sample_size: int = 1024) -> bool:
+    """检测文件头是否含二进制特征：
+    - 含 null 字节（b"\\x00"）
+    - 异常控制字符（排除文本常用空白 \\t\\n\\r\\v\\f）占比过高
+    仅统计控制字符而不统计高位字节，避免误伤 UTF-8 中文文本。
+    """
+    try:
+        with open(filepath, "rb") as f:
+            header = f.read(sample_size)
+    except OSError:
+        return False
+    if not header:
+        return False
+    if b"\x00" in header:
+        return True
+    control = sum(1 for b in header if b < 0x09 or 0x0E <= b < 0x20)
+    return control / len(header) > 0.3
+
+
 def extract_file_text(filepath):
     """
     自适应跨平台离线文件文本提取矩阵
@@ -470,6 +542,10 @@ def extract_file_text(filepath):
     """
     name = filepath.lower()
     try:
+        # 文件大小预检：超上限直接拒绝，不进入任何解析路径
+        if os.path.getsize(filepath) > MAX_FILE_SIZE:
+            return f"[文档解析拒绝: 文件超过 {MAX_FILE_SIZE // (1024 * 1024)}MB 大小上限]"
+
         if name.endswith(_AUDIO_EXTS):
             return _transcribe_audio(filepath)
 
@@ -485,6 +561,9 @@ def extract_file_text(filepath):
         if name.endswith((".xlsx", ".xls")):
             return _extract_excel(filepath, scan_privacy=False)  # 默认不扫描，保持向后兼容
 
+        # 未知扩展名兜底：先检测二进制特征，避免把恶意二进制当文本硬解码
+        if _looks_binary(filepath):
+            return "[文档解析: 二进制/不可解码文件，已跳过]"
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             return f.read()
 
@@ -495,7 +574,9 @@ def extract_file_text(filepath):
 
 
 def _read_text_file(filepath) -> str:
-    """读取文本文件，自动尝试多种编码"""
+    """读取文本文件，自动尝试多种编码；先检测二进制特征避免硬解码"""
+    if _looks_binary(filepath):
+        return "[文档解析: 二进制/不可解码文件，已跳过]"
     for enc in ["utf-8", "gbk", "gb2312", "latin-1"]:
         try:
             with open(filepath, "r", encoding=enc) as f:
@@ -518,6 +599,10 @@ def extract_file_text_with_report(filepath, scan_privacy: bool = True) -> str:
     音频文件不支持隐私扫描（转写文本已含在结果中，但不附加报告）。
     """
     try:
+        # 文件大小预检：超上限直接拒绝，不进入任何解析路径
+        if os.path.getsize(filepath) > MAX_FILE_SIZE:
+            return f"[文档解析拒绝: 文件超过 {MAX_FILE_SIZE // (1024 * 1024)}MB 大小上限]"
+
         name = filepath.lower()
 
         # 音频文件：不扫描，直接走原逻辑
@@ -576,6 +661,12 @@ def _extract_excel(filepath, scan_privacy: bool = False) -> str:
     并在文本末尾追加隐私风险报告。
     """
     import openpyxl
+
+    # zip 炸弹预检（仅 .xlsx 为 zip 容器；.xls 为 OLE 二进制非 zip，跳过）
+    if filepath.lower().endswith(".xlsx"):
+        rejected = _check_zip_bomb(filepath)
+        if rejected:
+            return rejected
 
     scanner = None
     if scan_privacy:

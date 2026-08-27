@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import traceback
 from datetime import datetime
@@ -23,6 +24,7 @@ from PySide6.QtGui import QColor, QPalette, QFont, QCursor, QMouseEvent
 # 核心后端多算力通信隔离舱
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage, AIMessage
+from yindun.core.secret_manager import SecretManager
 from yindun.core.file_tools import list_local_files, create_local_file, delete_local_file, read_local_file, modify_local_file, run_local_command, analyze_project, search_in_files, read_attachment_chunk, search_knowledge_base
 
 # 跨模块总线架构集成：动态引入所有的原子功能积木件
@@ -44,6 +46,10 @@ from yindun.core.audit_log import AuditLog
 
 COLLAPSED_H = 44  # 极致折叠挂件高度
 EXPANDED_W, EXPANDED_H = 420, 640
+
+# 全局配置写锁：保护 _save_global_config 的读-改-写全程，
+# 避免 GUI 线程与后台线程（如 LLM 初始化）并发写 global_config.json 导致 lost-update
+_SAVE_CONFIG_LOCK = threading.Lock()
 
 
 # ──────────────────────────────────────────
@@ -189,6 +195,8 @@ class MainWindow(QWidget):
         self.llm_ready = False
         self.is_busy = False
         self.attached_files = []  # 多文件挂载列表 [{"name": str, "text": str}]
+        # 活动审批弹窗集合：用于停止生成时定位并关闭残留 ConfirmDialog，防空授权
+        self._active_confirm_dialogs: set = set()
         # 后台文件解析线程列表：支持多文件并行解析，避免大 PDF/音频阻塞 GUI
         self._file_extractor_threads = []
         
@@ -201,6 +209,8 @@ class MainWindow(QWidget):
             "ollama_host": "http://127.0.0.1:11434"  # Ollama 服务地址，可改为远程服务器地址
         }
         self._load_global_config()
+        # 解密 custom_models 的 api_key_enc 回填为内存明文（不落盘明文）
+        self._decrypt_custom_model_keys()
 
         # 将配置的 Ollama 地址写入环境变量，使 ollama CLI 和 langchain_ollama 自动识别
         os.environ["OLLAMA_HOST"] = self._settings.get("ollama_host", "http://127.0.0.1:11434")
@@ -289,13 +299,87 @@ class MainWindow(QWidget):
                 saved = json.load(f)
                 if isinstance(saved, dict):
                     self._settings.update(saved)
-        except: pass
+        except Exception as e:
+            # 加载失败必须可见：安全配置（含密钥等）损坏/不可读不能静默吞掉
+            print(f"[MainWindow] 加载 global_config 失败：{type(e).__name__}: {e}")
+
+    def _decrypt_custom_model_keys(self):
+        """加载后：解密 custom_models 的 api_key_enc 回填为内存明文"""
+        models = self._settings.get("custom_models", {})
+        for mn, c_info in models.items():
+            if not isinstance(c_info, dict):
+                continue
+            if c_info.get("api_key_enc"):
+                try:
+                    c_info["api_key"] = SecretManager.get_instance().decrypt(c_info["api_key_enc"])
+                    c_info.pop("api_key_enc", None)
+                except RuntimeError as e:
+                    # 密钥轮换/损坏：标记无效并在设置页提示"密钥失效"，不崩溃不静默吞
+                    c_info["api_key"] = ""
+                    c_info["key_invalid"] = True
+                    print(f"[MainWindow] 自定义模型 {mn} 的 api_key 解密失败，已标记密钥失效：{e}")
+                    try:
+                        from yindun.core.audit_log import AuditLog, AuditEventType, AuditSeverity
+                        AuditLog().add_entry(
+                            AuditEventType.ACCESS_CONTROL, AuditSeverity.WARNING,
+                            f"自定义模型 {mn} api_key 解密失败，密钥已失效：{e}",
+                            {"model_name": mn}
+                        )
+                    except Exception:
+                        pass
+            elif c_info.get("api_key"):
+                # 旧明文格式：兼容读取，标记待迁移（下次保存自动加密）
+                c_info["pending_migration"] = True
 
     def _save_global_config(self):
-        try:
-            with self._config_file.open("w", encoding="utf-8") as f:
-                json.dump(self._settings, f, ensure_ascii=False, indent=2)
-        except: pass
+        # 并发写锁：保护读-改-写全程（含深拷贝 payload 的构造），
+        # 同一实例的写配置不再并发交叠，杜绝 lost-update
+        with _SAVE_CONFIG_LOCK:
+            try:
+                # 深拷贝一份，仅对落盘副本加密 api_key，内存保持明文
+                payload = dict(self._settings)
+                payload["custom_models"] = {
+                    mn: dict(c_info) for mn, c_info in self._settings.get("custom_models", {}).items()
+                }
+                sm = SecretManager.get_instance()
+                for c_info in payload["custom_models"].values():
+                    c_info.pop("pending_migration", None)
+                    c_info.pop("api_key_enc", None)
+                    c_info.pop("key_invalid", None)
+                    key = c_info.get("api_key")
+                    if key:
+                        try:
+                            c_info["api_key_enc"] = sm.encrypt(key)
+                            c_info["api_key"] = ""  # 落盘前置空，杜绝明文
+                        except RuntimeError as e:
+                            # 加密失败：不回退写明文，保留空密钥并记录告警
+                            c_info["api_key"] = ""
+                            print(f"[MainWindow] 自定义模型 api_key 加密失败，已落盘空密钥：{e}")
+                            try:
+                                from yindun.core.audit_log import AuditLog, AuditEventType, AuditSeverity
+                                AuditLog().add_entry(
+                                    AuditEventType.ACCESS_CONTROL, AuditSeverity.SECURITY,
+                                    f"自定义模型 api_key 加密失败，禁止明文落盘：{e}",
+                                    {"model_name": c_info.get("model_id", "")}
+                                )
+                            except Exception:
+                                pass
+                    else:
+                        c_info["api_key"] = ""
+                with self._config_file.open("w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                # 写盘失败必须可见：打印 + 审计告警，安全配置静默丢失会无告警降级
+                print(f"[MainWindow] 保存 global_config 失败：{type(e).__name__}: {e}")
+                try:
+                    from yindun.core.audit_log import AuditLog, AuditEventType, AuditSeverity
+                    AuditLog().add_entry(
+                        AuditEventType.ACCESS_CONTROL, AuditSeverity.WARNING,
+                        f"保存 global_config 失败：{type(e).__name__}: {e}",
+                        {"config_file": str(self._config_file)}
+                    )
+                except Exception:
+                    pass
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
@@ -858,8 +942,16 @@ class MainWindow(QWidget):
             try:
                 self.worker.finished.disconnect(self._on_reply_received)
                 self.worker.error.disconnect(self._on_error_caught)
+                self.worker.need_confirm.disconnect(self._on_intercept_confirm)
             except Exception:
                 pass
+            # 强制驳回并关闭所有活动审批弹窗，防止残留弹窗放行已取消的高危写盘操作
+            # 顺序：先 approve(False) 唤醒 worker 审批等待，再 close 关闭弹窗
+            for dlg in list(self._active_confirm_dialogs):
+                if self.worker:
+                    self.worker.approve(False)
+                dlg.close()
+            self._active_confirm_dialogs.clear()
             # 立即重置 UI 状态
             self.is_busy = False
             self.control_dock.toggle_busy_lock(False)
@@ -924,6 +1016,19 @@ class MainWindow(QWidget):
         self.control_dock.toggle_busy_lock(False)
         self.control_dock.force_input_focus()
 
+    def _audit_session_issue(self, message: str, details: dict = None, severity: str = "WARNING"):
+        """会话持久化/还原异常的审计告警（审计本身失败不影响主流程）"""
+        try:
+            from yindun.core.audit_log import AuditLog, AuditEventType, AuditSeverity
+            AuditLog().add_entry(
+                AuditEventType.PRIVACY_SENSITIVE,
+                getattr(AuditSeverity, severity, AuditSeverity.WARNING),
+                message,
+                details or {},
+            )
+        except Exception:
+            pass
+
     def _load_sessions_store(self):
         if not self._sessions_file.exists(): return
         try:
@@ -931,17 +1036,49 @@ class MainWindow(QWidget):
                 payload = json.load(handle)
             if not isinstance(payload, dict): return
             sessions = {}
+            sm = SecretManager.get_instance()
             for item in payload.get("sessions", []):
                 if not isinstance(item, dict): continue
                 sid, title, messages = item.get("id"), item.get("title"), item.get("messages", [])
                 if not sid or not isinstance(title, str): continue
                 safe_messages = []
                 for msg in messages if isinstance(messages, list) else []:
-                    if isinstance(msg, dict) and msg.get("role") in {"user", "assistant", "system"} and isinstance(msg.get("content"), str):
-                        safe_messages.append({"role": msg["role"], "content": msg["content"]})
+                    if not isinstance(msg, dict) or msg.get("role") not in {"user", "assistant", "system"}:
+                        continue
+                    content = None
+                    if isinstance(msg.get("content_enc"), str):
+                        # 新版：解密还原 content；解密失败置空 + 审计告警，不崩溃不静默
+                        try:
+                            content = sm.decrypt(msg["content_enc"])
+                        except Exception as e:
+                            content = ""
+                            print(f"[MainWindow] 会话 {sid} 消息 content_enc 解密失败，已置空：{e}")
+                            self._audit_session_issue(
+                                "会话消息 content_enc 解密失败，内容已置空",
+                                {"session_id": sid, "error": str(e)},
+                            )
+                    elif isinstance(msg.get("content"), str):
+                        # 旧版明文格式：向后兼容直接读取
+                        content = msg["content"]
+                    if content is not None:
+                        safe_messages.append({"role": msg["role"], "content": content})
                 # ★★★ 兼容老 session：补充 attachment_fulltext 字段
                 safe_attachments = item.get("attachment_fulltext", {})
-                if not isinstance(safe_attachments, dict):
+                if isinstance(item.get("attachment_fulltext_enc"), str):
+                    # 新版：解密还原为 dict；解密失败置空 + 告警
+                    try:
+                        decrypted_att = sm.decrypt(item["attachment_fulltext_enc"])
+                        safe_attachments = json.loads(decrypted_att)
+                        if not isinstance(safe_attachments, dict):
+                            safe_attachments = {}
+                    except Exception as e:
+                        safe_attachments = {}
+                        print(f"[MainWindow] 会话 {sid} attachment_fulltext_enc 解密失败，已置空：{e}")
+                        self._audit_session_issue(
+                            "会话 attachment_fulltext_enc 解密失败，已置空",
+                            {"session_id": sid, "error": str(e)},
+                        )
+                elif not isinstance(safe_attachments, dict):
                     safe_attachments = {}
                 sessions[sid] = {
                     "id": sid, "title": title,
@@ -953,14 +1090,74 @@ class MainWindow(QWidget):
             self._sessions = sessions
             sid = payload.get("current_session_id")
             self._current_session_id = sid if sid in self._sessions else None
-        except: self._sessions, self._current_session_id = {}, None
+        except Exception as e:
+            print(f"[MainWindow] 加载会话存储失败：{e}")
+            self._sessions, self._current_session_id = {}, None
 
     def _persist_sessions_store(self):
         try:
-            payload = {"version": 1, "current_session_id": self._current_session_id, "sessions": list(self._sessions.values())}
+            sm = SecretManager.get_instance()
+            payload_sessions = []
+            for sess in self._sessions.values():
+                if not isinstance(sess, dict):
+                    continue
+                sess_copy = dict(sess)
+                # 1) 消息 content 加密为 content_enc，原文落盘置空（内存保持明文）
+                new_messages = []
+                for msg in sess_copy.get("messages", []) or []:
+                    if not isinstance(msg, dict):
+                        continue
+                    m = dict(msg)
+                    content = m.get("content")
+                    m.pop("content_enc", None)
+                    if content:
+                        try:
+                            m["content_enc"] = sm.encrypt(content)
+                            m["content"] = ""
+                        except Exception as e:
+                            # 加密失败：落盘空值 + 告警，不回退明文
+                            m["content"] = ""
+                            print(f"[MainWindow] 会话 {sess_copy.get('id','')} 消息 content 加密失败，已落盘空内容：{e}")
+                            self._audit_session_issue(
+                                "会话消息 content 加密失败，已落盘空内容（禁止明文落盘）",
+                                {"session_id": sess_copy.get("id", ""), "error": str(e)},
+                                severity="SECURITY",
+                            )
+                    else:
+                        m.setdefault("content", "")
+                    new_messages.append(m)
+                sess_copy["messages"] = new_messages
+                # 2) attachment_fulltext 整个 dict 序列化后加密落盘
+                att = sess_copy.get("attachment_fulltext", {}) or {}
+                if att:
+                    try:
+                        sess_copy["attachment_fulltext_enc"] = sm.encrypt(
+                            json.dumps(att, ensure_ascii=False)
+                        )
+                        sess_copy["attachment_fulltext"] = {}
+                    except Exception as e:
+                        # 加密失败：落盘空值 + 告警，不回退明文
+                        sess_copy["attachment_fulltext"] = {}
+                        sess_copy.pop("attachment_fulltext_enc", None)
+                        print(f"[MainWindow] 会话 {sess_copy.get('id','')} attachment_fulltext 加密失败，已落盘空：{e}")
+                        self._audit_session_issue(
+                            "会话 attachment_fulltext 加密失败，已落盘空（禁止明文落盘）",
+                            {"session_id": sess_copy.get("id", "")},
+                            severity="SECURITY",
+                        )
+                else:
+                    sess_copy["attachment_fulltext"] = {}
+                    sess_copy.pop("attachment_fulltext_enc", None)
+                payload_sessions.append(sess_copy)
+            payload = {
+                "version": 1,
+                "current_session_id": self._current_session_id,
+                "sessions": payload_sessions,
+            }
             with self._sessions_file.open("w", encoding="utf-8") as handle:
                 json.dump(payload, handle, ensure_ascii=False, indent=2)
-        except: pass
+        except Exception as e:
+            print(f"[MainWindow] 持久化会话存储失败：{e}")
 
     def _refresh_session_list(self):
         all_sessions = list(self._sessions.values())
@@ -1078,9 +1275,11 @@ class MainWindow(QWidget):
     def _on_intercept_confirm(self, info):
         self.status_bar.set_static_text("🚨 等待人工合规审批...")
         dlg = ConfirmDialog(info["name"], info["path"], self)
+        self._active_confirm_dialogs.add(dlg)
         s = QApplication.primaryScreen()
         if s: dlg.move(s.availableGeometry().right() - 370, s.availableGeometry().bottom() - 230)
-        dlg.confirmed.connect(lambda ok: self.worker.approve(ok))
+        dlg.confirmed.connect(lambda ok: (self.worker.approve(ok), self._active_confirm_dialogs.discard(dlg)))
+        dlg.destroyed.connect(lambda: self._active_confirm_dialogs.discard(dlg))
         dlg.show()
 
     def _minimize(self): self.showMinimized()

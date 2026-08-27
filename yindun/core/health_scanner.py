@@ -24,6 +24,8 @@ from datetime import datetime
 
 import fnmatch
 
+from ..utils.privacy_scanner import PrivacyScanner
+
 
 # ── 敏感文件路径模式 ──
 SENSITIVE_FILE_PATTERNS = {
@@ -57,6 +59,17 @@ SENSITIVE_CONTENT_PATTERNS = {
     "邮箱": r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b",
     "私钥": r"-{5}BEGIN\s+(?:RSA|DSA|EC|OPENSSH|PGP)?\s*PRIVATE\s+KEY[\s\S]{50,}?-{5}END",
     "Token": r"(?:Bearer|access_token|refresh_token)\s*[=:]\s*[\'\"\s]?([A-Za-z0-9_\-\.]{20,})",
+}
+
+# 敏感内容类别 → 隐私扫描实体类型（复用 mask_sensitive 掩码规则）
+_MATCH_ENTITY_MAP = {
+    "身份证": "IDCARD",
+    "手机号": "PHONE",
+    "银行卡": "BANKCARD",
+    "API密钥": "APIKEY",
+    "邮箱": "EMAIL",
+    "私钥": "PRIVATE_KEY",
+    "Token": "ACCESS_TOKEN",
 }
 
 # ── 最大读取文件大小（4KB，只扫描头部）──
@@ -272,12 +285,17 @@ class HealthScanner:
                     else:
                         severity = "内部"
 
+                    # 掩码后再入库：matches 只保留"类型 + 掩码片段"，不存完整原文
+                    entity_type = _MATCH_ENTITY_MAP.get(name, name)
+                    masked_matches = [
+                        PrivacyScanner._mask_sensitive(entity_type, m) for m in matches[:5]
+                    ]
                     report.findings.append(ScanFinding(
                         file_path=file_path,
                         severity=severity,
                         category="sensitive_content",
                         description=f"发现{name}信息",
-                        matches=matches[:5],  # 只保留前5条
+                        matches=masked_matches,  # 只保留前5条（掩码后）
                         line_number=line_num
                     ))
 

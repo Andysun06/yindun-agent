@@ -13,6 +13,7 @@
 import os
 import re
 import threading
+import time
 import concurrent.futures
 from PySide6.QtCore import QObject, Signal
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
@@ -173,8 +174,38 @@ class Worker(QObject):
         self._approved.set()
 
     def cancel(self):
-        """取消正在进行的推理：由主线程调用，触发后会在下一轮 ReAct 循环开始时安全退出"""
+        """取消正在进行的推理：置取消标志，并把审批视为拒绝（_approved_val=False），
+        同时 set 审批事件，唤醒所有阻塞在等待人工审批上的线程，避免永久挂起。"""
         self._cancel_requested.set()
+        self._approved_val = False
+        self._approved.set()
+
+    def _request_approval(self, name, args, path, timeout: float = 60.0) -> bool:
+        """统一的敏感操作人工审批等待。
+
+        先 clear 审批事件再 emit need_confirm（修正 clear/emit 顺序，消除
+        GUI 先响应导致批准被误清的竞态）；随后用联合等待（审批事件 / 取消事件
+        / 超时）保证任何情形都能被唤醒返回，且不会被取消/超时永久卡死。
+
+        返回 True=批准；False=驳回/取消/超时（默认 timeout 60s）。
+        """
+        self._approved.clear()
+        self.need_confirm.emit({"name": name, "args": args, "path": path})
+        deadline = time.monotonic() + timeout
+        approved = None
+        while approved is None:
+            # 取消请求优先：cancel() 置标志并 set 审批事件
+            if self._cancel_requested.is_set():
+                approved = False
+                break
+            if self._approved.wait(timeout=0.2):  # 0.2s 轮询取消标志
+                approved = bool(self._approved_val)
+                break
+            if time.monotonic() >= deadline:
+                approved = False  # 超时视为驳回，避免永久阻塞
+                break
+        self._approved_val = approved
+        return approved
 
     def _invoke_llm_with_cancel_check(self, messages, check_interval=0.5):
         """
@@ -309,23 +340,23 @@ class Worker(QObject):
             if _path_match and (_has_analyze or _has_list or _has_read):
                 _resolved_path = os.path.abspath(os.path.normpath(_path_match.group(1)))
                 if os.path.exists(_resolved_path):
-                    # 直接执行工具（绕开 LLM 的工具调用决策，保证路径正确）
-                    if "analyze_project" in self.tools_map:
-                        _tool_obj = self.tools_map["analyze_project"]
-                        self.status.emit(f"[工具执行] 扫描项目目录: {_resolved_path}")
-                        try:
-                            if _has_analyze or os.path.isdir(_resolved_path):
-                                _args = {"target_directory": _resolved_path, "max_depth": self.think_depth}
-                                forced_tool_result = str(_tool_obj.invoke(_args))
-                                forced_tool_name = "analyze_project"
-                            elif _has_list and os.path.isdir(_resolved_path):
-                                _list_obj = self.tools_map.get("list_local_files")
-                                if _list_obj:
-                                    _args = {"target_directory": _resolved_path}
-                                    forced_tool_result = str(_list_obj.invoke(_args))
-                                    forced_tool_name = "list_local_files"
-                        except Exception as _e:
-                            forced_tool_result = f"[工具执行出错] {_e}"
+                    # ★ 强制工具分支也必须走统一的审批执行通道：
+                    #   PolicyManager.check → confirm 则 emit need_confirm 等待人工审批 → 通过后才执行。
+                    #   不再直接 tool.invoke()，杜绝绕过审批的旁路。
+                    try:
+                        if (_has_analyze or os.path.isdir(_resolved_path)) and "analyze_project" in self.tools_map:
+                            self.status.emit(f"[工具执行] 扫描项目目录: {_resolved_path}")
+                            _args = {"target_directory": _resolved_path, "max_depth": self.think_depth}
+                            forced_tool_result = self._execute_with_approval("analyze_project", _args)
+                            forced_tool_name = "analyze_project"
+                        elif (_has_list or _has_read) and os.path.isdir(_resolved_path):
+                            if "list_local_files" in self.tools_map:
+                                self.status.emit(f"[工具执行] 列出目录: {_resolved_path}")
+                                _args = {"target_directory": _resolved_path}
+                                forced_tool_result = self._execute_with_approval("list_local_files", _args)
+                                forced_tool_name = "list_local_files"
+                    except Exception as _e:
+                        forced_tool_result = f"[工具执行出错] {_e}"
                     self.tool_call_count += 1
 
             # 进入 ReAct 循环（快速模式和深度模式都走这个循环，区别在于最大轮次）
@@ -700,15 +731,8 @@ class Worker(QObject):
                         f"[思考 {round_count}/{max_rounds}] 🚨 检测到敏感操作 "
                         f"{tool_display_name}，等待人工审批..."
                     )
-                    self.need_confirm.emit({
-                        "name": tool_display_name,
-                        "args": tool_args,
-                        "path": target_path
-                    })
-                    self._approved.clear()
-                    self._approved.wait()
-                    if not self._approved_val:
-                        # 用户驳回
+                    if not self._request_approval(tool_display_name, tool_args, target_path):
+                        # 用户驳回 / 取消 / 超时
                         tool_result = f"已驳回：敏感操作被人工拦截（尝试在 {target_path} 执行 {tool_display_name}）"
                         tool_msg = ToolMessage(content=tool_result, tool_call_id=tool_call_id)
                         messages.append(tool_msg)
@@ -910,6 +934,53 @@ class Worker(QObject):
     # ──────────────────────────────────────────
     # 工具执行层：统一处理所有工具的调用
     # ──────────────────────────────────────────
+    def _execute_with_approval(self, tool_name: str, args: dict) -> str:
+        """统一审批执行入口：策略检查 → 人工审批 → 执行工具。
+
+        强制工具分支与 ReAct 循环复用同一审批通道，确保不存在绕过审批的第二调用路径。
+        策略：deny → 直接拦截；confirm → emit need_confirm 等待人工审批，通过后才执行；
+        approve（只读工具在沙箱内）→ 免审批放行。
+        """
+        target_path = self._resolve_target_path(args)
+        tool_display_name = self._map_tool_display_name(tool_name)
+        pm = PolicyManager()
+        policy_result = pm.check(tool_name, target_path)
+
+        # deny：策略直接拒绝，不询问用户
+        if policy_result == "deny":
+            self.status.emit(f"🚫 安全策略已拦截: {tool_display_name}")
+            try:
+                AuditLog().log_access_control(
+                    f"{tool_display_name}({tool_name})", target_path, approved=False)
+            except Exception:
+                pass
+            return f"已拦截：安全策略禁止在 {target_path} 执行 {tool_display_name}"
+
+        # confirm：需人工审批
+        if policy_result == "confirm":
+            self.status.emit(
+                f"🚨 检测到敏感操作 {tool_display_name}，等待人工审批..."
+            )
+            if not self._request_approval(tool_display_name, args, target_path):
+                # 驳回 / 取消 / 超时
+                self.status.emit(f"🚫 已驳回: {tool_display_name}")
+                try:
+                    AuditLog().log_access_control(
+                        f"{tool_display_name}({tool_name})", target_path, approved=False)
+                except Exception:
+                    pass
+                return f"已驳回：敏感操作被人工拦截（尝试在 {target_path} 执行 {tool_display_name}）"
+            # 审计：记录人工审批通过
+            try:
+                AuditLog().log_access_control(
+                    f"{tool_display_name}({tool_name})", target_path, approved=True)
+            except Exception:
+                pass
+
+        # approve 或已通过人工审批：正常执行工具
+        self.status.emit(f"执行工具: {tool_display_name}")
+        return self._execute_tool(tool_name, args)
+
     def _execute_tool(self, tool_name: str, args: dict) -> str:
         """根据工具名调用对应的工具对象，返回工具执行结果"""
 
@@ -957,9 +1028,12 @@ class Worker(QObject):
                 return str(tool_obj.invoke(effective_args))
             return str(tool_obj(effective_args) if callable(tool_obj) else str(tool_obj))
 
-        # 通过 tools_map 中的键做模糊匹配
+        # 通过 tools_map 中的键做精确匹配（仅大小写不敏感的精确命中）
+        # 注意：不使用子串包含匹配——校验对象 ≠ 执行对象会导致无关短名
+        # （如 "list"）误命中任意含该子串的工具，造成权限判定错位。
+        # 若存在别名需求，应使用显式 ALIAS 映射表精确映射，而非子串模糊匹配。
         for key, tool_obj in self.tools_map.items():
-            if tool_name.lower() == key.lower() or tool_name.lower() in key.lower():
+            if tool_name.lower() == key.lower():
                 if isinstance(tool_obj, BaseTool):
                     return str(tool_obj.invoke(effective_args))
                 return str(tool_obj(effective_args) if callable(tool_obj) else str(tool_obj))
@@ -1282,11 +1356,18 @@ class Worker(QObject):
         # ★ 关键：对占位符加 KB_ 前缀，避免与用户输入脱敏的 box 占位符冲突
         # 例如 [NAME_0] -> [KB_NAME_0]，确保输出层还原时不会误替换
         import re as _re
-        kb_prefix_pattern = _re.compile(r"\[([A-Z]+)_(\d+)\]")
+
+        def _add_kb_prefix(m):
+            # 兼容新旧两套格式：[NAME_0] -> [KB_NAME_0]；[NAME_0_a3f9] -> [KB_NAME_0_a3f9]
+            if m.group(3):
+                return f"[KB_{m.group(1)}_{m.group(2)}_{m.group(3)}]"
+            return f"[KB_{m.group(1)}_{m.group(2)}]"
+
+        kb_prefix_pattern = _re.compile(r"\[([A-Z]+)_(\d+)(?:_([a-z0-9]{4}))?\]")
 
         for placeholder, real_value in global_mapping.items():
-            # 转换占位符：[NAME_0] -> [KB_NAME_0]
-            new_placeholder = kb_prefix_pattern.sub(r"[KB_\1_\2]", placeholder)
+            # 转换占位符：[NAME_0] -> [KB_NAME_0] / [NAME_0_a3f9] -> [KB_NAME_0_a3f9]
+            new_placeholder = kb_prefix_pattern.sub(_add_kb_prefix, placeholder)
             self._kb_mapping[new_placeholder] = real_value
 
         # 格式化检索结果给 LLM（同时把片段内的占位符也加 KB_ 前缀）
@@ -1296,7 +1377,7 @@ class Worker(QObject):
             score = chunk.get("score", 0)
             content = chunk.get("content", "")
             # 片段内容占位符也加前缀，保持与映射表一致
-            content = kb_prefix_pattern.sub(r"[KB_\1_\2]", content)
+            content = kb_prefix_pattern.sub(_add_kb_prefix, content)
             parts.append(f"--- 片段 {i}（来源: {source}，相似度: {score:.2f}）---\n{content}\n")
 
         return "\n".join(parts)

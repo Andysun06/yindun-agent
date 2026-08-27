@@ -703,12 +703,14 @@ def init_workflow_integration(engine: WorkflowEngine):
     try:
         from yindun.core.file_tools import (
             read_local_file, list_local_files, create_local_file,
-            analyze_project
+            analyze_project,
+            _enforce_sandbox,  # 复用 T2 已有沙箱判定：realpath + normcase + commonpath
         )
         HAS_REAL_TOOLS = True
     except Exception:
         HAS_REAL_TOOLS = False
         read_local_file = None
+        _enforce_sandbox = None
 
     # ---------------- 2. 审计日志 ----------------
     try:
@@ -806,8 +808,20 @@ def init_workflow_integration(engine: WorkflowEngine):
         if not path:
             return {"ok": False, "error": "path 为空", "tool": "read_local_file"}
         try:
+            # ★ 沙箱校验：直接校验完整 file_path，而不再用 dirname + basename 拆分来规避沙箱（P0）。
+            #   越界一律拒绝读取并记录审计。
+            if _enforce_sandbox is not None:
+                _, within = _enforce_sandbox(path)
+                if not within:
+                    try:
+                        AuditLog().log_access_control(
+                            "read_local_file(workflow)", path, approved=False)
+                    except Exception:
+                        pass
+                    return {"ok": False, "tool": "read_local_file", "path": path,
+                            "error": "安全拦截: 文件路径超出安全沙箱，已拒绝读取"}
             if HAS_REAL_TOOLS and read_local_file is not None:
-                # 真实工具：langchain tool.invoke(dict)
+                # 真实工具：langchain tool.invoke(dict)（目录已通过沙箱校验）
                 result = read_local_file.invoke({"filename": _os.path.basename(path),
                                                   "target_directory": _os.path.dirname(path) or "."})
             else:
