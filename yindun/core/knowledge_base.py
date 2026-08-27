@@ -20,6 +20,7 @@ SecretManager 层整体加密映射表，metadata 中只存密文，磁盘上无
 import os
 import re
 import json
+import threading
 import time
 import hashlib
 from typing import Optional
@@ -27,6 +28,12 @@ from typing import Optional
 from yindun.core.privacy_engine import PrivacyEngine
 from yindun.core.secret_manager import SecretManager
 from yindun.utils.document_parser import extract_file_text
+
+
+# 占位符解析正则：兼容新旧两套格式
+#   旧格式 [PHONE_0]       → group(3) 为 None
+#   新格式 [PHONE_0_a3f9]  → group(3) 为 nonce（含 4 位随机 nonce）
+_PLACEHOLDER_RE = re.compile(r"\[([A-Z]+)_(\d+)(?:_([a-z0-9]{4}))?\]")
 
 
 class KnowledgeBase:
@@ -76,6 +83,12 @@ class KnowledgeBase:
         self.engine = PrivacyEngine()
         # 加密器：用于对 metadata 中的 mapping 整体加密（双层加密的外层）
         self._crypto = SecretManager.get_instance()
+
+        # 实例级并发锁：保护所有 Chroma 读/写操作（add_texts / similarity_search /
+        # collection.get/delete / _ensure_ready），入库线程与 Worker 共享实例时串行化。
+        # 使用 RLock：add_document 内部会调用 _remove_by_source，get_stats 会调用
+        # list_documents，可重入锁避免自死锁。
+        self._lock = threading.RLock()
 
         # 懒加载：首次使用时才初始化向量库和 embedding
         self._embeddings = None
@@ -136,73 +149,74 @@ class KnowledgeBase:
         返回统计 dict：
             {"file": "xxx.pdf", "chunks": 12, "chars": 6000, "sensitive": {"NAME": 3, ...}}
         """
-        self._ensure_ready()
-        from langchain_text_splitters import RecursiveCharacterTextSplitter
+        with self._lock:
+            self._ensure_ready()
+            from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-        file_name = os.path.basename(file_path)
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"文档不存在: {file_path}")
+            file_name = os.path.basename(file_path)
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"文档不存在: {file_path}")
 
-        # 1. 解析全文
-        full_text = extract_file_text(file_path)
-        if not full_text or not full_text.strip():
-            raise RuntimeError(f"文档内容为空或解析失败: {file_name}")
-        # 去掉解析失败提示
-        if full_text.startswith("[文档解析失败"):
-            raise RuntimeError(full_text)
+            # 1. 解析全文
+            full_text = extract_file_text(file_path)
+            if not full_text or not full_text.strip():
+                raise RuntimeError(f"文档内容为空或解析失败: {file_name}")
+            # 去掉解析失败提示
+            if full_text.startswith("[文档解析失败"):
+                raise RuntimeError(full_text)
 
-        # 2. 切块
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=self.CHUNK_SIZE,
-            chunk_overlap=self.CHUNK_OVERLAP,
-            separators=["\n\n", "\n", "。", "！", "？", "；", ".", "!", "?", ";", " ", ""],
-        )
-        chunks = splitter.split_text(full_text)
-        if not chunks:
-            raise RuntimeError(f"切块后无有效内容: {file_name}")
+            # 2. 切块
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=self.CHUNK_SIZE,
+                chunk_overlap=self.CHUNK_OVERLAP,
+                separators=["\n\n", "\n", "。", "！", "？", "；", ".", "!", "?", ";", " ", ""],
+            )
+            chunks = splitter.split_text(full_text)
+            if not chunks:
+                raise RuntimeError(f"切块后无有效内容: {file_name}")
 
-        # 3. 同名文档先删旧数据（去重）
-        self._remove_by_source(file_name)
+            # 3. 同名文档先删旧数据（去重）
+            self._remove_by_source(file_name)
 
-        # 4. 逐块脱敏 + 准备入库数据
-        documents = []
-        metadatas = []
-        ids = []
-        total_sensitive = {}
-        file_hash = hashlib.md5(file_path.encode("utf-8")).hexdigest()[:8]
+            # 4. 逐块脱敏 + 准备入库数据
+            documents = []
+            metadatas = []
+            ids = []
+            total_sensitive = {}
+            file_hash = hashlib.md5(file_path.encode("utf-8")).hexdigest()[:8]
 
-        for idx, chunk_text in enumerate(chunks):
-            # 每块独立脱敏
-            anon_text, mapping = self.engine.anonymize(chunk_text)
-            # 统计脱敏情况
-            for k, v in self.engine.get_last_stats().items():
-                total_sensitive[k] = total_sensitive.get(k, 0) + v
+            for idx, chunk_text in enumerate(chunks):
+                # 每块独立脱敏
+                anon_text, mapping = self.engine.anonymize(chunk_text)
+                # 统计脱敏情况
+                for k, v in self.engine.get_last_stats().items():
+                    total_sensitive[k] = total_sensitive.get(k, 0) + v
 
-            chunk_id = f"{file_hash}_{idx:04d}"
-            documents.append(anon_text)
-            # 把整个 mapping dict 序列化后再整体加密，metadata 只存密文
-            mapping_json = json.dumps(mapping, ensure_ascii=False)
-            encrypted_mapping = self._crypto.encrypt(mapping_json)
-            metadatas.append({
-                "source": file_name,
-                "file_path": file_path,
-                "chunk_index": idx,
-                "total_chunks": len(chunks),
-                "added_at": int(time.time()),
-                "mapping_encrypted": encrypted_mapping,
-                "has_mapping": bool(mapping),  # 标记是否有敏感数据，便于检索时快速判断
-            })
-            ids.append(chunk_id)
+                chunk_id = f"{file_hash}_{idx:04d}"
+                documents.append(anon_text)
+                # 把整个 mapping dict 序列化后再整体加密，metadata 只存密文
+                mapping_json = json.dumps(mapping, ensure_ascii=False)
+                encrypted_mapping = self._crypto.encrypt(mapping_json)
+                metadatas.append({
+                    "source": file_name,
+                    "file_path": file_path,
+                    "chunk_index": idx,
+                    "total_chunks": len(chunks),
+                    "added_at": int(time.time()),
+                    "mapping_encrypted": encrypted_mapping,
+                    "has_mapping": bool(mapping),  # 标记是否有敏感数据，便于检索时快速判断
+                })
+                ids.append(chunk_id)
 
-        # 5. 向量化并存储（批量写入）
-        self._vectorstore.add_texts(texts=documents, metadatas=metadatas, ids=ids)
+            # 5. 向量化并存储（批量写入）
+            self._vectorstore.add_texts(texts=documents, metadatas=metadatas, ids=ids)
 
-        return {
-            "file": file_name,
-            "chunks": len(chunks),
-            "chars": len(full_text),
-            "sensitive": total_sensitive,
-        }
+            return {
+                "file": file_name,
+                "chunks": len(chunks),
+                "chars": len(full_text),
+                "sensitive": total_sensitive,
+            }
 
     def add_documents(self, file_paths, progress_callback=None) -> dict:
         """
@@ -278,86 +292,91 @@ class KnowledgeBase:
                 "query_anonymized": "脱敏后的问题",
             }
         """
-        self._ensure_ready()
-        if top_k is None:
-            top_k = self.DEFAULT_TOP_K
+        with self._lock:
+            self._ensure_ready()
+            if top_k is None:
+                top_k = self.DEFAULT_TOP_K
 
-        # 1. 问题脱敏（避免用户的敏感信息进入向量库查询）
-        anon_query, query_mapping = self.engine.anonymize(query)
+            # 1. 问题脱敏（避免用户的敏感信息进入向量库查询）
+            anon_query, query_mapping = self.engine.anonymize(query)
 
-        # 2. 向量检索
-        results = self._vectorstore.similarity_search_with_score(anon_query, k=top_k)
+            # 2. 向量检索
+            results = self._vectorstore.similarity_search_with_score(anon_query, k=top_k)
 
-        if not results:
-            return {"chunks": [], "global_mapping": {}, "query_anonymized": anon_query}
+            if not results:
+                return {"chunks": [], "global_mapping": {}, "query_anonymized": anon_query}
 
-        # 3. 占位符全局重命名 + 合并映射表
-        #    不同 chunk 独立脱敏时，可能都产生 [NAME_0]，但对应不同真实值
-        #    这里统一重编号，避免还原时冲突
-        global_mapping = {}
-        counters = {}  # {TYPE: 当前全局编号}
-        output_chunks = []
+            # 3. 占位符全局重命名 + 合并映射表
+            #    不同 chunk 独立脱敏时，可能都产生 [NAME_0]，但对应不同真实值
+            #    这里统一重编号，避免还原时冲突
+            global_mapping = {}
+            counters = {}  # {TYPE: 当前全局编号}
+            output_chunks = []
 
-        # 把问题本身的脱敏映射也并入全局映射
-        for placeholder, real_value in query_mapping.items():
-            global_mapping[placeholder] = real_value
-            match = re.match(r"\[([A-Z]+)_(\d+)\]", placeholder)
-            if match:
-                ptype = match.group(1)
-                num = int(match.group(2))
-                counters[ptype] = max(counters.get(ptype, 0), num + 1)
-
-        for doc, score in results:
-            content = doc.page_content
-            meta = doc.metadata or {}
-
-            # 还原 chunk 的 mapping：优先读加密字段，兼容旧版明文字段
-            chunk_mapping = {}
-            raw_encrypted = meta.get("mapping_encrypted", "")
-            if raw_encrypted:
-                # 新版：密文 mapping，先解密再反序列化
-                try:
-                    mapping_json = self._crypto.decrypt(raw_encrypted)
-                    chunk_mapping = json.loads(mapping_json)
-                except Exception:
-                    # 解密失败跳过，不阻断检索
-                    chunk_mapping = {}
-            elif meta.get("mapping"):
-                # 兼容旧数据：metadata 里还有旧的明文 "mapping" 字段
-                try:
-                    chunk_mapping = json.loads(meta["mapping"])
-                except (json.JSONDecodeError, TypeError):
-                    chunk_mapping = {}
-
-            # 对该 chunk 的占位符做全局重命名
-            for placeholder, real_value in chunk_mapping.items():
-                if placeholder not in content:
-                    continue
-                # 解析 [TYPE_N]
-                match = re.match(r"\[([A-Z]+)_(\d+)\]", placeholder)
+            # 把问题本身的脱敏映射也并入全局映射
+            for placeholder, real_value in query_mapping.items():
+                global_mapping[placeholder] = real_value
+                match = _PLACEHOLDER_RE.match(placeholder)
                 if match:
                     ptype = match.group(1)
-                    gidx = counters.get(ptype, 0)
-                    new_placeholder = f"[{ptype}_{gidx}]"
-                    content = content.replace(placeholder, new_placeholder)
-                    global_mapping[new_placeholder] = real_value
-                    counters[ptype] = gidx + 1
-                else:
-                    # 非标准占位符，直接保留
-                    global_mapping[placeholder] = real_value
+                    num = int(match.group(2))
+                    counters[ptype] = max(counters.get(ptype, 0), num + 1)
 
-            output_chunks.append({
-                "content": content,
-                "source": meta.get("source", "未知"),
-                "chunk_index": meta.get("chunk_index", -1),
-                "score": float(score),
-            })
+            for doc, score in results:
+                content = doc.page_content
+                meta = doc.metadata or {}
 
-        return {
-            "chunks": output_chunks,
-            "global_mapping": global_mapping,
-            "query_anonymized": anon_query,
-        }
+                # 还原 chunk 的 mapping：优先读加密字段，兼容旧版明文字段
+                chunk_mapping = {}
+                raw_encrypted = meta.get("mapping_encrypted", "")
+                if raw_encrypted:
+                    # 新版：密文 mapping，先解密再反序列化
+                    try:
+                        mapping_json = self._crypto.decrypt(raw_encrypted)
+                        chunk_mapping = json.loads(mapping_json)
+                    except Exception as e:
+                        # 解密失败必须可见（安全机制降级不能无告警）：
+                        # 跳过该 chunk 映射，但打印告警
+                        print(f"[KnowledgeBase] chunk mapping 解密失败，跳过该 chunk 映射：{type(e).__name__}: {e}")
+                        chunk_mapping = {}
+                elif meta.get("mapping"):
+                    # 兼容旧数据：metadata 里还有旧的明文 "mapping" 字段
+                    try:
+                        chunk_mapping = json.loads(meta["mapping"])
+                    except (json.JSONDecodeError, TypeError):
+                        chunk_mapping = {}
+
+                # 对该 chunk 的占位符做全局重命名
+                for placeholder, real_value in chunk_mapping.items():
+                    if placeholder not in content:
+                        continue
+                    # 解析 [TYPE_N]（旧）/[TYPE_N_nonce]（新）
+                    match = _PLACEHOLDER_RE.match(placeholder)
+                    if match:
+                        ptype = match.group(1)
+                        gidx = counters.get(ptype, 0)
+                        nonce = match.group(3)
+                        # 重编号时保留 nonce（新格式），旧格式保持原样
+                        new_placeholder = f"[{ptype}_{gidx}]" if nonce is None else f"[{ptype}_{gidx}_{nonce}]"
+                        content = content.replace(placeholder, new_placeholder)
+                        global_mapping[new_placeholder] = real_value
+                        counters[ptype] = gidx + 1
+                    else:
+                        # 非标准占位符，直接保留
+                        global_mapping[placeholder] = real_value
+
+                output_chunks.append({
+                    "content": content,
+                    "source": meta.get("source", "未知"),
+                    "chunk_index": meta.get("chunk_index", -1),
+                    "score": float(score),
+                })
+
+            return {
+                "chunks": output_chunks,
+                "global_mapping": global_mapping,
+                "query_anonymized": anon_query,
+            }
 
     # ──────────────────────────────────────────
     # 3. 还原：用映射表把 LLM 回答中的占位符换回真实值
@@ -385,43 +404,45 @@ class KnowledgeBase:
     # ──────────────────────────────────────────
     def list_documents(self) -> list:
         """列出知识库中所有文档的摘要信息。"""
-        self._ensure_ready()
-        from langchain_chroma import Chroma
+        with self._lock:
+            self._ensure_ready()
+            from langchain_chroma import Chroma
 
-        # 通过底层 collection 获取所有 metadata
-        collection = self._vectorstore._collection
-        all_data = collection.get(include=["metadatas"])
+            # 通过底层 collection 获取所有 metadata
+            collection = self._vectorstore._collection
+            all_data = collection.get(include=["metadatas"])
 
-        if not all_data or not all_data.get("metadatas"):
-            return []
+            if not all_data or not all_data.get("metadatas"):
+                return []
 
-        # 按文件名聚合
-        doc_stats = {}
-        for meta in all_data["metadatas"]:
-            if not meta:
-                continue
-            source = meta.get("source", "未知")
-            if source not in doc_stats:
-                doc_stats[source] = {
-                    "file": source,
-                    "chunks": 0,
-                    "added_at": meta.get("added_at", 0),
-                }
-            doc_stats[source]["chunks"] += 1
-            # 取最早的入库时间
-            added = meta.get("added_at", 0)
-            if added and (not doc_stats[source]["added_at"] or added < doc_stats[source]["added_at"]):
-                doc_stats[source]["added_at"] = added
+            # 按文件名聚合
+            doc_stats = {}
+            for meta in all_data["metadatas"]:
+                if not meta:
+                    continue
+                source = meta.get("source", "未知")
+                if source not in doc_stats:
+                    doc_stats[source] = {
+                        "file": source,
+                        "chunks": 0,
+                        "added_at": meta.get("added_at", 0),
+                    }
+                doc_stats[source]["chunks"] += 1
+                # 取最早的入库时间
+                added = meta.get("added_at", 0)
+                if added and (not doc_stats[source]["added_at"] or added < doc_stats[source]["added_at"]):
+                    doc_stats[source]["added_at"] = added
 
-        return list(doc_stats.values())
+            return list(doc_stats.values())
 
     # ──────────────────────────────────────────
     # 5. 删除文档
     # ──────────────────────────────────────────
     def remove_document(self, file_name: str) -> bool:
         """从知识库删除指定文档的所有 chunk。返回是否删除了内容。"""
-        self._ensure_ready()
-        return self._remove_by_source(file_name)
+        with self._lock:
+            self._ensure_ready()
+            return self._remove_by_source(file_name)
 
     def _remove_by_source(self, file_name: str) -> bool:
         """内部方法：按 source metadata 删除指定文档的所有向量。"""
@@ -436,7 +457,9 @@ class KnowledgeBase:
                 return False
             collection.delete(ids=results["ids"])
             return True
-        except Exception:
+        except Exception as e:
+            # 删除（写盘）失败必须可见：返回失败标志并打印，不能静默吞掉
+            print(f"[KnowledgeBase] 删除文档 {file_name} 失败：{type(e).__name__}: {e}")
             return False
 
     # ──────────────────────────────────────────
@@ -444,32 +467,36 @@ class KnowledgeBase:
     # ──────────────────────────────────────────
     def clear(self) -> bool:
         """清空整个知识库。"""
-        self._ensure_ready()
-        try:
-            collection = self._vectorstore._collection
-            all_data = collection.get(include=[])
-            if all_data and all_data.get("ids"):
-                collection.delete(ids=all_data["ids"])
-            return True
-        except Exception:
-            return False
+        with self._lock:
+            self._ensure_ready()
+            try:
+                collection = self._vectorstore._collection
+                all_data = collection.get(include=[])
+                if all_data and all_data.get("ids"):
+                    collection.delete(ids=all_data["ids"])
+                return True
+            except Exception as e:
+                # 清空（写盘）失败必须可见：返回失败标志并打印，不能静默吞掉
+                print(f"[KnowledgeBase] 清空知识库失败：{type(e).__name__}: {e}")
+                return False
 
     # ──────────────────────────────────────────
     # 7. 获取知识库统计
     # ──────────────────────────────────────────
     def get_stats(self) -> dict:
         """返回知识库总体统计信息。"""
-        self._ensure_ready()
-        try:
-            collection = self._vectorstore._collection
-            count = collection.count()
-            docs = self.list_documents()
-            return {
-                "total_chunks": count,
-                "total_documents": len(docs),
-                "documents": docs,
-                "persist_dir": self.persist_dir,
-                "embed_model": self.embed_model,
-            }
-        except Exception as e:
-            return {"error": str(e)}
+        with self._lock:
+            self._ensure_ready()
+            try:
+                collection = self._vectorstore._collection
+                count = collection.count()
+                docs = self.list_documents()
+                return {
+                    "total_chunks": count,
+                    "total_documents": len(docs),
+                    "documents": docs,
+                    "persist_dir": self.persist_dir,
+                    "embed_model": self.embed_model,
+                }
+            except Exception as e:
+                return {"error": str(e)}

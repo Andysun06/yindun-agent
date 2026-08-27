@@ -47,7 +47,7 @@ TEST_CASES = [
         "desc": "验证银行卡/IP/金额/API密钥/微信号/地址的识别",
         "text": (
             "服务器IP是192.168.1.100，API密钥sk-abcdef1234567890abcdef1234567890，"
-            "合同金额85万元，乙方账号6222020200112345678，"
+            "合同金额85万元，乙方账号6228480402564890018，"
             "对接微信zhangwei_88，地址北京市海淀区中关村大街1号。"
         ),
     },
@@ -61,7 +61,7 @@ TEST_CASES = [
         "desc": "一份合同文本，包含多种敏感信息混合",
         "text": (
             "甲方张伟（手机13812345678，邮箱zhangwei@qq.com），"
-            "合同金额85万元，乙方账号6222020200112345678，"
+            "合同金额85万元，乙方账号6228480402564890018，"
             "地址北京市海淀区中关村大街1号，对接微信zhangwei_88，"
             "身份证110101199001011234。"
         ),
@@ -83,9 +83,9 @@ TEST_CASES = [
 # 工具函数
 # ──────────────────────────────────────────
 def _count_placeholders(text):
-    """统计文本中占位符的数量，如 [PHONE_0] [NAME_1]"""
+    """统计文本中占位符的数量，兼容 [PHONE_0]（旧）与 [PHONE_0_a3f9]（新，含 nonce）"""
     import re
-    return len(re.findall(r"\[[A-Z]+_\d+\]", text))
+    return len(re.findall(r"\[[A-Z]+_\d+(?:_[a-z0-9]+)?\]", text))
 
 
 def _count_real_sensitive_in_output(text, mapping):
@@ -217,9 +217,67 @@ def main():
     except Exception as e:
         print(f"  ❌ 接口兼容性验证失败：{e}")
 
+    # === nonce 专项验证（防"还原劫持"）===
+    print("\n【nonce 占位符专项验证】")
+    nonce_checks = [
+        ("原文含字面量占位符不应被误还原", run_nonce_anti_hijack_test),
+        ("同批 nonce 不重复", run_nonce_uniqueness_test),
+        ("新格式解密失败保留占位符", run_new_format_failure_test),
+    ]
+    for desc, fn in nonce_checks:
+        try:
+            fn()
+        except Exception as e:
+            print(f"  ❌ {desc} 失败：{type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+
     print("\n" + "=" * 70)
     print("测试完成。")
     return 0 if passed_count == total else 1
+
+
+def run_nonce_anti_hijack_test():
+    """验证：原文含字面量占位符（如 [PHONE_0_a3f9]）时，deanonymize 不应误还原。"""
+    import re
+    engine = NewEngine()
+    text = "我的手机是13812345678，占位符样例[PHONE_0_a3f9]"
+    anon, box = engine.anonymize(text)
+    assert "13812345678" not in anon, "真实手机号应被替换"
+    assert "[PHONE_0_a3f9]" in anon, "原文字面量占位符应保持不变"
+    ph = next(p for p in box if p.startswith("[PHONE_"))
+    assert re.match(r"\[PHONE_\d+_[a-z0-9]{4}\]", ph), f"占位符应为含 nonce 新格式: {ph}"
+    restored = engine.deanonymize(anon, box)
+    assert restored == text, f"还原后应与原文一致: {restored}"
+    print(f"  脱敏后: {anon}")
+    print(f"  还原后: {restored}")
+    print("  ✅ 字面量占位符未被误还原（nonce 已将碰撞概率降为不可行）")
+
+
+def run_nonce_uniqueness_test():
+    """验证：同一批 anonymize 内 nonce 不重复。"""
+    import re
+    engine = NewEngine()
+    text = "手机号13812345678，备用13987654321，工作13711112222"
+    anon, box = engine.anonymize(text)
+    ph_list = [p for p in box if p.startswith("[PHONE_")]
+    assert len(ph_list) == 3, f"应识别 3 个手机号: {ph_list}"
+    nonces = [re.search(r"_([a-z0-9]{4})\]$", p).group(1) for p in ph_list]
+    assert len(nonces) == len(set(nonces)), f"同批 nonce 不应重复: {nonces}"
+    print(f"  同批 {len(ph_list)} 个 PHONE 占位符 nonce 互不相同: {nonces}")
+    print("  ✅ 同批 nonce 去重通过")
+
+
+def run_new_format_failure_test():
+    """验证：新格式占位符解密失败时保留占位符，不写入密文垃圾。"""
+    engine = NewEngine()
+    text = "电话是[PHONE_0_a3f9]，请回拨。"
+    mapping = {"[PHONE_0_a3f9]": "not-a-valid-ciphertext"}
+    default_restored = engine.deanonymize(text, mapping)
+    strict_restored = engine.deanonymize(text, mapping, strict=True)
+    assert default_restored == text, f"默认模式应保留占位符: {default_restored}"
+    assert strict_restored == text, f"strict 模式应保留占位符: {strict_restored}"
+    print("  ✅ 默认与 strict 均保留占位符，不写入密文垃圾")
 
 
 if __name__ == "__main__":

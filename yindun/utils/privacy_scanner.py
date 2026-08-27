@@ -103,7 +103,11 @@ class PrivacyScanner:
                                 continue
                             occupied.append((m.start(), m.end()))
                             matched = m.group(1) if m.lastindex and m.group(1) else m.group(0)
-                            snippet = self._build_snippet(line, m.start(), m.end())
+                            snippet = self._build_snippet(
+                                line, m.start(), m.end(),
+                                entity_type=entity_type,
+                                masked_text=self._mask_sensitive(entity_type, matched),
+                            )
                             results.append(PrivacyScanResult(
                                 entity_type=entity_type,
                                 group=self._groups.get(entity_type, "未分组"),
@@ -117,11 +121,18 @@ class PrivacyScanner:
                     else:
                         # 无捕获组实体：整段匹配
                         for m in re.finditer(pattern, line, flags):
+                            matched = m.group(0)
+                            # (P1 加固) 复用引擎的命中后精验（PHONE 位数 / BANKCARD Luhn / IDCARD 可选校验位）
+                            if not self._is_valid(entity_type, matched):
+                                continue
                             if self._overlaps(occupied, m.start(), m.end()):
                                 continue
                             occupied.append((m.start(), m.end()))
-                            matched = m.group(0)
-                            snippet = self._build_snippet(line, m.start(), m.end())
+                            snippet = self._build_snippet(
+                                line, m.start(), m.end(),
+                                entity_type=entity_type,
+                                masked_text=self._mask_sensitive(entity_type, matched),
+                            )
                             results.append(PrivacyScanResult(
                                 entity_type=entity_type,
                                 group=self._groups.get(entity_type, "未分组"),
@@ -147,9 +158,10 @@ class PrivacyScanner:
             # 计算起始行号
             start_line = line_start + text[:m.start()].count("\n")
             end_line = line_start + text[:m.end()].count("\n")
-            # 跨行 snippet 取首行 + 省略号
+            # 跨行 snippet 取首行 + 省略号；单行内联密钥不能暴露密钥体，一律掩码
             first_line = text[m.start():m.end()].split("\n")[0]
-            snippet = first_line[:40] + "...（跨多行）" if len(first_line) > 40 else first_line + "...（跨多行）"
+            masked_line = self._mask_sensitive("PRIVATE_KEY", first_line)
+            snippet = masked_line[:40] + "...（跨多行）" if len(masked_line) > 40 else masked_line + "...（跨多行）"
             results.append(PrivacyScanResult(
                 entity_type="PRIVATE_KEY",
                 group=self._groups.get("PRIVATE_KEY", "密钥"),
@@ -170,31 +182,96 @@ class PrivacyScanner:
         return False
 
     @staticmethod
-    def _build_snippet(line, start, end, context=20) -> str:
-        """构建命中上下文片段（前后各 context 字符）"""
+    def _is_valid(entity_type: str, text: str) -> bool:
+        """复用 PrivacyEngine 的命中后精验（PHONE 位数 / BANKCARD Luhn / IDCARD 可选校验位）。"""
+        if entity_type == "PHONE":
+            return PrivacyEngine._is_valid_phone(text)
+        if entity_type == "BANKCARD":
+            return PrivacyEngine._luhn_valid(text)
+        if entity_type == "IDCARD" and PrivacyEngine.IDCARD_CHECKSUM:
+            return PrivacyEngine._idcard_valid(text)
+        return True
+
+    def _build_snippet(self, line, start, end, entity_type=None, masked_text=None, context=20) -> str:
+        """构建命中上下文片段（前后各 context 字符）。
+
+        命中段以掩码替换；随后对整段再做一次兜底掩码，确保上下文中的其他
+        敏感值（手机号/邮箱/密钥等）也不以明文形式进入报告。
+        """
         snippet_start = max(0, start - context)
         snippet_end = min(len(line), end + context)
         prefix = "..." if snippet_start > 0 else ""
         suffix = "..." if snippet_end < len(line) else ""
-        return prefix + line[snippet_start:snippet_end] + suffix
+        before = line[snippet_start:start]
+        after = line[end:snippet_end]
+        masked = masked_text if masked_text is not None else line[start:end]
+        combined = prefix + before + masked + after + suffix
+        return self._mask_remaining_sensitive(combined)
+
+    def _mask_remaining_sensitive(self, text: str) -> str:
+        """对片段中剩余可识别的敏感值做掩码（命中段已掩码，不会二次匹配）"""
+        for entity_type in self._SCAN_ORDER + ["PRIVATE_KEY"]:
+            pattern = self._patterns[entity_type]
+            try:
+                flags = re.IGNORECASE if entity_type in self._ignorecase_keys else 0
+                if entity_type == "PRIVATE_KEY":
+                    flags |= re.DOTALL
+                compiled = re.compile(pattern, flags)
+                text = compiled.sub(
+                    lambda m: self._mask_sensitive(entity_type, m.group(0))
+                    if self._is_valid(entity_type, m.group(0))
+                    else m.group(0),
+                    text,
+                )
+            except re.error:
+                continue
+        return text
+
+    @staticmethod
+    def _mask_fixed(text: str, head: int, tail: int) -> str:
+        """保留前 head 后 tail 字符，中段以 * 掩码"""
+        if len(text) <= head + tail:
+            return text[:head] + "***"
+        return text[:head] + "*" * (len(text) - head - tail) + text[-tail:]
 
     @staticmethod
     def _mask_sensitive(entity_type: str, text: str) -> str:
-        """对绝密级实体做掩码处理，避免审计日志落盘泄露"""
+        """对命中实体做掩码处理，避免报告/导出 JSON 泄露敏感明文
+
+        覆盖全部扫描实体类型：手机号/邮箱/密钥/证件/地址等一律以掩码形式呈现，
+        任一报告片段不含完整敏感值。
+        """
+        if not text:
+            return text
+        # 私钥：整块占位，不展示任何片段
         if entity_type == "PRIVATE_KEY":
-            return "[PEM 私钥块]"  # 已有逻辑
+            return "[PEM 私钥块]"
+        # JWT 三段式：只保留首段前 5 字符
         if entity_type == "JWT":
-            # JWT 三段式，只保留首段前 5 字符
             parts = text.split(".")
             if len(parts) == 3:
                 return parts[0][:5] + "***.***.***"
             return text[:5] + "***"
+        # 身份证/银行卡：保留前4后4（已有逻辑）
         if entity_type in ("IDCARD", "BANKCARD"):
-            # 身份证/银行卡：保留前 4 后 4，中间掩码
-            if len(text) >= 8:
-                return text[:4] + "*" * (len(text) - 8) + text[-4:]
-            return text[:2] + "***"
-        return text
+            return PrivacyScanner._mask_fixed(text, 4, 4)
+        # 手机号：保留前3后4（138****1234）；先规范化（去分隔符/全角转半角）再掩码，
+        # 保证 139-8888-9999 / １３８... 也能按 前3后4 格式脱敏
+        if entity_type == "PHONE":
+            normalized = PrivacyEngine._normalize_digits(text)
+            return PrivacyScanner._mask_fixed(normalized, 3, 4)
+        # 邮箱：保留首字符 + 域名（a***@example.com）
+        if entity_type == "EMAIL":
+            if "@" in text:
+                local, domain = text.split("@", 1)
+                head = local[0] if local else "x"
+                return f"{head}***@{domain}"
+            return PrivacyScanner._mask_fixed(text, 2, 2)
+        # API 密钥 / Token：保留前4后4
+        if entity_type in ("APIKEY", "BEARER", "ACCESS_TOKEN"):
+            return PrivacyScanner._mask_fixed(text, 4, 4)
+        # 其余类型（地址/姓名/医疗号/IP/金额/微信/路径等）及未知兜底：保留首尾各2
+        return PrivacyScanner._mask_fixed(text, 2, 2)
 
     def generate_report(self, results: list) -> str:
         """
@@ -258,7 +335,7 @@ if __name__ == "__main__":
     scanner = PrivacyScanner()
     test_text = (
         "员工老王邮箱 test@qq.com，手机 13988889999。\n"
-        "签约金额 85万元，银行卡 6222020200112345678。\n"
+        "签约金额 85万元，银行卡 6228480402564890018。\n"
         "身份证号 110101199003071234，IP 192.168.1.100。"
     )
     results = scanner.scan(test_text, page="1", line_start=1)
