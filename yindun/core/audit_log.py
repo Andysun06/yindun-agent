@@ -7,6 +7,7 @@ import json
 import hmac
 import hashlib
 import os
+import re
 import secrets
 import threading
 from datetime import datetime
@@ -19,8 +20,23 @@ _HMAC_KEY = b""
 _HMAC_KEY_LOADED = False
 
 
+def _audit_key_file() -> Path:
+    """审计 HMAC 密钥存储位置。
+
+    与 SecretManager 保持一致：存放在【用户目录】而非项目目录，
+    避免"密钥与它要保护的审计日志同盘"导致防篡改能力被绕过。
+    """
+    if os.name == "nt":
+        base = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
+        return base / "Yindun" / ".audit_hmac_key"
+    return Path.home() / ".config" / "yindun" / ".audit_hmac_key"
+
+
 def _get_hmac_key() -> Optional[bytes]:
-    """加载审计 HMAC 密钥（32 字节）；首次运行自动生成并持久化到 yindun/cache/.audit_hmac_key。
+    """加载审计 HMAC 密钥（32 字节）；首次运行自动生成并持久化到用户目录。
+
+    ★ 安全加固（第5步收尾）：密钥由 yindun/cache/.audit_hmac_key 迁移至用户目录。
+    迁移必须【复制同一把钥匙】而非重新生成——换了密钥会导致历史审计链校验全部失败。
 
     加载失败不静默：打印错误并返回 None，由调用方显式降级。
     密钥绝不明文写入 audit_chain.json 本身。
@@ -28,10 +44,22 @@ def _get_hmac_key() -> Optional[bytes]:
     global _HMAC_KEY, _HMAC_KEY_LOADED
     if _HMAC_KEY_LOADED:
         return _HMAC_KEY or None
-    key_file = Path(__file__).resolve().parent.parent / "cache" / ".audit_hmac_key"
+    key_file = _audit_key_file()
+    legacy_file = Path(__file__).resolve().parent.parent / "cache" / ".audit_hmac_key"
     try:
         if key_file.exists():
             data = key_file.read_bytes()
+        elif legacy_file.exists():
+            # 旧位置存在 → 迁移（复制原钥匙，保持历史审计链可校验）
+            data = legacy_file.read_bytes()
+            key_file.parent.mkdir(parents=True, exist_ok=True)
+            key_file.write_bytes(data)
+            try:
+                os.chmod(key_file, 0o600)
+            except OSError:
+                pass
+            print(f"[AuditLog] 审计 HMAC 密钥已迁移至：{key_file}")
+            print(f"[AuditLog] 旧文件可手动删除：{legacy_file}")
         else:
             data = secrets.token_bytes(32)
             key_file.parent.mkdir(parents=True, exist_ok=True)
@@ -75,6 +103,7 @@ class AuditEventType(Enum):
     SESSION_START = "session_start"
     SESSION_END = "session_end"
     WORKFLOW_STEP_EXECUTED = "workflow_step_executed"
+    CHAIN_RESTART = "chain_restart"   # 审计链重启标记（密钥轮换后重开新链）
 
 
 class AuditSeverity(Enum):
@@ -139,6 +168,49 @@ class AuditEntry:
         return entry
 
 
+def _mask_text(text: str) -> str:
+    """对任意文本中的敏感实体做掩码（审计落盘前统一调用）"""
+    if not text or not isinstance(text, str):
+        return text
+    try:
+        from yindun.core.privacy_engine import PrivacyEngine
+        from yindun.utils.privacy_scanner import PrivacyScanner
+        CAPTURED = ("WECHAT", "MEDICAL_RECORD", "MEDICAL_INSURANCE",
+                    "BEARER", "ACCESS_TOKEN")
+        for etype, pat in PrivacyEngine.PATTERNS.items():
+            flags = (re.DOTALL if etype == "PRIVATE_KEY"
+                     else (re.IGNORECASE if etype in PrivacyEngine._IGNORECASE_KEYS else 0))
+            try:
+                if etype in CAPTURED:
+                    def _rep(m, _e=etype):
+                        if not (m.lastindex and m.group(1)):
+                            return m.group(0)
+                        return m.group(0).replace(
+                            m.group(1), PrivacyScanner._mask_sensitive(_e, m.group(1)))
+                    text = re.sub(pat, _rep, text, flags=flags)
+                else:
+                    text = re.sub(
+                        pat,
+                        lambda m, _e=etype: PrivacyScanner._mask_sensitive(_e, m.group(0)),
+                        text, flags=flags)
+            except re.error:
+                continue
+    except Exception:
+        pass
+    return text
+
+
+def _mask_details(obj):
+    """递归对 details 结构中的字符串做掩码"""
+    if isinstance(obj, str):
+        return _mask_text(obj)
+    if isinstance(obj, dict):
+        return {k: _mask_details(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_mask_details(v) for v in obj]
+    return obj
+
+
 class AuditLog:
     _instance = None
 
@@ -190,6 +262,7 @@ class AuditLog:
     def add_entry(self, event_type: AuditEventType, severity: AuditSeverity,
                   message: str, details: dict = None):
         try:
+            details = _mask_details(details)  # ★ 落盘前统一掩码，杜绝敏感明文入审计
             with self._lock:
                 entry = AuditEntry(
                     event_type=event_type,

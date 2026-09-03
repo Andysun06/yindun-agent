@@ -43,6 +43,7 @@ from yindun.gui.data_dashboard import DataDashboard
 from yindun.gui.audit_panel import AuditPanel
 from yindun.gui.workflow_panel import WorkflowPanel
 from yindun.core.audit_log import AuditLog
+from yindun.core.privacy_engine import PrivacyEngine
 
 COLLAPSED_H = 44  # 极致折叠挂件高度
 EXPANDED_W, EXPANDED_H = 420, 640
@@ -1086,6 +1087,8 @@ class MainWindow(QWidget):
                     "updated_at": str(item.get("updated_at", "")),
                     "messages": safe_messages,
                     "attachment_fulltext": safe_attachments,
+                    # ★ 跨轮脱敏映射：随会话持久化，加载时带入，供历史消息渲染还原
+                    "box_mapping": item.get("box_mapping") or {},
                 }
             self._sessions = sessions
             sid = payload.get("current_session_id")
@@ -1231,6 +1234,9 @@ class MainWindow(QWidget):
         session = self._sessions.get(sid)
         if session is None: return
         self._current_session_id = sid
+        # ★ 清空上一会话的附件快照与未发送挂载列表，避免跨会话数据串联
+        self._attachment_fulltext_snapshot = None
+        self._clear_attachments()
         # ★ 审计：记录会话开始
         try:
             _audit = AuditLog()
@@ -1250,6 +1256,13 @@ class MainWindow(QWidget):
             if role == "user":
                 content = self._format_restored_attachment_message(content)
             if role in ("user", "assistant"):
+                # ★ 渲染前用该会话的映射表还原脱敏占位符，避免满屏 [PHONE_0_xxxx]
+                _box = session.get("box_mapping", {}) or {}
+                if _box and content:
+                    try:
+                        content = PrivacyEngine().deanonymize(content, _box)
+                    except Exception:
+                        pass
                 self.chat_display.add_message_bubble(role, content, self.width())
         self._persist_sessions_store()
         self._refresh_session_list()

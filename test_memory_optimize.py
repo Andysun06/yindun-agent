@@ -115,22 +115,26 @@ def test_05_cross_turn_mapping_restore():
     engine = PrivacyEngine()
     # 第1轮：用户输入含手机号
     anon1, box1 = engine.anonymize("我的电话是13800138000")
-    assert "[PHONE_0]" in anon1
+    # 占位符为含随机 nonce 的新格式 [PHONE_0_abcd]（防占位符劫持），
+    # 因此【不要硬编码 [PHONE_0]】，须从映射表取实际占位符
+    ph = next(iter(box1))
+    assert ph.startswith("[PHONE_"), f"未生成手机号占位符: {anon1}"
+    assert len(ph.split("_")) == 3, f"应为含 nonce 的新格式占位符: {ph}"
     # 模拟 worker 累积映射
     box_mapping = {}
     merged1 = {**box_mapping, **box1}
-    reply1 = "好的，已记录你的电话[PHONE_0]"
+    reply1 = f"好的，已记录你的电话{ph}"
     restored1 = engine.deanonymize(reply1, merged1)
     assert "13800138000" in restored1, f"第1轮还原失败: {restored1}"
     box_mapping.update(box1)  # 累积
 
     # 第2轮：新的 worker 从会话恢复 box_mapping
     box_mapping_restore = dict(box_mapping)
-    # 第2轮 LLM 引用了历史占位符 [PHONE_0]（来自历史消息）
-    reply2 = "你之前说电话是[PHONE_0]，对吗？"
+    # 第2轮 LLM 引用了历史占位符（来自历史消息）
+    reply2 = f"你之前说电话是{ph}，对吗？"
     restored2 = engine.deanonymize(reply2, box_mapping_restore)
     assert "13800138000" in restored2, f"跨轮还原失败: {restored2}"
-    print(f"✅ 测试5通过: 跨轮映射累积与还原正常（第2轮成功还原历史占位符）")
+    print(f"✅ 测试5通过: 跨轮映射累积与还原正常（占位符 {ph}，第2轮成功还原历史占位符）")
 
 
 def test_06_memory_serialization_regression():

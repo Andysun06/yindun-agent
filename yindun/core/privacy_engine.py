@@ -73,6 +73,16 @@ class PrivacyEngine:
         "MONEY":    "内部",   # 金额（视场景可调）
         "NAME":     "内部",   # 人名
         "FILE_PATH":    "内部",   # 敏感文件路径
+        "IDCARD15": "绝密",   # 15 位一代身份证（身份证号需人工核验）
+        "PASSWORD": "绝密",   # 口令字段（password=...）
+        "CONN_STRING": "绝密",   # 连接串内嵌密码
+        "CLOUD_KEY": "绝密",   # 云平台密钥（GitHub/AWS/Slack/Firebase/SendGrid/Stripe）
+        "CREDIT_CODE": "机密",   # 统一社会信用代码
+        "PASSPORT": "机密",   # 护照 / 港澳通行证 / 台胞证
+        "PLATE":    "机密",   # 车牌号
+        "IPV6":     "内部",   # IPv6 地址
+        "MAC":      "内部",   # 网卡 MAC 地址
+        "SENSITIVE_PATH": "内部",   # 业务敏感路径
     }
 
     # 分级权重（用于风险评分）
@@ -86,12 +96,12 @@ class PrivacyEngine:
     # 业务分组（按数据所属业务域归类，与风险分级是正交维度）
     # - 分级回答"多敏感"，分组回答"属于哪类业务数据"
     ENTITY_GROUPS = {
-        "PII":   ["PHONE", "EMAIL", "IDCARD", "NAME", "ADDRESS", "WECHAT", "IP"],  # WECHAT 改归 PII（个人社交账号）；IP 属个人/设备网络标识
+        "PII":   ["PHONE", "EMAIL", "IDCARD", "IDCARD15", "PASSPORT", "PLATE", "IPV6", "MAC", "NAME", "ADDRESS", "WECHAT", "IP"],  # WECHAT 改归 PII（个人社交账号）；IP 属个人/设备网络标识
         "PHI":   ["MEDICAL_RECORD", "MEDICAL_INSURANCE"],
-        "财务":  ["BANKCARD", "MONEY"],
-        "密钥":  ["APIKEY", "PRIVATE_KEY", "JWT"],   # 高危密钥凭证
+        "财务":  ["BANKCARD", "CREDIT_CODE", "MONEY"],
+        "密钥":  ["APIKEY", "PRIVATE_KEY", "JWT", "CLOUD_KEY", "PASSWORD", "CONN_STRING"],   # 高危密钥凭证
         "Token": ["BEARER", "ACCESS_TOKEN"],
-        "路径":  ["FILE_PATH"],
+        "路径":  ["FILE_PATH", "SENSITIVE_PATH"],
     }
 
     # 实体到分组的反向映射（自动生成，便于 O(1) 查询）
@@ -106,42 +116,97 @@ class PrivacyEngine:
     #    顺序很重要：先匹配长格式/严格格式，后匹配短格式，避免相互覆盖
     # ──────────────────────────────────────────
     # 需要 IGNORECASE 标志的实体（PRIVATE_KEY 单独走 DOTALL 分支）
-    _IGNORECASE_KEYS = {"APIKEY", "MEDICAL_RECORD", "BEARER", "ACCESS_TOKEN", "FILE_PATH"}
+    _IGNORECASE_KEYS = {"APIKEY", "MEDICAL_RECORD", "BEARER", "ACCESS_TOKEN", "FILE_PATH",
+                        "PASSWORD", "CONN_STRING", "IPV6", "MAC", "SENSITIVE_PATH"}
 
     PATTERNS = {
         # === 原有 3 类（保持兼容） ===
         # (P1 加固) IDCARD：加 lookaround 边界，避免从更长数字串中截取 18 位误检
-        "IDCARD": r"(?<![\dXx])[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?![\dXx])",
+        # (A6) 允许 4 位分组的空格/连字符（如 "110101 19900307 2316"）
+        "IDCARD": r"(?<![\dXx])[1-9]\d{5}[\s\-]?(?:19|20)\d{2}[\s\-]?(?:0[1-9]|1[0-2])[\s\-]?(?:0[1-9]|[12]\d|3[01])[\s\-]?\d{3}[\dXx](?![\dXx])",
         # (P1 加固) PHONE：加边界；支持 '-'/空格/全角'-' 分隔符分支与全角数字（１３８...）。
+        # (A4) 支持 +86 / 0086 国际前缀（捕获组1 = 纯号码，前缀 +86 保留只脱敏号码）。
         # 命中后由 _normalize_digits + _is_valid_phone 程序化校验（精确 11 位），避免截取/漏检。
-        "PHONE": r"(?<![\d])((?:1|１)[3-9３-９][\d０-９\s\-－]{2,13}[\d０-９])(?![\d])",
-        "EMAIL": r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
+        "PHONE": r"(?<![\d])(?:\+?86[-\s]?|0086[-\s]?)?((?:1|１)[3-9３-９][\d０-９\s\-－]{2,13}[\d０-９])(?![\d])",
+        # (A5) EMAIL 支持中文/国际化域名（如 li_si@公司.cn）
+        "EMAIL": r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]*[a-zA-Z\u4e00-\u9fa5]{2,}",
 
         # === 新增 6 类（正则） ===
         # 银行卡号：16-19 位连续数字，且以常见银行前缀开头
         # 前缀参考：62(银联)/4(Visa)/5(万事达)/30,36,38(大莱)/35(JCB)/37(运通)
+        # (A6) 允许 4 位分组的空格/连字符（如 "6228 4804 0256 4890 018"）。
         # 注意：用 lookaround 替代 \b，因为 \b 在"中文+数字"交界处不触发
-        "BANKCARD": r"(?<![\d])(?:62\d{14,17}|4\d{15}(?:\d{3})?|5\d{15}|3[0-8]\d{13}|35\d{14}|37\d{13})(?![\d])",
+        "BANKCARD": r"(?<![\d])(?:62\d{2}(?:[\s\-]?\d{4}){3}[\s\-]?\d{0,3}"
+                    r"|4\d{3}(?:[\s\-]?\d{4}){3}[\s\-]?\d{0,3}"
+                    r"|5\d{3}(?:[\s\-]?\d{4}){3}"
+                    r"|3[0-8]\d{2}(?:[\s\-]?\d{4}){2}[\s\-]?\d{0,6}"
+                    r"|35\d{2}(?:[\s\-]?\d{4}){3}"
+                    r"|37\d{2}(?:[\s\-]?\d{4}){3})(?![\d])",
+
+        # === 新增证件/组织（A 组补充 + B 组新增） ===
+        # (B1) 15 位一代身份证（含日期段校验，非裸 \d{15}）；命中后由
+        # _validate_entity 校验"前文触发词 || 有效地区码"，避免误伤普通数字串
+        "IDCARD15": r"(?<!\d)[1-9]\d{5}\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}(?!\d)",
+        # (B2) 统一社会信用代码（GB32100-2015，18 位，含 登记管理部门/机构类别 字符集过滤）
+        "CREDIT_CODE": r"(?<![A-Za-z0-9])[0-9A-HJ-NPQRTUWXY]{2}\d{6}[0-9A-HJ-NPQRTUWXY]{10}(?![A-Za-z0-9])",
+        # (B3) 车牌号（民用/新能源/使领馆）；命中后由 _validate_entity 负向判定
+        # 前文不含"型号|编号|订单|SKU"，避免误伤普通产品编号
+        "PLATE": r"(?<![A-Za-z0-9])[京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤青藏川宁琼]"
+                 r"[A-HJ-NP-Z][A-HJ-NP-Z0-9]{4,6}(?![A-Za-z0-9])",
+        # (B4) 护照/通行证/台胞证：第一段整体匹配；第二段带捕获组，仅换证件号码、保留前缀
+        "PASSPORT": r"(?<![A-Za-z0-9])[EDGPGS][A-Z0-9]\d{7}(?![A-Za-z0-9])"
+                    r"|(?:护照号?|通行证号?|台胞证)\s*[:：]?\s*([A-Za-z0-9]{8,10})",
 
         # IPv4 地址（前后不能是数字或点，避免误匹配版本号等）
         "IP": r"(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(?![\d.])",
 
-        # 金额：¥100,000 / 85万元 / 3.5亿 / 12000元 / 12.5万
-        "MONEY": r"(?:¥|￥)\s?\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d{1,3}(?:,\d{3})*(?:\.\d+)?\s?(?:万元|亿元|万元整|元|亿|万)",
+        # (B5) IPv6 地址（至少 4 段，避免误伤 HH:MM:SS 时间如 14:30:25）
+        "IPV6": r"(?<![A-Za-z0-9:])(?:[0-9A-Fa-f]{1,4}:){3,7}[0-9A-Fa-f]{1,4}(?![A-Za-z0-9:])",
+        # (B6) 网卡 MAC 地址（xx:xx:xx:xx:xx:xx 或 xx-xx-xx-xx-xx-xx）
+        "MAC": r"(?<![A-Za-z0-9])(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}(?![A-Za-z0-9])",
+
+        # 金额：¥100,000 / 85万元 / 3.5亿 / 12.5万 / 价格 500元
+        # 说明（第5步精修）：分支2 加左边界 (?<![\d.,]) 并【恢复裸"元"】。
+        #   - 左边界阻止"转账金额 1250000 元"这类普通金额被从长数字串中间截取命中（E 组负样本零误伤）；
+        #   - 裸"元"恢复"价格 500元 / 应付 88 元"的脱敏能力（多字单位 万元/亿元/万元整 仍覆盖大额）；
+        #   - 纯数字无单位（如"1250000 已到账"）属有意取舍：加纯数字规则会误伤业务数字，故不匹配。
+        "MONEY": r"(?:¥|￥)\s?\d{1,3}(?:,\d{3})*(?:\.\d+)?|(?<![\d.,])\d{1,3}(?:,\d{3})*(?:\.\d+)?\s?(?:万元|亿元|万元整|元|万|亿)|(?i:\b(?:USD|CNY|RMB|EUR|GBP|JPY|HKD|RUB|KRW)\s?\d{1,3}(?:,\d{3})*(?:\.\d+)?)",
 
         # API 密钥：sk-xxx / api_key=xxx / APIKEY: xxx
         # 用 lookaround 替代 \b，适配中文前缀场景（如"密钥sk-xxx"）
-        # (P1 加固) sk- 分支字符集加入 -/_，覆盖 sk-proj-xxx 系列；api[_-]?key= 分支值字符集同样允许 -/_
-        "APIKEY": r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}(?![A-Za-z0-9])|api[_-]?key\s*[=:]\s*['\"]?[A-Za-z0-9_-]{16,}['\"]?",
+        # (P1 加固) APIKEY：sk- 分支字符集加入 -/_，覆盖 sk-proj-xxx 系列；api[_-]?key= 分支值字符集同样允许 -/_
+        # (A1) sk- 分支最小长度由 20 降到 8，并显式支持 sk-proj- 前缀
+        "APIKEY": r"(?<![A-Za-z0-9])sk-(?:proj-)?[A-Za-z0-9_-]{8,}(?![A-Za-z0-9])"
+                  r"|api[_-]?key\s*[=:]\s*['\"]?[A-Za-z0-9_-]{16,}['\"]?",
+
+        # (B7) 口令字段（password=...）；带捕获组，仅换口令值、保留字段名
+        "PASSWORD": r"(?i)(?:password|passwd|pwd|passphrase)\s*[=:]\s*['\"]?([^\s'\"]{4,})['\"]?",
+        # (B8) 连接串内嵌密码（user:password@）；带捕获组，仅换密码段
+        "CONN_STRING": r"(?i)\b(?:mysql|postgres(?:ql)?|mongodb|redis|amqp|ftp|https?)://[^\s:/@]+:([^\s@/]{3,})@",
+        # (B9) 云平台密钥前缀（GitHub/AWS/Slack/Firebase/SendGrid/Stripe）
+        "CLOUD_KEY": r"(?<![A-Za-z0-9])(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]{16,}"
+                     r"|AKIA[0-9A-Z]{16}"
+                     r"|xox[baprs]-[A-Za-z0-9-]{10,}"
+                     r"|AIza[0-9A-Za-z_\-]{35}"
+                     r"|SG\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}"
+                     r"|sk_(?:live|test)_[A-Za-z0-9]{16,}",
+        # (B10) 业务敏感路径（关键词判定，非后缀判定）：路径 + 业务敏感词
+        "SENSITIVE_PATH": r"(?:[A-Za-z]:[\\/]|/home/|/data/|/var/|~/)[^\s，。；\"']*?"
+                          r"(?:薪资|工资|薪酬|员工|人事|花名册|合同|客户|财务|账目|密码|口令|征信|病历|体检)[^\s，。；\"']*",
 
         # 微信号：需"微信"前缀触发，避免误伤（微信号格式：字母开头 6-20 位）
         "WECHAT": r"(?:微信|微信号|wechat|WeChat)\s*[:：]?\s*([a-zA-Z][a-zA-Z0-9_-]{5,19})",
 
         # 地址：省市区+路+号 模式（覆盖最常见的中文办公地址）
-        "ADDRESS": r"(?:北京|上海|天津|重庆|河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|海南|四川|贵州|云南|陕西|甘肃|青海|台湾|内蒙古|广西|西藏|宁夏|新疆|香港|澳门)"
-                   r"(?:省|市|自治区|特别行政区)?"
-                   r"(?:[^\s，。、；]{2,8}(?:市|区|县|旗))?"
-                   r"(?:[^\s，。、；]{2,15}(?:路|街|道|巷|弄|号|幢|栋|单元|室|大厦|广场|大楼))",
+        # (放宽) 省份为可选（支持"海淀区中关村大街1号"无省前缀）；
+        # 必需出现"市/区/县/旗"行政区划（分支1），或【带数字】的门牌号（分支2），
+        # 避免误伤"订单号/型号/座机号"这类以"号/街/路"结尾的普通业务词
+        "ADDRESS": r"(?:(?:北京|上海|天津|重庆|河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|海南|四川|贵州|云南|陕西|甘肃|青海|台湾|内蒙古|广西|西藏|宁夏|新疆|香港|澳门)(?:省|市|自治区|特别行政区)?)?"
+                   r"(?:(?:[^\s，。、；]{2,8}(?:市|区|县|旗))"
+                   r"(?:[^\s，。、；]{1,20}(?:路|街|道|巷|弄|大道)?)"
+                   r"(?:[^\s，。、；]{0,15}(?:号|幢|栋|单元|室|大厦|广场|大楼))?"
+                   r"|(?:[^\s，。、；]{2,15}(?:路|街|道|巷|弄))?"
+                   r"(?:[^\s，。、；]{0,9}\d[^\s，。、；]{0,3}(?:号|幢|栋|单元|室)))",
 
         # === PHI 个人健康信息 ===
         # 病历号：常见前缀 MRN/BLH/病历号/病案号 + 数字
@@ -166,13 +231,14 @@ class PrivacyEngine:
         # === Token 组（API 凭证） ===
         # Bearer token：Authorization: Bearer xxx / Bearer xxx
         # 捕获组只取 token 部分（不含 "Bearer " 前缀）
-        # token 长度限制 20+，避免误匹配短字符串
-        "BEARER": r"(?i)(?:Authorization\s*[:：]\s*Bearer\s+|Bearer\s+)([A-Za-z0-9_\-\.=]{20,})",
+        # token 长度限制：默认 24+（高置信），应需求收紧到 8+（短 token 也识别，交由人工二次确认）
+        # (A2) Bearer token 最小长度 20 → 8
+        "BEARER": r"(?i)(?:Authorization\s*[:：]\s*Bearer\s+|Bearer\s+)([A-Za-z0-9_\-\.=]{8,})",
 
         # access_token / refresh_token：access_token=xxx / refresh_token: xxx
         # 捕获组只取 token 值（不含 key 名）
-        # 长度限制 16+，覆盖常见 JWT 和随机字符串
-        "ACCESS_TOKEN": r"(?i)(?:access_token|refresh_token|id_token|auth_token)\s*[=:]\s*['\"]?([A-Za-z0-9_\-\.=]{16,})['\"]?",
+        # (A3) 最小长度由 16 降到 8，并纳入 token|secret 字面
+        "ACCESS_TOKEN": r"(?i)(?:access_token|refresh_token|id_token|auth_token|token|secret)\s*[=:]\s*['\"]?([A-Za-z0-9_\-\.=]{8,})['\"]?",
 
         # === 路径组 ===
         # 敏感文件路径：覆盖常见密钥/配置/凭据文件
@@ -197,6 +263,16 @@ class PrivacyEngine:
     # ──────────────────────────────────────────
     # 1.2 命中后程序化校验（正则粗筛 + 算法精验）
     # ──────────────────────────────────────────
+    # 15 位身份证：前文触发词（用于 IDCARD15 上下文精验）
+    _IDCARD15_TRIGGERS = ("身份证", "证件号", "证件号码", "身份证号", "居民身份", "身份证号码")
+    # 15 位身份证：前两位地区码须落在有效省份码集合（避免误伤普通 15 位数字串）
+    _PROVINCE_CODES = {"11", "12", "13", "14", "15", "21", "22", "23", "31", "32", "33",
+                       "34", "35", "36", "37", "41", "42", "43", "44", "45", "46", "50",
+                       "51", "52", "53", "54", "61", "62", "63", "64", "65", "71", "81",
+                       "82", "91"}
+    # 车牌号：前文含这些词时判为产品编号而非车牌（负向判定）
+    _PLATE_BLOCK_WORDS = ("型号", "编号", "订单", "SKU", "sku", "批号")
+
     @staticmethod
     def _normalize_digits(text: str) -> str:
         """统一数字字符：全角数字→半角，其余非数字字符（分隔符等）剔除。"""
@@ -242,14 +318,33 @@ class PrivacyEngine:
         return expect == last
 
     @staticmethod
-    def _validate_entity(key: str, match: str) -> bool:
-        """正则命中后的精验调度：PHONE 位数、BANKCARD Luhn、IDCARD 可选校验位。"""
+    def _validate_entity(key: str, match: str, context: str = "", pos: int = -1) -> bool:
+        """
+        正则命中后的精验调度：
+        - PHONE：_is_valid_phone（精确 11 位）
+        - BANKCARD：先去分隔符归一化，再做 Luhn 校验
+        - IDCARD：可选校验位（默认关闭）
+        - IDCARD15：前文含身份证触发词，或前两位地区码为有效省份码（防御随机 15 位数字）
+        - PLATE：前文含"型号|编号|订单|SKU"等词时为产品编号，判负
+        """
         if key == "PHONE":
             return PrivacyEngine._is_valid_phone(match)
         if key == "BANKCARD":
-            return PrivacyEngine._luhn_valid(match)
+            return PrivacyEngine._luhn_valid(PrivacyEngine._normalize_digits(match))
         if key == "IDCARD" and PrivacyEngine.IDCARD_CHECKSUM:
             return PrivacyEngine._idcard_valid(match)
+        if key == "IDCARD15":
+            if context and pos >= 0:
+                pre = context[max(0, pos - 20):pos]
+                if any(t in pre for t in PrivacyEngine._IDCARD15_TRIGGERS):
+                    return True
+            return match[:2] in PrivacyEngine._PROVINCE_CODES
+        if key == "PLATE":
+            if context and pos >= 0:
+                pre = context[max(0, pos - 20):pos]
+                if any(w in pre for w in PrivacyEngine._PLATE_BLOCK_WORDS):
+                    return False
+            return True
         return True
 
     # ──────────────────────────────────────────
@@ -276,7 +371,16 @@ class PrivacyEngine:
         "先生", "女士", "经理", "主管", "总监", "总", "主任", "科长",
         "局长", "处长", "专员", "助理", "代表", "签字", "签署",
         "当事人", "原告", "被告", "证人", "客户", "供应商",
+        # (C1) 补充的金融/合同/授权类触发词
+        "签署人", "签约人", "开户人", "收款人", "付款人", "投保人", "被保险人", "受益人",
+        "法定代表人", "授权代表", "经办人", "当事人",
+        "监护人", "代理人", "担保人", "申请人",
     )
+
+    # (C2) 人名弱规则开关："姓氏+2字"误伤率高，默认关闭。
+    # 仅当显式置 True 时，才在句首/冒号后/顿号后位置启用弱规则。
+    # 默认优先用 add_custom_names() 通讯录精确匹配解决。
+    NAME_WEAK_MODE = False
 
     # ──────────────────────────────────────────
     # 3. 实例状态
@@ -316,60 +420,61 @@ class PrivacyEngine:
         used_nonces = set()
 
         # === 阶段 1：正则实体脱敏 ===
-        # 按固定顺序处理，避免相互干扰
-        # 顺序：IDCARD -> BANKCARD -> PHI -> PHONE/EMAIL -> IP/MONEY/WECHAT/ADDRESS -> 密钥组 -> Token 组 -> 路径组
-        # 注意：IDCARD 必须在 PHONE 之前（身份证后 11 位可能误匹配手机号）
-        #       BANKCARD 必须在 PHONE 之前（银行卡中间可能含手机号片段）
-        #       PHI 放在 BANKCARD 之后、PHONE 之前，避免医保卡号被银行卡或手机号误匹配
-        #       密钥组（JWT/PRIVATE_KEY）放最后，PRIVATE_KEY 跨行匹配范围大，避免影响其他实体
-        #       Token 组和路径组放最末尾，FILE_PATH 路径可能含 .env 等多种结尾
+        # 按固定顺序处理，避免相互干扰（D4）
+        # 说明：
+        #   - IDCARD15 必须在 BANKCARD 与 PHONE 之前（15 位证 3 位顺序码可能被误当成其它）
+        #   - IPV6 必须在 IP 之前（否则 IPv6 中的数字段可能被 IPv4 规则截断）
+        #   - CREDIT_CODE 必须在 BANKCARD 之后、PHONE 之前
+        #   - 密钥组（JWT/PRIVATE_KEY/PASSWORD/CONN_STRING/CLOUD_KEY）放中后段，
+        #     因为带字段名前缀（如 password=），不会与纯数字实体冲突
+        #   - FILE_PATH/SENSITIVE_PATH/PLATE/PASSPORT/MAC 放最末尾，避免交叉覆盖
         regex_order = [
-            "IDCARD", "BANKCARD",
+            "IDCARD", "IDCARD15", "BANKCARD", "CREDIT_CODE",
             "MEDICAL_RECORD", "MEDICAL_INSURANCE",  # PHI 组
             "PHONE", "EMAIL",
-            "IP", "MONEY", "WECHAT", "ADDRESS",
-            "APIKEY", "JWT", "PRIVATE_KEY",    # 密钥组
+            "IPV6", "IP", "MONEY", "WECHAT", "ADDRESS",  # IPV6 必须在 IP 之前
+            "PASSWORD", "CONN_STRING", "CLOUD_KEY", "APIKEY", "JWT", "PRIVATE_KEY",  # 密钥组
             "BEARER", "ACCESS_TOKEN",          # Token 组
-            "FILE_PATH",                       # 路径组
+            "FILE_PATH", "SENSITIVE_PATH", "PLATE", "PASSPORT", "MAC",  # 路径/证照组
         ]
+        # 带捕获组的实体：只替换捕获组部分、保留前缀（D5）
+        capture_keys = {
+            "WECHAT", "MEDICAL_RECORD", "MEDICAL_INSURANCE",
+            "BEARER", "ACCESS_TOKEN",
+            "PHONE",          # 仅换号码段，保留 +86/0086 前缀
+            "PASSWORD",       # 仅换口令值，保留字段名
+            "CONN_STRING",    # 仅换连接串密码段
+            "PASSPORT",       # 第二段（带"护照号"等前缀）仅换证件号码
+        }
         for key in regex_order:
             pattern = self.PATTERNS[key]
             try:
                 flags = re.DOTALL if key == "PRIVATE_KEY" else (
                     re.IGNORECASE if key in self._IGNORECASE_KEYS else 0
                 )
-                # 带捕获组的实体（只替换捕获组部分，保留前缀）：WECHAT / MEDICAL_* / BEARER / ACCESS_TOKEN
-                if key in ("WECHAT", "MEDICAL_RECORD", "MEDICAL_INSURANCE", "BEARER", "ACCESS_TOKEN"):
-                    for m in re.finditer(pattern, anonymized, flags):
-                        full = m.group(0)
-                        target = m.group(1) if m.lastindex and m.group(1) else full
-                        if target in value_to_placeholder:
-                            placeholder = value_to_placeholder[target]
-                            anonymized = anonymized.replace(target, placeholder, 1)
-                            continue
+                # 用快照精验上下文，避免循环内替换导致的索引偏移
+                snapshot = anonymized
+                matches = list(re.finditer(pattern, snapshot, flags))
+                for m in matches:
+                    full = m.group(0)
+                    if key in capture_keys and m.lastindex and m.group(1):
+                        target = m.group(1)
+                    else:
+                        target = full
+                    # 程序化精验（含上下文精验：PHONE 位数 / BANKCARD Luhn /
+                    # IDCARD15 地区码+触发词 / PLATE 负向词）
+                    if not self._validate_entity(key, target, context=snapshot, pos=m.start()):
+                        continue
+                    if target in value_to_placeholder:
+                        placeholder = value_to_placeholder[target]
+                    else:
                         idx = counts.get(key, 0)
                         placeholder = f"[{key}_{idx}_{_generate_nonce(used_nonces)}]"
                         mapping[placeholder] = self._crypto.encrypt(target)
                         value_to_placeholder[target] = placeholder
                         counts[key] = idx + 1
-                        # 只替换捕获组部分，保留前缀
-                        anonymized = anonymized.replace(target, placeholder, 1)
-                else:
-                    # 原有通用分支（无捕获组）
-                    matches = list(dict.fromkeys(m.group(0) for m in re.finditer(pattern, anonymized, flags)))
-                    # (P1 加固) 正则命中后精验：PHONE 位数 / BANKCARD Luhn / IDCARD 可选校验位
-                    matches = [m for m in matches if self._validate_entity(key, m)]
-                    for match in matches:
-                        if match in value_to_placeholder:
-                            placeholder = value_to_placeholder[match]
-                            anonymized = anonymized.replace(match, placeholder)
-                        else:
-                            idx = counts.get(key, 0)
-                            placeholder = f"[{key}_{idx}_{_generate_nonce(used_nonces)}]"
-                            mapping[placeholder] = self._crypto.encrypt(match)
-                            value_to_placeholder[match] = placeholder
-                            counts[key] = idx + 1
-                            anonymized = anonymized.replace(match, placeholder)
+                    # 只替换捕获组部分（capture 分支）或整个命中（非 capture 分支）
+                    anonymized = anonymized.replace(target, placeholder, 1)
             except re.error:
                 continue
 

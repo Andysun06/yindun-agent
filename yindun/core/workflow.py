@@ -730,11 +730,23 @@ def init_workflow_integration(engine: WorkflowEngine):
         return text
 
     def _write_report_to_file(title: str, body_md: str, fmt: str,
-                              out_dir: str = None) -> str:
+                              out_dir: str = None, mask_sensitive: bool = True) -> str:
         """生成实际的报告文件"""
         out_dir = out_dir or _os.path.abspath(_os.path.join(
             _os.environ.get("SANDBOX_PATH", "."), "workflow_reports"
         ))
+
+        # ★ 报告落盘前统一脱敏（安全优先）；显式 mask_sensitive=False 时保留完整信息并追加密级提示
+        if mask_sensitive:
+            try:
+                from yindun.core.audit_log import _mask_text
+                body_md = _mask_text(body_md)
+            except Exception:
+                pass
+        else:
+            body_md = ("【注意】本报告含未脱敏业务信息，请按内部资料管理。\n\n"
+                       + body_md)
+
         _os.makedirs(out_dir, exist_ok=True)
 
         timestamp = _dt.now().strftime("%Y%m%d_%H%M%S")
