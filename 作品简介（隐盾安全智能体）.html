@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>隐盾安全智能体 · 参赛材料</title>
+<style>
+  :root {
+    --bg: #f4f6fb;
+    --card: #ffffff;
+    --ink: #1f2733;
+    --sub: #667085;
+    --line: #e4e9f2;
+    --brand: #1e5eff;
+    --brand-soft: #eaf0ff;
+    --badge: #16a34a;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    line-height: 1.85;
+    padding: 40px 16px;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+  header {
+    text-align: center;
+    padding: 36px 24px;
+    background: linear-gradient(135deg, #10224f 0%, #1e5eff 100%);
+    border-radius: 18px;
+    color: #fff;
+    margin-bottom: 28px;
+  }
+  header h1 { font-size: 26px; letter-spacing: 1px; margin-bottom: 8px; }
+  header p { opacity: .85; font-size: 14px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 26px 30px;
+    margin-bottom: 20px;
+    box-shadow: 0 6px 20px rgba(20,40,90,.05);
+  }
+  .card-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+  .card-head .num {
+    width: 34px; height: 34px; border-radius: 10px;
+    background: var(--brand-soft); color: var(--brand);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 16px; flex-shrink: 0;
+  }
+  .card-head h2 { font-size: 18px; font-weight: 700; }
+  .badge {
+    margin-left: auto;
+    font-size: 12px; color: var(--badge);
+    background: #e8f7ee; border: 1px solid #bfe8cf;
+    padding: 2px 10px; border-radius: 999px; white-space: nowrap;
+  }
+  .card p { font-size: 15px; text-indent: 2em; color: #2a3342; }
+  .foot {
+    text-align: center; color: var(--sub); font-size: 12.5px; margin-top: 6px;
+  }
+  @media (max-width: 560px) {
+    body { padding: 20px 10px; }
+    .card { padding: 20px; }
+    header h1 { font-size: 21px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>隐盾安全智能体</h1>
+    <p>面向数据隐私安全的 AI 协同办公桌面智能体</p>
+  </header>
+
+  <div class="card">
+    <div class="card-head"><span class="num">一</span><h2>作品简介</h2><span class="badge">约 280 字</span></div>
+    <p>"隐盾"是一款面向数据隐私安全的 AI 协同办公桌面智能体。它以常驻桌面顶层的半透明悬浮窗口形态运行，采用本地大模型与私有化部署，在提供文档解析、项目分析、文件管理等协同能力的同时，将数据安全置于首位。系统内置内存级隐私脱敏网关，可识别手机号、身份证、银行卡、API 密钥等十余类敏感实体，在内存中就地脱敏、汇报时安全还原；内置全链路审计黑匣子，以哈希链防篡改记录每次工具调用与数据流转；通过沙箱隔离与权限分级，对高危操作实施熔断拦截与人工审批。其目标是让 AI 在安全可控、隐私合规的前提下深度融入日常办公。</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><span class="num">二</span><h2>主要功能与预期目的</h2><span class="badge">约 300 字</span></div>
+    <p>主要功能包括：内存级隐私脱敏，识别并匿名化十余类敏感实体，杜绝真实隐私落盘，并支持跨轮次可靠还原；权限分级与熔断拦截，提供完全控制、安全只读、彻底审计三级权限，对越界写入、删除及命令执行强制人工二次审批；全链路审计黑匣子，以哈希链记录工具调用与数据流转，篡改可被即时发现；本地知识库与脱敏 RAG，文档入库即脱敏，向量库只存占位符；ReAct 智能推理，支撑离线文档解析、项目分析、文件管理等办公协同任务。预期目的是在数据隐私安全与办公效率之间取得平衡，使敏感数据"可用不可见"，切实降低数据泄露风险，提升办公智能化与合规化水平。</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><span class="num">三</span><h2>设计方案及技术实现</h2><span class="badge">约 290 字</span></div>
+    <p>系统采用分层架构：界面层基于 PySide6 构建原子化组件；核心层封装隐私脱敏、权限策略、审计日志、知识库、记忆管理等模块；后台层运行基于 LangChain 原生 Tool Calling 的 ReAct 推理循环。隐私引擎通过正则识别与校验算法发现敏感实体，映射表以 Fernet 加密存储并加入随机 nonce 防止还原劫持；审计日志以 HMAC-SHA256 链式校验防篡改；知识库采用 Chroma 向量库与本地 Ollama 嵌入模型，全程无云端依赖；文件工具经沙箱校验与策略管理器 fail-closed 审批；会话数据加密持久化，文档解析设置资源上限防范攻击。</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><span class="num">四</span><h2>创新及应用前景</h2><span class="badge">约 280 字</span></div>
+    <p>创新之处在于：首创"内存级脱敏网关"模式，敏感数据全程以密文与占位符流转，实现脱敏—还原闭环；"入库即脱敏"的 RAG 管线从源头杜绝隐私落盘；哈希链审计黑匣子将 AI 操作全流程置于可追溯、不可篡改的监督之下；双轨算力设计使外部 API 仅接触脱敏内容，实现"零泄露"调用。应用前景广阔，可服务于政企办公、金融、医疗、法律等数据合规要求高的行业，也可作为个人本地 AI 助手的隐私加固方案；契合数据安全法规趋严的行业趋势，具备较强的推广价值与市场潜力。</p>
+  </div>
+
+  <div class="foot">隐盾安全智能体 · 参赛材料 · 2026</div>
+</div>
+</body>
+</html>

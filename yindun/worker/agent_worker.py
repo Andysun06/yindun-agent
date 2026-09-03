@@ -18,7 +18,7 @@ import concurrent.futures
 from PySide6.QtCore import QObject, Signal
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
-from yindun.core.privacy_engine import PrivacyEngine
+from yindun.core.privacy_engine import PrivacyEngine, _NEW_PLACEHOLDER_RE
 from yindun.core.memory_manager import SummarizableChatHistory
 from yindun.core.audit_log import AuditLog
 from yindun.core.policy_manager import PolicyManager
@@ -133,6 +133,9 @@ class Worker(QObject):
     need_confirm = Signal(dict)
     intermediate_result = Signal(str)  # 思考过程中的中间结果，用于渐进输出
 
+    # 跨轮映射表上限：超出后按插入顺序 FIFO 淘汰最早的条目
+    _BOX_MAPPING_MAX = 300
+
     # ──────────────────────────────────────────
     # 取消执行机制
     # ──────────────────────────────────────────
@@ -242,6 +245,7 @@ class Worker(QObject):
                 self.messages_snapshot, max_tokens=5000
             )
             engine = PrivacyEngine()
+            self._engine = engine  # ★ 新增：供 _anonymize_tool_output 复用
 
             # 隐私脱敏：用户输入可能包含敏感信息
             ai_input, box = (
@@ -314,11 +318,12 @@ class Worker(QObject):
             if (self._is_simple_question(ai_input) or _is_audio_request) and not _has_attachment:
                 self.status.emit("[快速回答] 直接回答问题...")
                 reply = self._clean(self._direct_answer(ai_input, memory))
-                if self.privacy_shield and box:
+                if self.privacy_shield and (box or self._box_mapping):
                     # ★ 合并跨轮映射表：用「历史映射 + 本轮映射」还原，避免历史占位符无法还原
                     merged_mapping = {**self._box_mapping, **box}
                     reply = engine.deanonymize(reply, merged_mapping)
-                    self._box_mapping.update(box)  # 累积本轮映射，供后续轮次还原
+                    if box:
+                        self._box_mapping.update(box)  # 累积本轮映射，供后续轮次还原
                 memory.update_with_context_result(self.user_input, reply)
                 self.result_messages = memory.to_dict_list()
                 self.finished.emit(reply)
@@ -347,13 +352,15 @@ class Worker(QObject):
                         if (_has_analyze or os.path.isdir(_resolved_path)) and "analyze_project" in self.tools_map:
                             self.status.emit(f"[工具执行] 扫描项目目录: {_resolved_path}")
                             _args = {"target_directory": _resolved_path, "max_depth": self.think_depth}
-                            forced_tool_result = self._execute_with_approval("analyze_project", _args)
+                            _raw = self._execute_with_approval("analyze_project", _args)
+                            forced_tool_result, _ = self._anonymize_tool_output(_raw, "analyze_project")
                             forced_tool_name = "analyze_project"
                         elif (_has_list or _has_read) and os.path.isdir(_resolved_path):
                             if "list_local_files" in self.tools_map:
                                 self.status.emit(f"[工具执行] 列出目录: {_resolved_path}")
                                 _args = {"target_directory": _resolved_path}
-                                forced_tool_result = self._execute_with_approval("list_local_files", _args)
+                                _raw = self._execute_with_approval("list_local_files", _args)
+                                forced_tool_result, _ = self._anonymize_tool_output(_raw, "list_local_files")
                                 forced_tool_name = "list_local_files"
                     except Exception as _e:
                         forced_tool_result = f"[工具执行出错] {_e}"
@@ -372,18 +379,24 @@ class Worker(QObject):
                 forced_tool_name=forced_tool_name
             )
 
-            if self.privacy_shield and box:
+            _reply_before_restore = final_reply  # ★ 脱敏态副本：审计记录用，避免还原后明文落盘
+            if self.privacy_shield and (box or self._box_mapping):
                 # ★ 合并跨轮映射表：用「历史映射 + 本轮映射」还原，避免历史占位符无法还原
                 merged_mapping = {**self._box_mapping, **box}
                 final_reply = engine.deanonymize(final_reply, merged_mapping)
-                self._box_mapping.update(box)  # 累积本轮映射，供后续轮次还原
+                if box:
+                    self._box_mapping.update(box)  # 累积本轮映射，供后续轮次还原
                 # ★ 审计：记录隐私还原（统计还原的实体类型数）
                 try:
                     # box 结构：{占位符: 真实值}，统计各类型数量
                     _type_counts = {}
                     for _ph in box.keys():
-                        _m = re.match(r"\[([A-Z]+)_?\d*\]", _ph)
-                        _t = _m.group(1) if _m else "OTHER"
+                        _m = _NEW_PLACEHOLDER_RE.match(_ph)  # 新格式 [TYPE_N_nonce]
+                        if _m:
+                            _t = _m.group(1)
+                        else:
+                            _m2 = re.match(r"\[([A-Z_]+?)(?:_\d+)?\]", _ph)  # 兼容旧格式 [TYPE_N]
+                            _t = _m2.group(1) if _m2 else "OTHER"
                         _type_counts[_t] = _type_counts.get(_t, 0) + 1
                     if _type_counts:
                         AuditLog().log_privacy_batch(_type_counts, "restored")
@@ -396,7 +409,7 @@ class Worker(QObject):
                 self._kb_mapping.clear()  # 用后即焚
             # ★ 审计：记录最终还原后的 LLM 输出（展示给用户的版本）
             try:
-                AuditLog().log_llm_output(final_reply, preview=final_reply[:200])
+                AuditLog().log_llm_output(_reply_before_restore, preview=_reply_before_restore[:200])
             except Exception:
                 pass
 
@@ -765,18 +778,8 @@ class Worker(QObject):
                     has_executed_tool = True  # 标记已执行过工具
                     last_tool_result = str(tool_result)[:2000]
 
-                    # 脱敏工具返回内容
-                    # 注意：search_knowledge_base 返回的已是脱敏文本，跳过避免二次脱敏
-                    if self.privacy_shield and box and tool_name != "search_knowledge_base":
-                        if isinstance(tool_result, str):
-                            tool_result = engine.anonymize(tool_result)[0]
-                            # ★ 审计：记录工具结果脱敏
-                            try:
-                                _r_stats = engine.get_last_stats()
-                                if _r_stats:
-                                    AuditLog().log_privacy_batch(_r_stats, "anonymized")
-                            except Exception:
-                                pass
+                    # 统一脱敏工具返回内容（内部已处理：搜索知识库豁免、映射合并进跨轮表、审计）
+                    tool_result, _ = self._anonymize_tool_output(tool_result, tool_name)
 
                     AuditLog().log_tool_result(tool_name, str(tool_result)[:500], True)
 
@@ -1040,6 +1043,55 @@ class Worker(QObject):
 
         # 工具不存在，返回错误信息
         return f"[错误] 工具 '{tool_name}' 未找到。可用工具: {list(self.tools_map.keys())}"
+
+    # ──────────────────────────────────────────
+    # 统一工具输出脱敏通道（第2步）
+    # ──────────────────────────────────────────
+    def _get_engine(self):
+        """取得本轮 PrivacyEngine 实例（run() 中已创建则复用，否则兜底新建）"""
+        engine = getattr(self, "_engine", None)
+        if engine is None:
+            engine = PrivacyEngine()
+            self._engine = engine
+        return engine
+
+    def _merge_box_mapping(self, mapping: dict) -> None:
+        """合并映射到跨轮映射表，并在超限时 FIFO 淘汰最早条目。"""
+        if not mapping:
+            return
+        self._box_mapping.update(mapping)
+        overflow = len(self._box_mapping) - self._BOX_MAPPING_MAX
+        if overflow > 0:
+            for k in list(self._box_mapping.keys())[:overflow]:
+                self._box_mapping.pop(k, None)
+
+    def _anonymize_tool_output(self, tool_result, tool_name: str = ""):
+        """★ 统一工具输出脱敏通道 —— 所有进入模型上下文的工具结果必须且只能经过这里。
+
+        与第1步的区别：本方法保留脱敏产生的 mapping 并合并进跨轮映射表，
+        使最终回复能把占位符还原成用户可读的明文。
+
+        返回：(脱敏后文本, 本次新增映射 dict)
+        """
+        if not self.privacy_shield:
+            return tool_result, {}
+        # 知识库检索返回的已是脱敏文本（KB_ 前缀占位符），二次脱敏会破坏其映射
+        if tool_name == "search_knowledge_base":
+            return tool_result, {}
+        if not isinstance(tool_result, str) or not tool_result:
+            return tool_result, {}
+
+        engine = self._get_engine()
+        anon_text, mapping = engine.anonymize(tool_result)
+        if mapping:
+            self._merge_box_mapping(mapping)
+            try:
+                _stats = engine.get_last_stats()
+                if _stats:
+                    AuditLog().log_privacy_batch(_stats, "anonymized")
+            except Exception:
+                pass
+        return anon_text, mapping
 
     # ──────────────────────────────────────────
     # 附件分块读取引擎：按题号/关键词/字符区间检索长文档

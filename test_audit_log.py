@@ -42,6 +42,8 @@ def _patched_init(self):
     self._storage_path = Path(_TEST_AUDIT_DIR)
     self._storage_path.mkdir(exist_ok=True)
     self._current_session_id = None
+    import threading
+    self._lock = threading.RLock()  # ★ 与生产 __init__ 保持一致，否则 add_entry 的 with self._lock 报错
     self._load_logs()
     self._initialized = True
 AuditLog.__init__ = _patched_init
