@@ -174,6 +174,32 @@ R["whitebox_nokey"] = {
     "结论": "无密钥/密钥失效时 strict 模式保留占位符，绝不回退明文",
 }
 
+# ══ 实验9：按实体类别的召回细分 ══
+import re as _re
+CATS = {
+ "PHONE": ["手机13812345678","联系139-8765-4321","+86 13700001111"],
+ "IDCARD": ["身份证110101199003072316","证号 440301199202020011"],
+ "BANKCARD": ["卡号6228480402564890018","账号 6217850012345678908"],
+ "EMAIL": ["邮箱a@b.com","联系 wf@acme.cn"],
+ "APIKEY": ["密钥sk-proj-9xK2mQ7vLpR4tW8yZ3aB","api_key=abcdefgh12345678"],
+ "MONEY": ["金额28,500元","服务费32000元","报价158,000元"],
+ "IP": ["服务器192.168.1.100","公网203.0.113.45"],
+ "NAME": ["联系人刘建国","员工张伟","患者陈静","负责人王芳"],
+ "ADDRESS": ["地址北京市朝阳区建国路88号","住北京市海淀区中关村大街27号"],
+ "JWT": ["令牌eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"],
+ "PASSWORD": ["登录密码=Adm!n#2026","password=Secret123"],
+}
+cat_break = {}
+for cat, samples in CATS.items():
+    d = 0
+    for t in samples:
+        anon, _ = eng.anonymize(t)
+        digs = _re.findall(r"\d{4,}", t)
+        leaked = any(x in anon for x in digs) if digs else (t == anon)
+        if not leaked: d += 1
+    cat_break[cat] = f"{d}/{len(samples)}"
+R["per_category_recall"] = cat_break
+
 # ── 输出 ──
 print(json.dumps(R, ensure_ascii=False, indent=2))
 with open("privacy_eval_results.json", "w", encoding="utf-8") as f:
