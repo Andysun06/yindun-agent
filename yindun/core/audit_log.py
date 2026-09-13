@@ -1,3 +1,4 @@
+from yindun import APP_ROOT
 # -*- coding: utf-8 -*-
 """
 隐盾审计日志模块 - 全链路审计黑匣子
@@ -223,7 +224,7 @@ class AuditLog:
         if hasattr(self, '_initialized') and self._initialized:
             return
         self._entries: List[AuditEntry] = []
-        self._storage_path = Path(__file__).resolve().parents[2] / "audit_logs"
+        self._storage_path = APP_ROOT / "audit_logs"
         self._storage_path.mkdir(exist_ok=True)
         self._current_session_id = None
         # 并发安全锁（RLock：add_entry 会在持锁状态下调用 _save_logs）

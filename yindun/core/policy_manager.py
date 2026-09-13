@@ -1,3 +1,4 @@
+from yindun import APP_ROOT
 # -*- coding: utf-8 -*-
 """
 隐盾权限策略管理器 — 可配置的访问控制与数据分级规则
@@ -101,7 +102,7 @@ APPROVE_READ_WHITELIST = {
 SANDBOX_ROOT = os.path.abspath(
     os.environ.get(
         "SANDBOX_PATH",
-        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+        str(APP_ROOT),
     )
 )
 
@@ -124,7 +125,7 @@ class PolicyManager:
         if hasattr(self, "_initialized") and self._initialized:
             return
         self._config_path = Path(config_dir) if config_dir else (
-            Path(__file__).resolve().parents[2] / "config"
+            APP_ROOT / "config"
         )
         self._config_path.mkdir(exist_ok=True)
 

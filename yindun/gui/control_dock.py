@@ -115,6 +115,19 @@ class SegmentedModeSwitch(QWidget):
     def get_mode(self) -> str:
         return "深度思考" if self._is_think else "快速回答"
 
+    def set_mode(self, mode: str):
+        """程序化设置模式（用于启动时恢复上次的模式选择）。
+
+        不走动画、不触发 mode_changed（避免启动时多写一次配置），
+        与当前状态一致时为 no-op。
+        """
+        is_think = (mode == "深度思考")
+        if self._is_think == is_think:
+            return
+        self._is_think = is_think
+        self._thumb_x = self.width() - self._thumb_w - self._thumb_pad - 1 if is_think else float(self._thumb_pad + 1)
+        self.update()
+
     def set_dark_theme(self, dark: bool):
         if self._dark_mode != dark:
             self._dark_mode = dark

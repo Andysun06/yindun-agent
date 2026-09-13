@@ -21,7 +21,7 @@ def main():
     # 1. 强行注入无损硬件缩放抗锯齿策略
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
-    app.setApplicationName("隐盾V3.1.4demo")
+    app.setApplicationName("隐盾安全智能体")
     app.setStyle("Fusion")
 
     # 2. 全局主字体

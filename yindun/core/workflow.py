@@ -1,3 +1,4 @@
+from yindun import APP_ROOT
 # -*- coding: utf-8 -*-
 """
 隐盾 V3.2 - 协同工作流编排引擎 (Workflow Engine)
@@ -627,7 +628,7 @@ def _load_workflow_llm_config():
     from pathlib import Path as _Path
     cfg = {}
     try:
-        cfg_path = _Path(__file__).resolve().parents[2] / "global_config.json"
+        cfg_path = APP_ROOT / "global_config.json"
         with cfg_path.open("r", encoding="utf-8") as _f:
             cfg = json.load(_f)
     except Exception:

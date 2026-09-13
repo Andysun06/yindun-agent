@@ -152,7 +152,7 @@ yindun-agent/
 ├── global_config.json          # 运行时配置文件（模型、隐私、界面设置）
 ├── chat_sessions.json          # 会话记录持久化
 │
-└── yindun/                     # 📦 主包
+    └── yindun/                     # 📦 主包
     ├── __init__.py             # 包标识与版本号
     ├── main.py                 # 应用入口（初始化环境 → 启动主窗口）
     │
@@ -161,10 +161,17 @@ yindun-agent/
     │   ├── file_tools.py       # 文件 CRUD 工具集（10 个 LangChain Tool）
     │   │                       #   - 本地文件操作 8 个 + read_attachment_chunk
     │   │                       #   - search_knowledge_base（知识库语义检索）
-    │   ├── privacy_engine.py   # 隐私脱敏引擎（10类实体识别/脱敏/还原）
+    │   ├── privacy_engine.py   # 隐私脱敏引擎（20+类实体识别/脱敏/还原）
     │   ├── knowledge_base.py   # 本地知识库 + 脱敏 RAG 引擎
-    │   ├── audit_log.py        # 全链路审计黑匣子（哈希链防篡改）
-    │   └── memory_manager.py   # 上下文记忆管理器（ChatMessageHistory + 摘要）
+    │   ├── audit_log.py        # 全链路审计黑匣子（HMAC 哈希链防篡改）
+    │   ├── memory_manager.py   # 上下文记忆管理器（ChatMessageHistory + 摘要）
+    │   ├── policy_manager.py   # 权限策略引擎（deny-by-default + 分级审批）
+    │   ├── secret_manager.py   # 本地密钥管理器（Fernet + DPAPI 包裹）
+    │   ├── key_manager.py      # 脱敏映射表密钥托管与完整性校验
+    │   ├── behavior_analyzer.py# 行为分析器（异常操作检测）
+    │   ├── health_scanner.py   # 系统健康扫描
+    │   ├── flow_builder.py     # 工作流构建器
+    │   └── workflow.py         # 协同工作流编排（合同分析/安全扫描等）
     │
     ├── gui/                    # 🖼️ 图形界面组件
     │   ├── __init__.py
@@ -175,6 +182,7 @@ yindun-agent/
     │   ├── control_dock.py     # 底部控制栏（输入 + 发送 + 模式切换）
     │   ├── settings_panel.py   # 设置面板（模型/安全/界面/思考深度/知识库管理）
     │   ├── audit_panel.py      # 审计日志查看面板（哈希链/统计/导出）
+    │   ├── workflow_panel.py   # 工作流编排面板
     │   ├── data_dashboard.py   # 数据看板（模型/对话次数/Token）
     │   ├── status_bar.py       # 动画状态栏（思考进度 + 取消按钮）
     │   ├── session_selector.py # 会话选择页（历史会话列表）
@@ -193,7 +201,8 @@ yindun-agent/
     └── utils/                  # 🔧 工具集
         ├── __init__.py
         ├── document_parser.py  # 离线文档解析（PDF/Word/Excel/TXT/MD/CSV）
-        └── latex_renderer.py   # LaTeX 公式渲染（matplotlib mathtext 引擎）
+        ├── latex_renderer.py   # LaTeX 公式渲染（matplotlib mathtext 引擎）
+        └── privacy_scanner.py  # 文档隐私扫描（位置化风险报告）
 ```
 
 ---
@@ -237,7 +246,7 @@ yindun-agent/
 
 ### 工具调用链
 
-隐盾支持以下 9 个工具：
+隐盾支持以下 10 个工具：
 
 | 工具名 | 功能 | 权限要求 |
 |--------|------|----------|
@@ -258,6 +267,7 @@ yindun-agent/
 
 | 版本 | 发布日期 | 主要变更 |
 |------|----------|----------|
+| **V3.3.1** | 2026-09 | 安全加固回归：修复审计工具结果参数颠倒回归、审批超时死弹窗（60s→300s+自动关闭）、姓氏表补全当代大姓、中文口令字段脱敏；回答模式持久化；完成红队测试→修复→回归的安全工程闭环 |
 | **V3.3** | 2025-07 | 全链路审计黑匣子；本地知识库+脱敏RAG；10类实体脱敏引擎；跨轮脱敏还原；摘要二次脱敏；工具调用对配平 |
 | **V3.2** | 2025-06 | LaTeX 公式渲染（$...$ 行内 / $$...$$ 块公式）；气泡内嵌高清 PNG 图片 |
 | **V3.1.4** | 2025-06 | 即时取消响应（0.5秒内）；强制工具调用机制；路径解析修复 |

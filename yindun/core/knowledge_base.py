@@ -25,6 +25,7 @@ import time
 import hashlib
 from typing import Optional
 
+from yindun import APP_ROOT
 from yindun.core.privacy_engine import PrivacyEngine
 from yindun.core.secret_manager import SecretManager
 from yindun.utils.document_parser import extract_file_text
@@ -71,8 +72,7 @@ class KnowledgeBase:
         """
         # 基础路径
         if persist_dir is None:
-            base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            persist_dir = os.path.join(base, "data", "knowledge_base")
+            persist_dir = os.path.join(str(APP_ROOT), "data", "knowledge_base")
         self.persist_dir = os.path.abspath(persist_dir)
         os.makedirs(self.persist_dir, exist_ok=True)
 

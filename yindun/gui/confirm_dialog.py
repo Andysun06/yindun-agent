@@ -58,9 +58,9 @@ class ConfirmDialog(QWidget):
         
         # 核心审计上下文详情展示区
         msg_lbl = QLabel(
-            f"安全内核检测到 Agent 正在暗中调用物理机械臂工具，试图切入默认沙箱外的敏感绝对路径，系统已依法熔断拦截。\n\n"
+            f"安全内核检测到 Agent 请求执行高危操作，已熔断挂起后台线程，等待人工安全审批。\n\n"
             f"📌 申请工具: {tool_name}\n"
-            f"📌 越界目标: {target_path}"
+            f"📌 目标路径: {target_path}"
         )
         msg_lbl.setWordWrap(True)
         msg_lbl.setStyleSheet("""

@@ -131,6 +131,7 @@ class Worker(QObject):
     error = Signal(str)
     status = Signal(str)
     need_confirm = Signal(dict)
+    approval_expired = Signal()   # 审批等待超时：通知 GUI 关闭残留弹窗，避免"死弹窗"误导用户
     intermediate_result = Signal(str)  # 思考过程中的中间结果，用于渐进输出
 
     # 跨轮映射表上限：超出后按插入顺序 FIFO 淘汰最早的条目
@@ -183,14 +184,19 @@ class Worker(QObject):
         self._approved_val = False
         self._approved.set()
 
-    def _request_approval(self, name, args, path, timeout: float = 60.0) -> bool:
+    def _request_approval(self, name, args, path, timeout: float = 300.0) -> bool:
         """统一的敏感操作人工审批等待。
 
         先 clear 审批事件再 emit need_confirm（修正 clear/emit 顺序，消除
         GUI 先响应导致批准被误清的竞态）；随后用联合等待（审批事件 / 取消事件
         / 超时）保证任何情形都能被唤醒返回，且不会被取消/超时永久卡死。
 
-        返回 True=批准；False=驳回/取消/超时（默认 timeout 60s）。
+        超时不宜过短：人类安全员需要真实阅读审批内容，60 秒内读完弹窗并
+        点击极易超时被静默驳回，且超时后弹窗仍留在屏幕上，用户再点"授权"
+        会误以为已放行（实际已被驳回）。默认 300 秒，并在超时时广播
+        approval_expired 关闭残留弹窗。
+
+        返回 True=批准；False=驳回/取消/超时（默认 timeout 300s）。
         """
         self._approved.clear()
         self.need_confirm.emit({"name": name, "args": args, "path": path})
@@ -206,6 +212,8 @@ class Worker(QObject):
                 break
             if time.monotonic() >= deadline:
                 approved = False  # 超时视为驳回，避免永久阻塞
+                self.status.emit("🚨 人工审批超时（5 分钟未响应），已按驳回处理")
+                self.approval_expired.emit()  # 关闭残留审批弹窗，防止死弹窗误导
                 break
         self._approved_val = approved
         return approved
@@ -781,13 +789,13 @@ class Worker(QObject):
                     # 统一脱敏工具返回内容（内部已处理：搜索知识库豁免、映射合并进跨轮表、审计）
                     tool_result, _ = self._anonymize_tool_output(tool_result, tool_name)
 
-                    AuditLog().log_tool_result(tool_name, str(tool_result)[:500], True)
+                    AuditLog().log_tool_result(tool_name, True, str(tool_result)[:500])
 
                 except Exception as e:
                     tool_result = f"[工具执行错误] {type(e).__name__}: {e}"
                     round_had_failure = True
                     all_success = False
-                    AuditLog().log_tool_result(tool_name, str(e), False)
+                    AuditLog().log_tool_result(tool_name, False, str(e))
 
                 # 4. 将工具执行结果追加到消息列表
                 tool_msg = ToolMessage(content=str(tool_result), tool_call_id=tool_call_id)

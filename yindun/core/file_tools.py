@@ -2,6 +2,8 @@ import os
 import re
 import shlex
 import subprocess
+
+from yindun import APP_ROOT
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
@@ -12,10 +14,9 @@ from pydantic import BaseModel, Field
 # 防止绕过沙箱读取/写入系统任意目录。
 # ──────────────────────────────────────────
 
-# 沙箱根目录：优先读环境变量 SANDBOX_PATH，否则回退到项目根目录
+# 沙箱根目录：优先读环境变量 SANDBOX_PATH，否则回退到应用根目录（打包后= exe 所在目录）
 SANDBOX = os.path.abspath(
-    os.environ.get("SANDBOX_PATH",
-                   os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
+    os.environ.get("SANDBOX_PATH", str(APP_ROOT))
 )
 
 

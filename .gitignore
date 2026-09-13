@@ -14,3 +14,14 @@ test_kb_data/
 test_kb_docs/
 # 个人 SSH 隧道脚本（含服务器地址，勿提交）
 tunnel.bat
+# ── 打包产物（发布时作为 Release 附件上传，不入库）──
+build/
+dist/
+*.spec.bak
+# 演示产物
+客户信息.txt
+演示记录.txt
+# PyInstaller 中间产物
+*.manifest
+# 安装包产物（99MB，作为 GitHub Release 附件上传，不入库）
+隐盾安全智能体_V3.3_安装包.exe

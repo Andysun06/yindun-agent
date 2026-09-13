@@ -11,7 +11,9 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
+from yindun import APP_ROOT
 from yindun.core.memory_manager import SummarizableChatHistory
+from yindun import __display_version__
 
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QStackedLayout,
@@ -186,7 +188,7 @@ class MainWindow(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("隐盾 V3.1.4demo")
+        self.setWindowTitle(f"隐盾安全智能体 {__display_version__}")
         self.setObjectName("mainWindow")
         self.setAttribute(Qt.WA_TranslucentBackground)
 
@@ -202,7 +204,7 @@ class MainWindow(QWidget):
         self._file_extractor_threads = []
         
         # 全局安全隔离配置树
-        self._config_file = Path(__file__).resolve().parents[2] / "global_config.json"
+        self._config_file = APP_ROOT / "global_config.json"
         self._settings = {
             "model": "qwen2.5:7b", "privacy": True, "dark_mode": False, "topmost": True,
             "custom_models": {}, "thinking_depth": 3,
@@ -252,7 +254,7 @@ class MainWindow(QWidget):
         self._saved_geo = None
         self._collapsed_w = EXPANDED_W  # 折叠态宽度记忆（本次会话内记忆，重启重置）
 
-        self._sessions_file = Path(__file__).resolve().parents[2] / "chat_sessions.json"
+        self._sessions_file = APP_ROOT / "chat_sessions.json"
         self._sessions = {}
         self._current_session_id = None
         self._load_sessions_store()
@@ -508,6 +510,11 @@ class MainWindow(QWidget):
         self.chat_display.file_dropped.connect(self._mount_files)
         self.control_dock.manage_requested.connect(self._show_file_manager)
         self.control_dock.stop_requested.connect(self._on_stop_requested)
+        # ★ 回答模式持久化：启动恢复上次选择，切换时写回 global_config
+        self.control_dock.mode_switch.mode_changed.connect(self._on_mode_changed)
+        _saved_mode = self._settings.get("think_mode")
+        if _saved_mode in ("快速回答", "深度思考"):
+            self.control_dock.mode_switch.set_mode(_saved_mode)
 
         self.data_dashboard = DataDashboard()
         self._dashboard_dark = False
@@ -559,7 +566,7 @@ class MainWindow(QWidget):
         
         outer.addWidget(self.container)
         
-        self.chat_display.add_status_banner("隐盾 V3.1.4demo - 请选择或创建对话")
+        self.chat_display.add_status_banner(f"隐盾安全智能体 {__display_version__} - 请选择或创建对话")
         self._refresh_session_list()
         
         if self._current_session_id:
@@ -922,6 +929,7 @@ class MainWindow(QWidget):
         self.worker.error.connect(self._on_error_caught)
         self.worker.status.connect(self.status_bar.set_static_text)
         self.worker.need_confirm.connect(self._on_intercept_confirm)
+        self.worker.approval_expired.connect(self._close_stale_confirm_dialogs)
         self.worker.intermediate_result.connect(self._on_intermediate_result)
         self.status_bar.cancel_requested.connect(lambda: self.worker.cancel() if self.worker else None)
         # 数据看板：每次发起请求 +1 次模型调用
@@ -934,6 +942,15 @@ class MainWindow(QWidget):
         self.worker.finished.connect(self.thread.quit)
         self.worker.error.connect(self.thread.quit)
         self.thread.start()
+
+    def _on_mode_changed(self, mode: str):
+        """回答模式切换：写入配置即时持久化，重启后恢复用户上次的选择。"""
+        try:
+            if mode in ("快速回答", "深度思考"):
+                self._settings["think_mode"] = mode
+                self._save_global_config()
+        except Exception as e:
+            print(f"[MainWindow] 保存回答模式失败：{e}")
 
     def _on_stop_requested(self):
         """停止按钮：立即取消生成并重置 UI，不等待 worker 线程"""
@@ -1290,10 +1307,20 @@ class MainWindow(QWidget):
         dlg = ConfirmDialog(info["name"], info["path"], self)
         self._active_confirm_dialogs.add(dlg)
         s = QApplication.primaryScreen()
-        if s: dlg.move(s.availableGeometry().right() - 370, s.availableGeometry().bottom() - 230)
+        if s:
+            # ★ 弹窗 700x400，必须整体落在可用屏幕内（原 right()-370 会导致右侧出屏被裁切）
+            geo = s.availableGeometry()
+            dlg.move(geo.right() - dlg.width() - 24, geo.bottom() - dlg.height() - 24)
         dlg.confirmed.connect(lambda ok: (self.worker.approve(ok), self._active_confirm_dialogs.discard(dlg)))
         dlg.destroyed.connect(lambda: self._active_confirm_dialogs.discard(dlg))
         dlg.show()
+
+    def _close_stale_confirm_dialogs(self):
+        """审批等待超时：worker 已按驳回处理，关闭屏幕上残留的审批弹窗，
+        避免用户继续在"死弹窗"上点击授权却始终被拒。"""
+        for dlg in list(self._active_confirm_dialogs):
+            dlg.close()
+        self._active_confirm_dialogs.clear()
 
     def _minimize(self): self.showMinimized()
 
@@ -1628,7 +1655,7 @@ class MainWindow(QWidget):
             from pathlib import Path as _Path
             # 在后台线程中检测 Ollama 模型列表并更新缓存
             _fresh = detect_ollama_models()
-            _cfg = _Path(__file__).resolve().parents[2] / "global_config.json"
+            _cfg = APP_ROOT / "global_config.json"
             try:
                 with _cfg.open("r", encoding="utf-8") as _f:
                     _saved = _json.load(_f)

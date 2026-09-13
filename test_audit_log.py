@@ -243,6 +243,50 @@ def test_12_access_control_log():
     print(f"✅ 测试12通过: 访问控制记录正常（拒绝={len(rejected)}, 通过={len(approved)}）")
 
 
+def test_13_tool_result_contract():
+    """测试13：log_tool_result 参数契约（第二参数必须为 bool，第三参数为结果文本）
+
+    回归背景：agent_worker.py 曾把结果文本传入 success、True 传入 result，
+    导致函数内部 result[:500] 对 bool 取下标抛 TypeError，成功的工具调用被覆盖为失败。
+    """
+    audit = AuditLog()
+    # 正确调用：成功
+    audit.log_tool_result("contract_tool", True, "✅ 成功读取文件内容示例")
+    # 正确调用：失败
+    audit.log_tool_result("contract_tool", False, "FileNotFoundError: no such file")
+    tr_entries = audit.get_entries({"event_type": "tool_result"})
+    mine = [e for e in tr_entries if e.details.get("tool_name") == "contract_tool"]
+    assert len(mine) == 2, "应记录两条 tool_result"
+    ok = next(e for e in mine if e.details.get("success") is True)
+    bad = next(e for e in mine if e.details.get("success") is False)
+    assert ok.severity == "info", "成功的 tool_result 应为 info 级别"
+    assert bad.severity == "warning", "失败的 tool_result 应为 warning 级别"
+    assert "成功读取" in ok.details.get("result", ""), "成功调用的结果文本应被完整记录"
+    assert "FileNotFoundError" in bad.details.get("result", ""), "失败调用的错误文本应被完整记录"
+    print("✅ 测试13通过: log_tool_result 契约正常（bool success + 结果文本 + 级别映射）")
+
+
+def test_14_tool_result_caller_consistency():
+    """测试14：静态扫描 agent_worker.py 中 log_tool_result 的调用点
+
+    签名为 log_tool_result(tool_name: str, success: bool, result: str = "")。
+    本测试断言所有调用点的第二实参都是布尔字面量，防止参数顺序再次写反。
+    """
+    import re
+    caller_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "yindun", "worker", "agent_worker.py")
+    with open(caller_path, "r", encoding="utf-8") as f:
+        source = f.read()
+    call_lines = [ln.strip() for ln in source.splitlines() if "log_tool_result(" in ln]
+    assert call_lines, "agent_worker.py 中应存在 log_tool_result 调用"
+    pattern = re.compile(r"log_tool_result\(\s*[^,()]+,\s*(True|False)\s*,")
+    for ln in call_lines:
+        assert pattern.search(ln), (
+            f"log_tool_result 调用参数顺序疑似错误（第二实参必须是 True/False）: {ln}"
+        )
+    print(f"✅ 测试14通过: {len(call_lines)} 处 log_tool_result 调用点参数顺序均正确")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("隐盾全链路审计黑匣子 - 功能验证测试")
@@ -261,6 +305,8 @@ if __name__ == "__main__":
         test_10_html_report,
         test_11_persistence_reload,
         test_12_access_control_log,
+        test_13_tool_result_contract,
+        test_14_tool_result_caller_consistency,
     ]
     passed = 0
     failed = 0

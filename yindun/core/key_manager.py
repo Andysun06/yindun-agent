@@ -1,3 +1,4 @@
+from yindun import APP_ROOT
 # -*- coding: utf-8 -*-
 """
 隐盾密钥管理中心 — 脱敏密钥持久化存储
@@ -183,7 +184,7 @@ class KeyManager:
             return
         self._entries: List[KeyEntry] = []
         self._storage_path = Path(storage_dir) if storage_dir else (
-            Path(__file__).resolve().parents[2] / "secure_keys"
+            APP_ROOT / "secure_keys"
         )
         self._storage_path.mkdir(exist_ok=True)
         # 并发安全锁（RLock：generate/revoke 会在持锁状态下调用 _save）
