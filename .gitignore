@@ -25,3 +25,7 @@ dist/
 *.manifest
 # 安装包产物（99MB，作为 GitHub Release 附件上传，不入库）
 隐盾安全智能体_V3.3_安装包.exe
+
+# Office 临时锁文件
+~$*
+*_new.pptx
