@@ -114,9 +114,11 @@ def title(s, text, y=0.9, size=30, color=TEXT, x=M, w=None):
     tf = box(s, x, y, w or (W - 2*M), 0.8)
     para(tf, text, size=size, color=color, bold=True, first=True)
 
-def pagenum(s, n, dark=False):
+_pg = [1]  # 封面为第1页（不显示页码），内容页自动递增
+def pagenum(s, n=None, dark=False):
+    _pg[0] += 1
     tf = box(s, W-1.1, H-0.62, 0.6, 0.35)
-    para(tf, f"{n:02d}", size=11, color=("9FC7B4" if dark else MUTED), align=PP_ALIGN.RIGHT, first=True)
+    para(tf, f"{_pg[0]:02d}", size=11, color=("9FC7B4" if dark else MUTED), align=PP_ALIGN.RIGHT, first=True)
 
 # ══════════════════ 1 · 封面 ══════════════════
 s = slide(BG_D)
@@ -130,7 +132,7 @@ tf = box(s, W-1.05, H/2-0.55, 1.1, 1.1, anchor=MSO_ANCHOR.MIDDLE)
 para(tf, "盾", size=40, color="FFFFFF", bold=True, align=PP_ALIGN.CENTER, first=True)
 
 tf = box(s, M, 1.7, 9.5, 0.4)
-para(tf, "大学生创新竞赛 · 项目汇报", size=15, color="8FD3B4", bold=True, first=True)
+para(tf, "技术汇报 · 隐私计算桌面智能体", size=15, color="8FD3B4", bold=True, first=True)
 tf = box(s, M, 2.25, 10.5, 1.15)
 para(tf, "隐盾安全智能体", size=60, color="FFFFFF", bold=True, first=True)
 tf = box(s, M, 3.75, 10.5, 0.7)
@@ -144,7 +146,7 @@ para(tf, [("Yindun Security Agent", {"bold": True, "color": "FFFFFF"}),
 
 # ══════════════════ 2 · 背景痛点 ══════════════════
 s = slide()
-kicker(s, "项目背景")
+kicker(s, "研究背景与动机")
 title(s, "大模型进办公，但涉密数据不敢喂")
 tf = box(s, M, 1.78, W-2*M, 0.6)
 para(tf, [("合同、薪酬、病历、客户资料高度敏感，而大模型天然要求把数据送出本地边界。", {"color": MUTED}),
@@ -165,6 +167,30 @@ for num, hd, desc in leaks:
     para(tf, desc, size=15.5, color=TEXT, first=True)
     y += 1.35
 pagenum(s, 2)
+
+# ══════════════════ 3 · 关键挑战 ══════════════════
+s = slide()
+kicker(s, "研究背景与动机")
+title(s, "做成一个可用系统，要跨四道坎")
+chal = [
+    ("可用 vs 不可见", "删掉敏感值模型就没法答——必须抹去真实值又保留语义结构，这是"
+     "「占位符化」而非「删除」的设计动机"),
+    ("召回 vs 精确", "中文敏感信息形态多变（全角/分段/国际前缀），既要高召回不漏，"
+     "又不能误伤订单号、版本号等业务数字"),
+    ("全链路一致", "脱敏只做入口没用：落盘会话、审计、向量库、输出还原任一环节旁路，整体即失效"),
+    ("可证明性", "「隐私有效」不能靠宣称，需在明确威胁模型下以可复现的攻击实验来度量"),
+]
+y = 1.85
+for i, (hd, d) in enumerate(chal):
+    rect(s, M, y, W-2*M, 1.08, fill=TINT, shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.08)
+    tf = box(s, M+0.35, y, 0.9, 1.08, anchor=MSO_ANCHOR.MIDDLE)
+    para(tf, f"{i+1}", size=34, color=ACC, bold=True, first=True)
+    tf = box(s, M+1.35, y+0.14, 3.0, 0.8, anchor=MSO_ANCHOR.MIDDLE)
+    para(tf, hd, size=18, color=PRIM, bold=True, first=True)
+    tf = box(s, M+4.4, y, W-4.4-M-0.4, 1.08, anchor=MSO_ANCHOR.MIDDLE)
+    para(tf, d, size=13.5, color=TEXT, first=True, line=1.15)
+    y += 1.24
+pagenum(s)
 
 # ══════════════════ 3 · 核心理念 ══════════════════
 s = slide()
@@ -226,6 +252,14 @@ para(tf, "甲方联系人[NAME_0]，电话[PHONE_0]，\n身份证号[IDCARD_0]�
      size=12.5, color="8AB8F5", space_after=12, line=1.25)
 para(tf, "呈现给用户（还原后）", size=12, color="7EE2A8", bold=True, space_after=3)
 para(tf, "→ 模型全程只接触占位符，真实值零出网", size=12.5, color="D7E3EE", first=False)
+# 底部形式化定义条
+rect(s, M, 6.35, W-2*M, 0.72, fill=TINT, shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.1)
+tf = box(s, M+0.3, 6.35, W-2*M-0.6, 0.72, anchor=MSO_ANCHOR.MIDDLE)
+para(tf, [("形式化：", {"bold": True, "color": PRIM}),
+          ("A(x) ↦ (x̂, M)，M = {占位符 ↦ Enc", {"color": TEXT}),
+          ("k", {"color": TEXT, "size": 9}),
+          ("(真实值)}；保证 机密性(x̂无明文) · 可逆性(持钥还原=x) · 还原不可伪造(nonce) · 持久化机密(无钥不可解)", {"color": TEXT})],
+     size=12.5, first=True)
 pagenum(s, 5)
 
 # ══════════════════ 6 · 脱敏实测效果 ══════════════════
@@ -258,6 +292,45 @@ tf = box(s, M, bar_y+0.75, bar_w, 0.4)
 para(tf, "身份证 · 银行卡 · 手机号 · 邮箱 · 地址 · 金额 · API密钥 · 口令 · 病历号 · 医保卡号 · 人名  ——  全部替换为加密占位符，向量库与审计零明文",
      size=12.5, color=MUTED, first=True)
 pagenum(s, 6)
+
+# ══════════════════ 攻击实验与结果 ══════════════════
+s = slide()
+kicker(s, "效果验证")
+title(s, "攻击实验：隐私到底有没有用", size=27)
+tf = box(s, M, 1.78, W-2*M, 0.35)
+para(tf, "13 篇合成办公语料 · 41 个敏感实体实例（含国际前缀/全角/分段卡号/PEM/JWT/IPv6 等边界格式）· 17 个业务数字负样本 · 可一键复现",
+     size=12.5, color=MUTED, first=True)
+rows = [
+    ("实验（威胁）", "指标", "结果"),
+    ("黑盒 · 出网泄露", "脱敏召回率 / 明文泄露", "100%  /  0 例"),
+    ("黑盒 · 误伤", "业务数字误报率", "0%（0/17）"),
+    ("可用性 · 往返", "还原正确率", "100%（13/13）"),
+    ("黑盒主动 · 还原劫持", "植入字面量占位符劫持成功率", "0 / 500 轮"),
+    ("黑盒主动 · 提示注入", "模型可见上下文中的真实 PII 数", "0"),
+    ("白盒 · 持久化扫描", "落盘文件明文 PII 命中", "0"),
+    ("白盒 · 审计预览", "审计掩码后明文 PII 命中", "0"),
+    ("白盒 · 无密钥还原", "strict 模式是否泄露明文", "否"),
+]
+tbl = s.shapes.add_table(len(rows), 3, Inches(M), Inches(2.15), Inches(W-2*M), Inches(3.7)).table
+tbl.columns[0].width = Inches(3.4); tbl.columns[1].width = Inches(5.5); tbl.columns[2].width = Inches(W-2*M-8.9)
+for ci, txt in enumerate(rows[0]):
+    c = tbl.cell(0, ci); c.text = txt
+    c.fill.solid(); c.fill.fore_color.rgb = RGBColor.from_string(PRIM)
+    p = c.text_frame.paragraphs[0]; p.alignment = PP_ALIGN.CENTER if ci==2 else PP_ALIGN.LEFT
+    for r in p.runs: style(r, 13, "FFFFFF", True)
+for ri in range(1, len(rows)):
+    for ci, txt in enumerate(rows[ri]):
+        c = tbl.cell(ri, ci); c.text = txt
+        c.fill.solid(); c.fill.fore_color.rgb = RGBColor.from_string("FFFFFF" if ri%2 else "F0F5F2")
+        p = c.text_frame.paragraphs[0]
+        p.alignment = PP_ALIGN.CENTER if ci==2 else PP_ALIGN.LEFT
+        col = PRIM if ci==2 else TEXT
+        for r in p.runs: style(r, 12, col, bold=(ci==2))
+tf = box(s, M, 6.05, W-2*M, 1.0)
+para(tf, [("关键结论：", {"bold": True, "color": ACC}),
+          ("出网零明文 ⇒ 模型信息论上无法泄露它没见过的数据；nonce ⇒ 还原环节不可被植入劫持（碰撞率≈5.9×10⁻⁷）；Fernet+DPAPI ⇒ 拿走磁盘文件、无密钥也无法恢复明文。", {"color": TEXT})],
+     size=13, first=True, line=1.2)
+pagenum(s)
 
 # ══════════════════ 7 · 纵深防御链 ══════════════════
 s = slide()
@@ -476,7 +549,7 @@ tf = box(s, 7.3, 4.85, 5.3, 1.6, anchor=MSO_ANCHOR.MIDDLE)
 para(tf, "让本地 AI", size=24, color="FFFFFF", bold=True, align=PP_ALIGN.RIGHT, first=True)
 para(tf, "更安全 · 更智能 · 更可控", size=24, color="7EE2A8", bold=True, align=PP_ALIGN.RIGHT)
 tf = box(s, M, 6.9, W-2*M, 0.4)
-para(tf, "隐盾安全智能体 · Yindun Team · 2026    |    大学生创新竞赛作品，仅供学习研究", size=11, color="6E9C86", first=True)
+para(tf, "隐盾安全智能体 · Yindun Team · 2026    |    技术报告 · 仅供学习研究", size=11, color="6E9C86", first=True)
 
 prs.save("隐盾安全智能体_项目汇报.pptx")
 print("PPTX saved:", len(prs.slides.__iter__.__self__._sldIdLst), "slides")

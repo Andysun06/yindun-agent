@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>隐盾安全智能体 · 技术报告</title>
+<style>
+  :root{
+    --ink:#1a2332; --ink2:#4a5568; --mut:#718096;
+    --prim:#0e7a4f; --prim2:#1565C0; --acc:#c0392b;
+    --line:#dde4ec; --soft:#f6f9f7; --code:#0f172a;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{font-family:"Source Han Serif SC","Noto Serif SC","Microsoft YaHei","PingFang SC",serif;
+       color:var(--ink);background:#eceff3;line-height:1.85;font-size:15.5px;}
+  .page{max-width:920px;margin:0 auto;background:#fff;box-shadow:0 0 40px rgba(20,40,60,.12);}
+  .cover{padding:88px 80px 66px;background:linear-gradient(160deg,#0b3d2e 0%,#0e5c3f 55%,#11614a 100%);
+         color:#fff;position:relative;overflow:hidden;}
+  .cover::after{content:"";position:absolute;right:-120px;top:-120px;width:420px;height:420px;border-radius:50%;background:rgba(255,255,255,.05);}
+  .cover .badge-row{display:flex;gap:10px;margin-bottom:44px;flex-wrap:wrap;}
+  .cover .badge{border:1px solid rgba(255,255,255,.35);padding:4px 14px;border-radius:999px;font-size:12.5px;letter-spacing:1px;font-family:"Microsoft YaHei",sans-serif;}
+  .cover h1{font-size:44px;letter-spacing:2px;font-weight:800;line-height:1.25;}
+  .cover .subtitle{margin-top:16px;font-size:19px;opacity:.92;font-family:"Microsoft YaHei",sans-serif;font-weight:300;}
+  .cover .en-title{margin-top:6px;font-size:13px;opacity:.55;letter-spacing:1px;}
+  .cover .meta{margin-top:56px;display:grid;grid-template-columns:repeat(3,auto);gap:8px 46px;font-size:13.5px;font-family:"Microsoft YaHei",sans-serif;opacity:.9;width:fit-content;}
+  .cover .meta b{display:block;opacity:.6;font-weight:400;font-size:12px;}
+  .cover .abstract-box{margin-top:40px;padding:22px 26px;background:rgba(255,255,255,.08);border-left:3px solid rgba(255,255,255,.55);font-size:13.6px;line-height:1.95;border-radius:4px;font-family:"Microsoft YaHei",sans-serif;}
+  .cover .abstract-box b{letter-spacing:4px;}
+  .toc{padding:46px 80px 40px;border-bottom:1px solid var(--line);background:var(--soft);}
+  .toc h2{font-size:20px;margin-bottom:18px;letter-spacing:3px;color:var(--prim);}
+  .toc ol{list-style:none;columns:2;column-gap:60px;font-size:14.5px;}
+  .toc li{padding:5px 0;border-bottom:1px dashed var(--line);break-inside:avoid;}
+  .toc li a{color:var(--ink);text-decoration:none;}
+  .content{padding:56px 80px 80px;}
+  section{margin-bottom:52px;}
+  h2.sec{font-size:25px;padding-left:16px;border-left:5px solid var(--prim);margin-bottom:24px;letter-spacing:1px;line-height:1.4;}
+  h3{font-size:18px;margin:28px 0 14px;color:var(--prim2);}
+  h4{font-size:15.5px;margin:18px 0 8px;}
+  p{margin-bottom:13px;text-align:justify;color:#2a3444;}
+  strong{color:var(--prim);}
+  .muted{color:var(--mut);font-size:13.5px;}
+  ul.plain{margin:0 0 14px 22px;} ul.plain li{margin-bottom:7px;}
+  figure{margin:24px 0 28px;text-align:center;page-break-inside:avoid;}
+  figure img{max-width:100%;border:1px solid var(--line);border-radius:10px;box-shadow:0 6px 22px rgba(20,40,60,.10);}
+  figure img.arch{border:none;box-shadow:none;}
+  figcaption{margin-top:11px;font-size:13px;color:var(--mut);font-family:"Microsoft YaHei",sans-serif;}
+  figcaption b{color:var(--prim);font-weight:700;}
+  table.data{width:100%;border-collapse:collapse;margin:18px 0 8px;font-size:13.6px;page-break-inside:avoid;}
+  table.data th{background:var(--prim);color:#fff;padding:10px 12px;text-align:left;font-weight:600;letter-spacing:.5px;}
+  table.data td{padding:9px 12px;border-bottom:1px solid var(--line);color:#2a3444;}
+  table.data tr:nth-child(even) td{background:#fafcfa;}
+  table.data td.num{text-align:center;white-space:nowrap;}
+  table.data td.lv{white-space:nowrap;}
+  table.data thead{display:table-header-group;}
+  table.data tr{page-break-inside:avoid;}
+  table.data.splittable,table.data.splittable tbody{page-break-inside:auto;}
+  .good{color:var(--prim);font-weight:700;}
+  .tbl-caption{text-align:center;font-size:13px;color:var(--mut);margin:6px 0 22px;font-family:"Microsoft YaHei",sans-serif;}
+  .terminal{background:var(--code);color:#d7e3ee;font-family:"Cascadia Code",Consolas,monospace;font-size:12.6px;line-height:1.75;padding:22px 26px;border-radius:10px;overflow-x:auto;margin:18px 0;page-break-inside:avoid;box-shadow:0 8px 24px rgba(10,25,45,.25);}
+  .terminal .t-title{color:#7ee2a8;font-weight:700;} .terminal .t-key{color:#8ab8f5;}
+  .callout{border-left:4px solid var(--prim2);background:#f2f7fd;padding:14px 20px;border-radius:0 8px 8px 0;margin:16px 0;font-size:14px;color:#274257;page-break-inside:avoid;}
+  .callout.warn{border-color:#d35400;background:#fdf5ec;color:#6e4413;}
+  .formula{background:var(--soft);border:1px solid var(--line);border-radius:8px;padding:16px 22px;margin:16px 0;font-family:"Cambria Math","Times New Roman",serif;font-size:15px;text-align:center;color:var(--ink);}
+  .cards{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:20px 0;}
+  .card{border:1px solid var(--line);border-radius:12px;padding:18px 20px;background:#fcfefd;page-break-inside:avoid;}
+  .card h4{margin:0 0 8px;color:var(--prim);} .card p{font-size:13.6px;margin:0;color:var(--ink2);}
+  @media print{
+    body{background:#fff;} .page{box-shadow:none;max-width:none;}
+    .cover{page-break-after:always;padding:70px 60px;} .toc{page-break-after:always;}
+    .content{padding:40px 60px;} h2.sec{page-break-after:avoid;}
+    figure,table.data,.terminal,.card,.callout,.formula{page-break-inside:avoid;}
+    a{color:inherit;text-decoration:none;}
+  }
+  @page{size:A4;margin:0;}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="cover">
+    <div class="badge-row">
+      <span class="badge">隐私计算 · 桌面智能体</span>
+      <span class="badge">技术报告</span>
+      <span class="badge">V3.3</span>
+    </div>
+    <h1>🛡️ 隐盾安全智能体</h1>
+    <div class="subtitle">面向涉密办公场景的本地化隐私防护桌面智能体</div>
+    <div class="en-title">YINDUN SECURITY AGENT — A Privacy-Gateway Desktop Agent for Confidential Office Work</div>
+    <div class="abstract-box">
+      <b>摘　要</b><br>
+      大模型进入办公场景面临一个根本矛盾：待处理数据高度敏感，而模型服务天然要求数据跨越本地边界。本文提出并实现隐盾安全智能体，其核心是一个<span style="color:#9fe3bf">「内存级隐私脱敏网关」</span>——将敏感文本在进入大模型前形式化地映射为占位符文本与一份加密映射表，使模型在信息论意义上无法接触真实敏感值，同时保持任务可用性。系统配套本地沙箱、命令白名单、高危熔断审批与 HMAC 哈希链审计，构成覆盖"输入—推理—执行—落盘—审计"的纵深防御。为验证隐私防护的有效性，我们构建了可复现的攻防评测：在 13 篇含 41 个敏感实体实例的合成办公语料上，黑盒出网脱敏召回率 <b>100%</b>、明文泄露 <b>0</b>、误报率 <b>0%</b>、还原正确率 <b>100%</b>；还原劫持攻击 500 轮成功 <b>0</b>；提示注入下模型可见明文 PII <b>0</b>；白盒持久化与审计产物明文 PII 命中 <b>0</b>；无密钥条件下还原不泄露明文。结果表明该机制在既定威胁模型下能有效阻断敏感数据的出网与落盘泄露。
+    </div>
+    <div class="meta">
+      <div><b>系统</b>隐盾安全智能体</div>
+      <div><b>版本</b>V3.3（2026-09）</div>
+      <div><b>技术栈</b>Python · LangChain · PySide6 · Chroma</div>
+    </div>
+  </header>
+
+  <nav class="toc">
+    <h2>目　录</h2>
+    <ol>
+      <li><a href="#sec1">1　研究背景与动机</a></li>
+      <li><a href="#sec2">2　关键挑战</a></li>
+      <li><a href="#sec3">3　系统概览与架构</a></li>
+      <li><a href="#sec4">4　隐私保护机制：怎么做到的</a></li>
+      <li><a href="#sec4-1">4.1　脱敏算法的形式化定义</a></li>
+      <li><a href="#sec4-2">4.2　威胁模型</a></li>
+      <li><a href="#sec4-3">4.3　密钥体系与实现</a></li>
+      <li><a href="#sec5">5　攻击实验与结果</a></li>
+      <li><a href="#sec6">6　纵深防御与审计</a></li>
+      <li><a href="#sec7">7　安全工程闭环</a></li>
+      <li><a href="#sec8">8　测试与质量保障</a></li>
+      <li><a href="#sec9">9　结论与展望</a></li>
+    </ol>
+  </nav>
+
+  <main class="content">
+
+  <section id="sec1">
+    <h2 class="sec">1　研究背景与动机</h2>
+    <p>
+      大模型办公助手正在快速普及，但企业与机构在涉密文档（合同、薪酬、病历、客户资料）处理上面临一个根本矛盾：<strong>数据越敏感，越需要 AI 的能力；却也越不能把数据交出去</strong>。无论是调用云端 API，还是把对话写入本地日志、向量库与审计文件，每一个跨越本地边界的环节都可能成为泄露面。
+    </p>
+    <p>
+      现有的通用做法——"提示用户不要粘贴敏感信息"或"整体关闭联网"——要么依赖人的自觉而不可靠，要么牺牲了云端强模型的能力。我们想要的是：<strong>既不牺牲可用性，又能从系统机制上保证敏感数据不泄露</strong>。这正是隐盾的出发点——把隐私保护从"使用约定"下沉为"架构约束"，让大模型在物理上"看不见"敏感数据，却依然能把活干完。
+    </p>
+    <div class="cards">
+      <div class="card"><h4>出网面</h4><p>敏感明文随 prompt 发往云端，离开本地即失控。</p></div>
+      <div class="card"><h4>落盘面</h4><p>会话记录、向量库、摘要把真实隐私写进磁盘。</p></div>
+      <div class="card"><h4>留痕面</h4><p>审计日志本为追溯，却可能反过来成为二次泄露源。</p></div>
+      <div class="card"><h4>执行面</h4><p>智能体具备写盘/删除/执行能力，被诱导即造成物理破坏。</p></div>
+    </div>
+  </section>
+
+  <section id="sec2">
+    <h2 class="sec">2　关键挑战</h2>
+    <p>要把上述目标做成一个可用的系统，我们面对四个核心挑战：</p>
+    <ul class="plain">
+      <li><b>可用性 vs 不可见性的张力。</b>若把敏感值简单删除，模型会因上下文断裂而无法作答。必须在"抹去真实值"与"保留语义结构"之间取得平衡——这正是占位符化（而非删除）的设计动机。</li>
+      <li><b>识别的召回与精确难以两全。</b>中文办公文本里，手机号、身份证、银行卡、人名、金额形态多变（全角、分段、国际前缀），既要高召回不漏，又要不误伤订单号、版本号等业务数字。</li>
+      <li><b>防护必须贯穿全链路，而非只在入口。</b>脱敏若只做在用户输入，落盘的会话、审计、向量库、以及模型输出的还原环节仍会泄露。任一环节旁路，整体即失效。</li>
+      <li><b>可证明性。</b>"隐私有效"不能靠宣称，需要在明确的威胁模型下、以可复现的攻击实验来度量。</li>
+    </ul>
+  </section>
+
+  <section id="sec3">
+    <h2 class="sec">3　系统概览与架构</h2>
+    <p>
+      系统采用「GUI 层 — 推理引擎层 — 安全内核层」三层解耦。安全内核由隐私引擎、策略引擎、密钥管理、审计日志四个独立模块组成，可脱离 GUI 单独测试。数据在系统内的旅程为：
+      <span class="muted">用户输入 → 隐私脱敏 → ReAct 推理（模型只见占位符）→ 工具执行（沙箱校验 + 审批熔断）→ 结果脱敏 → 隐私还原 → 呈现用户</span>，每一环节的事件均同步写入哈希链审计。算力支持本地 Ollama（数据不出网）与 OpenAI 兼容云端（出网内容已脱敏）双模式。
+    </p>
+    <figure><img class="arch" src="screenshots/00_架构图.png" alt="架构"><figcaption><b>图 1</b>　核心数据流与安全防线：脱敏网关位于输入/输出两侧，安全内核覆盖执行与审计全程</figcaption></figure>
+  </section>
+
+  <section id="sec4">
+    <h2 class="sec">4　隐私保护机制：怎么做到的</h2>
+
+    <h3 id="sec4-1">4.1　脱敏算法的形式化定义</h3>
+    <p>设敏感实体识别器识别出文本 <i>x</i> 中的敏感实体集合 <i>E(x)</i>。隐私网关定义为一个映射：</p>
+    <div class="formula"><i>A</i> : <i>x</i> ⟼ (<i>x̂</i>, <i>M</i>)，&nbsp;&nbsp;<i>M</i> = { <i>p</i><sub>i</sub> ↦ Enc<sub>k</sub>(<i>e</i><sub>i</sub>) }，<i>e</i><sub>i</sub> ∈ <i>E(x)</i></div>
+    <p>其中 <i>x̂</i> 是将每个实体替换为占位符 <i>p</i><sub>i</sub> 后的文本（送入模型），<i>M</i> 为映射表，其真实值以密钥 <i>k</i> 下的 Fernet 密文存储。还原算子 <i>D</i>(<i>x̂</i>′, <i>M</i>; <i>k</i>) 将模型输出中的占位符解回明文呈现给用户。系统在既定威胁模型下主张四条性质：</p>
+    <ul class="plain">
+      <li><b>机密性（Confidentiality）：</b>任意 <i>e</i> ∈ <i>E(x)</i> 不出现在 <i>x̂</i> 中——模型侧无明文（实验 5.1 测得 41/41 满足）。</li>
+      <li><b>可逆性（Recoverability）：</b>持密钥 <i>k</i> 时 <i>D</i>(<i>A</i>(<i>x</i>)) = <i>x</i>（实验 5.3 还原正确率 100%）。</li>
+      <li><b>还原不可伪造（Unforgeability）：</b>占位符含 4 位随机 nonce，攻击者无法构造命中他人映射的字面量（实验 5.4 劫持 0/500）。</li>
+      <li><b>持久化机密（Persistence-Confidentiality）：</b>无密钥时，磁盘产物（<i>x̂</i>、<i>M</i> 密文、审计预览、向量库）不含明文（实验 5.5–5.7 命中 0）。</li>
+    </ul>
+    <div class="callout warn"><b>性质边界（诚实声明）：</b>本机制是<strong>确定性脱敏</strong>而非差分隐私，不主张对"未被规则覆盖的实体类型"或"可由背景知识重识别的属性组合"提供保证；人名识别依赖上下文触发词，无触发词的连续人名列举可能漏检；算法精验（Luhn / 校验位）会主动放过非法格式数字，属"宁漏不误伤"的既定取舍。</div>
+
+    <h3 id="sec4-2">4.2　威胁模型</h3>
+    <table class="data">
+      <thead><tr><th style="width:96px">攻击者</th><th>能力</th><th>系统对应防线</th></tr></thead>
+      <tr><td class="lv"><b>黑盒</b></td><td>仅能观察出网文本 <i>x̂</i> 与模型输出（如被攻破的模型服务方、链路窃听者）</td><td>机密性：出网文本零明文；提示注入也无法诱导模型泄露其未掌握的数据</td></tr>
+      <tr><td class="lv"><b>黑盒·主动</b></td><td>可向待处理文档中植入内容（如伪造占位符、注入越权指令）</td><td>还原不可伪造（nonce）；注入指令不改变"模型看不到明文"的事实</td></tr>
+      <tr><td class="lv"><b>白盒</b></td><td>可读取本地磁盘持久化文件（会话/审计/映射/向量库），但不在活动用户会话内</td><td>持久化机密：真实值以密文存储，无密钥不可还原</td></tr>
+      <tr><td class="lv"><b>白盒·持钥</b></td><td>劫持当前 Windows 用户会话、可调用 DPAPI 取回密钥</td><td class="muted">超出防护目标：DPAPI 将密钥绑定用户账户，此情形等价于"用户本人"，是安全与可恢复性的既定边界</td></tr>
+    </table>
+
+    <h3 id="sec4-3">4.3　密钥体系与实现</h3>
+    <p>识别采用"正则粗筛 + 程序化精验"两段式：正则负责召回，Luhn（银行卡）、GB11643 校验位（身份证）、11 位精验（手机号）、地区码/触发词（15 位证、人名）负责精确，覆盖 20+ 类实体并做三级数据分级。映射表真实值经 Fernet（AES-128-CBC + HMAC-SHA256）加密；主密钥由密钥管理器统一托管，Windows 下经 <b>DPAPI（CryptProtectData）按用户账户包裹</b>，密钥文件移出项目目录并收紧权限。还原对调用方透明，且提供 strict 模式：解密失败时保留占位符、绝不回退明文。</p>
+    <figure><img src="screenshots/02_隐私对话演示.png" alt="演示" style="max-width:66%"><figcaption><b>图 2</b>　涉密指令实测：模型调用工具、审批放行、文件创建、回复还原的完整闭环</figcaption></figure>
+  </section>
+
+  <section id="sec5">
+    <h2 class="sec">5　攻击实验与结果</h2>
+    <p>
+      为回应"没有攻击实验，如何证明隐私有效"，我们构建了可复现的攻防评测脚本 <span class="muted">privacy_eval.py</span>，在 <b>13 篇合成办公语料、41 个敏感实体实例</b>（含国际前缀、全角、分段卡号、PEM/JWT、IPv6/MAC 等边界格式）与 17 个不应被误伤的业务数字负样本上，逐条度量上述性质。全部数据为虚构。结果如下：
+    </p>
+    <table class="data">
+      <thead><tr><th>#</th><th>实验（威胁）</th><th>指标</th><th class="num" style="width:150px">结果</th></tr></thead>
+      <tr><td class="num">5.1</td><td>黑盒 · 出网泄露</td><td>脱敏召回率 / 出网明文泄露</td><td class="num"><span class="good">100%</span> / <span class="good">0 例</span></td></tr>
+      <tr><td class="num">5.2</td><td>黑盒 · 误伤</td><td>业务数字误报率</td><td class="num"><span class="good">0%（0/17）</span></td></tr>
+      <tr><td class="num">5.3</td><td>可用性 · 往返</td><td>还原正确率</td><td class="num"><span class="good">100%（13/13）</span></td></tr>
+      <tr><td class="num">5.4</td><td>黑盒主动 · 还原劫持</td><td>植入字面量占位符劫持成功率</td><td class="num"><span class="good">0 / 500 轮</span></td></tr>
+      <tr><td class="num">5.5</td><td>黑盒主动 · 提示注入</td><td>模型可见上下文中的真实 PII 数</td><td class="num"><span class="good">0</span></td></tr>
+      <tr><td class="num">5.6</td><td>白盒 · 持久化扫描</td><td>映射/会话落盘文件明文 PII 命中</td><td class="num"><span class="good">0</span></td></tr>
+      <tr><td class="num">5.7</td><td>白盒 · 审计预览</td><td>审计落盘前掩码后明文 PII 命中</td><td class="num"><span class="good">0</span></td></tr>
+      <tr><td class="num">5.8</td><td>白盒 · 无密钥还原</td><td>strict 模式无密钥是否泄露明文</td><td class="num"><span class="good">否（保留占位符）</span></td></tr>
+    </table>
+    <div class="tbl-caption">表 1　隐私防护攻防评测结果（privacy_eval.py，2026-09-13 复现）</div>
+    <div class="callout">
+      <b>关键结论：</b>5.1 与 5.5 合起来构成核心保证——出网文本零明文，因此模型在信息论上无法被诱导泄露它从未接触的数据；5.4 证明还原环节不可被植入劫持（nonce 单次碰撞概率 ≈ 1/36⁴ ≈ 5.9×10⁻⁷）；5.6–5.8 证明即使攻击者拿走本地磁盘文件、在无密钥条件下也无法恢复明文。
+    </div>
+    <p class="muted">局限：评测语料为合成样例，真实语料上的召回会因未覆盖的实体形态而下降；人名连续列举、以及依赖背景知识的属性组合重识别不在本机制保证范围内。评测脚本与结果 JSON 随仓库提供，可一键复现。</p>
+  </section>
+
+  <section id="sec6">
+    <h2 class="sec">6　纵深防御与审计</h2>
+    <p>隐私之外，智能体的物理副作用同样需要约束。系统对每个具备副作用的工具施加四层防御，并以哈希链审计全程留痕：</p>
+    <div class="cards">
+      <div class="card"><h4>路径沙箱</h4><p>realpath + commonpath 越界校验，文件名 basename 化杜绝 ../ 穿越；越界读写一律拒绝。</p></div>
+      <div class="card"><h4>命令白名单</h4><p>仅放行 python/pip/git/echo，shlex 解析 + shell=False，参数级拦截操作符与绝对路径，杜绝命令注入。</p></div>
+      <div class="card"><h4>熔断审批</h4><p>高危操作挂起后台线程，弹窗展示申请工具与目标路径，人工授权才放行；超时自动驳回并关闭弹窗。</p></div>
+      <div class="card"><h4>哈希链审计</h4><p>HMAC-SHA256 链式存储，篡改即告警；审计自身落盘前统一掩码，只存脱敏预览（见 5.7）。</p></div>
+    </div>
+    <p>另有模式级防线：快速模式禁用一切写操作工具（只读安全），思考模式支持完整工具调用与可调推理深度。本地知识库采用"入库即脱敏"管线，向量库中只存占位符文本。</p>
+    <figure><img src="screenshots/05_高危操作审批弹窗.png" alt="审批" style="max-width:52%"><figcaption><b>图 3</b>　高危操作熔断审批弹窗（实测）</figcaption></figure>
+    <figure><img src="screenshots/03_审计面板.png" alt="审计" style="max-width:60%"><figcaption><b>图 4</b>　审计黑匣子面板：统计概览 / 哈希链状态 / 事件筛选 / 报告导出</figcaption></figure>
+  </section>
+
+  <section id="sec7">
+    <h2 class="sec">7　安全工程闭环</h2>
+    <p>我们以"红队—修复—回归"的方式持续加固：先做对抗性安全测试（20+ 攻击用例动态验证 + 通读源码审查），输出分级问题清单，逐项修复并将对抗用例固化为回归测试。代表性成果：</p>
+    <table class="data splittable">
+      <thead><tr><th style="width:56px">#</th><th>发现的问题</th><th>修复与加固</th><th style="width:64px">状态</th></tr></thead>
+      <tr><td class="num">P0-1</td><td>审计工具结果接口参数颠倒，成功调用被误判失败</td><td>修正调用方 + 调用点静态扫描回归测试</td><td class="num">✅</td></tr>
+      <tr><td class="num">P0-3</td><td>审计日志泄露明文 PII</td><td>落盘前统一掩码（复用完整脱敏管线）</td><td class="num">✅</td></tr>
+      <tr><td class="num">P1-1</td><td>命令执行 shell=True + 子串黑名单可绕过</td><td>白名单 + shlex + shell=False + 参数级拦截</td><td class="num">✅</td></tr>
+      <tr><td class="num">P1-2</td><td>路径"沙箱"默认放行任意绝对路径</td><td>realpath+commonpath 越界判定，deny-by-default</td><td class="num">✅</td></tr>
+      <tr><td class="num">P1-4</td><td>审批 60s 超时且弹窗残留（点授权实为已驳回）</td><td>超时 300s + 超时自动关闭弹窗并广播</td><td class="num">✅</td></tr>
+      <tr><td class="num">P1-5</td><td>占位符还原可被字面量植入劫持</td><td>随机 nonce + strict 还原不回退明文</td><td class="num">✅</td></tr>
+      <tr><td class="num">P2-1</td><td>系统代理劫持本地回环，本地模型调用 502</td><td>包入口强制 NO_PROXY 豁免 localhost</td><td class="num">✅</td></tr>
+      <tr><td class="num">P2-2</td><td>5 位以上裸金额漏检，向量库实测残留</td><td>金额正则补 4–10 位分支</td><td class="num">✅</td></tr>
+      <tr><td class="num">P2-3</td><td>中文口令字段（登录密码=xxx）漏检</td><td>口令规则纳入中文标签并修复吞句</td><td class="num">✅</td></tr>
+      <tr><td class="num">P2-4</td><td>人名识别漏当代高频大姓（刘/徐/林等）</td><td>姓氏表按人口普查补全 + 角色触发词补全</td><td class="num">✅</td></tr>
+    </table>
+    <div class="tbl-caption">表 2　安全对抗测试代表性问题与修复（节选）</div>
+  </section>
+
+  <section id="sec8">
+    <h2 class="sec">8　测试与质量保障</h2>
+    <p>项目建立 5 个测试套件共 40+ 断言，覆盖隐私引擎、审计哈希链、记忆管理、工作流引擎与知识库管线，并新增隐私攻防评测（第 5 节）。2026-09-13 全量回归通过。</p>
+    <table class="data">
+      <thead><tr><th>测试套件</th><th>覆盖范围</th><th class="num" style="width:110px">结果</th></tr></thead>
+      <tr><td>privacy_eval（攻防评测）</td><td>黑盒/白盒/劫持/注入/无密钥 8 项实验</td><td class="num">✅ 全部达标</td></tr>
+      <tr><td>test_privacy_engine</td><td>实体识别/脱敏/还原/nonce/strict</td><td class="num">✅ 通过</td></tr>
+      <tr><td>test_audit_log</td><td>哈希链/防篡改/调用点一致性扫描</td><td class="num">✅ 14/14</td></tr>
+      <tr><td>test_memory_optimize</td><td>摘要压缩/跨轮还原/序列化</td><td class="num">✅ 6/6</td></tr>
+      <tr><td>test_workflow / test_knowledge_base</td><td>工作流/审批链/入库检索/向量库零明文</td><td class="num">✅ 通过</td></tr>
+    </table>
+    <div class="tbl-caption">表 3　测试套件汇总</div>
+    <figure><img src="screenshots/04_设置面板.png" alt="设置" style="max-width:70%"><figcaption><b>图 5</b>　设置面板：模型选择、隐私隔离网关、深度思考强度与脱敏 RAG 知识库管理</figcaption></figure>
+  </section>
+
+  <section id="sec9">
+    <h2 class="sec">9　结论与展望</h2>
+    <p>
+      隐盾把"让大模型安全地处理涉密办公数据"从使用约定下沉为架构约束：以内存级脱敏网关关闭出网与落盘泄露面，以沙箱/白名单/熔断审批约束物理副作用，以哈希链审计实现可追溯且自身不泄露，并以可复现的攻防实验量化了隐私防护效果（黑盒召回 100%、明文泄露 0、劫持 0、白盒持久化 0 命中）。
+    </p>
+    <h4>下一步</h4>
+    <ul class="plain">
+      <li>引入 NER 模型补充规则式识别，提升开放域实体召回；</li>
+      <li>工具调用结果文件系统侧二次核验，杜绝小模型幻觉式"假成功"；</li>
+      <li>审计链头外部锚定，抵御整体重算哈希链；</li>
+      <li>在更大真实语料上扩展攻防评测，量化召回—误报权衡曲线。</li>
+    </ul>
+    <p class="muted" style="margin-top:24px">本文档中的个人信息（张伟、13812345678 等）均为公开测试样例，不涉及任何真实个人数据。评测与截图取自真实运行环境（Windows 11 · RTX 3060 Ti · Ollama qwen2.5-7b / GLM-4-Flash 双算力）。</p>
+  </section>
+
+  </main>
+</div>
+</body>
+</html>

@@ -170,35 +170,19 @@ class AuditEntry:
 
 
 def _mask_text(text: str) -> str:
-    """对任意文本中的敏感实体做掩码（审计落盘前统一调用）"""
+    """对任意文本中的敏感实体做掩码（审计落盘前统一调用）。
+
+    直接复用 PrivacyEngine 完整脱敏管线（正则粗筛 + 算法精验 + 人名识别），
+    使审计预览的防护强度与主链路一致——此前弱正则版会漏掉人名与需精验的实体。
+    """
     if not text or not isinstance(text, str):
         return text
     try:
         from yindun.core.privacy_engine import PrivacyEngine
-        from yindun.utils.privacy_scanner import PrivacyScanner
-        CAPTURED = ("WECHAT", "MEDICAL_RECORD", "MEDICAL_INSURANCE",
-                    "BEARER", "ACCESS_TOKEN")
-        for etype, pat in PrivacyEngine.PATTERNS.items():
-            flags = (re.DOTALL if etype == "PRIVATE_KEY"
-                     else (re.IGNORECASE if etype in PrivacyEngine._IGNORECASE_KEYS else 0))
-            try:
-                if etype in CAPTURED:
-                    def _rep(m, _e=etype):
-                        if not (m.lastindex and m.group(1)):
-                            return m.group(0)
-                        return m.group(0).replace(
-                            m.group(1), PrivacyScanner._mask_sensitive(_e, m.group(1)))
-                    text = re.sub(pat, _rep, text, flags=flags)
-                else:
-                    text = re.sub(
-                        pat,
-                        lambda m, _e=etype: PrivacyScanner._mask_sensitive(_e, m.group(0)),
-                        text, flags=flags)
-            except re.error:
-                continue
+        masked, _ = PrivacyEngine().anonymize(text)
+        return masked
     except Exception:
-        pass
-    return text
+        return text
 
 
 def _mask_details(obj):
