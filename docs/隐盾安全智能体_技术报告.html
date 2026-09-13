@@ -29,9 +29,10 @@
   .cover .abstract-box b{letter-spacing:4px;}
   .toc{padding:46px 80px 40px;border-bottom:1px solid var(--line);background:var(--soft);}
   .toc h2{font-size:20px;margin-bottom:18px;letter-spacing:3px;color:var(--prim);}
-  .toc ol{list-style:none;columns:2;column-gap:60px;font-size:14.5px;}
-  .toc li{padding:5px 0;border-bottom:1px dashed var(--line);break-inside:avoid;}
-  .toc li a{color:var(--ink);text-decoration:none;}
+  .toc ol{list-style:none;columns:1;font-size:14.5px;}
+  .toc li{padding:6px 0;}
+  .toc li a{color:var(--ink);text-decoration:none;display:block;position:relative;padding-right:2.4em;border-bottom:1px dotted var(--line);}
+  .toc li a::after{content:target-counter(attr(href), page);position:absolute;right:0;color:var(--mut);font-size:13px;}
   .content{padding:56px 80px 80px;}
   section{margin-bottom:52px;}
   h2.sec{font-size:25px;padding-left:16px;border-left:5px solid var(--prim);margin-bottom:24px;letter-spacing:1px;line-height:1.4;}
@@ -67,7 +68,7 @@
   .card h4{margin:0 0 8px;color:var(--prim);} .card p{font-size:13.6px;margin:0;color:var(--ink2);}
   @media print{
     body{background:#fff;} .page{box-shadow:none;max-width:none;}
-    .cover{page-break-after:always;padding:70px 60px;} .toc{page-break-after:always;}
+    .cover{page-break-after:always;padding:70px 60px;}
     .content{padding:40px 60px;} h2.sec{page-break-after:avoid;}
     figure,table.data,.terminal,.card,.callout,.formula{page-break-inside:avoid;}
     a{color:inherit;text-decoration:none;}
