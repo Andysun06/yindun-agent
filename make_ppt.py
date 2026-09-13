@@ -446,7 +446,7 @@ para(tf, "一键安装包  ·  Windows 安装向导", size=15, color="8FD3B4", b
 rect(s, 7.6, 3.95, 4.55, 0.02, fill="2E6B50")
 tf = box(s, 7.45, 4.15, 4.85, 2.2)
 for t in ["PySide6 + LangChain 全依赖自包含（PyInstaller）", "装到用户目录，无需管理员权限",
-          "桌面/开始菜单快捷方式 + 卸载器", "随附《评委使用说明》：本地/云端算力两步接入"]:
+          "桌面/开始菜单快捷方式 + 卸载器", "随附《使用说明》：本地/云端算力两步接入"]:
     para(tf, [("▪  ", {"color": "F0B45C", "bold": True}), (t, {"color": "EAF5EF"})],
          size=13, first=(t.startswith("PySide6")), space_after=8, line=1.1)
 pagenum(s, 13)

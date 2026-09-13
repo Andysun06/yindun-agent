@@ -21,8 +21,8 @@ VIAddVersionKey "LegalCopyright" "Yindun Team"
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${APP_EXE}"
 !define MUI_FINISHPAGE_RUN_TEXT "立即启动隐盾安全智能体"
-!define MUI_FINISHPAGE_SHOWREADME "$INSTDIR\评委使用说明.txt"
-!define MUI_FINISHPAGE_SHOWREADME_TEXT "查看评委使用说明（配置算力模型）"
+!define MUI_FINISHPAGE_SHOWREADME "$INSTDIR\使用说明.pdf"
+!define MUI_FINISHPAGE_SHOWREADME_TEXT "查看使用说明（配置算力模型）"
 !define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED
 !insertmacro MUI_PAGE_FINISH
 
@@ -35,7 +35,7 @@ Section "安装隐盾安全智能体" SecMain
   SectionIn RO
   SetOutPath "$INSTDIR"
   File /r "dist\YindunSecurityAgent\*.*"
-  File "评委使用说明.txt"
+  File "使用说明.pdf"
 
   ; 快捷方式
   CreateShortcut "$DESKTOP\隐盾安全智能体.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0

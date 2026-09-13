@@ -1,0 +1,171 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>隐盾安全智能体 · 使用说明</title>
+<style>
+:root{--ink:#1a2332;--prim:#0e7a4f;--acc:#e8590c;--mut:#6b7a72;--line:#dde4ec;--tint:#f2f7f4;}
+*{box-sizing:border-box;}
+body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;color:var(--ink);line-height:1.85;
+     font-size:11.5pt;margin:0;padding:0;}
+.page{max-width:820px;margin:0 auto;padding:0 8mm;}
+h1{font-size:24pt;color:var(--prim);border-bottom:3px solid var(--prim);padding-bottom:8px;margin:0 0 4px;}
+h1+p{color:var(--mut);font-size:10.5pt;margin:0 0 6px;}
+blockquote{margin:14px 0;padding:10px 18px;background:var(--tint);border-left:4px solid var(--prim);
+           color:#2a3444;border-radius:0 6px 6px 0;}
+blockquote p{margin:2px 0;}
+h2{font-size:16pt;color:var(--prim);margin:26px 0 10px;padding-left:10px;border-left:5px solid var(--prim);}
+h3{font-size:13pt;color:#124a30;margin:16px 0 6px;}
+p{margin:8px 0;}
+a{color:var(--acc);text-decoration:none;word-break:break-all;}
+ul,ol{margin:6px 0;padding-left:22px;}
+li{margin:4px 0;}
+code{background:#eef2f0;color:#0a5c3b;padding:1px 6px;border-radius:4px;font-family:Consolas,monospace;font-size:10pt;}
+pre{background:#0f172a;color:#d7e3ee;padding:12px 16px;border-radius:8px;overflow-x:auto;line-height:1.6;}
+pre code{background:none;color:inherit;padding:0;}
+table{border-collapse:collapse;width:100%;margin:12px 0;font-size:10.5pt;}
+th{background:var(--prim);color:#fff;text-align:left;padding:8px 12px;}
+td{border-bottom:1px solid var(--line);padding:7px 12px;vertical-align:top;}
+tr:nth-child(even) td{background:#fafcfa;}
+hr{border:none;border-top:1px solid var(--line);margin:20px 0;}
+strong{color:#0a5c3b;}
+@page{size:A4;margin:16mm 12mm;}
+h2{page-break-after:avoid;} table,pre,blockquote{page-break-inside:avoid;}
+</style></head><body><div class="page"><h1>隐盾安全智能体 · 使用说明</h1>
+<blockquote>
+<p>面向涉密办公场景的本地化隐私防护桌面智能体 · V3.3
+Yindun Security Agent — 让本地 AI 更安全、更智能、更可控</p>
+</blockquote>
+<hr />
+<h2>一、产品简介</h2>
+<p>隐盾安全智能体是一款常驻桌面的 AI 办公助手，核心差异在于<strong>内置内存级隐私防护</strong>：
+所有敏感信息（手机号、身份证、银行卡、密钥、病历、金额、人名等）在进入大模型之前，
+会在内存中自动替换为加密占位符；模型全程只见占位符，回答返回时再自动还原为明文呈现给你。</p>
+<p>配合文件沙箱、权限分级、命令白名单、高危操作人工审批与哈希链审计，
+隐盾把"数据出网、落盘、留痕"三大泄露面逐一关闭，让你放心把涉密文档交给 AI 处理。</p>
+<p><strong>典型用途</strong>：合同/简历/病历等涉密文档的问答与摘要、本地知识库检索、
+项目代码分析、办公文件创建与整理、可追溯的操作审计。</p>
+<hr />
+<h2>二、安装与启动</h2>
+<h3>方式 A：安装包（推荐）</h3>
+<ol>
+<li>双击 <code>隐盾安全智能体_V3.3_安装包.exe</code>；</li>
+<li>按向导点击"下一步"（默认安装到当前用户目录，<strong>无需管理员权限</strong>）；</li>
+<li>完成后勾选"立即启动"，或双击桌面"隐盾安全智能体"图标。</li>
+</ol>
+<p>卸载：开始菜单 → 隐盾安全智能体 → 卸载，或经"控制面板 → 程序和功能"。</p>
+<h3>方式 B：源码运行</h3>
+<pre><code class="language-bash"># Python 3.10+，安装依赖
+pip install -r requirements.txt
+python run.py
+</code></pre>
+<blockquote>
+<p>首次启动若被杀毒软件 / Windows Defender 提示，选择"仍要运行"或添加信任即可
+（未签名的绿色软件常见误报，源码可自查）。</p>
+</blockquote>
+<hr />
+<h2>三、首次使用：配置一个"算力底座"</h2>
+<p>隐盾需要接入一个大模型作为算力底座，<strong>两种方式二选一</strong>（约 2 分钟）。
+启动后若顶部状态栏显示"✅ 安全算力联通成功"即已就绪；否则点右上角 ⚙ 设置进行配置。</p>
+<h3>方式 A：本地离线模型（推荐，数据全程不出网）</h3>
+<ol>
+<li>下载安装 Ollama：<a href="https://ollama.com/download">https://ollama.com/download</a>（安装后服务自动运行）；</li>
+<li>打开命令行执行，拉取一个支持工具调用的模型：
+   <code>bash
+   ollama pull qwen2.5:7b-instruct</code>
+   如需使用知识库检索，再拉取向量模型：
+   <code>bash
+   ollama pull nomic-embed-text</code></li>
+<li>启动隐盾，在设置页"算力底座 → 模型选择"中选中检测到的本地模型。</li>
+</ol>
+<h3>方式 B：云端模型（无需下载大文件）</h3>
+<ol>
+<li>点右上角 ⚙ 设置 → 算力底座 → ➕ 新增外部；</li>
+<li>填入任一 OpenAI 兼容 API 的参数（示例：智谱开放平台）：
+   - <code>base_url</code>：<code>https://open.bigmodel.cn/api/paas/v4</code>
+   - <code>api_key</code>：你自己的密钥
+   - <code>model_id</code>：<code>glm-4-flash</code></li>
+<li>保存后在模型下拉框选择该模型。</li>
+</ol>
+<blockquote>
+<p><strong>隐私提示</strong>：开启"隐私隔离网关"（默认开启）时，发往云端的内容已自动替换为占位符，
+真实敏感数据不出本地。</p>
+</blockquote>
+<hr />
+<h2>四、核心功能使用</h2>
+<h3>4.1 对话与隐私脱敏</h3>
+<p>直接在底部输入框下达指令即可。含敏感信息的内容会先脱敏再交给模型，回答后自动还原。</p>
+<ul>
+<li><strong>快速 / 思考模式</strong>：输入框上方切换。快速模式为只读安全模式（禁止一切写盘/删除/命令执行）；
+  思考模式支持完整工具调用与多轮推理（思考深度 1–10 在设置页调节）。</li>
+<li><strong>挂载文件</strong>：点"📎 挂载文件"上传 PDF / Word / Excel / TXT 等，直接在对话中就其内容提问。</li>
+<li><strong>会话管理</strong>：💬 切换历史会话，➕ 新建会话；多会话相互隔离，记录加密存储。</li>
+</ul>
+<h3>4.2 本地知识库（脱敏 RAG）</h3>
+<p>在设置页底部"本地知识库"区，点"➕ 添加文档"将机密文档入库（入库即逐块脱敏，
+向量库中只存占位符，真实隐私永不落盘）。之后在对话中即可语义检索问答。</p>
+<h3>4.3 协同工作流</h3>
+<p>点顶部 🔀 进入工作流编排，内置合同审查 / 周报生成 / 代码安全检查等模板，
+支持步骤编排、执行、审批通过与人工拦截。</p>
+<h3>4.4 审计黑匣子</h3>
+<p>点顶部 📊 查看全链路审计：LLM 输入输出、工具调用、脱敏还原、审批决策逐条留痕，
+哈希链完整性状态实时可见，可一键导出 JSON / HTML 审计报告。</p>
+<hr />
+<h2>五、安全机制说明</h2>
+<table>
+<thead>
+<tr>
+<th>机制</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>隐私脱敏网关</td>
+<td>20+ 类敏感实体识别，进模型前占位符化，映射表 Fernet 加密、密钥 DPAPI 保护</td>
+</tr>
+<tr>
+<td>文件沙箱</td>
+<td>所有文件操作限定在沙箱目录内，越界读写一律拒绝</td>
+</tr>
+<tr>
+<td>权限分级</td>
+<td>完全控制 / 安全只读 / 彻底审计 三档，按需收口写盘能力</td>
+</tr>
+<tr>
+<td>命令白名单</td>
+<td>仅放行 python/pip/git/echo，去 shell 化执行，杜绝命令注入</td>
+</tr>
+<tr>
+<td>熔断审批</td>
+<td>高危操作挂起后台线程，强制人工二次确认，超时自动驳回</td>
+</tr>
+<tr>
+<td>哈希链审计</td>
+<td>HMAC-SHA256 链式存储，篡改即告警；审计自身只存脱敏预览</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>六、数据与隐私</h2>
+<ul>
+<li><strong>配置</strong>：安装目录下 <code>global_config.json</code>（模型、权限、界面等）。</li>
+<li><strong>会话</strong>：<code>chat_sessions.json</code>，内容加密存储。</li>
+<li><strong>审计</strong>：<code>audit_logs/</code>，哈希链防篡改，仅存脱敏预览。</li>
+<li><strong>知识库</strong>：<code>data/knowledge_base/</code>，只存占位符向量。</li>
+<li>卸载即清除以上全部本地数据。</li>
+</ul>
+<hr />
+<h2>七、常见问题（FAQ）</h2>
+<ul>
+<li><strong>状态栏显示"模型初始化失败"</strong>：未装 Ollama 或未拉取模型，按第三节方式 A 完成，或改用方式 B。</li>
+<li><strong>杀毒软件报警</strong>：未签名绿色软件常见误报，添加信任即可。</li>
+<li><strong>想让 AI 写文件却提示"快速模式无法执行"</strong>：切到"思考"模式再试。</li>
+<li><strong>回答里出现 <code>[PHONE_0_xxxx]</code> 这类占位符没还原</strong>：属跨轮历史占位符，正常会随会话映射还原；
+  若长期不还原，可在设置页关闭再开启"隐私隔离网关"重置会话。</li>
+<li><strong>换了电脑/重装系统后旧会话无法还原明文</strong>：脱敏密钥绑定 Windows 用户账户（DPAPI），
+  属安全优先于可恢复性的既定设计。</li>
+</ul>
+<hr />
+<h2>八、版本与声明</h2>
+<ul>
+<li>当前版本：<strong>V3.3</strong>（技术栈 Python · LangChain · PySide6 · Chroma · Ollama）</li>
+<li>本软件为大学生创新竞赛作品，<strong>仅供学习研究使用</strong>。</li>
+<li>文档与演示中出现的个人信息（张伟 / 13812345678 等）均为虚构测试样例，不涉及任何真实个人数据。</li>
+</ul></div></body></html>
