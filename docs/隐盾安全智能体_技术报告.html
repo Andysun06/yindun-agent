@@ -186,7 +186,8 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
       <tr><td class="num">5.2.8</td><td>白盒 · 无密钥还原</td><td>strict 模式是否泄露明文</td><td class="num"><span class="good">否（保留占位符）</span></td></tr>
     </table>
     <div class="tbl-caption">表 1　隐私防护攻防评测结果（privacy_eval.py，2026-09-13 复现）</div>
-    <h3>5.3　按实体类别的召回细分</h3>
+    <h3>5.3　按类别的专项召回测试</h3>
+    <p>为细粒度验证各类识别器的有效性，我们<em>另</em>针对 11 类实体分别构造专项样本（每类 1–4 例、共 25 例，含边界格式），与 5.1 的 41 实例语料相互独立。结果如下：</p>
     <table class="data">
       <thead><tr><th>类别</th><th class="num">召回</th><th>类别</th><th class="num">召回</th><th>类别</th><th class="num">召回</th></tr></thead>
       <tr><td>手机号</td><td class="num">3/3</td><td>银行卡</td><td class="num">2/2</td><td>金额</td><td class="num">3/3</td></tr>
@@ -194,7 +195,7 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
       <tr><td>API 密钥</td><td class="num">2/2</td><td>人名</td><td class="num">4/4</td><td>地址</td><td class="num">2/2</td></tr>
       <tr><td>JWT</td><td class="num">1/1</td><td>口令字段</td><td class="num">2/2</td><td>合计</td><td class="num"><span class="good">25/25</span></td></tr>
     </table>
-    <div class="tbl-caption">表 2　11 类实体按类别召回（含边界格式）</div>
+    <div class="tbl-caption">表 2　11 类实体专项样本召回（25 例，独立于表 1 的 41 实例语料）</div>
     <div class="callout"><b>关键结论：</b>5.2.1 与 5.2.5 合起来构成核心保证——出网文本零明文，因此模型在信息论上无法被诱导泄露它从未接触的数据；5.2.4 证明还原环节不可被植入劫持（碰撞概率 $\le 36^{-4}$）；5.2.6–5.2.8 证明即使攻击者拿走本地磁盘文件、在无密钥条件下也无法恢复明文。</div>
     <p class="muted">局限：评测语料为合成样例，真实语料上的召回会因未覆盖的实体形态而下降；人名连续列举、依赖背景知识的属性组合重识别不在本机制保证范围内。评测脚本与结果 JSON 随仓库提供，可一键复现。</p>
     <figure><img src="screenshots/02_隐私对话演示.png" alt="演示" style="max-width:64%"><figcaption><b>图 2</b>　涉密指令实测：模型调用工具、审批放行、文件创建、回复还原的完整闭环</figcaption></figure>
