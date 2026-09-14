@@ -478,6 +478,20 @@ para(tf, "向量库实测残留真实敏感数据 = 0", size=14, color=TEXT, ali
 para(tf, "（逐 chunk 扫描验证）", size=11, color=MUTED, align=PP_ALIGN.CENTER)
 pagenum(s, 10)
 
+# ══════════════════ 脱敏 RAG 知识库 · 实测闭环 ══════════════════
+s = slide()
+kicker(s, "核心创新 · 四")
+title(s, "脱敏 RAG 知识库 · 实测闭环", size=27)
+pic_card(s, "docs/screenshots/08_知识库入库.png", 2076/1430, M, 1.85, 5.9,
+         cap="① 3 篇文档入库（入库即逐块脱敏），向量库零明文")
+pic_card(s, "docs/screenshots/08_知识库检索回答.png", 2108/1430, 6.75, 1.85, 5.9,
+         cap="② 检索命中占位符 → 输出层还原真实值呈现")
+tf = box(s, M, 6.85, W-2*M, 0.5)
+para(tf, [("闭环要点：", {"bold": True, "color": PRIM}),
+          ("模型全程只接触占位符；真实值仅在本地输出层还原，云端/向量库/审计均无明文。", {"color": TEXT})],
+     size=13, first=True)
+pagenum(s)
+
 # ══════════════════ 11 · 全链路演示 ══════════════════
 s = slide()
 kicker(s, "功能实测")

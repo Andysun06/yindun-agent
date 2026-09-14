@@ -213,6 +213,12 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
     <p>另有模式级防线：快速模式禁用一切写操作工具（只读安全），思考模式支持完整工具调用与可调推理深度。本地知识库采用"入库即脱敏"管线，向量库中只存占位符文本。</p>
     <figure><img src="screenshots/05_高危操作审批弹窗.png" alt="审批" style="max-width:50%"><figcaption><b>图 3</b>　高危操作熔断审批弹窗（实测）</figcaption></figure>
     <figure><img src="screenshots/03_审计面板.png" alt="审计" style="max-width:58%"><figcaption><b>图 4</b>　审计黑匣子面板：统计概览 / 哈希链状态 / 事件筛选 / 报告导出</figcaption></figure>
+    <p>下图为实测：当智能体试图执行不在白名单内的系统命令（<span class="commit">tasklist</span>）时，先触发熔断审批，被驳回后如实向用户说明"由于涉及敏感操作，系统未能执行该命令"，全程未产生任何命令执行副作用。</p>
+    <figure><img src="screenshots/07_命令拦截拒绝.png" alt="命令拦截" style="max-width:78%"><figcaption><b>图 5</b>　命令白名单 + 熔断审批实测：非白名单命令被拦截，模型如实反馈</figcaption></figure>
+    <h3>脱敏 RAG 知识库（实测闭环）</h3>
+    <p>机密文档"入库即逐块脱敏"，向量库中只存占位符；检索命中后，答案中的占位符在输出层还原为真实值呈现给用户。下图为真实闭环：对已入库合同提问"乙方联系人是谁、电话和银行卡号"，系统调用 <span class="commit">search_knowledge_base</span> 检索并还原出真实联系信息——<strong>模型全程只见占位符，真实值仅在本地输出层还原</strong>。</p>
+    <figure><img src="screenshots/08_知识库入库.png" alt="知识库入库" style="max-width:74%"><figcaption><b>图 6</b>　本地知识库管理：3 篇文档已入库（入库即脱敏），向量库零明文</figcaption></figure>
+    <figure><img src="screenshots/08_知识库检索回答.png" alt="知识库检索" style="max-width:80%"><figcaption><b>图 7</b>　脱敏 RAG 检索实测：命中占位符经输出层还原为真实值呈现</figcaption></figure>
   </section>
 
   <section id="sec7">
@@ -246,7 +252,7 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
       <tr><td>test_workflow / test_knowledge_base</td><td>工作流/审批链/入库检索/向量库零明文</td><td class="num">✅ 通过</td></tr>
     </table>
     <div class="tbl-caption">表 4　测试套件汇总</div>
-    <figure><img src="screenshots/04_设置面板.png" alt="设置" style="max-width:70%"><figcaption><b>图 5</b>　设置面板：模型选择、隐私隔离网关、深度思考强度与脱敏 RAG 知识库管理</figcaption></figure>
+    <figure><img src="screenshots/04_设置面板.png" alt="设置" style="max-width:70%"><figcaption><b>图 8</b>　设置面板：模型选择、隐私隔离网关、深度思考强度与脱敏 RAG 知识库管理</figcaption></figure>
   </section>
 
   <section id="sec9">
