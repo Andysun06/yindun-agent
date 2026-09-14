@@ -284,9 +284,10 @@ class SettingsPanel(QWidget):
         # 文档列表
         self.kb_list = QListWidget()
         self.kb_list.setStyleSheet("""
-            QListWidget { background: #1e1e2a; border: 1px solid #3a3a4a; border-radius: 6px; padding: 4px; }
-            QListWidget::item { padding: 6px 8px; border-bottom: 1px solid #2a2a3a; }
-            QListWidget::item:selected { background: #6e80ff; color: white; }
+            QListWidget { background: #ffffff; color: #2a3444; border: 1px solid #d3ded8; border-radius: 6px; padding: 4px; outline: none; }
+            QListWidget::item { padding: 6px 8px; border-bottom: 1px solid #eef2f0; color: #2a3444; }
+            QListWidget::item:hover { background: #eef6f1; }
+            QListWidget::item:selected { background: #0e7a4f; color: #ffffff; }
         """)
         self.kb_list.setMinimumHeight(120)
         self.kb_list.setMaximumHeight(200)
@@ -580,6 +581,12 @@ class SettingsPanel(QWidget):
         idx = self.setting_model.findText(settings_dict["model"])
         if idx >= 0:
             self.setting_model.setCurrentIndex(idx)
+        else:
+            # 保存的模型不在当前列表（如本地 Ollama 检测暂时为空）：显式加入并选中，
+            # 否则下拉框会错误回退到第一项（常为云端模型），且后续任何设置变更会经
+            # currentTextChanged→即时保存 把模型悄悄改回，导致"配了本地却用成云端"。
+            self.setting_model.insertItem(0, settings_dict["model"])
+            self.setting_model.setCurrentIndex(0)
 
         # 静默装填滑动开关状态，不抛出变化信号
         self.setting_privacy.setChecked(settings_dict["privacy"], emit_signal=False)

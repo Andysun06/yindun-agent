@@ -323,7 +323,25 @@ class Worker(QObject):
                     )
                 _has_attachment = True  # 强制走 ReAct 循环，避免被 _is_simple_question 短路
 
-            if (self._is_simple_question(ai_input) or _is_audio_request) and not _has_attachment:
+            # ★ 知识库有文档时，禁止走"跳过工具的快速直答"：否则 search_knowledge_base
+            #   永远不会被调用，模型会凭空作答（甚至误判为"拒绝提供敏感信息"）。
+            #   仅在"本会走快速直答"时才探测 KB，避免给普通问答增加开销。
+            _is_simple = self._is_simple_question(ai_input)
+            _kb_has_docs = False
+            if _is_simple and not _has_attachment and not _is_audio_request:
+                _kb = self._get_knowledge_base()
+                if _kb is not None:
+                    try:
+                        _kb_has_docs = _kb.get_stats().get("total_documents", 0) > 0
+                    except Exception:
+                        _kb_has_docs = False
+                if _kb_has_docs:
+                    ai_input = (
+                        "[提示] 本地知识库已入库文档；若本问题可能涉及已入库的合同/报表/员工信息等内容，"
+                        "请先调用 search_knowledge_base 工具检索后再作答。\n\n" + ai_input
+                    )
+
+            if (_is_simple or _is_audio_request) and not _has_attachment and not _kb_has_docs:
                 self.status.emit("[快速回答] 直接回答问题...")
                 reply = self._clean(self._direct_answer(ai_input, memory))
                 if self.privacy_shield and (box or self._box_mapping):
