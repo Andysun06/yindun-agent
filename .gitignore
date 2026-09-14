@@ -29,3 +29,6 @@ dist/
 # Office 临时锁文件
 ~$*
 *_new.pptx
+
+# 编辑器/插件内部状态
+.mimosa/

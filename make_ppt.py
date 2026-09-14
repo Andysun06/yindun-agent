@@ -521,13 +521,13 @@ for i, (t, d) in enumerate(pipe):
 # 右：核心安全问题 + git 提交
 tf = box(s, 6.7, 1.85, 5.9, 0.35)
 para(tf, "安全内核级问题（节选，均可 git 追溯）", size=13.5, color=PRIM, bold=True, first=True)
-probs = [("命令执行 shell=True+黑名单可绕过", "052f054"),
-         ("沙箱默认放行任意绝对路径", "052f054"),
-         ("审批共用单 Event，点一个放行全部", "6577cdc"),
-         ("工作流绕过隐私网关，原文直发云端", "052f054"),
-         ("审计还原后落盘，泄露明文 PII", "3876638"),
-         ("占位符可预测，被植入字面量劫持", "3876638"),
-         ("映射表明文落盘", "d59c4eb")]
+probs = [("命令执行 shell=True+黑名单可绕过", "357907f"),
+         ("沙箱默认放行任意绝对路径", "357907f"),
+         ("审批共用单 Event，点一个放行全部", "e17fd83"),
+         ("工作流绕过隐私网关，原文直发云端", "357907f"),
+         ("审计还原后落盘，泄露明文 PII", "a79645c"),
+         ("占位符可预测，被植入字面量劫持", "a79645c"),
+         ("映射表明文落盘", "9150bf9")]
 tbl = s.shapes.add_table(len(probs)+1, 2, Inches(6.7), Inches(2.28), Inches(5.9), Inches(3.5)).table
 tbl.columns[0].width = Inches(4.35); tbl.columns[1].width = Inches(1.55)
 for ci, txt in enumerate(["核心问题", "提交"]):

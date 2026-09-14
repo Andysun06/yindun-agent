@@ -220,16 +220,16 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
     <p>我们以"红队—修复—回归"的方式持续加固：先对系统做对抗性安全测试（攻击用例动态验证 + 通读源码审查），输出分级问题清单，逐项修复并将对抗用例固化为回归测试。下表列出与安全内核强相关的核心问题及其修复与对应提交：</p>
     <table class="data splittable">
       <thead><tr><th>核心问题</th><th>危害</th><th>修复</th><th class="num" style="width:150px">提交</th></tr></thead>
-      <tr><td>命令执行为 shell=True + 子串黑名单，可被 cmd/powershell 绕过</td><td>任意命令执行，沙箱形同虚设</td><td>白名单 + shlex + shell=False + 参数级纵深拦截</td><td class="num"><span class="commit">052f054</span></td></tr>
-      <tr><td>"沙箱"默认放行任意绝对路径，策略 default=approve</td><td>读桌面/写系统目录均被放行</td><td>realpath+commonpath 越界判定，deny-by-default</td><td class="num"><span class="commit">052f054</span></td></tr>
-      <tr><td>审批弹窗共用单一 Event，多工具待审时点一个=放行全部</td><td>审批旁路，高危操作绕过人工确认</td><td>逐请求审批 + 超时自动驳回 + 关闭残留弹窗</td><td class="num"><span class="commit">6577cdc</span></td></tr>
-      <tr><td>工作流链路绕过隐私网关，合同原文直发云端</td><td>聊天侧脱敏在工作流侧失效，明文出网</td><td>所有 LLM 调用统一走 anonymize→invoke→deanonymize</td><td class="num"><span class="commit">052f054</span></td></tr>
-      <tr><td>审计日志在还原后记录，真实 PII 落盘</td><td>审计系统反成泄露源</td><td>落盘前统一掩码（复用完整脱敏管线）</td><td class="num"><span class="commit">3876638</span></td></tr>
-      <tr><td>占位符格式固定可预测，可被植入字面量劫持还原</td><td>恶意文档诱导写出他人明文</td><td>随机 nonce + strict 还原不回退明文</td><td class="num"><span class="commit">3876638</span></td></tr>
-      <tr><td>KeyManager 哈希链不覆盖 cipher_key</td><td>可静默替换密钥而完整性校验不报警</td><td>完整性字段纳入密钥材料</td><td class="num"><span class="commit">052f054</span></td></tr>
-      <tr><td>映射表明文 dict 落盘</td><td>拿到文件即还原全部真实隐私</td><td>Fernet 加密存储 + DPAPI 包裹密钥</td><td class="num"><span class="commit">d59c4eb</span></td></tr>
-      <tr><td>审计工具结果接口参数顺序颠倒</td><td>成功的工具调用被误判为失败，链路中断</td><td>修正调用方 + 调用点静态扫描回归测试</td><td class="num"><span class="commit">6577cdc</span></td></tr>
-      <tr><td>人名识别漏当代高频大姓、5 位以上裸金额漏检</td><td>核心实体召回不足</td><td>姓氏/角色触发词补全 + 金额正则扩展（评测复测召回 100%）</td><td class="num"><span class="commit">f8b766d</span></td></tr>
+      <tr><td>命令执行为 shell=True + 子串黑名单，可被 cmd/powershell 绕过</td><td>任意命令执行，沙箱形同虚设</td><td>白名单 + shlex + shell=False + 参数级纵深拦截</td><td class="num"><span class="commit">357907f</span></td></tr>
+      <tr><td>"沙箱"默认放行任意绝对路径，策略 default=approve</td><td>读桌面/写系统目录均被放行</td><td>realpath+commonpath 越界判定，deny-by-default</td><td class="num"><span class="commit">357907f</span></td></tr>
+      <tr><td>审批弹窗共用单一 Event，多工具待审时点一个=放行全部</td><td>审批旁路，高危操作绕过人工确认</td><td>逐请求审批 + 超时自动驳回 + 关闭残留弹窗</td><td class="num"><span class="commit">e17fd83</span></td></tr>
+      <tr><td>工作流链路绕过隐私网关，合同原文直发云端</td><td>聊天侧脱敏在工作流侧失效，明文出网</td><td>所有 LLM 调用统一走 anonymize→invoke→deanonymize</td><td class="num"><span class="commit">357907f</span></td></tr>
+      <tr><td>审计日志在还原后记录，真实 PII 落盘</td><td>审计系统反成泄露源</td><td>落盘前统一掩码（复用完整脱敏管线）</td><td class="num"><span class="commit">a79645c</span></td></tr>
+      <tr><td>占位符格式固定可预测，可被植入字面量劫持还原</td><td>恶意文档诱导写出他人明文</td><td>随机 nonce + strict 还原不回退明文</td><td class="num"><span class="commit">a79645c</span></td></tr>
+      <tr><td>KeyManager 哈希链不覆盖 cipher_key</td><td>可静默替换密钥而完整性校验不报警</td><td>完整性字段纳入密钥材料</td><td class="num"><span class="commit">357907f</span></td></tr>
+      <tr><td>映射表明文 dict 落盘</td><td>拿到文件即还原全部真实隐私</td><td>Fernet 加密存储 + DPAPI 包裹密钥</td><td class="num"><span class="commit">9150bf9</span></td></tr>
+      <tr><td>审计工具结果接口参数顺序颠倒</td><td>成功的工具调用被误判为失败，链路中断</td><td>修正调用方 + 调用点静态扫描回归测试</td><td class="num"><span class="commit">e17fd83</span></td></tr>
+      <tr><td>人名识别漏当代高频大姓、5 位以上裸金额漏检</td><td>核心实体召回不足</td><td>姓氏/角色触发词补全 + 金额正则扩展（评测复测召回 100%）</td><td class="num"><span class="commit">252202c</span></td></tr>
     </table>
     <div class="tbl-caption">表 3　安全内核级问题与修复（节选，均可在 git 历史追溯）</div>
   </section>
