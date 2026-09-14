@@ -262,6 +262,60 @@ para(tf, [("形式化：", {"bold": True, "color": PRIM}),
      size=12.5, first=True)
 pagenum(s, 5)
 
+# ══════════════════ 形式化定义与保证 ══════════════════
+def formula_band(s, y, label, img, ratio, ih):
+    rect(s, M, y, W-2*M, ih+0.34, fill=TINT, shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.06)
+    tf = box(s, M+0.28, y, 1.55, ih+0.34, anchor=MSO_ANCHOR.MIDDLE)
+    para(tf, label, size=13, color=PRIM, bold=True, first=True)
+    iw = ih * ratio; ix = M + 1.95 + (W-2*M-1.95-iw)/2
+    s.shapes.add_picture(img, Inches(ix), Inches(y+0.17), Inches(iw), Inches(ih))
+
+s = slide()
+kicker(s, "核心方法 · 形式化")
+title(s, "隐私算法的形式化定义与四条保证", size=27)
+formula_band(s, 1.7, "脱敏映射", "docs/screenshots/formulas/eq_anon.png", 2770/155, 0.5)
+formula_band(s, 2.62, "还原算子", "docs/screenshots/formulas/eq_restore.png", 1693/246, 0.72)
+tf = box(s, M, 3.72, W-2*M, 0.35)
+para(tf, "在既定威胁模型下主张四条安全性质", size=15, color=PRIM, bold=True, first=True)
+props = [("机密性", "任意敏感值不出现在送入模型的文本中"),
+         ("可逆性", "持密钥还原，结果与原文完全一致"),
+         ("还原不可伪造", "占位符含随机 nonce，无法被植入劫持"),
+         ("持久化机密", "无密钥时磁盘产物不可恢复明文")]
+px, pw = M, (W-2*M-0.36)/4
+for i, (hd, d) in enumerate(props):
+    x = M + i*(pw+0.12)
+    rect(s, x, 4.15, pw, 1.5, fill=CARD, line=LINEC, lw=1, shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.08)
+    tf = box(s, x+0.18, 4.32, pw-0.36, 0.4)
+    para(tf, f"{i+1}  {hd}", size=14, color=ACC if i==2 else PRIM, bold=True, first=True)
+    tf = box(s, x+0.18, 4.78, pw-0.36, 0.85)
+    para(tf, d, size=11.5, color=TEXT, first=True, line=1.12)
+formula_band(s, 5.9, "量化", "docs/screenshots/formulas/eq_props.png", 2104/130, 0.4)
+pagenum(s)
+
+# ══════════════════ 威胁模型与攻击博弈 ══════════════════
+s = slide()
+kicker(s, "核心方法 · 威胁模型")
+title(s, "威胁模型：四类攻击者与攻击博弈", size=27)
+adv = [("黑盒", "仅观察出网文本与模型输出（被攻破的模型方、链路窃听）", "机密性：无明文可泄露", PRIM),
+       ("黑盒·主动", "可向文档植入伪造占位符 / 注入越权指令", "还原不可伪造（nonce）", PRIM),
+       ("白盒", "读本地磁盘持久化文件，但不在活动用户会话内", "持久化机密：密文存储", PRIM),
+       ("白盒·持钥", "劫持当前 Windows 会话、可调用 DPAPI", "既定边界：等价用户本人", ACC)]
+ay = 1.8
+for hd, cap, line, col in adv:
+    rect(s, M, ay, W-2*M, 0.82, fill=TINT, shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.08)
+    tf = box(s, M+0.3, ay, 2.0, 0.82, anchor=MSO_ANCHOR.MIDDLE)
+    para(tf, hd, size=16, color=col, bold=True, first=True)
+    tf = box(s, M+2.4, ay, 6.0, 0.82, anchor=MSO_ANCHOR.MIDDLE)
+    para(tf, cap, size=13, color=TEXT, first=True, line=1.1)
+    tf = box(s, M+8.5, ay, W-8.5-M-0.3, 0.82, anchor=MSO_ANCHOR.MIDDLE)
+    para(tf, [("防线：", {"color": MUTED, "size": 11}), (line, {"color": col, "size": 12.5, "bold": True})], first=True, line=1.05)
+    ay += 0.94
+formula_band(s, ay+0.04, "攻击博弈", "docs/screenshots/formulas/eq_game.png", 1979/141, 0.42)
+tf = box(s, M, ay+0.86, W-2*M, 0.4)
+para(tf, "机密性 ⇔ 出网泄露博弈中对手胜率为 0；还原不可伪造 ⇔ 劫持博弈成功率受 nonce 空间界定",
+     size=12.5, color=MUTED, first=True)
+pagenum(s)
+
 # ══════════════════ 6 · 脱敏实测效果 ══════════════════
 s = slide()
 kicker(s, "核心创新 · 一")
@@ -464,28 +518,30 @@ for i, (t, d) in enumerate(pipe):
     for ln in d.split("\n"):
         para(tf, ln, size=12, color=MUTED, first=(ln==d.split(chr(10))[0]), line=1.05)
     py += 1.08
-# 右：柱状图 修复项按严重级
-cd = CategoryChartData()
-cd.categories = ["P0 阻断", "P1 架构", "P2 缺陷"]
-cd.add_series("修复项", (3, 5, 4))
-gframe = s.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(7.0), Inches(1.9),
-                            Inches(5.6), Inches(3.9), cd)
-ch = gframe.chart
-ch.has_legend = False; ch.has_title = True; ch.chart_title.text_frame.text = "本轮修复项分布（共 12 项）"
-for r in ch.chart_title.text_frame.paragraphs[0].runs: style(r, 13, TEXT, True)
-plot = ch.plots[0]; plot.has_data_labels = True
-plot.data_labels.font.size = Pt(13); plot.data_labels.font.bold = True
-plot.data_labels.font.color.rgb = RGBColor.from_string(PRIM_D)
-ser = plot.series[0]
-ser.format.fill.solid(); ser.format.fill.fore_color.rgb = RGBColor.from_string(PRIM)
-try:
-    from pptx.util import Pt as _Pt
-    ser.points[0].format.fill.solid(); ser.points[0].format.fill.fore_color.rgb = RGBColor.from_string(ACC)
-except Exception: pass
-ch.category_axis.tick_labels.font.size = Pt(12)
-ch.value_axis.visible = False
-ch.value_axis.has_major_gridlines = False
-tf = box(s, 7.0, 6.0, 5.6, 0.9)
+# 右：核心安全问题 + git 提交
+tf = box(s, 6.7, 1.85, 5.9, 0.35)
+para(tf, "安全内核级问题（节选，均可 git 追溯）", size=13.5, color=PRIM, bold=True, first=True)
+probs = [("命令执行 shell=True+黑名单可绕过", "052f054"),
+         ("沙箱默认放行任意绝对路径", "052f054"),
+         ("审批共用单 Event，点一个放行全部", "6577cdc"),
+         ("工作流绕过隐私网关，原文直发云端", "052f054"),
+         ("审计还原后落盘，泄露明文 PII", "3876638"),
+         ("占位符可预测，被植入字面量劫持", "3876638"),
+         ("映射表明文落盘", "d59c4eb")]
+tbl = s.shapes.add_table(len(probs)+1, 2, Inches(6.7), Inches(2.28), Inches(5.9), Inches(3.5)).table
+tbl.columns[0].width = Inches(4.35); tbl.columns[1].width = Inches(1.55)
+for ci, txt in enumerate(["核心问题", "提交"]):
+    c = tbl.cell(0, ci); c.text = txt
+    c.fill.solid(); c.fill.fore_color.rgb = RGBColor.from_string(PRIM)
+    p = c.text_frame.paragraphs[0]; p.alignment = PP_ALIGN.CENTER if ci else PP_ALIGN.LEFT
+    for r in p.runs: style(r, 12, "FFFFFF", True)
+for ri, (prob, cm) in enumerate(probs, 1):
+    for ci, txt in enumerate([prob, cm]):
+        c = tbl.cell(ri, ci); c.text = txt
+        c.fill.solid(); c.fill.fore_color.rgb = RGBColor.from_string("FFFFFF" if ri%2 else "F0F5F2")
+        p = c.text_frame.paragraphs[0]; p.alignment = PP_ALIGN.CENTER if ci else PP_ALIGN.LEFT
+        for r in p.runs: style(r, 10.5 if ci else 11, "0A5C3B" if ci else TEXT, bold=bool(ci))
+tf = box(s, 6.7, 5.95, 5.9, 1.0)
 para(tf, [("诚实披露：", {"bold": True, "color": ACC}), ("实测发现 7B 本地模型工具调用可靠性问题（幻觉谎称已保存），多层防御保证零实际写盘，已作为已知局限写入报告。", {"color": MUTED})],
      size=11.5, first=True, line=1.1)
 pagenum(s, 12)
