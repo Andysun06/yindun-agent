@@ -36,3 +36,8 @@ dist/
 
 # 运行时知识库向量数据（本地生成，不入库）
 data/
+
+# 视频成片走 Release 分发（163MB 不入 git）；AI 视频工具工作区与工具链
+介绍视频.mp4
+product-video/
+.tools/
