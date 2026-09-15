@@ -41,3 +41,9 @@ data/
 介绍视频.mp4
 product-video/
 .tools/
+
+# 运行输出 / 缓存 / 工具记忆 / 备份（不入库）
+workflow_reports/
+yindun/cache/
+.workbuddy/
+*.bak
