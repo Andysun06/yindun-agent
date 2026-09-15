@@ -47,3 +47,6 @@ workflow_reports/
 yindun/cache/
 .workbuddy/
 *.bak
+
+# 视频成片统一走 Release（含上传用副本）
+*.mp4
