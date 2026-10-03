@@ -40,6 +40,7 @@ from yindun.core.file_tools import (
     search_knowledge_base,
 )
 from yindun.worker.agent_worker import WORKER_EVENTS, Worker
+from yindun.plugins.host import PluginHost
 
 Listener = Callable[[str, Any], None]
 
@@ -78,6 +79,14 @@ class AgentService:
         # 知识库实例（懒加载并复用：Chroma + 本地 embedding 初始化较重）
         self._kb = None
         self._kb_error: Optional[str] = None
+        # 用户本轮原话（供插件做"是否与请求相符"的判断；不含附件正文）
+        self._last_user_request: str = ""
+        # 插件宿主：重依赖能力按需启用，内核保持精简
+        self._plugins = PluginHost(
+            enabled_lookup=lambda pid: bool((self.settings.get("plugins_enabled") or {}).get(pid, False)),
+            enabled_setter=self._persist_plugin_enabled,
+            model_lister=detect_ollama_models,
+        )
 
     # ── 生命周期 ──────────────────────────────────
     def initialize(self) -> None:
@@ -185,6 +194,60 @@ class AgentService:
 
     def attachment_count(self) -> int:
         return len(self._attachments)
+
+    # ── 插件 ─────────────────────────────────────
+    def list_plugins(self) -> List[Dict[str, Any]]:
+        """列出可用插件（内置 + 用户安装），含依赖满足情况与启用状态。"""
+        try:
+            return self._plugins.list_plugins()
+        except Exception as exc:
+            print(f"[AgentService] 插件发现失败：{exc}")
+            return []
+
+    def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> Dict[str, Any]:
+        """启用/停用插件。能力变更写入审计（插件是可执行代码，必须留痕）。"""
+        result = self._plugins.set_enabled(plugin_id, bool(enabled))
+        try:
+            from yindun.core.audit_log import AuditEventType, AuditLog, AuditSeverity
+            AuditLog().add_entry(
+                AuditEventType.ACCESS_CONTROL,
+                AuditSeverity.WARNING if enabled else AuditSeverity.INFO,
+                f"插件{'启用' if enabled else '停用'}：{plugin_id}",
+                {"plugin_id": plugin_id, "enabled": bool(enabled),
+                 "ok": bool(result.get("ok")), "error": result.get("error")},
+            )
+        except Exception:
+            pass
+        return result
+
+    def _persist_plugin_enabled(self, plugin_id: str, enabled: bool) -> None:
+        state = dict(self.settings.get("plugins_enabled") or {})
+        state[plugin_id] = bool(enabled)
+        self.settings.set("plugins_enabled", state)
+        self.settings.save()
+
+    def _emit_advisories(self, approval: Dict[str, Any]) -> None:
+        """审批出现后，**在后台**向已启用的插件征集建议。
+
+        注意：只有本地模型参与的判断才会慢，因此绝不能阻塞审批弹窗——
+        弹窗先出（need_confirm 立即转发），建议算完再以 advisories 事件补发，
+        界面在弹窗上增量显示；用户随时可以先做决定。
+        """
+        try:
+            context = {
+                "tool": approval.get("name"),
+                "args": approval.get("args") or {},
+                "path": approval.get("path"),
+                "user_request": self._last_user_request,
+                "model": self.settings.get("model"),
+                "ollama_host": self.settings.get("ollama_host") or "http://127.0.0.1:11434",
+            }
+            advisories = self._plugins.call_hook("advisory_for_approval", context)
+        except Exception as exc:
+            print(f"[AgentService] 征集插件建议失败：{exc}")
+            return
+        if advisories:
+            self._emit("advisories", advisories)
 
     # ── 知识库（脱敏 RAG）─────────────────────────
     def knowledge_base(self):
@@ -295,6 +358,7 @@ class AgentService:
             self._attachments = []
 
         # 界面上展示的消息保持"用户原话 + 附件名"，不把附件正文写进气泡
+        self._last_user_request = text
         display_text = text
         if pending:
             names = "、".join(item.get("name", "") for item in pending)
@@ -339,6 +403,9 @@ class AgentService:
                 if run_id != self._active_run:
                     return
             self._emit(topic, payload)
+            # 审批弹窗出现后，后台征集插件建议（不阻塞弹窗与用户决策）
+            if topic == "need_confirm" and isinstance(payload, dict):
+                threading.Thread(target=self._emit_advisories, args=(dict(payload),), daemon=True).start()
         return _forward
 
     def _run_worker(self, worker: Worker, session_id: str, run_id: int) -> None:

@@ -63,6 +63,20 @@
     ],
     error: null,
   };
+  const plugins = [
+    { id: "decision_hint", name: "审批决策提示", version: "0.1.0",
+      description: "审批弹窗里给出一条提示：Agent 要执行的操作与你刚才的请求是否相符。用本地模型判断，数据不出本机。",
+      source: "builtin", hooks: ["advisory_for_approval"],
+      permissions: { network: "local-only", filesystem: "none" },
+      enabled: true, error: null, missing: [], usable: true },
+    { id: "laya_risk", name: "laya 风险分级（示例）", version: "0.2.1",
+      description: "用 laya 决策模型给待审批操作分级。需要额外安装 torch 与 laya，属于按需安装的重依赖插件。",
+      source: "user", hooks: ["advisory_for_approval"],
+      permissions: { network: "none", filesystem: "read" },
+      enabled: false, error: null,
+      missing: ["缺少 Python 依赖：torch>=2.0（pip install torch）"], usable: false },
+  ];
+
   const api = {
     bootstrap: () => Promise.resolve({
       version: "V3.3.2",
@@ -88,6 +102,8 @@
     kb_pick_and_add: () => Promise.resolve({ ok: true, status: kb }),
     kb_add_paths: () => Promise.resolve({ ok: true, status: kb }),
     kb_remove: () => Promise.resolve({ ok: true, status: kb }),
+    plugins_list: () => Promise.resolve(plugins),
+    plugin_set_enabled: () => Promise.resolve({ ok: true, plugins }),
     window_action: noop,
     audit_snapshot: () => Promise.resolve(audit),
     audit_export: () => Promise.resolve("（预览模式）audit_report_demo.json"),
@@ -129,6 +145,11 @@
         name: "执行命令", path: "E:\\yindun-agent\\dist",
         args: { command: "python report.py --month 2026-09" },
       });
+      // 插件建议是异步补发的（本地模型判断可能慢），这里模拟慢一步到达
+      setTimeout(() => window.yindun && window.yindun.onEvent("advisories", [
+        { source: "审批决策提示", level: "warn",
+          text: "本地模型判断：与你的请求存疑。你只要求汇总要点，未要求生成新文件。" },
+      ]), 900);
     }, 400);
   }
 })();

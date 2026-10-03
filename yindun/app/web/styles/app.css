@@ -294,3 +294,23 @@ select:focus, input[type="text"]:focus { border-color: var(--steel); box-shadow:
   .sidebar.is-open { transform: none; }
   .sheet { margin: var(--sp-4) var(--sp-4) 0; }
 }
+
+/* ── 插件列表（设置页）───────────────────────────── */
+.plugin-list { display: flex; flex-direction: column; margin-top: var(--sp-3); border-top: 1px solid var(--border-1); }
+.plugin-item { padding: var(--sp-4) 0; border-bottom: 1px solid var(--border-1); display: flex; flex-direction: column; gap: var(--sp-3); }
+.plugin-item__head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-4); }
+.plugin-item__name { font-size: var(--fs-base); font-weight: 600; display: inline-flex; align-items: center; gap: var(--sp-3); }
+.plugin-item__ver { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-3); }
+.plugin-item__desc { font-size: var(--fs-xs); color: var(--text-3); line-height: 1.65; }
+.plugin-item__meta { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.plugin-badge { font-size: var(--fs-xs); padding: 1px 5px; border-radius: var(--r-chip); border: 1px solid var(--border-2); color: var(--text-3); font-family: var(--font-mono); }
+.plugin-badge--warn { color: var(--amber); border-color: var(--amber); }
+.plugin-badge--src { color: var(--steel); border-color: var(--steel); }
+
+/* ── 审批弹窗里的插件建议 ─────────────────────────── */
+.advisory__title { font-size: var(--fs-xs); color: var(--text-3); margin-bottom: var(--sp-2); display: flex; gap: var(--sp-3); align-items: baseline; }
+.advisory__hint { color: var(--text-3); opacity: .8; }
+.advisory { display: flex; flex-direction: column; gap: var(--sp-2); }
+.advisory__item { padding: var(--sp-3) var(--sp-4); border-radius: var(--r-chip); border: 1px solid var(--border-2); background: var(--bg-input); font-size: var(--fs-sm); line-height: 1.6; border-left: 2px solid var(--steel); }
+.advisory__item--warn { border-left-color: var(--amber); }
+.advisory__src { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-3); margin-right: var(--sp-3); }

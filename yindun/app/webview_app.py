@@ -221,6 +221,13 @@ class JsApi:
             print(f"[WebView] 窗口操作 {action} 失败：{exc}")
             return False
 
+    # ── 插件 ─────────────────────────────────────
+    def plugins_list(self):
+        return self._svc.list_plugins()
+
+    def plugin_set_enabled(self, plugin_id: str, enabled: bool):
+        return self._svc.set_plugin_enabled(plugin_id, bool(enabled))
+
     # ── 设置 ─────────────────────────────────────
     def save_settings(self, patch: Dict[str, Any]) -> bool:
         if not isinstance(patch, dict):

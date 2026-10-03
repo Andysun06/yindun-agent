@@ -32,6 +32,8 @@ DEFAULTS: Dict[str, Any] = {
     "ollama_models_cache": [],
     # 无边框悬浮模式（Web 界面）：窗口无系统边框，由界面顶栏承担拖拽与窗口控制
     "frameless": True,
+    # 插件启用状态：{插件ID: bool}（插件默认关闭，按需启用）
+    "plugins_enabled": {},
 }
 
 

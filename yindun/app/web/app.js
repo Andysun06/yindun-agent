@@ -323,6 +323,7 @@
   }
 
   function showApproval(payload) {
+    renderAdvisories([]);   // 建议是异步补发的（本地模型判断可能慢），先清空
     $("approval-tool").textContent = payload.name || "—";
     $("approval-path").textContent = payload.path || "—";
     const text = formatPayload(payload.args);
@@ -332,7 +333,10 @@
     $("approval-root").classList.add("is-open");
     setStatus("等待人工合规审批…");
   }
-  function hideApproval() { $("approval-root").classList.remove("is-open"); }
+  function hideApproval() {
+    $("approval-root").classList.remove("is-open");
+    renderAdvisories([]);
+  }
 
   /* ── 附件条 ───────────────────────────────────── */
   function renderChips() {
@@ -431,6 +435,63 @@
 
   async function refreshKb() { renderKb(await call("kb_status")); }
 
+  /* ── 插件 ─────────────────────────────────────── */
+  const SOURCE_LABEL = { builtin: "内置", user: "用户安装" };
+  const PERM_LABEL = { "local-only": "仅本机网络", none: "无网络" };
+
+  function renderPlugins(list) {
+    const box = $("plugin-list");
+    const plugins = Array.isArray(list) ? list : [];
+    if (!plugins.length) {
+      box.innerHTML = `<div class="plugin-item__desc">没有发现插件</div>`;
+      return;
+    }
+    box.innerHTML = plugins.map((p) => {
+      const badges = [
+        `<span class="plugin-badge plugin-badge--src">${esc(SOURCE_LABEL[p.source] || p.source)}</span>`,
+        p.permissions && p.permissions.network ? `<span class="plugin-badge">${esc(PERM_LABEL[p.permissions.network] || p.permissions.network)}</span>` : "",
+        (p.missing && p.missing.length) ? `<span class="plugin-badge plugin-badge--warn">依赖未满足</span>` : "",
+        p.error ? `<span class="plugin-badge plugin-badge--warn">${esc(p.error)}</span>` : "",
+      ].filter(Boolean).join("");
+      const disabled = !p.usable || !!p.error;
+      return `<div class="plugin-item">
+        <div class="plugin-item__head">
+          <span class="plugin-item__name">${esc(p.name)}<span class="plugin-item__ver">v${esc(p.version)}</span></span>
+          <label class="switch"><input type="checkbox" data-plugin="${esc(p.id)}" ${p.enabled ? "checked" : ""} ${disabled ? "disabled" : ""}><span class="switch__track"></span></label>
+        </div>
+        <div class="plugin-item__desc">${esc(p.description || "")}</div>
+        <div class="plugin-item__meta">${badges}</div>
+        ${(p.missing && p.missing.length) ? `<div class="plugin-item__desc">${p.missing.map(esc).join("<br>")}</div>` : ""}
+      </div>`;
+    }).join("");
+    box.querySelectorAll("[data-plugin]").forEach((input) => {
+      input.onchange = async () => {
+        const res = await call("plugin_set_enabled", input.dataset.plugin, input.checked);
+        if (res && res.ok) {
+          toast(input.checked ? "插件已启用（已写入审计）" : "插件已停用");
+          renderPlugins(res.plugins);
+        } else {
+          toast("操作失败：" + ((res && res.error) || "未知原因"));
+          input.checked = !input.checked;
+        }
+      };
+    });
+  }
+
+  async function refreshPlugins() { renderPlugins(await call("plugins_list")); }
+
+  /* ── 插件建议（审批弹窗内）──────────────────────── */
+  function renderAdvisories(list) {
+    const wrap = $("approval-advisory-wrap");
+    const items = Array.isArray(list) ? list : [];
+    if (!items.length) { wrap.style.display = "none"; return; }
+    $("approval-advisory").innerHTML = items.map((a) => `
+      <div class="advisory__item ${a.level === "warn" ? "advisory__item--warn" : ""}">
+        <span class="advisory__src">${esc(a.source || "插件")}</span>${esc(a.text || "")}
+      </div>`).join("");
+    wrap.style.display = "";
+  }
+
   /* ── 窗口控制 ─────────────────────────────────── */
   function bindWindowControls() {
     const frameless = !!(state.settings && state.settings.frameless);
@@ -501,6 +562,7 @@
         setStatus(""); break;
       case "need_confirm": showApproval(payload || {}); break;
       case "attachments": state.attachments = Array.isArray(payload) ? payload : []; renderChips(); break;
+      case "advisories": renderAdvisories(payload); break;
       case "approval_expired": hideApproval(); setStatus("审批超时，已按驳回处理"); break;
       case "state": {
         setBusy(!!payload.busy);
@@ -637,7 +699,7 @@
     $("btn-settings").onclick = async () => {
       const info = await call("llm_status");
       if (info) { state.llm = info; }
-      fillSettings(); bindWindowControls(); refreshKb();
+      fillSettings(); bindWindowControls(); refreshKb(); refreshPlugins();
       $("drawer").classList.add("is-open");
     };
     $("btn-drawer-close").onclick = () => $("drawer").classList.remove("is-open");

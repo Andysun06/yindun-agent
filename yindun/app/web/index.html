@@ -192,6 +192,14 @@
       </div>
 
       <div class="divider"></div>
+
+      <div class="field">
+        <div class="field__label">插件</div>
+        <div class="field__hint">重依赖能力按需启用。插件是本地代码，隐盾不会联网下载插件；启用与停用都会写入审计。</div>
+        <div class="plugin-list" id="plugin-list"></div>
+      </div>
+
+      <div class="divider"></div>
       <div class="field__hint" id="settings-note">设置修改后立即生效；配置与会话均在本机加密保存。</div>
     </div>
   </aside>
@@ -239,6 +247,10 @@
         <div id="approval-payload-wrap" style="display:none">
           <div class="payload__title">⚠︎ 请核对以下内容后再决定是否授权</div>
           <div class="payload" id="approval-payload"></div>
+        </div>
+        <div id="approval-advisory-wrap" style="display:none">
+          <div class="advisory__title">插件建议 <span class="advisory__hint">仅供参考；放行与否由你决定</span></div>
+          <div class="advisory" id="approval-advisory"></div>
         </div>
       </div>
       <div class="modal__foot">

@@ -1,0 +1,16 @@
+{
+  "id": "decision_hint",
+  "name": "审批决策提示",
+  "version": "0.1.0",
+  "description": "审批弹窗里给出一条提示：Agent 要执行的操作与你刚才的请求是否相符。用本地模型判断，数据不出本机，默认关闭，可随时停用。",
+  "author": "隐盾（内置）",
+  "hooks": ["advisory_for_approval"],
+  "requires": {
+    "python": [],
+    "ollama_models": []
+  },
+  "permissions": {
+    "network": "local-only",
+    "filesystem": "none"
+  }
+}
