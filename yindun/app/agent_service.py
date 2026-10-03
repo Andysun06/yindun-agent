@@ -403,6 +403,8 @@ class AgentService:
             "message_count": len(messages),
             "model": self.settings.get("model"),
             "privacy": bool(self.settings.get("privacy", True)),
+            "permission": self.settings.get("permission"),
+            "sandbox": os.environ.get("SANDBOX_PATH", str(APP_ROOT)),
             "think_mode": self.settings.get("think_mode") or "快速回答",
         }
 

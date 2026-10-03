@@ -39,9 +39,12 @@ class JsApi:
 
     # ── 启动数据 ─────────────────────────────────
     def bootstrap(self) -> Dict[str, Any]:
+        settings = dict(self._svc.settings.data)
+        # 态势行要展示真实运行态：沙箱目录来自环境（工具层实际使用的值）
+        settings.setdefault("sandbox", os.environ.get("SANDBOX_PATH", str(APP_ROOT)))
         return {
             "version": __display_version__,
-            "settings": self._svc.settings.data,
+            "settings": settings,
             "llm": self._svc.llm_status(),
             "sessions": self._svc.list_sessions(),
             "current_session_id": self._svc.current_session_id(),

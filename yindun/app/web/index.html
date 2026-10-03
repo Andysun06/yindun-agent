@@ -12,76 +12,77 @@
     <!-- ── 侧栏：会话 ─────────────────────────────── -->
     <aside class="sidebar" id="sidebar">
       <div class="brand">
-        <svg class="brand__mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+        <svg class="brand__mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M12 3l7 3v5.5c0 4.5-2.9 8.3-7 9.5-4.1-1.2-7-5-7-9.5V6l7-3z"/>
-          <path d="M9 12l2 2 4-4"/>
+          <path d="M9.2 11.8l2 2 3.6-3.8"/>
         </svg>
         <div>
           <div class="brand__name">隐盾</div>
-          <div class="brand__ver" id="brand-version">V—</div>
+          <div class="brand__ver" id="brand-version">—</div>
         </div>
       </div>
 
-      <button class="btn btn--primary btn--block" id="btn-new-session">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-        新建对话
-      </button>
+      <div class="rail-actions">
+        <button class="btn btn--block" id="btn-new-session">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          新建对话
+        </button>
+      </div>
 
       <div class="session-list" id="session-list"></div>
 
       <div class="sidebar__foot">
-        <div style="display:flex;align-items:center;gap:var(--sp-2);min-width:0">
+        <div style="display:flex;align-items:center;gap:var(--sp-3);min-width:0">
           <span class="dot" id="llm-dot"></span>
-          <span class="session-item__meta" id="llm-label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">算力未就绪</span>
+          <span class="session-item__meta" id="llm-label" title="算力状态">未就绪</span>
         </div>
-        <button class="btn btn--ghost" id="btn-audit" title="审计黑匣子">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M5 4h14v16H5z"/><path d="M8 9h8M8 13h8M8 17h4"/>
-          </svg>
-        </button>
-        <button class="btn btn--ghost" id="btn-settings" title="设置">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="3"/>
-            <path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1A1.7 1.7 0 008.9 19a1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1A1.7 1.7 0 004.6 8.9a1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.9.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/>
-          </svg>
-        </button>
+        <div style="display:flex;gap:2px">
+          <button class="btn btn--ghost" id="btn-audit" title="审计黑匣子">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14v16H5z"/><path d="M8 9h8M8 13h8M8 17h4"/></svg>
+          </button>
+          <button class="btn btn--ghost" id="btn-settings" title="设置">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1A1.7 1.7 0 008.9 19a1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1A1.7 1.7 0 004.6 8.9a1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.9.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/>
+            </svg>
+          </button>
+        </div>
       </div>
     </aside>
 
-    <!-- ── 主区：对话 ─────────────────────────────── -->
+    <!-- ── 主区 ─────────────────────────────── -->
     <main class="main">
-      <header class="topbar">
+      <header class="band topbar">
         <button class="btn btn--ghost" id="btn-sidebar" title="会话列表" style="display:none">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
         <div class="topbar__title" id="chat-title">新对话</div>
+        <span class="band__id" id="session-id-mark"></span>
         <div class="topbar__spacer"></div>
-        <div class="seg" id="mode-switch">
-          <button class="seg__btn is-active" data-mode="快速回答">快速</button>
-          <button class="seg__btn" data-mode="深度思考">思考</button>
-        </div>
-        <div class="stats" id="stats-strip" title="数据看板：模型 / 本轮工具调用 / 上下文估算 / 隐私网关">
+        <div class="stats" id="stats-strip" title="数据看板">
           <span class="stats__item" id="stat-model">—</span>
           <span class="stats__sep"></span>
           <span class="stats__item" id="stat-tools">工具 0</span>
           <span class="stats__sep"></span>
           <span class="stats__item" id="stat-tokens">上下文 0</span>
-          <span class="stats__sep"></span>
-          <span class="stats__item" id="stat-privacy">隐私网关 —</span>
         </div>
-        <button class="btn btn--ghost" id="btn-theme" title="切换主题">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <div class="seg" id="mode-switch">
+          <button class="seg__btn is-active" data-mode="快速回答">快速</button>
+          <button class="seg__btn" data-mode="深度思考">思考</button>
+        </div>
+        <button class="btn btn--ghost" id="btn-theme" title="切换明暗">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>
           </svg>
         </button>
-        <!-- 无边框悬浮模式下的窗口控制（由前端顶栏承担拖拽与窗口操作） -->
+        <!-- 无边框悬浮模式下的窗口控制 -->
         <div class="win-ctrls" id="win-ctrls">
           <button class="win-btn" data-win="minimize" title="最小化">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg>
           </button>
-          <button class="win-btn" data-win="toggle_top" id="btn-pin" title="切换置顶">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h6l-1 6 3 3H7l3-3-1-6zM12 13v7"/></svg>
+          <button class="win-btn" data-win="toggle_top" id="btn-pin" title="置顶（重启生效）">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h6l-1 6 3 3H7l3-3-1-6zM12 13v7"/></svg>
           </button>
           <button class="win-btn win-btn--close" data-win="close" title="关闭">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
@@ -89,24 +90,34 @@
         </div>
       </header>
 
-      <div class="status-line" id="status-line"></div>
-      <div class="chat" id="chat"></div>
+      <!-- 安全态势：真实状态，不是装饰 -->
+      <div class="posture" id="posture">
+        <span class="posture__item" id="posture-privacy"><b>隐私网关</b><span>—</span></span>
+        <span class="posture__item" id="posture-permission"><b>权限</b><span>—</span></span>
+        <span class="posture__item" id="posture-sandbox"><b>沙箱</b><span class="posture__sandbox">—</span></span>
+        <span class="posture__item" id="posture-chain"><b>审计链</b><span>—</span></span>
+      </div>
 
-      <form class="composer" id="composer" autocomplete="off">
-        <div class="chips" id="chips"></div>
-        <div class="composer__box">
-          <button class="icon-btn icon-btn--ghost" id="btn-attach" type="button" title="挂载文档（PDF/Word/Excel/TXT/MD/CSV）">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21.4 11.1l-8.5 8.5a5 5 0 01-7.1-7.1l8.6-8.5a3.3 3.3 0 014.7 4.7l-8.6 8.5a1.7 1.7 0 01-2.4-2.4l7.9-7.8"/>
-            </svg>
-          </button>
-          <textarea id="input" rows="1" placeholder="输入涉密指令…（Enter 发送，Shift+Enter 换行）"></textarea>
-          <button class="icon-btn" id="btn-send" type="submit" title="发送">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 8 6 8-16-8z"/></svg>
-          </button>
-        </div>
-        <div class="composer__hint" id="composer-hint">数据在本机脱敏后才送入模型</div>
-      </form>
+      <div class="sheet">
+        <div class="status-line" id="status-line"></div>
+        <div class="chat" id="chat"></div>
+
+        <form class="composer" id="composer" autocomplete="off">
+          <div class="chips" id="chips"></div>
+          <div class="composer__box">
+            <button class="icon-btn icon-btn--ghost" id="btn-attach" type="button" title="挂载文档（PDF / Word / Excel / TXT / MD / CSV）">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21.4 11.1l-8.5 8.5a5 5 0 01-7.1-7.1l8.6-8.5a3.3 3.3 0 014.7 4.7l-8.6 8.5a1.7 1.7 0 01-2.4-2.4l7.9-7.8"/>
+              </svg>
+            </button>
+            <textarea id="input" rows="1" placeholder="输入指令…（Enter 发送，Shift+Enter 换行）"></textarea>
+            <button class="icon-btn" id="btn-send" type="submit" title="发送">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 8 6 8-16-8z"/></svg>
+            </button>
+          </div>
+          <div class="composer__hint" id="composer-hint">文本在本机脱敏后才送模型；真实值只在你的屏幕上还原</div>
+        </form>
+      </div>
     </main>
   </div>
 

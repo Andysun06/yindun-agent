@@ -71,6 +71,8 @@
     setTimeout(() => el.remove(), ms);
   }
 
+  const CLIP_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.1l-8.5 8.5a5 5 0 01-7.1-7.1l8.6-8.5a3.3 3.3 0 014.7 4.7l-8.6 8.5a1.7 1.7 0 01-2.4-2.4l7.9-7.8"/></svg>';
+
   const api = () =>
     (window.pywebview && window.pywebview.api) ||
     (window.__YINDUN_MOCK__ && window.__YINDUN_MOCK__.api) ||   // 开发预览（#mock）
@@ -155,46 +157,100 @@
     toast("会话已删除");
   }
 
+  /* ── 安全态势（真实状态，非装饰）───────────────────── */
+  function renderPosture(payload) {
+    const s = state.settings || {};
+    const privacy = payload && "privacy" in payload ? payload.privacy : s.privacy;
+    const p = $("posture-privacy");
+    p.classList.toggle("is-on", !!privacy);
+    p.classList.toggle("is-off", !privacy);
+    p.querySelector("span").textContent = privacy ? "已启用" : "已关闭";
+
+    const permission = (payload && payload.permission) || s.permission || "—";
+    $("posture-permission").querySelector("span").textContent = permission.replace(/\s*\(.*\)$/, "");
+
+    const sandbox = (payload && payload.sandbox) || s.sandbox || state.sandbox || "—";
+    $("posture-sandbox").querySelector("span").textContent = sandbox;
+
+    const chain = state.audit && state.audit.chain_ok;
+    const c = $("posture-chain");
+    c.classList.toggle("is-on", chain === true);
+    c.classList.toggle("is-off", chain === false);
+    c.querySelector("span").textContent = chain === true ? "完整性通过" : (chain === false ? "校验未通过" : "未校验");
+  }
+
   /* ── 数据看板 ─────────────────────────────────── */
   function renderStats(payload) {
     const model = (payload && payload.model) || state.settings.model || "—";
-    $("stat-model").textContent = model.length > 26 ? model.slice(0, 24) + "…" : model;
+    $("stat-model").textContent = model.length > 24 ? model.slice(0, 22) + "…" : model;
     $("stat-tools").textContent = `工具 ${(payload && payload.tool_calls) || 0}`;
     const tokens = (payload && payload.context_tokens) || 0;
     $("stat-tokens").textContent = `上下文 ${tokens >= 1000 ? (tokens / 1000).toFixed(1) + "k" : tokens}`;
-    const privacy = payload ? payload.privacy : state.settings.privacy;
-    const el = $("stat-privacy");
-    el.textContent = privacy ? "隐私网关 开" : "隐私网关 关";
-    el.className = "stats__item" + (privacy ? "" : " stats__item--bad");
+    renderPosture(payload);
   }
 
   /* ── 渲染：消息 ───────────────────────────────────── */
+  const pad = (n) => String(n).padStart(2, "0");
+
   function emptyState() {
+    const starters = [
+      ["读取沙箱里的文档，列出关键条款", "M6 3h9l4 4v14H6zM15 3v4h4"],
+      ["检查这个项目的结构，指出风险点", "M4 6h6v5H4zM14 6h6v5h-6zM9 18h6"],
+      ["把上一步的结论整理成一份报告文件", "M6 3h9l4 4v14H6zM8 12h8M8 16h5"],
+    ];
     return `<div class="chat__empty">
-      <h1>让大模型看不见敏感数据，却依然能把活干完</h1>
-      <p>数据进模型前在内存中被替换为加密占位符，模型全程只见占位符，回答返回时自动还原。</p>
-      <p>文件读写经沙箱校验，命令走白名单，高危操作强制人工审批，全过程写入哈希链审计。</p>
+      <h1>让大模型看不见敏感数据，也能把活干完</h1>
+      <p>文本在内存中被替换成占位符后才送进模型；模型全程只见占位符，回答返回时在本机还原。
+         文件读写走沙箱，命令走白名单，高危操作需你确认，全过程写入审计链。</p>
+      <div class="starters">${starters.map(([text, path]) => `
+        <button class="starter" data-starter="${esc(text)}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="${path}"/></svg>
+          ${esc(text)}
+        </button>`).join("")}</div>
     </div>`;
   }
 
-  function bubbleEl(role, html, meta = "") {
+  /** 助手回答 = 案卷记录：左侧编号栏 + 发丝竖线 */
+  function entryEl(html, metaHtml = "", index = null) {
     const row = document.createElement("div");
-    row.className = "row" + (role === "user" ? " row--user" : "");
-    row.innerHTML = `<div class="bubble">${html}${meta ? `<div class="bubble__meta">${meta}</div>` : ""}</div>`;
+    row.className = "row";
+    row.innerHTML = `<div class="entry">
+      <div class="entry__gutter">${index === null ? "" : pad(index)}</div>
+      <div class="entry__body">${html}${metaHtml ? `<div class="bubble__meta">${metaHtml}</div>` : ""}</div>
+    </div>`;
+    return row;
+  }
+
+  /** 用户输入 = 指令票：左轨加粗 + 小标签 */
+  function slipEl(html) {
+    const row = document.createElement("div");
+    row.className = "row row--user";
+    row.innerHTML = `<div class="slip"><div class="slip__mark">指令</div><div class="bubble">${html}</div></div>`;
     return row;
   }
 
   function renderMessages() {
     const chat = $("chat");
     chat.innerHTML = "";
-    if (!state.messages.length) { chat.innerHTML = emptyState(); return; }
+    if (!state.messages.length) { chat.innerHTML = emptyState(); bindStarters(); return; }
+    let index = 0;
     for (const m of state.messages) {
-      if (m.role === "user") { chat.appendChild(bubbleEl("user", md(m.content || ""))); }
+      if (m.role === "user") { chat.appendChild(slipEl(md(m.content || ""))); }
       else if (m.role === "assistant" && m.content) {
-        chat.appendChild(bubbleEl("assistant", md(m.content)));
+        index += 1;
+        chat.appendChild(entryEl(md(m.content), "", index));
       }
     }
     scrollToEnd();
+  }
+
+  function bindStarters() {
+    document.querySelectorAll("[data-starter]").forEach((btn) => {
+      btn.onclick = () => {
+        $("input").value = btn.dataset.starter;
+        $("input").focus();
+      };
+    });
   }
 
   function scrollToEnd() { const c = $("chat"); c.scrollTop = c.scrollHeight; }
@@ -202,17 +258,17 @@
   function appendUser(text) {
     const chat = $("chat");
     if (chat.querySelector(".chat__empty")) chat.innerHTML = "";
-    const row = bubbleEl("user", md(text));
-    chat.appendChild(row); scrollToEnd();
+    chat.appendChild(slipEl(md(text))); scrollToEnd();
   }
 
-  /** 思考中的临时气泡（中间结果/状态都写进它） */
+  /** 思考中的临时条目（中间结果/等待态都写进它） */
   function ensureStreamBubble() {
     if (state.streamBubble) return state.streamBubble;
     const chat = $("chat");
     if (chat.querySelector(".chat__empty")) chat.innerHTML = "";
-    const row = bubbleEl("assistant", `<span class="typing"><i></i><i></i><i></i></span>`);
-    row.querySelector(".bubble").classList.add("is-thinking");
+    const index = chat.querySelectorAll(".entry").length + 1;
+    const row = entryEl(`<span class="typing"><i></i><i></i><i></i></span>`, "", index);
+    row.querySelector(".entry__body").classList.add("is-thinking");
     chat.appendChild(row);
     state.streamBubble = row;
     scrollToEnd();
@@ -222,11 +278,16 @@
   function finalizeBubble(text, tagText) {
     const row = state.streamBubble;
     state.streamBubble = null;
-    if (!row) { const chat = $("chat"); chat.appendChild(bubbleEl("assistant", md(text))); scrollToEnd(); return; }
-    const bubble = row.querySelector(".bubble");
-    bubble.classList.remove("is-thinking");
+    if (!row) {
+      const chat = $("chat");
+      chat.appendChild(entryEl(md(text), "", chat.querySelectorAll(".entry").length + 1));
+      scrollToEnd();
+      return;
+    }
+    const body = row.querySelector(".entry__body");
+    body.classList.remove("is-thinking");
     const secs = Math.max(1, Math.round((Date.now() - state.startedAt) / 1000));
-    bubble.innerHTML = md(text) + `<div class="bubble__meta">
+    body.innerHTML = md(text) + `<div class="bubble__meta">
         <span class="bubble__tag">${esc(tagText || "快速")}</span><span>${secs}s</span></div>`;
     scrollToEnd();
   }
@@ -281,7 +342,8 @@
       const chip = document.createElement("span");
       chip.className = "chip" + (item.error ? " chip--bad" : "");
       const size = item.chars ? `${(item.chars / 1000).toFixed(1)}k 字` : (item.error || "空");
-      chip.innerHTML = `<span>📎 ${esc(item.name)} · ${esc(size)}</span><span class="chip__x" title="移除">×</span>`;
+      chip.innerHTML = `<span class="chip__ico">` + CLIP_ICON + `</span><span>${esc(item.name)}</span>` +
+        `<span class="chip__size">${esc(size)}</span><span class="chip__x" title="移除">×</span>`;
       chip.querySelector(".chip__x").onclick = async () => {
         await call("clear_attachments");
         state.attachments = [];
@@ -309,6 +371,7 @@
       ["隐私事件", num(stats.privacy_events)],
       ["审批决策", num(stats.approvals)],
     ];
+    renderPosture(null);
     $("audit-stats").innerHTML = pairs.map(([label, value]) =>
       `<div class="stat"><div class="stat__num">${esc(value)}</div><div class="stat__label">${esc(label)}</div></div>`).join("");
     paintAuditList();
@@ -354,7 +417,7 @@
     list.innerHTML = docs.map((doc) => {
       const name = typeof doc === "string" ? doc : (doc.name || doc.file_name || doc.source || "—");
       const meta = typeof doc === "string" ? "" : (doc.chunks ? `${doc.chunks} 片段` : "");
-      return `<div class="kb-item"><span class="kb-item__name">📄 ${esc(name)}</span>
+      return `<div class="kb-item"><span class="kb-item__name">${esc(name)}</span>
         <span class="kb-item__meta">${esc(meta)} <span class="chip__x" data-kb="${esc(name)}" title="移除">×</span></span></div>`;
     }).join("");
     list.querySelectorAll("[data-kb]").forEach((el) => {
@@ -469,6 +532,7 @@
     state.messages = data.messages || [];
     const item = state.sessions.find((s) => s.id === id);
     $("chat-title").textContent = item ? item.title : "对话";
+    $("session-id-mark").textContent = id ? `NO. ${String(id).slice(0, 8)}` : "";
     renderSessions(); renderMessages();
   }
 
@@ -494,7 +558,10 @@
     const seg = state.settings.think_mode || "快速回答";
     document.querySelectorAll("#mode-switch .seg__btn").forEach((b) =>
       b.classList.toggle("is-active", b.dataset.mode === seg));
-    fillSettings(); renderSessions(); renderStats({ model: state.settings.model, privacy: state.settings.privacy });
+    fillSettings(); renderSessions();
+    renderStats({ model: state.settings.model, privacy: state.settings.privacy,
+                  permission: state.settings.permission, sandbox: state.settings.sandbox });
+    call("audit_snapshot", 1).then((snap) => { if (snap) { state.audit = snap; renderPosture(null); } });
     if (state.currentId) await openSession(state.currentId); else renderMessages();
     onEvent("llm_status", state.llm);
   }

@@ -1,104 +1,124 @@
 /* ==========================================================================
-   隐盾 · 设计 Token（唯一风格源）
-   规则：颜色/间距/圆角/字号/阴影一律从这里取值，组件样式不得写死数值。
-   主题：html[data-theme="dark" | "light"]
+   隐盾 · 设计 Token —— "密件流转" 设计语言
+   --------------------------------------------------------------------------
+   取材自产品本身：涉密文件的密级标注、黑条涂改、编号台账、印章闸门。
+   规则：
+   1) 颜色按语义分工，不按"好看"分配——
+      印泥红只表示「密级/拦截/危险」，竹青只表示「放行/通过」，
+      钢青承担全部交互与信息态。品牌不靠一个亮色撐，而靠这套语义体系。
+   2) 字体三档各司其职：文书标记（宋体）/ 界面正文（雅黑 UI）/ 机器数据（等宽）。
+   3) 层级用"色调块 + 发丝线 + 字重"表达，不靠统一的圆角卡片 + 柔和阴影。
    ========================================================================== */
 
 :root {
-  /* ── 品牌色：品牌绿（沉稳版，替代原先的高饱和绿） ── */
-  --brand-50:  #eefaf3;
-  --brand-100: #d3f2e2;
-  --brand-300: #6fd3a5;
-  --brand-500: #10935f;
-  --brand-600: #0b7a4d;
-  --brand-700: #075c3a;
+  /* ── 墨与纸（底色，冷调，不用纯黑） ── */
+  --ink-900: #0C1116;   /* 最深：窗口底 */
+  --ink-850: #10151C;   /* 面板底 */
+  --ink-800: #151C25;
+  --ink-700: #1B2430;
+  --ink-600: #232E3C;   /* 抬升块 */
+  --ink-500: #2C3948;   /* 悬停 */
+  --line-800: #1E2833;  /* 发丝线 */
+  --line-600: #2A3745;
 
-  /* ── 语义色（仅用于状态，克制使用） ── */
-  --danger-500: #dc2626;
-  --danger-100: #fee2e2;
-  --warn-500:   #d97706;
-  --warn-100:   #fef3c7;
-  --info-500:   #2563eb;
-  --info-100:   #dbeafe;
+  --paper: #E9EDF2;     /* "文书"上的正文色 */
+  --paper-dim: #A9B6C4; /* 次级文字 */
+  --paper-mute: #6F7E8E;/* 三级文字/时间戳 */
 
-  /* ── 间距（8px 基准） ── */
-  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
-  --sp-5: 20px; --sp-6: 24px; --sp-8: 32px; --sp-10: 40px;
+  /* ── 语义色 ── */
+  --stamp: #B4232A;         /* 印泥红：密级 / 拦截 / 危险 */
+  --stamp-soft: #E0524F;
+  --stamp-wash: rgba(180, 35, 42, .12);
 
-  /* ── 圆角 ── */
-  --r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-xl: 20px; --r-full: 999px;
+  --steel: #5B86B8;         /* 钢青：交互 / 信息 / 焦点 */
+  --steel-soft: #8FB3D9;
+  --steel-wash: rgba(91, 134, 184, .14);
 
-  /* ── 字号与行高 ── */
-  --fs-xs: 12px; --fs-sm: 13px; --fs-md: 14px; --fs-lg: 16px;
-  --fs-xl: 20px; --fs-2xl: 26px;
-  --lh-tight: 1.35; --lh-body: 1.7;
+  --bamboo: #4E8A66;        /* 竹青：放行 / 通过 */
+  --bamboo-wash: rgba(78, 138, 102, .14);
 
-  /* ── 字体：中文优先，等宽用于命令/代码 ── */
-  --font-sans: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
-               system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: "Cascadia Mono", Consolas, "JetBrains Mono", ui-monospace, monospace;
+  --amber: #B98237;         /* 琥珀：待处理 / 超时 */
+  --amber-wash: rgba(185, 130, 55, .14);
 
-  /* ── 动效 ── */
-  --ease: cubic-bezier(.22, .61, .36, 1);
-  --dur-fast: 120ms; --dur: 200ms;
+  /* ── 字体：三档各司其职 ── */
+  --font-doc: "SimSun", "Songti SC", "Noto Serif CJK SC", serif;   /* 文书标记/台账表头 */
+  --font-ui: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, "SFMono-Regular", ui-monospace, monospace;
+
+  /* ── 字号阶（收紧行高，界面文字不需要正文级松弛） ── */
+  --fs-mark: 11px;   /* 标记/密级/表头 */
+  --fs-xs: 11.5px;
+  --fs-sm: 12.5px;
+  --fs-base: 13.5px;
+  --fs-md: 15px;
+  --fs-lg: 18px;
+  --fs-xl: 24px;
+  --lh-ui: 1.55;     /* 界面正文 */
+  --lh-doc: 1.75;    /* 文书正文（中文长文本需要更松） */
+
+  /* ── 间距（8px 基准，但有 4px 细档用于密排的元信息） ── */
+  --sp-1: 4px; --sp-2: 6px; --sp-3: 8px; --sp-4: 12px;
+  --sp-5: 16px; --sp-6: 20px; --sp-7: 28px; --sp-8: 40px;
+
+  /* ── 圆角：小圆角直线风格（最大 4px；直线感来自发丝线与对齐，不来自留白） ── */
+  --r-block: 4px;
+  --r-row: 3px;
+  --r-chip: 2px;
+  --r-pill: 3px;
+
+  /* ── 动效：只用于"回应操作"，不做无触发的入场动画 ── */
+  --ease: cubic-bezier(.2, .7, .3, 1);
+  --dur: 140ms;
 
   /* ── 尺寸 ── */
-  --sidebar-w: 264px;
-  --topbar-h: 56px;
+  --rail-w: 268px;
+  --band-h: 46px;
 }
 
-/* ── 深色主题（默认） ─────────────────────────────────────── */
+/* ── 深色（默认，也是这个产品的正确形态：长时间盯屏的安全工具） ── */
 html[data-theme="dark"] {
-  --bg-app:      #0d1117;
-  --bg-surface:  #151b23;
-  --bg-raised:   #1b232d;
-  --bg-hover:    #222c38;
-  --bg-active:   #26313d;
-  --bg-input:    #10161d;
+  --bg-window: var(--ink-900);
+  --bg-panel: var(--ink-850);
+  --bg-raised: var(--ink-700);
+  --bg-hover: var(--ink-600);
+  --bg-active: var(--ink-500);
+  --bg-input: var(--ink-800);
+  --bg-sheet: #121922;          /* "案卷页"表面：比面板略亮，形成纸感 */
 
-  --text-1:      #e8eef6;
-  --text-2:      #a8b6c6;
-  --text-3:      #6f7f90;
+  --text-1: var(--paper);
+  --text-2: var(--paper-dim);
+  --text-3: var(--paper-mute);
 
-  --border-1:    #232d39;
-  --border-2:    #2e3a48;
+  --border-1: var(--line-800);
+  --border-2: var(--line-600);
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
-  --shadow-md: 0 6px 20px rgba(0, 0, 0, .35);
-  --shadow-lg: 0 18px 50px rgba(0, 0, 0, .5);
+  --shadow-pop: 0 18px 48px rgba(0, 0, 0, .55);
+  --shadow-sheet: 0 1px 0 rgba(255, 255, 255, .02), 0 8px 24px rgba(0, 0, 0, .28);
 
-  --bubble-user:      var(--brand-600);
-  --bubble-user-text: #ffffff;
-  --bubble-ai:        #1b232d;
-  --bubble-ai-text:   var(--text-1);
-
-  --overlay: rgba(4, 8, 12, .62);
+  --bubble-user-bg: #1D2A3A;
+  --bubble-user-line: #33465E;
 }
 
-/* ── 浅色主题 ─────────────────────────────────────────────── */
+/* ── 浅色（纸质公文形态；同样只改映射，不改语义分工） ── */
 html[data-theme="light"] {
-  --bg-app:      #f5f7fa;
-  --bg-surface:  #ffffff;
-  --bg-raised:   #ffffff;
-  --bg-hover:    #eef2f6;
-  --bg-active:   #e4eaf1;
-  --bg-input:    #ffffff;
+  --bg-window: #E7EAEF;
+  --bg-panel: #F3F5F8;
+  --bg-raised: #FFFFFF;
+  --bg-hover: #E9EDF3;
+  --bg-active: #DDE4EC;
+  --bg-input: #FFFFFF;
+  --bg-sheet: #FBFCFD;
 
-  --text-1:      #16212e;
-  --text-2:      #4d5c6d;
-  --text-3:      #7d8b9a;
+  --text-1: #131A22;
+  --text-2: #4A5A6B;
+  --text-3: #7A8798;
 
-  --border-1:    #e3e8ee;
-  --border-2:    #d3dae2;
+  --border-1: #DCE2EA;
+  --border-2: #C6D0DC;
 
-  --shadow-sm: 0 1px 2px rgba(16, 30, 45, .06);
-  --shadow-md: 0 6px 20px rgba(16, 30, 45, .08);
-  --shadow-lg: 0 18px 50px rgba(16, 30, 45, .14);
+  --shadow-pop: 0 18px 48px rgba(20, 32, 48, .18);
+  --shadow-sheet: 0 1px 0 rgba(255, 255, 255, .6), 0 6px 18px rgba(20, 32, 48, .06);
 
-  --bubble-user:      var(--brand-600);
-  --bubble-user-text: #ffffff;
-  --bubble-ai:        #ffffff;
-  --bubble-ai-text:   var(--text-1);
-
-  --overlay: rgba(20, 30, 40, .38);
+  --bubble-user-bg: #E8EEF6;
+  --bubble-user-line: #C3D2E4;
 }
