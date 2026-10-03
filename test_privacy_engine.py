@@ -3,35 +3,47 @@
 PrivacyEngine 强化版测试脚本
 
 测试方式：
-1. 同时加载旧版（备份文件）和新版（强化版）
-2. 对同一批测试用例做对比，直观展示强化前后的差异
+1. 加载新版（强化版）并对同一批测试用例断言：无泄露 / 还原准确 / 不误伤
+2. 若存在旧版备份（privacy_engine_old.py.bak），顺带做强化前后对比
 3. 验证接口兼容性：anonymize/deanonymize 行为一致
-4. 验证还原准确性：deanonymize(anonymize(text)) 应还原回原文
+4. 验证 nonce 防劫持专项行为
+
+说明：旧版备份文件已在仓库整理中移除，缺失时自动跳过"新旧对比"，
+      不影响新版断言与退出码（退出码 0 = 全部通过）。
 
 运行方式：
     python test_privacy_engine.py
 """
+import importlib.util
 import sys
 import os
-from importlib.machinery import SourceFileLoader
 
 # ──────────────────────────────────────────
-# 动态加载旧版（备份）和新版（强化版）两个版本
+# 加载新版（强化版）；旧版备份存在时一并加载用于对比
 # ──────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OLD_PATH = os.path.join(BASE_DIR, "yindun", "core", "privacy_engine_old.py.bak")
 NEW_PATH = os.path.join(BASE_DIR, "yindun", "core", "privacy_engine.py")
 
 
-def _load_class(path, module_name):
-    """从指定路径动态加载 PrivacyEngine 类（支持 .bak 等非标准扩展名）。"""
-    loader = SourceFileLoader(module_name, path)
-    mod = loader.load_module()
+def _load_class_from_file(path, module_name):
+    """从任意扩展名的文件路径加载 PrivacyEngine 类（支持 .bak 等非标准扩展名）。
+
+    注意：不使用已废弃的 SourceFileLoader.load_module()（Python 3.12+ 已移除），
+    改用 spec_from_file_location + exec_module。
+    """
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
     return mod.PrivacyEngine
 
 
-OldEngine = _load_class(OLD_PATH, "old_engine")
-NewEngine = _load_class(NEW_PATH, "new_engine")
+sys.path.insert(0, BASE_DIR)
+from yindun.core.privacy_engine import PrivacyEngine as NewEngine  # noqa: E402
+
+OldEngine = None
+if os.path.exists(OLD_PATH):
+    OldEngine = _load_class_from_file(OLD_PATH, "old_engine")
 
 # ──────────────────────────────────────────
 # 测试用例
@@ -89,10 +101,20 @@ def _count_placeholders(text):
 
 
 def _count_real_sensitive_in_output(text, mapping):
-    """检查脱敏后文本中是否还残留真实敏感值。返回残留数量。"""
+    """检查脱敏后文本中是否还残留真实敏感值。返回残留数量。
+
+    注意：mapping 的 value 是 Fernet 密文而非明文，直接用密文比对永远"不残留"
+    （等于空转断言）。这里先解密出真实值再比对，才是有效的泄露检查。
+    """
+    from yindun.core.secret_manager import SecretManager
+    sm = SecretManager.get_instance()
     leaked = 0
-    for real_value in mapping.values():
-        if real_value in text:
+    for encrypted_value in mapping.values():
+        try:
+            real_value = sm.decrypt(encrypted_value)
+        except Exception:
+            real_value = encrypted_value  # 旧版明文 mapping 兼容
+        if real_value and real_value in text:
             leaked += 1
     return leaked
 
@@ -114,16 +136,21 @@ def run_test(case):
     print(f"  原文：{text}")
     print("-" * 70)
 
-    # === 旧版 ===
-    old_eng = OldEngine()
-    old_safe, old_box = old_eng.anonymize(text)
-    old_restored = old_eng.deanonymize(old_safe, old_box)
-    old_count = _count_placeholders(old_safe)
-    old_leak = _count_real_sensitive_in_output(old_safe, old_box)
+    # === 旧版（备份存在时才做强化前后对比）===
+    old_count = 0
+    if OldEngine is not None:
+        old_eng = OldEngine()
+        old_safe, old_box = old_eng.anonymize(text)
+        old_restored = old_eng.deanonymize(old_safe, old_box)
+        old_count = _count_placeholders(old_safe)
+        old_leak = _count_real_sensitive_in_output(old_safe, old_box)
 
-    print(f"\n  【旧版】脱敏后：{old_safe}")
-    print(f"  【旧版】占位符数：{old_count}，残留敏感值：{old_leak}")
-    print(f"  【旧版】还原准确：{'✅' if _check_restore(text, old_restored) else '❌'}")
+        print(f"\n  【旧版】脱敏后：{old_safe}")
+        print(f"  【旧版】占位符数：{old_count}，残留敏感值：{old_leak}")
+        print(f"  【旧版】还原准确：{'✅' if _check_restore(text, old_restored) else '❌'}")
+    else:
+        print("\n  【旧版】未找到备份文件 privacy_engine_old.py.bak，"
+              "跳过新旧对比（仅验证新版断言）")
 
     # === 新版 ===
     new_eng = NewEngine()
@@ -165,10 +192,10 @@ def run_test(case):
 
 def main():
     print("=" * 70)
-    print("PrivacyEngine 强化版 vs 旧版 对比测试")
+    print("PrivacyEngine 强化版 断言测试" + ("（含新旧对比）" if OldEngine else "（无旧版备份，仅测新版）"))
     print("=" * 70)
-    print(f"旧版文件：{OLD_PATH}")
     print(f"新版文件：{NEW_PATH}")
+    print(f"旧版文件：{OLD_PATH if OldEngine else '（不存在，跳过对比）'}")
 
     results = []
     for case in TEST_CASES:
@@ -194,6 +221,7 @@ def main():
 
     # === 额外验证：接口兼容性 ===
     print("\n【接口兼容性验证】")
+    interface_ok = True
     try:
         new_eng = NewEngine()
         # 验证 anonymize 返回 (str, dict)
@@ -215,6 +243,7 @@ def main():
         print("  ✅ destroy() / get_last_stats() / add_custom_names() 可用")
         print("  ✅ 接口完全兼容，调用方代码无需修改")
     except Exception as e:
+        interface_ok = False
         print(f"  ❌ 接口兼容性验证失败：{e}")
 
     # === nonce 专项验证（防"还原劫持"）===
@@ -224,17 +253,29 @@ def main():
         ("同批 nonce 不重复", run_nonce_uniqueness_test),
         ("新格式解密失败保留占位符", run_new_format_failure_test),
     ]
+    nonce_failed = []
     for desc, fn in nonce_checks:
         try:
             fn()
         except Exception as e:
+            nonce_failed.append(desc)
             print(f"  ❌ {desc} 失败：{type(e).__name__}: {e}")
             import traceback
             traceback.print_exc()
 
     print("\n" + "=" * 70)
-    print("测试完成。")
-    return 0 if passed_count == total else 1
+    all_ok = (passed_count == total) and interface_ok and not nonce_failed
+    if all_ok:
+        print(f"✅ 全部通过：用例 {passed_count}/{total}，接口兼容，nonce 专项 {len(nonce_checks)} 项")
+    else:
+        if passed_count != total:
+            print(f"❌ 用例通过 {passed_count}/{total}")
+        if not interface_ok:
+            print("❌ 接口兼容性验证未通过")
+        for desc in nonce_failed:
+            print(f"❌ nonce 专项未通过：{desc}")
+    print("=" * 70)
+    return 0 if all_ok else 1
 
 
 def run_nonce_anti_hijack_test():
