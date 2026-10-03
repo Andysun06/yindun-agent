@@ -12,6 +12,7 @@
     sessions: [], currentId: null, messages: [], busy: false,
     settings: {}, llm: { ready: false, model: "", models: [] },
     streamBubble: null, startedAt: 0,
+    attachments: [], audit: null,
   };
 
   /* ── 工具 ─────────────────────────────────────────── */
@@ -207,6 +208,68 @@
   }
   function hideApproval() { $("approval-root").classList.remove("is-open"); }
 
+  /* ── 附件条 ───────────────────────────────────── */
+  function renderChips() {
+    const box = $("chips");
+    box.innerHTML = "";
+    for (const item of state.attachments) {
+      const chip = document.createElement("span");
+      chip.className = "chip" + (item.error ? " chip--bad" : "");
+      const size = item.chars ? `${(item.chars / 1000).toFixed(1)}k 字` : (item.error || "空");
+      chip.innerHTML = `<span>📎 ${esc(item.name)} · ${esc(size)}</span><span class="chip__x" title="移除">×</span>`;
+      chip.querySelector(".chip__x").onclick = async () => {
+        await call("clear_attachments");
+        state.attachments = [];
+        renderChips();
+      };
+      box.appendChild(chip);
+    }
+  }
+
+  /* ── 审计面板 ─────────────────────────────────── */
+  const SEV_CLASS = { warning: "audit-item__type--warn", critical: "audit-item__type--crit", security: "audit-item__type--crit" };
+
+  function renderAudit(data) {
+    state.audit = data || { stats: {}, chain_ok: false, entries: [] };
+    const stats = state.audit.stats || {};
+    const ok = !!state.audit.chain_ok;
+    $("audit-chain").className = "chain-badge " + (ok ? "chain-badge--ok" : "chain-badge--bad");
+    $("audit-chain").textContent = ok
+      ? "✔ 哈希链完整性验证通过（HMAC-SHA256 链式校验）"
+      : "⚠︎ 哈希链校验未通过（存在被篡改或密钥不匹配的可能）";
+    const num = (v) => (v === undefined || v === null ? "—" : String(v));
+    const pairs = [
+      ["总日志数", num(stats.total_entries)],
+      ["工具调用", num(stats.tool_calls)],
+      ["隐私事件", num(stats.privacy_events)],
+      ["审批决策", num(stats.approvals)],
+    ];
+    $("audit-stats").innerHTML = pairs.map(([label, value]) =>
+      `<div class="stat"><div class="stat__num">${esc(value)}</div><div class="stat__label">${esc(label)}</div></div>`).join("");
+    paintAuditList();
+  }
+
+  function paintAuditList() {
+    const keyword = ($("audit-filter").value || "").trim().toLowerCase();
+    const entries = ((state.audit && state.audit.entries) || []).filter((e) => {
+      if (!keyword) return true;
+      return [e.type, e.severity, e.message, e.preview].join(" ").toLowerCase().includes(keyword);
+    });
+    const list = $("audit-list");
+    if (!entries.length) { list.innerHTML = `<div class="audit-item__msg" style="color:var(--text-3)">没有匹配的审计事件</div>`; return; }
+    list.innerHTML = entries.slice(0, 300).map((e) => `
+      <div class="audit-item">
+        <div class="audit-item__head">
+          <span>${esc((e.time || "").replace("T", " ").slice(0, 19))}</span>
+          <span class="audit-item__type ${SEV_CLASS[e.severity] || ""}">${esc(e.type || "")}</span>
+          <span>${esc(e.severity || "")}</span>
+        </div>
+        <div class="audit-item__msg">${esc(e.message || "")}</div>
+        ${e.preview ? `<div class="audit-item__msg" style="color:var(--text-2)">${esc(e.preview)}</div>` : ""}
+        <div class="audit-item__hash">#${esc(e.hash || "")} ← ${esc(e.prev || "")}</div>
+      </div>`).join("");
+  }
+
   /* ── 设置抽屉 ─────────────────────────────────────── */
   function fillSettings() {
     const s = state.settings || {};
@@ -258,6 +321,7 @@
         else { const chat = $("chat"); chat.appendChild(bubbleEl("assistant", md("⚠︎ " + (payload || "出错了")))); scrollToEnd(); }
         setStatus(""); break;
       case "need_confirm": showApproval(payload || {}); break;
+      case "attachments": state.attachments = Array.isArray(payload) ? payload : []; renderChips(); break;
       case "approval_expired": hideApproval(); setStatus("审批超时，已按驳回处理"); break;
       case "state": {
         setBusy(!!payload.busy);
@@ -348,6 +412,31 @@
     });
 
     $("btn-new-session").onclick = newSession;
+    $("btn-attach").onclick = async () => {
+      const added = await call("pick_files");
+      if (Array.isArray(added)) {
+        const bad = added.filter((x) => x.error);
+        if (bad.length) toast(`有 ${bad.length} 个附件解析失败：${bad[0].name}`);
+        else if (added.length) toast(`已挂载 ${added.length} 个附件（本地解析，不联网）`);
+        const list = await call("list_attachments");
+        state.attachments = Array.isArray(list) ? list : state.attachments;
+        renderChips();
+      }
+    };
+    $("btn-audit").onclick = async () => {
+      $("audit-drawer").classList.add("is-open");
+      renderAudit(await call("audit_snapshot", 300));
+    };
+    $("btn-audit-close").onclick = () => $("audit-drawer").classList.remove("is-open");
+    $("audit-filter").oninput = paintAuditList;
+    $("btn-audit-export-json").onclick = async () => {
+      const path = await call("audit_export", "json");
+      toast(path ? `已导出：${path}` : "导出失败");
+    };
+    $("btn-audit-export-html").onclick = async () => {
+      const path = await call("audit_export", "html");
+      toast(path ? `已导出：${path}` : "导出失败");
+    };
     $("btn-settings").onclick = async () => {
       const info = await call("llm_status");
       if (info) { state.llm = info; }

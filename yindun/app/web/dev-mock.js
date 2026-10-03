@@ -33,6 +33,25 @@
   ];
 
   const noop = () => Promise.resolve(true);
+  const attachments = [
+    { name: "供应商服务合同_示例.pdf", chars: 18422, error: null },
+    { name: "员工薪酬表_示例.csv", chars: 1260, error: null },
+  ];
+  const audit = {
+    chain_ok: true,
+    stats: { total_entries: 128, tool_calls: 23, privacy_events: 41, approvals: 6,
+             llm_calls: 18, chain_valid: true,
+             by_type: { tool_call: 23, privacy_sensitive: 41, access_control: 6, llm_input: 18 },
+             by_severity: { info: 114, warning: 12, security: 2 } },
+    entries: [
+      { time: "2026-10-03T10:09:41", type: "privacy_restored", severity: "info", message: "输出层还原占位符 3 处（仅在本机内存还原）", preview: "", hash: "9f2c41ab77e0d315", prev: "41aa08c3d1b77e92" },
+      { time: "2026-10-03T10:09:38", type: "llm_output", severity: "info", message: "模型输出已脱敏回填，长度 412", preview: "乙方联系人为 [NAME_0_7k2p]，联系电话 [PHONE_0_mx91]", hash: "41aa08c3d1b77e92", prev: "77de10aa9c3f4b20" },
+      { time: "2026-10-03T10:09:12", type: "access_control", severity: "warning", message: "人工审批通过：创建文件（合同要点_20261003.md）", preview: "", hash: "77de10aa9c3f4b20", prev: "a0c1d5e2b6f83047" },
+      { time: "2026-10-03T10:09:03", type: "tool_call", severity: "info", message: "调用工具 read_local_file（沙箱内）", preview: "", hash: "a0c1d5e2b6f83047", prev: "cd77b2190ae4f38a" },
+      { time: "2026-10-03T10:08:55", type: "privacy_detected", severity: "info", message: "检测到敏感实体 5 类：NAME/PHONE/MONEY/BANKCARD/ADDRESS", preview: "", hash: "cd77b2190ae4f38a", prev: "2b90fa4c17de6a55" },
+    ],
+  };
+
   const api = {
     bootstrap: () => Promise.resolve({
       version: "V3.3.2",
@@ -51,11 +70,31 @@
     list_sessions: () => Promise.resolve(sessions),
     open_session: (id) => Promise.resolve({ id, messages, box_mapping: {} }),
     new_session: () => Promise.resolve("s-new"),
+    pick_files: () => Promise.resolve([]),
+    list_attachments: () => Promise.resolve(attachments),
+    clear_attachments: () => Promise.resolve(true),
+    audit_snapshot: () => Promise.resolve(audit),
+    audit_export: () => Promise.resolve("（预览模式）audit_report_demo.json"),
     save_settings: noop, send: noop, cancel: noop, approve: noop,
     delete_session: noop, rename_session: noop,
   };
 
   window.__YINDUN_MOCK__ = { api };
+
+  // 预览用：把附件挂到界面上（真实运行时由 pick_files → attachments 事件驱动）
+  setTimeout(() => {
+    window.yindun && window.yindun.onEvent("attachments", attachments);
+  }, 300);
+
+  // 预览审计面板：加 #mock-audit
+  if (location.hash.indexOf("audit") >= 0) {
+    setTimeout(() => {
+      document.getElementById("audit-drawer").classList.add("is-open");
+      window.yindun && window.yindun.onEvent("status", "");
+      const btn = document.getElementById("btn-audit");
+      btn && btn.click();
+    }, 350);
+  }
 
   // 预览审批弹窗：加 #mock-approval
   if (location.hash.indexOf("approval") >= 0) {

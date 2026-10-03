@@ -78,6 +78,92 @@ class JsApi:
         self._svc.approve(bool(ok))
         return True
 
+    # ── 附件 ─────────────────────────────────────
+    def pick_files(self):
+        """弹出系统文件对话框选择附件（解析后挂载到本轮；返回解析摘要）。"""
+        window = self._window.get("window")
+        if window is None:
+            return []
+        try:
+            import webview as _wv
+            from yindun.app.attachment import SUPPORTED_EXTS, normalize_paths
+            patterns = " ".join(f"*.{ext}" for ext in SUPPORTED_EXTS)
+            picked = window.create_file_dialog(
+                _wv.OPEN_DIALOG, allow_multiple=True, file_types=(f"文档 ({patterns})", "所有文件 (*.*)")
+            )
+        except Exception as exc:
+            print(f"[WebView] 打开文件对话框失败：{exc}")
+            return []
+        paths = normalize_paths(picked)
+        if not paths:
+            return []
+        return self._svc.attach_files(paths)
+
+    def attach_paths(self, paths):
+        """直接挂载给定路径（供拖拽或自动化测试使用）。"""
+        from yindun.app.attachment import normalize_paths
+        return self._svc.attach_files(normalize_paths(paths))
+
+    def clear_attachments(self) -> bool:
+        self._svc.clear_attachments()
+        return True
+
+    def list_attachments(self):
+        return self._svc.list_attachments()
+
+    # ── 审计 ─────────────────────────────────────
+    def audit_snapshot(self, limit: int = 200):
+        """审计面板数据：统计概览 + 链完整性 + 事件列表（均为脱敏预览）。
+
+        注意：`get_stats()` 的 by_type/by_severity 以枚举为键，直接返回无法 JSON 序列化，
+        这里统一转成字符串键的普通字典再交给前端。
+        """
+        try:
+            from yindun.core.audit_log import AuditLog
+            log = AuditLog()
+            raw_stats = log.get_stats() or {}
+            by_type = {str(getattr(k, "value", k)): int(v)
+                       for k, v in (raw_stats.get("by_type") or {}).items()}
+            by_severity = {str(getattr(k, "value", k)): int(v)
+                           for k, v in (raw_stats.get("by_severity") or {}).items()}
+            stats = {
+                "total_entries": int(raw_stats.get("total_entries", 0)),
+                "chain_valid": bool(raw_stats.get("chain_valid", False)),
+                "tool_calls": by_type.get("tool_call", 0),
+                "privacy_events": sum(v for k, v in by_type.items() if k.startswith("privacy")),
+                "approvals": by_type.get("access_control", 0),
+                "llm_calls": by_type.get("llm_input", 0),
+                "by_type": by_type,
+                "by_severity": by_severity,
+            }
+            entries = log.get_entries() or []
+            recent = []
+            for item in entries[-max(1, min(int(limit or 200), 1000)):]:
+                record = item.to_dict() if hasattr(item, "to_dict") else dict(item)
+                details = record.get("details") if isinstance(record.get("details"), dict) else {}
+                recent.append({
+                    "time": str(record.get("timestamp", "")),
+                    "type": str(getattr(record.get("event_type"), "value", record.get("event_type", ""))),
+                    "severity": str(getattr(record.get("severity"), "value", record.get("severity", ""))),
+                    "message": str(record.get("message", "")),
+                    "preview": str(details.get("preview", ""))[:200],
+                    "hash": str(record.get("entry_hash", ""))[:16],
+                    "prev": str(record.get("previous_hash", ""))[:16],
+                })
+            return {"stats": stats, "chain_ok": bool(stats["chain_valid"]),
+                    "entries": list(reversed(recent))}
+        except Exception as exc:
+            return {"stats": {}, "chain_ok": False, "entries": [], "error": str(exc)}
+
+    def audit_export(self, fmt: str = "json"):
+        """导出审计报告（json/html），返回落盘路径。"""
+        try:
+            from yindun.core.audit_log import AuditLog
+            fmt = "html" if str(fmt).lower() == "html" else "json"
+            return AuditLog().save_report(fmt)
+        except Exception as exc:
+            return f"导出失败：{exc}"
+
     # ── 设置 ─────────────────────────────────────
     def save_settings(self, patch: Dict[str, Any]) -> bool:
         if not isinstance(patch, dict):

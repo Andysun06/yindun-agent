@@ -35,6 +35,11 @@
           <span class="dot" id="llm-dot"></span>
           <span class="session-item__meta" id="llm-label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">算力未就绪</span>
         </div>
+        <button class="btn btn--ghost" id="btn-audit" title="审计黑匣子">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 4h14v16H5z"/><path d="M8 9h8M8 13h8M8 17h4"/>
+          </svg>
+        </button>
         <button class="btn btn--ghost" id="btn-settings" title="设置">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3"/>
@@ -67,7 +72,13 @@
       <div class="chat" id="chat"></div>
 
       <form class="composer" id="composer" autocomplete="off">
+        <div class="chips" id="chips"></div>
         <div class="composer__box">
+          <button class="icon-btn icon-btn--ghost" id="btn-attach" type="button" title="挂载文档（PDF/Word/Excel/TXT/MD/CSV）">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21.4 11.1l-8.5 8.5a5 5 0 01-7.1-7.1l8.6-8.5a3.3 3.3 0 014.7 4.7l-8.6 8.5a1.7 1.7 0 01-2.4-2.4l7.9-7.8"/>
+            </svg>
+          </button>
           <textarea id="input" rows="1" placeholder="输入涉密指令…（Enter 发送，Shift+Enter 换行）"></textarea>
           <button class="icon-btn" id="btn-send" type="submit" title="发送">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 8 6 8-16-8z"/></svg>
@@ -129,6 +140,29 @@
 
       <div class="divider"></div>
       <div class="field__hint" id="settings-note">设置修改后立即生效；配置与会话均在本机加密保存。</div>
+    </div>
+  </aside>
+
+  <!-- ── 审计抽屉 ─────────────────────────────── -->
+  <aside class="drawer" id="audit-drawer">
+    <div class="drawer__head">
+      <div class="drawer__title">审计黑匣子</div>
+      <div style="display:flex;gap:var(--sp-2)">
+        <button class="btn btn--ghost" id="btn-audit-export-json" title="导出 JSON">JSON</button>
+        <button class="btn btn--ghost" id="btn-audit-export-html" title="导出 HTML">HTML</button>
+        <button class="btn btn--ghost" id="btn-audit-close" title="关闭">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="drawer__body">
+      <div class="stat-grid" id="audit-stats"></div>
+      <div class="chain-badge" id="audit-chain">—</div>
+      <div class="field">
+        <label class="field__label" for="audit-filter">事件筛选</label>
+        <input type="text" id="audit-filter" placeholder="按类型 / 严重度 / 内容过滤…">
+      </div>
+      <div class="audit-list" id="audit-list"></div>
     </div>
   </aside>
 

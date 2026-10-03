@@ -133,7 +133,34 @@ button { cursor: pointer; border: none; background: none; }
 .icon-btn { width: 38px; height: 38px; border-radius: var(--r-full); display: grid; place-items: center; background: var(--brand-600); color: #fff; flex: none; }
 .icon-btn:hover { background: var(--brand-500); }
 .icon-btn--stop { background: var(--danger-500); }
+.icon-btn--ghost { background: transparent; color: var(--text-2); }
+.icon-btn--ghost:hover { background: var(--bg-hover); color: var(--text-1); }
 .icon-btn svg { width: 18px; height: 18px; }
+
+/* 附件文件条 */
+.chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); padding: 0 var(--sp-1) var(--sp-2); }
+.chips:empty { display: none; }
+.chip { display: inline-flex; align-items: center; gap: var(--sp-2); padding: 5px var(--sp-3); border-radius: var(--r-full); background: var(--bg-raised); border: 1px solid var(--border-1); font-size: var(--fs-xs); color: var(--text-2); }
+.chip__x { cursor: pointer; color: var(--text-3); font-size: 14px; line-height: 1; }
+.chip__x:hover { color: var(--danger-500); }
+.chip--bad { border-color: var(--danger-500); color: var(--danger-500); }
+
+/* 审计面板 */
+.stat-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--sp-3); }
+.stat { background: var(--bg-raised); border: 1px solid var(--border-1); border-radius: var(--r-md); padding: var(--sp-3); }
+.stat__num { font-size: var(--fs-xl); font-weight: 650; }
+.stat__label { font-size: var(--fs-xs); color: var(--text-3); }
+.chain-badge { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); border-radius: var(--r-md); font-size: var(--fs-sm); border: 1px solid var(--border-1); background: var(--bg-raised); }
+.chain-badge--ok { border-color: var(--brand-500); color: var(--brand-500); }
+.chain-badge--bad { border-color: var(--danger-500); color: var(--danger-500); }
+.audit-list { display: flex; flex-direction: column; gap: var(--sp-2); max-height: 46vh; overflow-y: auto; }
+.audit-item { padding: var(--sp-2) var(--sp-3); border-radius: var(--r-md); background: var(--bg-raised); border: 1px solid var(--border-1); font-size: var(--fs-xs); }
+.audit-item__head { display: flex; align-items: center; gap: var(--sp-2); color: var(--text-3); flex-wrap: wrap; }
+.audit-item__type { padding: 1px 6px; border-radius: var(--r-full); background: var(--bg-hover); color: var(--text-2); }
+.audit-item__type--warn { color: var(--warn-500); }
+.audit-item__type--crit { color: var(--danger-500); }
+.audit-item__msg { margin-top: var(--sp-1); color: var(--text-1); overflow-wrap: anywhere; }
+.audit-item__hash { margin-top: 2px; font-family: var(--font-mono); color: var(--text-3); }
 
 /* 抽屉（设置） */
 .drawer {

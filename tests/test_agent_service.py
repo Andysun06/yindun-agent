@@ -178,6 +178,63 @@ raw_svc = svc_sess.read_text(encoding="utf-8")
 check("服务层落盘的会话同样不含明文", "介绍一下你自己" not in raw_svc)
 
 print("\n" + "=" * 78)
+print("【4】附件挂载与上下文（解析 → 上下文 → 落库展示文本）")
+print("=" * 78)
+attachment_path = TMP / "供应商合同_示例.txt"
+attachment_path.write_text(
+    "供应商服务合同\n\n乙方联系人：张伟\n联系电话：13812345678\n合同金额：85万元整\n",
+    encoding="utf-8")
+
+svc2 = AgentService(settings=SettingsStore(path=TMP / "svc2_cfg.json"),
+                    sessions=SessionStore(path=TMP / "svc2_sess.json"))
+svc2.initialize()
+svc2._llm = FakeLLM()
+svc2._tools_map = {}
+events2 = []
+svc2.set_listener(lambda ev, payload: events2.append((ev, payload)))
+added = svc2.attach_files([str(attachment_path)])
+check("附件解析成功", added and added[0]["chars"] > 0 and not added[0]["error"], str(added))
+check("附件列表可查询", len(svc2.list_attachments()) == 1)
+check("附件事件推送给界面", any(ev == "attachments" for ev, _ in events2))
+check("重复挂载去重", len(svc2.attach_files([str(attachment_path)])) == 0, "同一路径不应重复挂载")
+
+captured = {}
+
+
+class CapturingLLM:
+    def invoke(self, messages):
+        captured["messages"] = messages
+        return AIMessage(content="已读取附件。")
+
+    def bind_tools(self, tools):
+        return self
+
+
+svc2._llm = CapturingLLM()
+svc2.send("这份合同的乙方联系人是谁？", attachments=None)
+deadline = time.time() + 60
+while time.time() < deadline and svc2.busy:
+    time.sleep(0.05)
+
+flatten = " ".join(str(getattr(m, "content", m)) for m in captured.get("messages", []))
+check("附件正文进入了模型输入", "供应商服务合同" in flatten, flatten[:120])
+check("附件以环境上下文标记注入", "[离线附件环境上下文" in flatten or "read_attachment_chunk" in flatten,
+      flatten[:160])
+
+session_id = svc2.current_session_id()
+stored = svc2.sessions.get_messages(session_id)
+user_msgs = [m.get("content", "") for m in stored if m.get("role") == "user"]
+check("落库的用户消息是展示文本（不是附件正文）",
+      user_msgs and "📎 附件：" in user_msgs[-1] and "供应商服务合同" not in user_msgs[-1],
+      str(user_msgs[-1])[:120])
+check("附件快照已写入会话（供跨轮 read_attachment_chunk 检索）",
+      "供应商合同_示例.txt" in svc2.sessions.get_attachment_fulltext(session_id),
+      str(list(svc2.sessions.get_attachment_fulltext(session_id).keys())))
+
+raw_att = (TMP / "svc2_sess.json").read_text(encoding="utf-8")
+check("附件正文与手机号均未明文落盘", FAKE_PHONE not in raw_att and "供应商服务合同" not in raw_att)
+
+print("\n" + "=" * 78)
 if failures:
     print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))
     sys.exit(1)

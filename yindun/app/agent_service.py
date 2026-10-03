@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from yindun import APP_ROOT
+from yindun.app.attachment import build_attachment_context, parse_attachment
 from yindun.app.llm_factory import build_llm, detect_chat_models, detect_ollama_models
 from yindun.app.session_store import SessionStore
 from yindun.app.settings_store import SettingsStore
@@ -70,6 +71,10 @@ class AgentService:
         self._llm_error: Optional[str] = None
         self._run_seq = 0
         self._active_run = 0
+        # 本轮待发送的附件（解析后的 {name, path, text, chars, error}）
+        self._attachments: List[Dict[str, Any]] = []
+        # 本轮用户消息的"展示文本"（附件场景下与送模型的上下文不同）
+        self._last_display_text: str = ""
 
     # ── 生命周期 ──────────────────────────────────
     def initialize(self) -> None:
@@ -148,6 +153,36 @@ class AgentService:
             self.sessions.save()
         return ok
 
+    # ── 附件 ─────────────────────────────────────
+    def attach_files(self, paths: List[str]) -> List[Dict[str, Any]]:
+        """解析并挂载附件（同步；解析大文档时前端可显示等待态）。
+
+        返回解析结果摘要列表：[{name, chars, error}]，供界面提示。
+        """
+        added: List[Dict[str, Any]] = []
+        existing = {item.get("path") for item in self._attachments}
+        for path in paths:
+            if not path or path in existing:
+                continue
+            self._emit("status", f"正在解析附件：{Path(path).name} …")
+            record = parse_attachment(path)
+            self._attachments.append(record)
+            added.append({"name": record["name"], "chars": record["chars"], "error": record["error"]})
+        self._emit("status", "")
+        self._emit("attachments", self.list_attachments())
+        return added
+
+    def clear_attachments(self) -> None:
+        self._attachments = []
+        self._emit("attachments", [])
+
+    def list_attachments(self) -> List[Dict[str, Any]]:
+        return [{"name": item.get("name", ""), "chars": item.get("chars", 0),
+                 "error": item.get("error")} for item in self._attachments]
+
+    def attachment_count(self) -> int:
+        return len(self._attachments)
+
     # ── 推理 ─────────────────────────────────────
     @property
     def busy(self) -> bool:
@@ -157,7 +192,8 @@ class AgentService:
     def send(self, text: str, attachments: Optional[List[Dict[str, str]]] = None) -> bool:
         """发起一轮对话。返回是否成功启动（忙碌或算力未就绪则拒绝）。
 
-        attachments 暂未接入（阶段 2 迁移附件解析），此处显式忽略并留痕。
+        附件：使用 `attach_files()` 预先挂载的解析结果；本轮附件会合并进会话的
+        累积快照（跨轮可通过 read_attachment_chunk 工具检索），发送后清空待发列表。
         """
         text = (text or "").strip()
         if not text:
@@ -175,18 +211,32 @@ class AgentService:
             run_id = self._run_seq
             self._active_run = run_id
 
-        if attachments:
-            print("[AgentService] 附件解析将在阶段 2 接入，本轮忽略附件")
+        pending = list(self._attachments)
 
-        # 用户在界面上的消息立即入库，保证切换会话/重启不丢
-        messages = self.sessions.get_messages(sid)
-        messages.append({"role": "user", "content": text})
+        # 历史快照必须在写入本轮消息之前取（与旧界面语义一致：快照=历史，本轮由引擎自行追加）
+        history_snapshot = self.sessions.get_messages(sid)
+
+        # 附件上下文：本轮新附件 + 历史累积快照（统一走服务层实现）
+        snapshot = self.sessions.get_attachment_fulltext(sid)
+        context, updated_snapshot = build_attachment_context(text, pending, snapshot)
+        if pending:
+            self.sessions.set_attachment_fulltext(sid, updated_snapshot)
+            self._attachments = []
+
+        # 界面上展示的消息保持"用户原话 + 附件名"，不把附件正文写进气泡
+        display_text = text
+        if pending:
+            names = "、".join(item.get("name", "") for item in pending)
+            display_text = f"📎 附件：{names}\n{text}"
+        messages = list(history_snapshot)
+        messages.append({"role": "user", "content": display_text})
         self.sessions.set_messages(sid, messages)
+        self._last_display_text = display_text
         self.sessions.save()
 
         worker = Worker()
-        worker.user_input = text
-        worker.messages_snapshot = self.sessions.get_messages(sid)
+        worker.user_input = context          # 送模型的是"附件上下文 + 提问"
+        worker.messages_snapshot = history_snapshot
         worker._box_mapping_restore = self.sessions.get_box_mapping(sid)
         worker.think_mode = self.settings.get("think_mode") or "快速回答"
         worker.privacy_shield = bool(self.settings.get("privacy", True))
@@ -236,8 +286,9 @@ class AgentService:
             self._worker = None
         if current:
             try:
-                if getattr(worker, "result_messages", None):
-                    self.sessions.set_messages(session_id, worker.result_messages)
+                result = getattr(worker, "result_messages", None)
+                if result:
+                    self.sessions.set_messages(session_id, self._restore_display_text(result))
                 box = getattr(worker, "_box_mapping", None)
                 if box:
                     self.sessions.set_box_mapping(session_id, box)
@@ -245,6 +296,28 @@ class AgentService:
             except Exception as exc:
                 print(f"[AgentService] 会话落库失败：{exc}")
         self._emit("state", self._state_payload(session_id, worker))
+
+    def _restore_display_text(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """把"附件上下文"那条用户消息换回界面展示文本。
+
+        引擎收到的 user_input 是"附件正文 + 提问"（内容很长），若原样落库：
+        ① 切换会话重渲染时会把整篇附件正文当成用户发言铺满气泡；
+        ② 附件正文会以用户消息形态二次落盘（本应只存在附件快照里）。
+        展示文本在发送时已记录（_last_display_text），这里替换回去。
+        """
+        display = getattr(self, "_last_display_text", "")
+        if not display:
+            return messages
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
+            content = message.get("content")
+            if message.get("role") != "user" or not isinstance(content, str):
+                continue
+            if "[人类当前实时提问]" in content or "[离线附件环境上下文" in content:
+                patched = list(messages)
+                patched[index] = {**message, "content": display}
+                return patched
+        return messages
 
     def _state_payload(self, session_id: Optional[str], worker: Optional[Worker] = None) -> Dict[str, Any]:
         worker = worker or self._worker

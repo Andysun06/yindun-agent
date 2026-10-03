@@ -62,103 +62,11 @@ _SAVE_CONFIG_LOCK = threading.Lock()
 # 做法：扫描每行行首，识别题号格式，在行首注入 [Q<n>] 锚点
 # ──────────────────────────────────────────
 
-# 中文数字映射（支持 1-99）
-_CN_DIGITS = {'零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
-              '六': 6, '七': 7, '八': 8, '九': 9, '壹': 1, '贰': 2,
-              '叁': 3, '肆': 4, '伍': 5, '陆': 6, '柒': 7, '捌': 8, '玖': 9}
+# 题号锚点与中文数字转换的实现已统一到服务层：yindun/app/attachment.py
+# （Web 界面与 Qt 界面共用同一份实现，避免双实现漂移）
+from yindun.app.attachment import build_attachment_context, inject_question_anchors  # noqa: E402
 
-
-def _cn_to_arabic(s: str):
-    """中文数字转阿拉伯数字，支持 1-99。纯数字字符串返回 None（让调用方自行 int()）。"""
-    if not s:
-        return None
-    if s.isdigit():
-        return None
-    if '十' in s:
-        parts = s.split('十')
-        if len(parts) == 2:
-            tens = _CN_DIGITS.get(parts[0], 1) if parts[0] else 1
-            ones = _CN_DIGITS.get(parts[1], 0) if parts[1] else 0
-            return tens * 10 + ones
-    if s in _CN_DIGITS:
-        return _CN_DIGITS[s]
-    return None
-
-
-# 题号正则（行首，允许前导空白）
-# 顺序：先匹配"第N题"这种最明确的格式，再匹配"N." "N、" 等
-_QUESTION_PATTERNS = [
-    re.compile(r'^(\s*)(\d{1,3})\s*[.、)）]\s*(.+)$'),                               # 1. xxx / 1、xxx / 1) xxx
-    re.compile(r'^(\s*)第\s*([一二三四五六七八九十百零\d]{1,4})\s*题\s*[.、:：)）]?\s*(.*)$'),  # 第5题 / 第五题
-    re.compile(r'^(\s*)题目\s*([一二三四五六七八九十百零\d]{1,4})\s*[.、:：)）]?\s*(.*)$'),     # 题目5
-    re.compile(r'^(\s*)Q\s*(\d{1,3})\s*[.、)）]?\s*(.+)$', re.IGNORECASE),              # Q5 xxx / q5 xxx
-]
-
-
-def _inject_question_anchors(text: str) -> str:
-    """
-    给附件文本注入题号锚点 [Q<n>]。
-
-    扫描每行行首，若匹配题号格式（1./1、/1)/第N题/题目N/Q N），
-    在该行行首（保留原缩进）插入 [Q<n>] 锚点标记。
-
-    例：
-      原文: "  5. 下列哪个选项是正确的？"
-      注入: "  [Q5] 5. 下列哪个选项是正确的？"
-
-    这样模型在初始上下文中看到 [Q5] 就能秒级定位第 5 题，
-    而不需要在大段纯文本中模糊匹配。
-
-    注意：
-    - 只处理行首题号，避免误匹配正文中的数字（如"答案选5"）
-    - 题号范围限制 1-200，避免误匹配年份/金额
-    - 选项 A/B/C/D 不视为题号，不注入锚点
-    """
-    if not text:
-        return text
-
-    lines = text.split('\n')
-    result_lines = []
-    matched_count = 0
-
-    for line in lines:
-        matched = False
-        for cp in _QUESTION_PATTERNS:
-            m = cp.match(line)
-            if not m:
-                continue
-            indent = m.group(1)
-            num_str = m.group(2)
-            rest = m.group(3) if m.lastindex >= 3 else ""
-
-            # 中文数字 -> 阿拉伯数字
-            num = _cn_to_arabic(num_str)
-            if num is None:
-                try:
-                    num = int(num_str)
-                except ValueError:
-                    continue
-
-            # 题号范围 1-100，过滤年份/金额/页码等
-            # 绝大多数试卷题目数不超过 100，超过的几乎都是误匹配
-            if not (1 <= num <= 100):
-                continue
-
-            # 至少要有题干内容（rest 非空或长度合理），避免误匹配
-            # 但允许"第5题"这种独立成行的情况（rest 可为空）
-            # 不强制 rest 非空，因为有些题号独占一行，题干在下一行
-
-            # 注入锚点：保留原行内容，只在缩进后插入 [Qn] 标记
-            original_content = line[len(indent):]
-            result_lines.append(f"{indent}[Q{num}] {original_content}")
-            matched = True
-            matched_count += 1
-            break
-
-        if not matched:
-            result_lines.append(line)
-
-    return '\n'.join(result_lines)
+_inject_question_anchors = inject_question_anchors  # 兼容旧调用名
 
 
 class _AudioTranscriberThread(QThread):
@@ -806,51 +714,20 @@ class MainWindow(QWidget):
           在每道题前注入 [Q<n>] 锚点，让模型秒级定位题号
           注意：快照保留原文（不加锚点），工具检索原文，避免锚点污染匹配
         """
-        contexts = []
         sid = self._current_session_id
-        # 从 session 取累积快照（包含所有历史轮次挂载过的附件）
-        session_snapshot = {}
+        snapshot = {}
         if sid and sid in self._sessions:
-            session_snapshot = dict(self._sessions[sid].get("attachment_fulltext", {}))
+            snapshot = dict(self._sessions[sid].get("attachment_fulltext", {}))
 
-        # 本轮新挂载的附件合并到累积快照
-        for f in self.attached_files:
-            full_text = f['text'] or ''
-            fname = f['name']
-            session_snapshot[fname] = full_text  # 覆盖同名旧文件
-            if len(full_text) <= self._MAX_DOC_CHARS:
-                # 短文档：注入锚点后整篇展示
-                anchored = _inject_question_anchors(full_text)
-                contexts.append(f"[离线附件环境上下文：{fname}]\n{anchored}")
-            else:
-                # 超长文档：截取前 30000 字 + 注入锚点 + 全文索引提示
-                head = full_text[:self._MAX_DOC_CHARS]
-                anchored_head = _inject_question_anchors(head)
-                total_len = len(full_text)
-                contexts.append(
-                    f"[离线附件环境上下文：{fname}]\n"
-                    f"{anchored_head}\n\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"【长文档分块提示】该文档总长 {total_len} 字符，"
-                    f"上方仅展示前 {self._MAX_DOC_CHARS} 字符。"
-                    f"如需读取后续内容（例如某道题目），请调用工具：\n"
-                    f"  read_attachment_chunk(file='{fname}', question='题号')  "
-                    f"# 如 question='5' 或 '第5题'\n"
-                    f"  read_attachment_chunk(file='{fname}', keyword='题干关键词')  "
-                    f"# 模糊定位\n"
-                    f"  read_attachment_chunk(file='{fname}', char_start=30000)  "
-                    f"# 从第 30000 字符继续读取\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                )
+        # 统一走服务层实现（Web / Qt 共用），返回 (上下文, 更新后的累积快照)
+        context, updated = build_attachment_context(user_text, self.attached_files, snapshot)
 
-        # 把累积快照写回 session（持久化）
+        # 把累积快照写回 session（持久化）并暂存给 _start_worker 取用
         if sid and sid in self._sessions:
-            self._sessions[sid]["attachment_fulltext"] = session_snapshot
+            self._sessions[sid]["attachment_fulltext"] = updated
             self._persist_sessions_store()
-
-        # 同时暂存到实例属性，供 _start_worker 取用
-        self._attachment_fulltext_snapshot = session_snapshot
-        return "\n\n".join(contexts) + f"\n\n[人类当前实时提问]：{user_text}"
+        self._attachment_fulltext_snapshot = updated
+        return context
 
     def _clear_attachments(self):
         self.attached_files = []
