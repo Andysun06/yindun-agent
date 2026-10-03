@@ -75,6 +75,9 @@ class AgentService:
         self._attachments: List[Dict[str, Any]] = []
         # 本轮用户消息的"展示文本"（附件场景下与送模型的上下文不同）
         self._last_display_text: str = ""
+        # 知识库实例（懒加载并复用：Chroma + 本地 embedding 初始化较重）
+        self._kb = None
+        self._kb_error: Optional[str] = None
 
     # ── 生命周期 ──────────────────────────────────
     def initialize(self) -> None:
@@ -182,6 +185,74 @@ class AgentService:
 
     def attachment_count(self) -> int:
         return len(self._attachments)
+
+    # ── 知识库（脱敏 RAG）─────────────────────────
+    def knowledge_base(self):
+        """懒加载并复用 KnowledgeBase 实例；不可用时返回 None 并记录原因。"""
+        if self._kb is not None or self._kb_error:
+            return self._kb
+        try:
+            from yindun.core.knowledge_base import KnowledgeBase
+            self._kb = KnowledgeBase()
+        except Exception as exc:
+            self._kb_error = f"{type(exc).__name__}: {exc}"
+            print(f"[AgentService] 知识库初始化失败：{exc}")
+        return self._kb
+
+    def kb_status(self) -> Dict[str, Any]:
+        """知识库状态：是否可用、embedding 模型、文档/片段数。"""
+        kb = self.knowledge_base()
+        if kb is None:
+            return {"available": False, "docs": [], "stats": {},
+                    "error": self._kb_error or "知识库未初始化"}
+        try:
+            available = bool(kb.is_available())
+        except Exception as exc:
+            return {"available": False, "docs": [], "stats": {}, "error": str(exc)}
+        stats = {}
+        docs = []
+        if available:
+            try:
+                stats = kb.get_stats() or {}
+                docs = kb.list_documents() or []
+            except Exception as exc:
+                print(f"[AgentService] 读取知识库状态失败：{exc}")
+        return {
+            "available": available,
+            "embed_model": getattr(kb, "embed_model", ""),
+            "docs": docs,
+            "stats": stats,
+            "error": None if available else "本地 embedding 不可用（请确认 Ollama 在线且已拉取 nomic-embed-text）",
+        }
+
+    def kb_add(self, paths: List[str]) -> Dict[str, Any]:
+        """把文档入库（入库前逐块脱敏，向量库只存占位符）。"""
+        kb = self.knowledge_base()
+        if kb is None:
+            return {"ok": False, "error": self._kb_error or "知识库未初始化"}
+        files = [p for p in (paths or []) if p]
+        if not files:
+            return {"ok": False, "error": "未选择文件"}
+        try:
+            if not kb.is_available():
+                return {"ok": False, "error": "本地 embedding 不可用（Ollama / nomic-embed-text 未就绪）"}
+            self._emit("status", f"正在入库 {len(files)} 个文档（逐块脱敏后向量化）…")
+            result = kb.add_documents(files)
+            self._emit("status", "")
+            return {"ok": True, "result": result, "status": self.kb_status()}
+        except Exception as exc:
+            self._emit("status", "")
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def kb_remove(self, file_name: str) -> Dict[str, Any]:
+        kb = self.knowledge_base()
+        if kb is None:
+            return {"ok": False, "error": self._kb_error or "知识库未初始化"}
+        try:
+            ok = bool(kb.remove_document(file_name))
+            return {"ok": ok, "status": self.kb_status()}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     # ── 推理 ─────────────────────────────────────
     @property

@@ -75,6 +75,18 @@
             <path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>
           </svg>
         </button>
+        <!-- 无边框悬浮模式下的窗口控制（由前端顶栏承担拖拽与窗口操作） -->
+        <div class="win-ctrls" id="win-ctrls">
+          <button class="win-btn" data-win="minimize" title="最小化">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg>
+          </button>
+          <button class="win-btn" data-win="toggle_top" id="btn-pin" title="切换置顶">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h6l-1 6 3 3H7l3-3-1-6zM12 13v7"/></svg>
+          </button>
+          <button class="win-btn win-btn--close" data-win="close" title="关闭">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
       </header>
 
       <div class="status-line" id="status-line"></div>
@@ -145,6 +157,27 @@
           <div class="field__hint">悬浮于其他窗口之上</div>
         </div>
         <label class="switch"><input type="checkbox" id="sw-topmost"><span class="switch__track"></span></label>
+      </div>
+
+      <div class="switch">
+        <div>
+          <div class="field__label">无边框悬浮模式</div>
+          <div class="field__hint">隐藏系统边框，拖动顶栏移动窗口（重启后生效；拖动异常可关闭此项回退）</div>
+        </div>
+        <label class="switch"><input type="checkbox" id="sw-frameless"><span class="switch__track"></span></label>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="field">
+        <div class="field__label">本地知识库（脱敏 RAG）</div>
+        <div class="field__hint" id="kb-status">正在检测…</div>
+        <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-2)">
+          <button class="btn" id="btn-kb-add" type="button">＋ 添加文档</button>
+          <button class="btn" id="btn-kb-refresh" type="button">刷新</button>
+        </div>
+        <div class="kb-list" id="kb-list"></div>
+        <div class="field__hint">入库即逐块脱敏：向量库中只存占位符，真实隐私不落盘</div>
       </div>
 
       <div class="divider"></div>

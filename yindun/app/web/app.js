@@ -335,6 +335,52 @@
       </div>`).join("");
   }
 
+  /* ── 知识库 ───────────────────────────────────── */
+  function renderKb(status) {
+    const data = status || {};
+    const hint = $("kb-status");
+    const available = !!data.available;
+    hint.textContent = available
+      ? `就绪 · 文档 ${(data.stats && data.stats.total_documents) || (data.docs || []).length} 篇 · 片段 ${(data.stats && data.stats.total_chunks) || "—"} · 模型 ${data.embed_model || "—"}`
+      : `不可用：${data.error || "未知原因"}`;
+    hint.style.color = available ? "var(--text-3)" : "var(--danger-500)";
+    $("btn-kb-add").disabled = !available;
+    const list = $("kb-list");
+    const docs = data.docs || [];
+    if (!docs.length) {
+      list.innerHTML = `<div class="kb-item__meta">${available ? "还没有文档，点「添加文档」入库" : ""}</div>`;
+      return;
+    }
+    list.innerHTML = docs.map((doc) => {
+      const name = typeof doc === "string" ? doc : (doc.name || doc.file_name || doc.source || "—");
+      const meta = typeof doc === "string" ? "" : (doc.chunks ? `${doc.chunks} 片段` : "");
+      return `<div class="kb-item"><span class="kb-item__name">📄 ${esc(name)}</span>
+        <span class="kb-item__meta">${esc(meta)} <span class="chip__x" data-kb="${esc(name)}" title="移除">×</span></span></div>`;
+    }).join("");
+    list.querySelectorAll("[data-kb]").forEach((el) => {
+      el.onclick = async () => {
+        const res = await call("kb_remove", el.dataset.kb);
+        if (res && res.ok) { toast("已移除"); renderKb(res.status); }
+        else toast("移除失败：" + ((res && res.error) || "未知原因"));
+      };
+    });
+  }
+
+  async function refreshKb() { renderKb(await call("kb_status")); }
+
+  /* ── 窗口控制 ─────────────────────────────────── */
+  function bindWindowControls() {
+    const frameless = !!(state.settings && state.settings.frameless);
+    document.documentElement.dataset.frameless = frameless ? "1" : "0";
+    document.querySelectorAll("[data-win]").forEach((btn) => {
+      btn.onclick = async () => {
+        const action = btn.dataset.win;
+        await call("window_action", action);
+        if (action === "toggle_top") toast("置顶设置已保存，重启后生效");
+      };
+    });
+  }
+
   /* ── 设置抽屉 ─────────────────────────────────────── */
   function fillSettings() {
     const s = state.settings || {};
@@ -357,11 +403,16 @@
 
     $("sw-privacy").checked = !!s.privacy;
     $("sw-topmost").checked = !!s.topmost;
+    $("sw-frameless").checked = !!s.frameless;
     $("rng-depth").value = s.thinking_depth ?? 3;
     $("depth-value").textContent = s.thinking_depth ?? 3;
     $("sel-permission").value = s.permission || "完全控制 (读/写/列表)";
 
     document.documentElement.dataset.theme = s.dark_mode ? "dark" : "light";
+    // 注意：无边框模式的窗口控制按钮必须在"设置已加载后"决定是否显示，
+    // 因此绑定放在这里（fillSettings 由 bootstrap / 保存设置 / 打开设置页触发），
+    // 而不是 DOMContentLoaded —— 那时 settings 还是空的。
+    bindWindowControls();
   }
 
   async function persist(patch) {
@@ -478,6 +529,19 @@
     });
 
     $("btn-new-session").onclick = newSession;
+    $("btn-kb-add").onclick = async () => {
+      toast("正在入库（本地解析 + 逐块脱敏 + 向量化）…", 8000);
+      const res = await call("kb_pick_and_add");
+      if (res && res.ok) {
+        toast("入库完成");
+        renderKb(res.status);
+      } else if (res && res.error) {
+        toast("入库失败：" + res.error);
+      }
+      await refreshKb();
+    };
+    $("btn-kb-refresh").onclick = refreshKb;
+    bindWindowControls();
     $("btn-attach").onclick = async () => {
       const added = await call("pick_files");
       if (Array.isArray(added)) {
@@ -506,7 +570,8 @@
     $("btn-settings").onclick = async () => {
       const info = await call("llm_status");
       if (info) { state.llm = info; }
-      fillSettings(); $("drawer").classList.add("is-open");
+      fillSettings(); bindWindowControls(); refreshKb();
+      $("drawer").classList.add("is-open");
     };
     $("btn-drawer-close").onclick = () => $("drawer").classList.remove("is-open");
     $("btn-sidebar").onclick = () => $("sidebar").classList.toggle("is-open");
@@ -525,6 +590,10 @@
     $("sel-model").onchange = (e) => persist({ model: e.target.value });
     $("sw-privacy").onchange = (e) => persist({ privacy: e.target.checked });
     $("sw-topmost").onchange = (e) => persist({ topmost: e.target.checked });
+    $("sw-frameless").onchange = (e) => {
+      persist({ frameless: e.target.checked });
+      toast("无边框悬浮模式将在重启后生效");
+    };
     $("sel-permission").onchange = (e) => persist({ permission: e.target.value });
     $("rng-depth").oninput = (e) => { $("depth-value").textContent = e.target.value; };
     $("rng-depth").onchange = (e) => persist({ thinking_depth: Number(e.target.value) });

@@ -164,6 +164,60 @@ class JsApi:
         except Exception as exc:
             return f"导出失败：{exc}"
 
+    # ── 知识库（脱敏 RAG）─────────────────────────
+    def kb_status(self):
+        return self._svc.kb_status()
+
+    def kb_pick_and_add(self):
+        """弹窗选择文档并入库（入库即脱敏）。"""
+        window = self._window.get("window")
+        if window is None:
+            return {"ok": False, "error": "窗口未就绪"}
+        try:
+            import webview as _wv
+            from yindun.app.attachment import SUPPORTED_EXTS, normalize_paths
+            patterns = " ".join(f"*.{ext}" for ext in SUPPORTED_EXTS)
+            picked = window.create_file_dialog(
+                _wv.OPEN_DIALOG, allow_multiple=True, file_types=(f"文档 ({patterns})", "所有文件 (*.*)"))
+        except Exception as exc:
+            return {"ok": False, "error": f"打开文件对话框失败：{exc}"}
+        return self._svc.kb_add(normalize_paths(picked))
+
+    def kb_add_paths(self, paths):
+        from yindun.app.attachment import normalize_paths
+        return self._svc.kb_add(normalize_paths(paths))
+
+    def kb_remove(self, file_name: str):
+        return self._svc.kb_remove(file_name)
+
+    # ── 窗口控制（无边框悬浮模式）─────────────────
+    def window_action(self, action: str) -> bool:
+        """无边框模式下的窗口操作：minimize / toggle_top / close。
+
+        ★ 注意：`toggle_top` 只**更新设置**（下次启动生效），不在运行时改窗口置顶标志——
+        实测从 JS 触发的运行时窗口标志变更会卡住 pywebview 事件循环（窗口假死）。
+        置顶这种"形态类"设置走重启生效，风险最低。
+        """
+        window = self._window.get("window")
+        if window is None:
+            return False
+        try:
+            if action == "minimize":
+                window.minimize()
+            elif action == "toggle_top":
+                new_value = not bool(self._svc.settings.get("topmost", True))
+                self._svc.settings.set("topmost", new_value)
+                self._svc.settings.save()
+                self._svc._emit("status", f"置顶已设为「{'开' if new_value else '关'}」，重启后生效")
+            elif action == "close":
+                window.destroy()
+            else:
+                return False
+            return True
+        except Exception as exc:
+            print(f"[WebView] 窗口操作 {action} 失败：{exc}")
+            return False
+
     # ── 设置 ─────────────────────────────────────
     def save_settings(self, patch: Dict[str, Any]) -> bool:
         if not isinstance(patch, dict):
@@ -219,15 +273,23 @@ class WebApp:
 
         api = JsApi(self.service, self._window_holder)
         settings = self.service.settings.data
+        # 无边框悬浮模式（产品标志性形态）：窗口本身无系统边框，由前端顶栏承担拖拽与窗口控制；
+        # 若拖动异常，可在设置里关掉"无边框悬浮模式"回退到系统边框。
+        frameless = bool(settings.get("frameless", True))
+        window_kwargs: Dict[str, Any] = {
+            "width": 1180,
+            "height": 780,
+            "min_size": (880, 600),
+            "on_top": bool(settings.get("topmost", True)),
+            "confirm_close": False,
+        }
+        if frameless:
+            window_kwargs.update({"frameless": True, "easy_drag": True})
         self._window = webview.create_window(
             f"隐盾安全智能体 {__display_version__}",
             url=str(INDEX_HTML),
             js_api=api,
-            width=1180,
-            height=780,
-            min_size=(880, 600),
-            on_top=bool(settings.get("topmost", True)),
-            confirm_close=False,
+            **window_kwargs,
         )
         self._window_holder["window"] = self._window
 

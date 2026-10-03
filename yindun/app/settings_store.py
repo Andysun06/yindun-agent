@@ -30,6 +30,8 @@ DEFAULTS: Dict[str, Any] = {
     "think_mode": "快速回答",
     "custom_models": {},
     "ollama_models_cache": [],
+    # 无边框悬浮模式（Web 界面）：窗口无系统边框，由界面顶栏承担拖拽与窗口控制
+    "frameless": True,
 }
 
 

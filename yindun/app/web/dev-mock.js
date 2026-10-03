@@ -52,12 +52,23 @@
     ],
   };
 
+  const kb = {
+    available: true,
+    embed_model: "nomic-embed-text",
+    stats: { total_documents: 3, total_chunks: 5 },
+    docs: [
+      { name: "供应商服务合同_示例.md", chunks: 2 },
+      { name: "隐盾产品说明_示例.md", chunks: 2 },
+      { name: "员工薪酬表_示例.csv", chunks: 1 },
+    ],
+    error: null,
+  };
   const api = {
     bootstrap: () => Promise.resolve({
       version: "V3.3.2",
       settings: {
         model: "qwen2.5:7b-instruct", privacy: true, dark_mode: true, topmost: true,
-        thinking_depth: 4, permission: "完全控制 (读/写/列表)", think_mode: "深度思考",
+        thinking_depth: 4, permission: "完全控制 (读/写/列表)", think_mode: "深度思考", frameless: true,
         ollama_models_cache: ["qwen2.5:7b-instruct", "nomic-embed-text:latest"],
       },
       llm: {
@@ -73,6 +84,11 @@
     pick_files: () => Promise.resolve([]),
     list_attachments: () => Promise.resolve(attachments),
     clear_attachments: () => Promise.resolve(true),
+    kb_status: () => Promise.resolve(kb),
+    kb_pick_and_add: () => Promise.resolve({ ok: true, status: kb }),
+    kb_add_paths: () => Promise.resolve({ ok: true, status: kb }),
+    kb_remove: () => Promise.resolve({ ok: true, status: kb }),
+    window_action: noop,
     audit_snapshot: () => Promise.resolve(audit),
     audit_export: () => Promise.resolve("（预览模式）audit_report_demo.json"),
     save_settings: noop, send: noop, cancel: noop, approve: noop,
@@ -89,11 +105,21 @@
   // 预览审计面板：加 #mock-audit
   if (location.hash.indexOf("audit") >= 0) {
     setTimeout(() => {
+      document.getElementById("audit-drawer").style.transition = "none";
       document.getElementById("audit-drawer").classList.add("is-open");
       window.yindun && window.yindun.onEvent("status", "");
       const btn = document.getElementById("btn-audit");
       btn && btn.click();
     }, 350);
+  }
+
+  // 预览设置抽屉：加 #mock-settings
+  if (location.hash.indexOf("settings") >= 0) {
+    setTimeout(() => {
+      const d = document.getElementById("drawer");
+      d.style.transition = "none";
+      document.getElementById("btn-settings").click();
+    }, 400);
   }
 
   // 预览审批弹窗：加 #mock-approval

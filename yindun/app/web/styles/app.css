@@ -175,6 +175,20 @@ button { cursor: pointer; border: none; background: none; }
 .audit-item__msg { margin-top: var(--sp-1); color: var(--text-1); overflow-wrap: anywhere; }
 .audit-item__hash { margin-top: 2px; font-family: var(--font-mono); color: var(--text-3); }
 
+/* 无边框悬浮模式的窗口控制 */
+.win-ctrls { display: none; gap: 2px; margin-left: var(--sp-1); }
+html[data-frameless="1"] .win-ctrls { display: inline-flex; }
+.win-btn { width: 30px; height: 30px; border-radius: var(--r-sm); display: grid; place-items: center; color: var(--text-2); }
+.win-btn:hover { background: var(--bg-hover); color: var(--text-1); }
+.win-btn--close:hover { background: var(--danger-500); color: #fff; }
+.win-btn svg { width: 15px; height: 15px; }
+
+/* 知识库文档列表 */
+.kb-list { display: flex; flex-direction: column; gap: var(--sp-1); margin-top: var(--sp-2); max-height: 220px; overflow-y: auto; }
+.kb-item { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); padding: 6px var(--sp-3); border-radius: var(--r-sm); background: var(--bg-raised); border: 1px solid var(--border-1); font-size: var(--fs-xs); }
+.kb-item__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kb-item__meta { color: var(--text-3); flex: none; }
+
 /* 抽屉（设置） */
 .drawer {
   position: fixed; inset: 0 0 0 auto; width: min(420px, 92vw);
