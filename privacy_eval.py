@@ -5,6 +5,7 @@
 全部数据为合成虚构，不涉及任何真实个人信息。
 """
 import sys, os, io, json, re, secrets, traceback
+from pathlib import Path
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -202,6 +203,7 @@ R["per_category_recall"] = cat_break
 
 # ── 输出 ──
 print(json.dumps(R, ensure_ascii=False, indent=2))
-with open("privacy_eval_results.json", "w", encoding="utf-8") as f:
-    json.dump(R, f, ensure_ascii=False, indent=2)
-print("\n[saved] privacy_eval_results.json")
+# 结果固定落在脚本同目录（便于"一键复现"时校验），不接受外部路径
+_result_file = Path(__file__).resolve().parent / "privacy_eval_results.json"
+_result_file.write_text(json.dumps(R, ensure_ascii=False, indent=2), encoding="utf-8")
+print(f"\n[saved] {_result_file.name}")

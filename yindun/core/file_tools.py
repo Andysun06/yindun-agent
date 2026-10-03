@@ -2,6 +2,7 @@ import os
 import re
 import shlex
 import subprocess
+from pathlib import Path
 
 from yindun import APP_ROOT
 from langchain_core.tools import tool
@@ -33,6 +34,27 @@ def _enforce_sandbox(path: str):
     except ValueError:
         within = False
     return real, within
+
+
+def _safe_write_path(file_path, base_dir):
+    """写盘前的最终落点校验：把"文件名已拼好的目标路径"再收敛一次到授权目录内。
+
+    背景：仅校验 base_dir 不足以拦住两种越界——
+      1. 目录内存在指向外部的符号链接/junction 时，写入会跟随链接逃出授权目录；
+      2. 文件名携带分隔符或 8.3 短名等形态时，拼接结果可能落在预期之外。
+    因此对最终路径做 realpath + commonpath 双校验，越界即拒绝写入。
+
+    返回 (Path, ok)：ok=False 时调用方必须放弃写入。
+    """
+    real_file = os.path.realpath(str(file_path))
+    real_base = os.path.realpath(str(base_dir))
+    try:
+        within = os.path.commonpath(
+            [os.path.normcase(real_base), os.path.normcase(real_file)]
+        ) == os.path.normcase(real_base)
+    except ValueError:
+        within = False
+    return Path(real_file), within
 
 
 # ──────────────────────────────────────────
@@ -233,15 +255,17 @@ def create_local_file(filename: str, content: str = "", target_directory: str = 
     if not within:
         return f"❌ 安全拦截：目标路径超出安全沙箱（{base_dir}），已拒绝执行，未写入任何文件。"
     
-    # 🛡️ 边界防御：强制过滤掉路径穿越符号（如 ../../），防止 AI 乱写到系统核心区
+    # 🛡️ 边界防御：文件名强制 basename 化（丢弃目录成分），再与授权目录拼接；
+    #    随后对最终落点做 realpath+commonpath 二次校验，拦截符号链接跟随式越界。
     safe_filename = os.path.basename(filename)
-    file_path = os.path.join(base_dir, safe_filename)
-    
+    file_path, ok = _safe_write_path(Path(base_dir) / safe_filename, base_dir)
+    if not ok:
+        return f"❌ 安全拦截：解析后的落点超出授权目录（{safe_filename}），已拒绝写入。"
+
     try:
         if not os.path.exists(base_dir):
             os.makedirs(base_dir, exist_ok=True)
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(content)
+        file_path.write_text(content, encoding="utf-8")
         folder_name = os.path.basename(base_dir) if os.path.basename(base_dir) else base_dir
         return f"✅ 权限验证通过！成功在当前授权沙箱 [{folder_name}] 下物理创建文件：{safe_filename}。"
     except Exception as e:
@@ -318,9 +342,12 @@ def modify_local_file(filename: str, old_content: str = "", new_content: str = "
     _, within = _enforce_sandbox(base_dir)
     if not within:
         return f"❌ 安全拦截：目标路径超出安全沙箱（{base_dir}），已拒绝执行，未修改任何文件。"
+    # 文件名 basename 化 + 最终落点 realpath+commonpath 校验（拦截符号链接跟随式越界）
     safe_filename = os.path.basename(filename)
-    file_path = os.path.join(base_dir, safe_filename)
-    
+    file_path, ok = _safe_write_path(Path(base_dir) / safe_filename, base_dir)
+    if not ok:
+        return f"❌ 安全拦截：解析后的落点超出授权目录（{safe_filename}），已拒绝修改。"
+
     try:
         if not os.path.exists(file_path):
             return f"❌ 修改失败：文件 {safe_filename} 不存在。"
@@ -334,8 +361,7 @@ def modify_local_file(filename: str, old_content: str = "", new_content: str = "
         else:
             new_content_full = content + "\n" + new_content
         
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(new_content_full)
+        file_path.write_text(new_content_full, encoding="utf-8")
         
         folder_name = os.path.basename(base_dir) if os.path.basename(base_dir) else base_dir
         action = "替换内容" if old_content else "追加内容"
@@ -347,9 +373,11 @@ def modify_local_file(filename: str, old_content: str = "", new_content: str = "
 @tool(args_schema=RunCommandInput)
 def run_local_command(command: str, target_directory: str = "当前沙箱目录") -> str:
     """
-    在指定安全沙箱目录下执行系统命令（如 python 脚本、pip 安装、git 操作等）。
-    仅允许白名单命令（python/python3/pip/git/echo），去 shell 化执行并拦截危险参数，
-    从根本上杜绝命令注入。
+    在指定安全沙箱目录下执行受限的系统命令（只读查看、脚本执行等）。
+    仅允许白名单命令（python/python3/pip/git/echo），去 shell 化执行并拦截危险参数；
+    python 只允许执行沙箱内的 .py 脚本文件（禁止 -c/-m/stdin 内联代码），
+    pip/git 只允许只读子命令（禁止 install/clone 等会触发代码执行的子命令），
+    从根本上杜绝命令注入与任意代码执行。
     """
     perm = os.environ.get("PERMISSION_LEVEL", "完全控制 (读/写/列表)")
     if "彻底审计" in perm or "安全只读" in perm:
@@ -387,6 +415,52 @@ def run_local_command(command: str, target_directory: str = "当前沙箱目录"
             return f"❌ 安全拦截：参数 '{arg}' 含路径穿越 '..'，已拒绝执行。"
         if absolute_path_pattern.match(arg) or os.path.isabs(arg):
             return f"❌ 安全拦截：参数 '{arg}' 为绝对系统路径，已拒绝执行。"
+
+    # 4. 子命令级纵深防御（★ 关键修复）：
+    #    仅靠"命令名白名单"不足以约束图灵完备的解释器/包管理器/版本控制工具——
+    #      · python -c "<任意代码>"   → 读写任意文件、发起网络请求，等价任意代码执行；
+    #      · python -m http.server     → 启动服务并暴露目录；
+    #      · pip install <包>          → 执行第三方 setup.py，同样是任意代码执行；
+    #      · git -c core.pager=... log → 经 pager/hook 间接执行命令。
+    #    这些入口的参数里既没有 shell 元字符也没有路径穿越，参数级拦截天然挡不住，
+    #    必须在"子命令/入口形态"这一层禁止。
+    args_rest = parts[1:]
+
+    if cmd_name in ("python", "python3"):
+        # 只允许直接执行沙箱内的 .py 脚本文件
+        script = next((a for a in args_rest if not a.startswith("-")), None)
+        if script is None:
+            return ("❌ 安全拦截：python 不支持内联代码（-c/-m/- 标准输入），"
+                    "请改为在沙箱内放置 .py 脚本文件后再执行。")
+        if args_rest[0].startswith("-"):
+            return ("❌ 安全拦截：python 脚本执行前不允许附加解释器开关"
+                    f"（如 -c/-m/-u，收到 '{args_rest[0]}'），已拒绝执行。")
+        if not script.lower().endswith(".py"):
+            return f"❌ 安全拦截：python 仅允许执行 .py 脚本（收到 '{script}'），已拒绝执行。"
+
+    elif cmd_name == "pip":
+        allowed_subcommands = {"list", "show", "check", "freeze", "--version", "-V"}
+        got = args_rest[0] if args_rest else "(无)"
+        if got not in allowed_subcommands:
+            return (f"❌ 安全拦截：pip 仅允许只读子命令 "
+                    f"[{'/'.join(sorted(allowed_subcommands))}]，收到 '{got}'，已拒绝执行"
+                    "（install/download 会执行第三方代码，属高危入口）。")
+
+    elif cmd_name == "git":
+        allowed_subcommands = {"status", "log", "diff", "show", "branch", "rev-parse",
+                               "ls-files", "describe", "blame", "grep", "tag", "shortlog"}
+        got = args_rest[0] if args_rest else "(无)"
+        if got not in allowed_subcommands:
+            return (f"❌ 安全拦截：git 仅允许只读子命令 "
+                    f"[{'/'.join(sorted(allowed_subcommands))}]，收到 '{got}'，已拒绝执行"
+                    "（clone/fetch/config 等会改动仓库或触发外部执行）。")
+        # git 危险开关：可覆盖 pager/hook/仓库指向，从而间接执行命令或越界访问
+        dangerous_flags = {"-c", "-C", "--exec-path", "--exec", "--upload-pack",
+                           "--receive-pack", "--pager", "--git-dir", "--work-tree",
+                           "--config-env", "--output"}
+        bad = next((a for a in args_rest if a in dangerous_flags), None)
+        if bad:
+            return f"❌ 安全拦截：git 参数 '{bad}' 可绕过安全边界，已拒绝执行。"
     
     try:
         result = subprocess.run(

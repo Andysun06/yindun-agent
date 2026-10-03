@@ -222,21 +222,30 @@ class Worker(QObject):
         """
         可中断的 LLM 调用：使用线程池包装 llm.invoke()，
         每隔 check_interval 秒检查取消标志，实现即时响应取消请求。
+
+        ★ 注意不要用 `with ThreadPoolExecutor(...)`：with 退出时会执行
+        shutdown(wait=True)，在取消分支上会阻塞到模型生成完毕才抛出取消，
+        使"0.5 秒取消"退化为 UI 假象（后台仍占满算力、worker 线程无法及时退出）。
+        这里改为显式 shutdown(wait=False, cancel_futures=True)：worker 线程立即
+        响应取消返回，模型请求在后台自然结束、结果被丢弃。
         """
         if self._cancel_requested.is_set():
             raise KeyboardInterrupt("用户取消")
 
-        # 使用线程池执行 llm.invoke()，主线程定期检查取消标志
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
             future = executor.submit(self.llm.invoke, messages)
             while not future.done():
                 if self._cancel_requested.is_set():
-                    # 用户点击取消，立即返回
+                    # 用户点击取消：立即返回，不等待在途的模型请求
                     self.status.emit("[已取消] 推理已被用户中断")
+                    future.cancel()
                     raise KeyboardInterrupt("用户取消")
                 # 等待一小段时间再检查（避免频繁轮询）
                 threading.Event().wait(check_interval)
             return future.result()
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     # ──────────────────────────────────────────
     # 主入口：根据模式执行不同逻辑

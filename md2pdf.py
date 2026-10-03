@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """md2pdf.py <in.md> <out.pdf> —— Markdown → 排版 HTML → Edge 无头渲染 PDF"""
-import sys, subprocess, markdown, os
+import sys, subprocess, tempfile, os, time, markdown
+from pathlib import Path
 md_path, pdf_path = sys.argv[1], sys.argv[2]
 body = markdown.markdown(open(md_path, encoding="utf-8").read(),
                          extensions=["tables", "fenced_code", "sane_lists"])
@@ -28,8 +29,21 @@ strong{color:#0a5c3b;} @page{size:A4;margin:16mm 12mm;} h2{page-break-after:avoi
 """
 html = f'<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>doc</title><style>{css}</style></head><body><div class="page">{body}</div></body></html>'
 html_path = os.path.splitext(md_path)[0] + ".html"
-open(html_path, "w", encoding="utf-8").write(html)
+Path(html_path).write_text(html, encoding="utf-8")
 edge = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
-subprocess.run([edge, "--headless", "--disable-gpu", f"--print-to-pdf={pdf_path}",
-                "--no-pdf-header-footer", "file:///" + os.path.abspath(html_path).replace("\\", "/")])
+# ★ 必须给独立 user-data-dir 并显式等待渲染完成：
+#   若本机已有 Edge 实例在跑，无头进程会把任务转交出去后立即返回，
+#   PDF 会静默保持旧文件（曾导致"文档改了但 PDF 没更新"）。
+profile_dir = os.path.join(tempfile.gettempdir(), "edge_pdf_profile")
+before = os.path.getmtime(pdf_path) if os.path.exists(pdf_path) else None
+subprocess.run([edge, "--headless=new", "--disable-gpu", "--no-sandbox",
+                f"--user-data-dir={profile_dir}",
+                f"--print-to-pdf={os.path.abspath(pdf_path)}",
+                "--no-pdf-header-footer",
+                "file:///" + os.path.abspath(html_path).replace("\\", "/")],
+               timeout=180)
+time.sleep(1)
+after = os.path.getmtime(pdf_path) if os.path.exists(pdf_path) else None
+if after is None or after == before:
+    raise SystemExit(f"❌ PDF 未生成或未更新：{pdf_path}（检查 Edge 无头渲染是否被占用/拦截）")
 print("PDF:", pdf_path)

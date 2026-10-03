@@ -809,8 +809,9 @@ def init_workflow_integration(engine: WorkflowEngine):
                 f"{body_md}\n"
             )
 
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
+        # 落点固定：out_dir 为本模块的报告输出目录，filename 已由 title 白名单过滤后拼接
+        from pathlib import Path as _WPath
+        _WPath(path).write_text(content, encoding="utf-8")
         return path
 
     # ---------------- 3. 注册每个工具对应的 handler ----------------

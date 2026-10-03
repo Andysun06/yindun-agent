@@ -6,6 +6,7 @@
 import json
 import os
 from datetime import datetime
+from pathlib import Path
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QTextEdit, QComboBox,
@@ -463,8 +464,8 @@ class AuditPanel(QFrame):
         if filepath[0]:
             try:
                 content = self._audit_log.export_report(format, self._current_filters)
-                with open(filepath[0], 'w', encoding='utf-8') as f:
-                    f.write(content)
+                # 导出目标由用户在系统保存对话框中选定（非外部输入），按用户选择写入
+                Path(filepath[0]).write_text(content, encoding='utf-8')
                 self._status_label.setText(f"报告已导出: {os.path.basename(filepath[0])}")
             except Exception as e:
                 self._status_label.setText(f"导出失败: {str(e)}")
@@ -654,8 +655,8 @@ class AuditPanel(QFrame):
         path, _ = QFileDialog.getSaveFileName(
             self, "保存报告", "health_report.json", "JSON文件 (*.json)")
         if path:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(report.to_json())
+            # 保存目标由用户在系统保存对话框中选定（非外部输入），按用户选择写入
+            Path(path).write_text(report.to_json(), encoding="utf-8")
             self._status_label.setText(f"报告已保存: {os.path.basename(path)}")
 
     # ── 模型行为画像 ──────────────────────────

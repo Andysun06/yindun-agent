@@ -222,9 +222,10 @@ class KeyManager:
         try:
             with self._lock:
                 # 写临时文件 + 原子替换，避免写一半崩溃留下损坏文件
-                with open(tmp_file, "w", encoding="utf-8") as f:
-                    json.dump([e.to_dict() for e in self._entries],
-                              f, ensure_ascii=False, indent=2)
+                # 落点固定：key_file/tmp_file 均由 _storage_path（应用密钥目录）派生
+                tmp_file.write_text(
+                    json.dumps([e.to_dict() for e in self._entries],
+                               ensure_ascii=False, indent=2), encoding="utf-8")
                 os.replace(tmp_file, key_file)
         except Exception as e:
             print(f"[KeyManager] 密钥存储保存失败：{e}")

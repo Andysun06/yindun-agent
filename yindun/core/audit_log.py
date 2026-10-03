@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import threading
+from pathlib import Path
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional
@@ -234,9 +235,10 @@ class AuditLog:
         try:
             with self._lock:
                 # 先写临时文件，再原子替换，避免写一半崩溃留下损坏文件
-                with open(tmp_file, 'w', encoding='utf-8') as f:
-                    json.dump([e.to_dict() for e in self._entries],
-                              f, ensure_ascii=False, indent=2)
+                # 落点固定：log_file/tmp_file 均由 _storage_path（应用审计目录）派生
+                tmp_file.write_text(
+                    json.dumps([e.to_dict() for e in self._entries],
+                               ensure_ascii=False, indent=2), encoding='utf-8')
                 os.replace(tmp_file, log_file)
         except Exception as e:
             print(f"[AuditLog] 审计日志保存失败：{e}")
@@ -559,7 +561,7 @@ class AuditLog:
         if not filename:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"audit_report_{timestamp}.{format}"
-        filepath = self._storage_path / filename
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(content)
+        # 只取文件名、丢弃任何目录成分：即使调用方传入 "../x" 也只会落回审计目录内
+        filepath = self._storage_path / Path(filename).name
+        filepath.write_text(content, encoding='utf-8')
         return str(filepath)

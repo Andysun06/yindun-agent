@@ -172,8 +172,9 @@ class PolicyManager:
                 "anonymize_rules": self._anonymize_rules,
                 "custom_sensitive_paths": self._custom_sensitive_paths
             }
-            with open(policy_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            # 固定落点：_config_path 在初始化时钉死在应用配置目录，不接受外部传入路径
+            policy_file.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
 

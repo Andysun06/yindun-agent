@@ -167,21 +167,30 @@ class PrivacyEngine:
 
         # 金额：¥100,000 / 85万元 / 3.5亿 / 12.5万 / 价格 500元 / 25000元
         # 说明（第5步精修）：分支2 加左边界 (?<![\d.,]) 并【恢复裸"元"】。
-        #   - 左边界阻止"转账金额 1250000 元"这类普通金额被从长数字串中间截取命中（E 组负样本零误伤）；
-        #   - 纯数字无单位（如"1250000 已到账"）属有意取舍：加纯数字规则会误伤业务数字，故不匹配。
+        #   - 左边界阻止"转账金额 1250000 元"这类普通金额被从长数字串中间截取命中；
+        #   - 纯数字无单位（如"1250000 已到账"）单独走分支5：仅在【金额语境词】之后才命中，
+        #     不加语境词的裸数字仍不匹配（否则会误伤订单号/版本号等业务数字）。
         # (C5) 新增分支3：4~10 位裸数字+元（25000元/100000元）——合同大额写法，
         #   原模式 \d{1,3}(?:,\d{3})* 元 对 5 位以上无逗号数字无有效起始位置（lookbehind 全挡），整体漏检。
         "MONEY": r"(?:¥|￥)\s?\d{1,3}(?:,\d{3})*(?:\.\d+)?"
                  r"|(?<![\d.,])\d{1,3}(?:,\d{3})*(?:\.\d+)?\s?(?:万元|亿元|万元整|元|万|亿)"
                  r"|(?<![\d.,])\d{4,10}\s?元"
-                 r"|(?i:\b(?:USD|CNY|RMB|EUR|GBP|JPY|HKD|RUB|KRW)\s?\d{1,3}(?:,\d{3})*(?:\.\d+)?)",
+                 r"|(?i:\b(?:USD|CNY|RMB|EUR|GBP|JPY|HKD|RUB|KRW)\s?\d[\d,]*(?:\.\d+)?)(?![\d.,])"
+                 # 分支5：金额语境词 + 4~12 位裸数字（"转账金额 1250000"/"合同金额：850000"）。
+                 #   带捕获组，仅替换数字、保留"转账金额"等业务标签。
+                 r"|(?<![\d.,])(?:转账金额|合同金额|订单金额|应付金额|实付金额|收款金额|付款金额|"
+                 r"结算金额|总金额|金额|价款|报价|总价|单价|薪资|工资|月薪|年薪|报酬|费用|预算)"
+                 r"\s*[:：]?\s*(\d{4,12})(?![\d.,])",
 
         # API 密钥：sk-xxx / api_key=xxx / APIKEY: xxx
         # 用 lookaround 替代 \b，适配中文前缀场景（如"密钥sk-xxx"）
         # (P1 加固) APIKEY：sk- 分支字符集加入 -/_，覆盖 sk-proj-xxx 系列；api[_-]?key= 分支值字符集同样允许 -/_
         # (A1) sk- 分支最小长度由 20 降到 8，并显式支持 sk-proj- 前缀
+        # (A7) 新增分支3：在"密钥/令牌/key/secret"等字段名之后的 sk- 短值（4~7 位，如"密钥 sk-abc123"）
+        #   也纳入识别——单独出现的短 sk- 值置信度不足（易误伤编号），但带字段名时可判定为密钥。
         "APIKEY": r"(?<![A-Za-z0-9])sk-(?:proj-)?[A-Za-z0-9_-]{8,}(?![A-Za-z0-9])"
-                  r"|api[_-]?key\s*[=:]\s*['\"]?[A-Za-z0-9_-]{16,}['\"]?",
+                  r"|api[_-]?key\s*[=:]\s*['\"]?([A-Za-z0-9_-]{16,})['\"]?"
+                  r"|(?:密钥|私钥|令牌|key|secret)\s*[:：=]?\s*['\"]?(sk-(?:proj-)?[A-Za-z0-9_-]{4,7})(?![\w-])",
 
         # (B7) 口令字段（password=...）；带捕获组，仅换口令值、保留字段名
         # (C3) 纳入中文标签（密码/口令/密码：），覆盖"登录密码=xxx"等中文办公场景
@@ -239,7 +248,10 @@ class PrivacyEngine:
         # 捕获组只取 token 部分（不含 "Bearer " 前缀）
         # token 长度限制：默认 24+（高置信），应需求收紧到 8+（短 token 也识别，交由人工二次确认）
         # (A2) Bearer token 最小长度 20 → 8
-        "BEARER": r"(?i)(?:Authorization\s*[:：]\s*Bearer\s+|Bearer\s+)([A-Za-z0-9_\-\.=]{8,})",
+        # (A8) 拆成两个分支：带 "Authorization:" 头的短 token（4 位起）也识别——
+        #   单独的 "Bearer xxx" 置信度低（易误伤普通文本），但 HTTP 认证头上下文足够强。
+        "BEARER": r"(?:Authorization\s*[:：]\s*Bearer\s+)([A-Za-z0-9_\-\.=]{4,})"
+                  r"|(?:Bearer\s+)([A-Za-z0-9_\-\.=]{8,})",
 
         # access_token / refresh_token：access_token=xxx / refresh_token: xxx
         # 捕获组只取 token 值（不含 key 名）
@@ -392,6 +404,9 @@ class PrivacyEngine:
         # (C6) 办公/医疗/金融高频角色触发词补全（此前"员工/患者/参会人"等无触发，人名漏检）
         "员工", "职工", "患者", "病人", "参会人", "与会人", "记录人", "主持人", "主讲人", "讲师",
         "作者", "收件人", "发件人", "借款人", "贷款人", "持卡人", "开户人", "经办", "承办人", "见证人",
+        # (A9) 流程/流转类触发词："请查收 张三 提交的材料"这类无角色词但语境明确的办公句式
+        "审核人", "审批人", "复核人", "提交人", "报送人", "验收人", "接收人", "移交人", "填表人",
+        "请查收", "查收",
     )
 
     # (C2) 人名弱规则开关："姓氏+2字"误伤率高，默认关闭。
@@ -462,6 +477,8 @@ class PrivacyEngine:
             "PASSWORD",       # 仅换口令值，保留字段名
             "CONN_STRING",    # 仅换连接串密码段
             "PASSPORT",       # 第二段（带"护照号"等前缀）仅换证件号码
+            "MONEY",          # 金额语境分支：仅换数字，保留"转账金额"等标签
+            "APIKEY",         # api_key=/密钥前缀分支：仅换密钥值，保留字段名
         }
         for key in regex_order:
             pattern = self.PATTERNS[key]
@@ -469,15 +486,19 @@ class PrivacyEngine:
                 flags = re.DOTALL if key == "PRIVATE_KEY" else (
                     re.IGNORECASE if key in self._IGNORECASE_KEYS else 0
                 )
-                # 用快照精验上下文，避免循环内替换导致的索引偏移
+                # 用快照精验上下文，并记录所有替换区间（避免循环内替换导致的索引偏移）
                 snapshot = anonymized
                 matches = list(re.finditer(pattern, snapshot, flags))
+                spans = []  # (start, end, placeholder)，坐标全部基于 snapshot
                 for m in matches:
                     full = m.group(0)
-                    if key in capture_keys and m.lastindex and m.group(1):
-                        target = m.group(1)
-                    else:
-                        target = full
+                    target, g_start, g_end = full, m.start(), m.end()
+                    if key in capture_keys:
+                        # 取第一个真正参与匹配的捕获组（兼容同一模式多分支各自带组的情况）
+                        for gi in range(1, (m.lastindex or 0) + 1):
+                            if m.group(gi):
+                                target, g_start, g_end = m.group(gi), m.start(gi), m.end(gi)
+                                break
                     # 程序化精验（含上下文精验：PHONE 位数 / BANKCARD Luhn /
                     # IDCARD15 地区码+触发词 / PLATE 负向词）
                     if not self._validate_entity(key, target, context=snapshot, pos=m.start()):
@@ -490,8 +511,14 @@ class PrivacyEngine:
                         mapping[placeholder] = self._crypto.encrypt(target)
                         value_to_placeholder[target] = placeholder
                         counts[key] = idx + 1
-                    # 只替换捕获组部分（capture 分支）或整个命中（非 capture 分支）
-                    anonymized = anonymized.replace(target, placeholder, 1)
+                    spans.append((g_start, g_end, placeholder))
+                # ★ 按命中区间【从右向左】精确替换。
+                #   旧实现是 anonymized.replace(target, placeholder, 1)，替换的是"全文中第一次
+                #   出现的相同子串"而非正则命中的位置：当同一子串在非敏感位置先出现时
+                #   （如"备注 abc12345，登录密码=abc12345"），真正的敏感字段会残留明文。
+                #   按区间定位后该确定性泄露被消除（同一值多处出现时共用同一占位符）。
+                for g_start, g_end, placeholder in sorted(spans, key=lambda x: x[0], reverse=True):
+                    anonymized = anonymized[:g_start] + placeholder + anonymized[g_end:]
             except re.error:
                 continue
 
@@ -600,6 +627,11 @@ class PrivacyEngine:
             "签", "约", "见", "审", "批",
             "到", "去", "来", "说", "做", "写", "看", "听", "给", "请",
             "让", "被", "把", "对", "跟", "由", "向", "从", "往",
+            # (A10) 紧随人名出现的"字段标签首字"（避免"联系人张伟电话138…"被切成
+            #   "张伟电"并生成错误占位符）。仅在人名末尾字符命中时裁剪，不影响
+            #   "张信哲"这类名字中间含标签字的合法人名。
+            "电", "话", "手", "机", "邮", "箱", "址", "座", "传", "微",
+            "账", "银", "卡", "证", "单", "部", "司", "职", "务", "位", "系",
         }
         while chars and chars[-1] in stop_chars:
             chars.pop()

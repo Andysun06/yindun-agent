@@ -931,7 +931,13 @@ class MainWindow(QWidget):
         self.worker.need_confirm.connect(self._on_intercept_confirm)
         self.worker.approval_expired.connect(self._close_stale_confirm_dialogs)
         self.worker.intermediate_result.connect(self._on_intermediate_result)
-        self.status_bar.cancel_requested.connect(lambda: self.worker.cancel() if self.worker else None)
+        # 取消按钮：采用"先断后连"的单一连接，避免每轮 _start_worker 累积 lambda
+        # （累积后点一次取消会对当前 worker 重复调用 cancel N 次）
+        try:
+            self.status_bar.cancel_requested.disconnect(self._on_cancel_requested)
+        except Exception:
+            pass
+        self.status_bar.cancel_requested.connect(self._on_cancel_requested)
         # 数据看板：每次发起请求 +1 次模型调用
         self.data_dashboard.inc_model_call()
         
@@ -952,17 +958,31 @@ class MainWindow(QWidget):
         except Exception as e:
             print(f"[MainWindow] 保存回答模式失败：{e}")
 
+    def _on_cancel_requested(self):
+        """状态栏取消按钮 → 转发给当前 worker（单一入口，便于断连与测试）"""
+        if self.worker:
+            self.worker.cancel()
+
     def _on_stop_requested(self):
         """停止按钮：立即取消生成并重置 UI，不等待 worker 线程"""
         if self.worker and self.is_busy:
             self.worker.cancel()
-            # 断开旧 worker 信号，防止 stale 回复污染 UI
-            try:
-                self.worker.finished.disconnect(self._on_reply_received)
-                self.worker.error.disconnect(self._on_error_caught)
-                self.worker.need_confirm.disconnect(self._on_intercept_confirm)
-            except Exception:
-                pass
+            # 断开旧 worker 的【全部】信号，防止 stale 数据污染 UI。
+            # 旧实现只断开了 finished/error/need_confirm，遗留的 status /
+            # intermediate_result / approval_expired 仍会把已取消那轮的中间结果
+            # 写进新气泡或状态栏（取消后立刻重发消息即可复现）。
+            for signal, slot in (
+                (self.worker.finished, self._on_reply_received),
+                (self.worker.error, self._on_error_caught),
+                (self.worker.need_confirm, self._on_intercept_confirm),
+                (self.worker.status, self.status_bar.set_static_text),
+                (self.worker.intermediate_result, self._on_intermediate_result),
+                (self.worker.approval_expired, self._close_stale_confirm_dialogs),
+            ):
+                try:
+                    signal.disconnect(slot)
+                except Exception:
+                    pass
             # 强制驳回并关闭所有活动审批弹窗，防止残留弹窗放行已取消的高危写盘操作
             # 顺序：先 approve(False) 唤醒 worker 审批等待，再 close 关闭弹窗
             for dlg in list(self._active_confirm_dialogs):
@@ -1304,11 +1324,12 @@ class MainWindow(QWidget):
 
     def _on_intercept_confirm(self, info):
         self.status_bar.set_static_text("🚨 等待人工合规审批...")
-        dlg = ConfirmDialog(info["name"], info["path"], self)
+        # ★ 把工具入参一并交给弹窗：审批人必须看到即将执行的命令/写入的内容，
+        #   否则对 run_local_command 等工具构成"盲签"（点授权却不知放行了什么）。
+        dlg = ConfirmDialog(info["name"], info["path"], info.get("args"), self)
         self._active_confirm_dialogs.add(dlg)
         s = QApplication.primaryScreen()
         if s:
-            # ★ 弹窗 700x400，必须整体落在可用屏幕内（原 right()-370 会导致右侧出屏被裁切）
             geo = s.availableGeometry()
             dlg.move(geo.right() - dlg.width() - 24, geo.bottom() - dlg.height() - 24)
         dlg.confirmed.connect(lambda ok: (self.worker.approve(ok), self._active_confirm_dialogs.discard(dlg)))

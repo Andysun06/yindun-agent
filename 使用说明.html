@@ -110,7 +110,7 @@ python run.py
 <tbody>
 <tr>
 <td>隐私脱敏网关</td>
-<td>20+ 类敏感实体识别，进模型前占位符化，映射表 Fernet 加密、密钥 DPAPI 保护</td>
+<td>27 类敏感实体识别（正则粗筛 + 程序化精验），进模型前占位符化，映射表 Fernet 加密、密钥 DPAPI 保护</td>
 </tr>
 <tr>
 <td>文件沙箱</td>
@@ -122,11 +122,11 @@ python run.py
 </tr>
 <tr>
 <td>命令白名单</td>
-<td>仅放行 python/pip/git/echo，去 shell 化执行，杜绝命令注入</td>
+<td>放行 python/pip/git/echo，去 shell 化执行，并做子命令级收口：python 仅允许执行沙箱内的 .py 脚本（<code>-c</code>/<code>-m</code>/标准输入等内联代码一律拒绝），pip/git 仅允许只读子命令（install/download/clone/fetch 等会触发代码执行或改动仓库的入口被拒绝）</td>
 </tr>
 <tr>
 <td>熔断审批</td>
-<td>高危操作挂起后台线程，强制人工二次确认，超时自动驳回</td>
+<td>高危操作挂起后台线程，弹窗展示申请工具、目标路径与即将执行的命令 / 即将写入的内容，人工二次确认后才放行；超时自动驳回</td>
 </tr>
 <tr>
 <td>哈希链审计</td>
