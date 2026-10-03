@@ -19,6 +19,8 @@ import json
 import shutil
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 仓库根目录
+
 # 临时审计日志目录，测试后清理
 _TEST_AUDIT_DIR = os.path.join(tempfile.gettempdir(), "yindun_test_audit")
 os.environ["YINDUN_AUDIT_TEST_DIR"] = _TEST_AUDIT_DIR
@@ -273,7 +275,8 @@ def test_14_tool_result_caller_consistency():
     本测试断言所有调用点的第二实参都是布尔字面量，防止参数顺序再次写反。
     """
     import re
-    caller_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+    # 仓库根目录 = tests/ 的上级（本测试文件可位于 tests/ 下，路径必须锚定根目录）
+    caller_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                "yindun", "worker", "agent_worker.py")
     with open(caller_path, "r", encoding="utf-8") as f:
         source = f.read()

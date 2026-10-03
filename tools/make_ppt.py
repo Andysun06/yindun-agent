@@ -1,5 +1,19 @@
 # -*- coding: utf-8 -*-
-"""隐盾安全智能体 · 汇报 PPT 生成（python-pptx，13.33x7.5 16:9）"""
+"""隐盾安全智能体 · 汇报 PPT 生成（python-pptx，13.33x7.5 16:9）
+
+用法：python tools/make_ppt.py
+输出：docs/隐盾安全智能体_项目汇报.pptx
+说明：脚本会把工作目录切到仓库根目录，因此内部图片路径（docs/screenshots/...）
+      与输出路径都与"从哪运行"无关（受 Mimosa 门禁限制，此处不能直接搬 .py，
+      故用 chdir 方式锚定根目录）。
+"""
+import os
+import sys
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.chdir(_ROOT)
+sys.path.insert(0, _ROOT)
+
 from pptx import Presentation
 from pptx.util import Inches, Pt, Emu
 from pptx.dml.color import RGBColor
@@ -564,7 +578,7 @@ pagenum(s, 12)
 # ══════════════════ 13 · 测试质量 & 产品化 ══════════════════
 s = slide()
 kicker(s, "质量与交付")
-title(s, "全量回归通过 · 一键安装包就绪")
+title(s, "全量回归通过 · 免安装单文件 exe 就绪")
 # 左：测试套件
 tf = box(s, M, 1.72, 6.2, 0.55)
 para(tf, "8 个测试套件 · 全部通过（含攻防评测 9 项实验）", size=14.5, color=PRIM, bold=True, first=True)
@@ -584,16 +598,16 @@ for name, d in suites:
     tf = box(s, M+5.4, yy, 0.5, 0.66, anchor=MSO_ANCHOR.MIDDLE)
     para(tf, "✓", size=18, color=PRIM, bold=True, first=True)
     yy += 0.75
-# 右：安装包强调
+# 右：分发形态强调
 card = rect(s, 7.15, 1.9, 5.45, 4.6, fill=PRIM_D, shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.05); shadow(card)
 tf = box(s, 7.45, 2.25, 4.85, 1.0, anchor=MSO_ANCHOR.MIDDLE)
-para(tf, "99 MB", size=52, color="FFFFFF", bold=True, align=PP_ALIGN.CENTER, first=True)
+para(tf, "1 个 exe", size=52, color="FFFFFF", bold=True, align=PP_ALIGN.CENTER, first=True)
 tf = box(s, 7.45, 3.35, 4.85, 0.5)
-para(tf, "一键安装包  ·  Windows 安装向导", size=15, color="8FD3B4", bold=True, align=PP_ALIGN.CENTER, first=True)
+para(tf, "免安装 · 双击即用 · 无需脚本", size=15, color="8FD3B4", bold=True, align=PP_ALIGN.CENTER, first=True)
 rect(s, 7.6, 3.95, 4.55, 0.02, fill="2E6B50")
 tf = box(s, 7.45, 4.15, 4.85, 2.2)
-for t in ["PySide6 + LangChain 全依赖自包含（PyInstaller）", "装到用户目录，无需管理员权限",
-          "桌面/开始菜单快捷方式 + 卸载器", "随附《使用说明》：本地/云端算力两步接入"]:
+for t in ["PySide6 + LangChain 全依赖自包含（PyInstaller onefile）", "单文件双击即用，无需安装与脚本",
+          "配置/会话/审计/向量库写在 exe 同目录，删文件即卸载", "随附《使用说明》：本地/云端算力两步接入"]:
     para(tf, [("▪  ", {"color": "F0B45C", "bold": True}), (t, {"color": "EAF5EF"})],
          size=13, first=(t.startswith("PySide6")), space_after=8, line=1.1)
 pagenum(s, 13)
@@ -625,5 +639,5 @@ para(tf, "更安全 · 更智能 · 更可控", size=24, color="7EE2A8", bold=Tr
 tf = box(s, M, 6.9, W-2*M, 0.4)
 para(tf, "隐盾安全智能体 · Yindun Team · 2026    |    技术报告 · 仅供学习研究", size=11, color="6E9C86", first=True)
 
-prs.save("隐盾安全智能体_项目汇报.pptx")
+prs.save(os.path.join("docs", "隐盾安全智能体_项目汇报.pptx"))
 print("PPTX saved:", len(prs.slides.__iter__.__self__._sldIdLst), "slides")

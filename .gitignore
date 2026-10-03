@@ -1,52 +1,51 @@
+# ──────────────────────────────────────────
+# 隐盾安全智能体 · 忽略规则
+# 原则：运行时状态、构建产物、大体积成片一律不入库；源码/文档/证据文件入库。
+# ──────────────────────────────────────────
+
+# 环境与缓存
 secure_env/
 __pycache__/
 *.pyc
 .cursor/
 .vscode/
-*.json
-audit_logs/
-ollama_models/
-*.bak
-# 运行时生成数据（不入库）
-yindun/data/
-yindun/cache/
+.tools/
+.workbuddy/
+.mimosa/
+
+# ── 运行时状态（每台机器不同，不入库）──
+# 注意：这里逐项列出，不再使用 *.json 全局通配——
+#       全局通配会连"应当入库的 JSON"（如评测结果证据）一起静默忽略。
+/global_config.json
+/chat_sessions.json
+/config/
+/audit_logs/
+/data/
+/yindun/data/
+/yindun/cache/
 test_kb_data/
 test_kb_docs/
-# 个人 SSH 隧道脚本（含服务器地址，勿提交）
+workflow_reports/
+客户信息.txt
+演示记录.txt
 tunnel.bat
-# ── 打包产物（发布时作为 Release 附件上传，不入库）──
+
+# ── 构建/打包产物（走 Release 附件分发，不入库）──
 build/
 dist/
 *.spec.bak
-# 演示产物
-客户信息.txt
-演示记录.txt
-# PyInstaller 中间产物
 *.manifest
-# 安装包产物（99MB，作为 GitHub Release 附件上传，不入库）
-隐盾安全智能体_V3.3_安装包.exe
+*.exe
+隐盾安全智能体_V*_安装包.exe
 
-# Office 临时锁文件
+# ── 大体积成片（走 Release 分发）──
+*.mp4
+product-video/
+
+# ── 备份与临时文件 ──
+*.bak
 ~$*
 *_new.pptx
 
-# 编辑器/插件内部状态
-.mimosa/
-*.exe
-
-# 运行时知识库向量数据（本地生成，不入库）
-data/
-
-# 视频成片走 Release 分发（163MB 不入 git）；AI 视频工具工作区与工具链
-介绍视频.mp4
-product-video/
-.tools/
-
-# 运行输出 / 缓存 / 工具记忆 / 备份（不入库）
-workflow_reports/
-yindun/cache/
-.workbuddy/
-*.bak
-
-# 视频成片统一走 Release（含上传用副本）
-*.mp4
+# ── 第三方资料/研究素材（非本项目产物；含未发表稿件，勿入库）──
+论文研究/

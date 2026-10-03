@@ -7,7 +7,7 @@
 import sys, os, io, json, re, secrets, traceback
 from pathlib import Path
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 仓库根目录
 
 from yindun.core.privacy_engine import PrivacyEngine
 from yindun.core.secret_manager import SecretManager

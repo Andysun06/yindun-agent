@@ -11,7 +11,7 @@ import re
 import json
 
 sys.stdout.reconfigure(encoding='utf-8')
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 仓库根目录
 
 from yindun.core.privacy_engine import PrivacyEngine
 
@@ -205,7 +205,7 @@ print("\n" + "=" * 78)
 print("【落盘数据明文扫描】")
 print("=" * 78)
 
-BASE = os.path.dirname(os.path.abspath(__file__))
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 仓库根目录（运行时数据都在这里）
 SCAN_FILES = [
     os.path.join(BASE, "chat_sessions.json"),
     os.path.join(BASE, "global_config.json"),

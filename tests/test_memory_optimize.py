@@ -10,6 +10,9 @@
 """
 import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 仓库根目录
+
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 from yindun.core.memory_manager import SummarizableChatHistory, _estimate_tokens
 from yindun.core.privacy_engine import PrivacyEngine

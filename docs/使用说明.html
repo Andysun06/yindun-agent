@@ -35,14 +35,15 @@ Yindun Security Agent — 让本地 AI 更安全、更智能、更可控</p>
 项目代码分析、办公文件创建与整理、可追溯的操作审计。</p>
 <hr />
 <h2>二、安装与启动</h2>
-<h3>方式 A：安装包（推荐）</h3>
+<h3>方式 A：免安装单文件 exe（推荐，双击即用）</h3>
 <ol>
-<li>双击 <code>隐盾安全智能体_V3.3_安装包.exe</code>；</li>
-<li>按向导点击"下一步"（默认安装到当前用户目录，<strong>无需管理员权限</strong>）；</li>
-<li>完成后勾选"立即启动"，或双击桌面"隐盾安全智能体"图标。</li>
+<li>拿到 <code>隐盾安全智能体_V3.3.2_便携版.exe</code>（约 100+ MB，单文件）；</li>
+<li><strong>双击直接运行</strong>——无需安装、无需任何脚本、不需要管理员权限；</li>
+<li>首次启动约需 10~20 秒（单文件会先解压到临时目录，属正常现象），之后正常速度。</li>
 </ol>
-<p>卸载：开始菜单 → 隐盾安全智能体 → 卸载，或经"控制面板 → 程序和功能"。</p>
-<h3>方式 B：源码运行</h3>
+<p><strong>数据落在哪</strong>：配置、会话记录、审计日志、知识库向量数据都写在 <strong>exe 同目录</strong>，所以请把 exe 放在可写目录（桌面、文档、便携盘均可）。
+<strong>卸载</strong>：删除 exe 及其同目录下生成的数据文件即可，不留残余。</p>
+<h3>方式 B：源码运行（开发者）</h3>
 <pre><code class="language-bash"># Python 3.10+，安装依赖
 pip install -r requirements.txt
 python run.py
@@ -137,11 +138,11 @@ python run.py
 <hr />
 <h2>六、数据与隐私</h2>
 <ul>
-<li><strong>配置</strong>：安装目录下 <code>global_config.json</code>（模型、权限、界面等）。</li>
+<li><strong>配置</strong>：程序目录下 <code>global_config.json</code>（模型、权限、界面等；免安装版即 exe 同目录）。</li>
 <li><strong>会话</strong>：<code>chat_sessions.json</code>，内容加密存储。</li>
 <li><strong>审计</strong>：<code>audit_logs/</code>，哈希链防篡改，仅存脱敏预览。</li>
 <li><strong>知识库</strong>：<code>data/knowledge_base/</code>，只存占位符向量。</li>
-<li>卸载即清除以上全部本地数据。</li>
+<li>免安装版：删除 exe 与其同目录生成的数据即可；安装版：卸载即清除以上全部本地数据。</li>
 </ul>
 <hr />
 <h2>七、常见问题（FAQ）</h2>

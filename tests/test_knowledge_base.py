@@ -19,8 +19,8 @@ import shutil
 import time
 from pathlib import Path
 
-# 确保能导入项目模块
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 确保能导入项目模块（BASE_DIR = 仓库根目录，测试数据也生成在根目录下并被 .gitignore 忽略）
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
 

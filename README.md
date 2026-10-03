@@ -1,6 +1,6 @@
-# 🛡️ 隐盾安全智能体 (Yindun Security Agent) - V3.3
+# 🛡️ 隐盾安全智能体 (Yindun Security Agent) - V3.3.2
 
-欢迎来到 **隐盾安全智能体 (V3.3)** 官方代码库。
+欢迎来到 **隐盾安全智能体 (V3.3.2)** 官方代码库。
 
 本应用是一款常驻系统桌面最上层的原生半透明悬浮智能体客户端。项目经历多轮工业级深度解耦重构，前端核心视舱（大厅、状态栏、控制台、设置页、气泡、弹窗）均已实现 100% 原子组件化封装。
 
@@ -16,12 +16,13 @@
 
 | 交付物 | 位置 |
 |---|---|
-| 📦 **Windows 一键安装包**（99MB，免管理员） | [Release v3.3.0](https://github.com/Andysun06/yindun-agent/releases/tag/v3.3.0) → `Yindun-Setup-v3.3.0.exe` |
+| 📦 **免安装单文件 exe**（双击即用，无需安装与脚本） | [Release](https://github.com/Andysun06/yindun-agent/releases) → `隐盾安全智能体_V3.3.2_便携版.exe`（本地构建：`python tools/build_portable.py`） |
 | 🎬 **项目演示视频**（1080p，3分28秒） | [Release v3.3.0](https://github.com/Andysun06/yindun-agent/releases/tag/v3.3.0) → `Yindun-Demo-v3.3.0.mp4` |
 | 📄 **技术报告**（含隐私算法形式化 / 威胁模型 / 攻击实验） | [docs/隐盾安全智能体_技术报告.pdf](docs/隐盾安全智能体_技术报告.pdf) |
-| 📽 **汇报 PPT**（19 页） | [隐盾安全智能体_项目汇报.pptx](隐盾安全智能体_项目汇报.pptx) |
-| 📖 **使用说明**（安装/配置算力/功能演示） | [使用说明.md](使用说明.md) · [使用说明.pdf](使用说明.pdf) |
-| 🧪 **隐私攻防评测**（黑盒/白盒/劫持/注入，可复现） | [privacy_eval.py](privacy_eval.py)（`python privacy_eval.py` 一键复现） |
+| 📽 **汇报 PPT**（19 页） | [docs/隐盾安全智能体_项目汇报.pptx](docs/隐盾安全智能体_项目汇报.pptx) |
+| 📖 **使用说明**（安装/配置算力/功能演示） | [docs/使用说明.md](docs/使用说明.md) · [docs/使用说明.pdf](docs/使用说明.pdf) |
+| 🧪 **隐私攻防评测**（黑盒/白盒/劫持/注入，可复现） | [tests/privacy_eval.py](tests/privacy_eval.py)（`python tests/privacy_eval.py` 一键复现） |
+| 🧠 **开发记忆**（对内：架构/决策/路线图/协作规范） | [开发记忆.md](开发记忆.md) · [AGENTS.md](AGENTS.md) |
 
 > 核心一句话：**让大模型"看不见"敏感数据，却依然能完成办公任务**——数据进模型前在内存中替换为加密占位符，模型全程只见占位符，回答返回时自动还原；配合文件沙箱、命令白名单、熔断审批与 HMAC 哈希链审计，构成"输入—推理—执行—落盘—审计"全链路纵深防御。
 
@@ -126,98 +127,127 @@
 
 ## 🚀 快速开始
 
-### 环境准备
+### 方式一：免安装单文件 exe（推荐给使用者）
+
+下载 `隐盾安全智能体_V3.3.2_便携版.exe`，**双击即用**——无需安装、无需脚本。
+
+- 配置、会话、审计日志、知识库向量数据都写在 **exe 同目录**（放桌面/便携盘均可，卸载 = 删除 exe 与同目录生成的数据）
+- 主密钥由 Windows DPAPI 按当前用户保护，不随 exe 移动
+- 自行构建：`python tools/build_portable.py`（产物在 `dist/`；单文件模式首次启动约需 10~20 秒解压）
+
+### 方式二：源码运行（开发者）
 
 ```bash
-# Windows：双击运行
+# Windows：双击运行（自动建虚拟环境并装依赖）
 准备环境.bat
-```
 
-脚本将自动检测 Python 版本、创建独立虚拟环境、安装全部依赖。
-
-### 启动应用
-
-```bash
-# Windows：双击运行
+# 启动
 启动.bat
-
 # 或命令行
 pip install -r requirements.txt
 python run.py
 ```
 
-### 首次使用
+### 首次使用（两种方式相同）
 
 1. 确保 Ollama 已安装并运行（默认地址 `http://127.0.0.1:11434`）
 2. 至少下载一个模型（推荐 `qwen2.5:7b` 或其他支持 Tool Calling 的模型）
 3. 启动隐盾后，设置面板会自动检测可用模型
 
+> 开发协作、架构决策、改进路线与文档同步规范，见 [开发记忆.md](开发记忆.md)。
+
 ---
 
 ## 📂 项目结构
 
-本项目严格遵循 Python 包管理规范，使用 `yindun` 作为顶层命名空间包：
+本项目严格遵循 Python 包管理规范，使用 `yindun` 作为顶层命名空间包；测试、构建工具、素材与文档各自归位：
 
 ```text
 yindun-agent/
-├── run.py                      # 🚀 程序入口
+├── run.py                      # 🚀 程序入口（开发态：python run.py）
 ├── requirements.txt            # 依赖清单
 ├── .gitignore
-├── 启动.bat                    # 一键启动脚本
-├── 准备环境.bat                # 环境部署脚本
-├── global_config.json          # 运行时配置文件（模型、隐私、界面设置）
-├── chat_sessions.json          # 会话记录持久化
+├── 启动.bat                    # 开发用一键启动脚本
+├── 准备环境.bat                # 开发用环境部署脚本
+├── README.md                   # 项目门面（对外）
+├── 开发记忆.md                  # 🧠 对内：架构/决策/路线图/协作规范（每次改动必须同步）
+├── AGENTS.md                   # AI 助手协作约定（指向开发记忆）
+├── PRIVACY.md                  # 隐私说明
 │
-    └── yindun/                     # 📦 主包
-    ├── __init__.py             # 包标识与版本号
-    ├── main.py                 # 应用入口（初始化环境 → 启动主窗口）
-    │
-    ├── core/                   # 🧠 核心业务逻辑
-    │   ├── __init__.py
-    │   ├── file_tools.py       # 文件 CRUD 工具集（10 个 LangChain Tool）
-    │   │                       #   - 本地文件操作 8 个 + read_attachment_chunk
-    │   │                       #   - search_knowledge_base（知识库语义检索）
-    │   ├── privacy_engine.py   # 隐私脱敏引擎（27 类实体识别/脱敏/还原，正则粗筛+程序化精验）
-    │   ├── knowledge_base.py   # 本地知识库 + 脱敏 RAG 引擎
-    │   ├── audit_log.py        # 全链路审计黑匣子（HMAC 哈希链防篡改）
-    │   ├── memory_manager.py   # 上下文记忆管理器（ChatMessageHistory + 摘要）
-    │   ├── policy_manager.py   # 权限策略引擎（deny-by-default + 分级审批）
-    │   ├── secret_manager.py   # 本地密钥管理器（Fernet + DPAPI 包裹）
-    │   ├── key_manager.py      # 脱敏映射表密钥托管与完整性校验
-    │   ├── behavior_analyzer.py# 行为分析器（异常操作检测）
-    │   ├── health_scanner.py   # 系统健康扫描
-    │   ├── flow_builder.py     # 工作流构建器
-    │   └── workflow.py         # 协同工作流编排（合同分析/安全扫描等）
-    │
-    ├── gui/                    # 🖼️ 图形界面组件
-    │   ├── __init__.py
-    │   ├── main_window.py      # 主窗口框架（骨架拼接 + 信号路由）
-    │   ├── styles.py           # 全局 QSS 样式表（亮色/暗色双主题）
-    │   ├── chat_bubble.py      # 原生弹性聊天气泡（含元信息栏）
-    │   ├── chat_display.py     # 聊天显示区域（滚动布局 + 宽度自适应）
-    │   ├── control_dock.py     # 底部控制栏（输入 + 发送 + 模式切换）
-    │   ├── settings_panel.py   # 设置面板（模型/安全/界面/思考深度/知识库管理）
-    │   ├── audit_panel.py      # 审计日志查看面板（哈希链/统计/导出）
-    │   ├── workflow_panel.py   # 工作流编排面板
-    │   ├── data_dashboard.py   # 数据看板（模型/对话次数/Token）
-    │   ├── status_bar.py       # 动画状态栏（思考进度 + 取消按钮）
-    │   ├── session_selector.py # 会话选择页（历史会话列表）
-    │   ├── new_session_dialog.py   # 新建会话对话框
-    │   ├── custom_model_dialog.py  # 外部模型 API 配置弹窗
-    │   ├── confirm_dialog.py       # 高危操作审批弹窗
-    │   └── rounded_scrollbar.py     # 圆角滚动条样式
-    │
-    ├── worker/                 # ⚙️ 后台工作线程
-    │   ├── __init__.py
-    │   └── agent_worker.py     # Agent 推理引擎（ReAct 循环 + Tool Calling）
-    │                           #   - 路径解析与强制工具调用
-    │                           #   - 可中断的 LLM 调用（即时取消响应）
-    │                           #   - 最低思考轮数约束
-    │
-    └── utils/                  # 🔧 工具集
-        ├── __init__.py
-        ├── document_parser.py  # 离线文档解析（PDF/Word/Excel/TXT/MD/CSV）
-        └── privacy_scanner.py  # 文档隐私扫描（位置化风险报告）
+├── yindun/                     # 📦 主包
+│   ├── __init__.py             # 包标识与版本号
+│   ├── main.py                 # 应用入口（初始化环境 → 启动主窗口）
+│   │
+│   ├── core/                   # 🧠 核心业务逻辑（与界面无关，可独立测试）
+│   │   ├── file_tools.py       # 文件工具集（10 个 LangChain Tool）+ 沙箱/命令白名单
+│   │   ├── privacy_engine.py   # 隐私脱敏引擎（27 类实体，正则粗筛+程序化精验）
+│   │   ├── knowledge_base.py   # 本地知识库 + 脱敏 RAG 引擎
+│   │   ├── audit_log.py        # 全链路审计黑匣子（HMAC 哈希链防篡改）
+│   │   ├── memory_manager.py   # 上下文记忆管理器（摘要压缩 + 工具消息配平）
+│   │   ├── policy_manager.py   # 权限策略引擎（分级审批 + 越界判定）
+│   │   ├── secret_manager.py   # 本地密钥管理器（Fernet + DPAPI 包裹）
+│   │   ├── key_manager.py      # 脱敏映射表密钥托管与完整性校验
+│   │   ├── behavior_analyzer.py# 行为分析器（异常操作检测）
+│   │   ├── health_scanner.py   # 系统健康扫描
+│   │   ├── flow_builder.py     # 工作流构建器
+│   │   └── workflow.py         # 协同工作流编排（合同分析/安全扫描等）
+│   │
+│   ├── gui/                    # 🖼️ 界面组件（PySide6，当前形态）
+│   │   ├── main_window.py      # 主窗口框架（骨架拼接 + 信号路由）
+│   │   ├── styles.py           # 全局 QSS 样式表（亮色/暗色双主题）
+│   │   ├── chat_bubble.py      # 弹性聊天气泡（含元信息栏）
+│   │   ├── chat_display.py     # 聊天显示区域（滚动布局 + 宽度自适应）
+│   │   ├── control_dock.py     # 底部控制栏（输入 + 发送 + 模式切换）
+│   │   ├── settings_panel.py   # 设置面板（模型/安全/界面/思考深度/知识库管理）
+│   │   ├── audit_panel.py      # 审计日志查看面板（哈希链/统计/导出）
+│   │   ├── workflow_panel.py   # 工作流编排面板
+│   │   ├── data_dashboard.py   # 数据看板（模型/对话次数/Token）
+│   │   ├── status_bar.py       # 动画状态栏（思考进度 + 取消按钮）
+│   │   ├── session_selector.py # 会话选择页（历史会话列表）
+│   │   ├── *_dialog.py         # 新建会话 / 外部模型配置 / 高危审批弹窗
+│   │   └── rounded_scrollbar.py# 圆角滚动条样式
+│   │
+│   ├── worker/                 # ⚙️ 后台推理引擎
+│   │   └── agent_worker.py     # ReAct 循环 + Tool Calling + 可中断 LLM 调用
+│   │
+│   └── utils/                  # 🔧 工具集
+│       ├── document_parser.py  # 离线文档解析（PDF/Word/Excel/TXT/MD/CSV）
+│       └── privacy_scanner.py  # 文档隐私扫描（位置化风险报告）
+│
+├── tests/                      # 🧪 全部测试与评测（每个文件可独立运行）
+│   ├── privacy_audit_test.py   #   隐私回归：正样本脱敏 / 负样本误伤 / 落盘扫描
+│   ├── test_privacy_engine.py  #   脱敏引擎
+│   ├── test_command_whitelist.py #  命令白名单（高危入口必须拦截）
+│   ├── test_worker_cancel.py   #   取消语义（必须立即返回）
+│   ├── test_audit_log.py       #   审计哈希链
+│   ├── test_memory_optimize.py #   记忆管理
+│   ├── test_workflow.py        #   工作流引擎
+│   ├── privacy_pipeline_test.py#   端到端脱敏链路
+│   ├── privacy_eval.py         #   隐私攻防评测（产出 privacy_eval_results.json）
+│   └── test_knowledge_base.py  #   知识库集成（需 Ollama，不在线自动跳过）
+│
+├── tools/                      # 🔨 构建与文档工具
+│   ├── build_portable.py       #   免安装单文件 exe 构建入口
+│   ├── yindun_agent_portable.spec #  onefile 打包配置（主推）
+│   ├── yindun_agent.spec       #   onedir 打包配置（备选）
+│   ├── installer.nsi           #   NSIS 安装包脚本（备选分发形态）
+│   ├── make_ppt.py             #   生成 docs/汇报PPT
+│   └── md2pdf.py               #   Markdown → 排版 HTML → PDF
+│
+├── docs/                       # 📄 对外文档
+│   ├── 隐盾安全智能体_技术报告.{html,pdf}
+│   ├── 隐盾安全智能体_项目汇报.pptx
+│   ├── 使用说明.{md,html,pdf}
+│   ├── 作品简介（隐盾安全智能体）.html
+│   ├── 素材录制指南.md / 视频脚本_AI生成用.md
+│   └── screenshots/            #   报告与 PPT 的图源（唯一图源）
+│
+├── assets/                     # 🎬 演示与录制素材
+│   ├── 素材/                    #   宣传/视频用的截图源素材
+│   ├── 知识库演示文档/           #   知识库演示用示例文档
+│   └── demo_contract.txt
+│
+└── (运行时生成，不入库：global_config.json / chat_sessions.json / audit_logs/ / config/ / data/ / workflow_reports/)
 ```
 
 ---

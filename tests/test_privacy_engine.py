@@ -21,7 +21,7 @@ import os
 # ──────────────────────────────────────────
 # 加载新版（强化版）；旧版备份存在时一并加载用于对比
 # ──────────────────────────────────────────
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 仓库根目录（tests/ 的上级）
 OLD_PATH = os.path.join(BASE_DIR, "yindun", "core", "privacy_engine_old.py.bak")
 NEW_PATH = os.path.join(BASE_DIR, "yindun", "core", "privacy_engine.py")
 

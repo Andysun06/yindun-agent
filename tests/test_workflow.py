@@ -8,8 +8,9 @@
 3. 步骤执行与上下文传递
 4. 进度查询与状态管理
 """
+import os
 import sys
-sys.path.insert(0, ".")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 仓库根目录，避免依赖当前工作目录
 
 from yindun.core.workflow import (
     WorkflowEngine, WorkflowStep, WorkflowTemplate,

@@ -1,15 +1,19 @@
 ﻿Unicode true
 !include "MUI2.nsh"
 
+; 备选分发方式：NSIS 安装包（主推"免安装单文件 exe"，见 tools/build_portable.py）
+; 路径说明：NSIS 以本脚本所在目录（tools/）为基准，故引用上级目录用 ..\
+; 构建：makensis tools\installer.nsi（需先 pyinstaller tools\yindun_agent.spec 产出 dist/）
+
 Name "隐盾安全智能体"
-OutFile "隐盾安全智能体_V3.3_安装包.exe"
+OutFile "..\隐盾安全智能体_V3.3.2_安装包.exe"
 InstallDir "$LOCALAPPDATA\Yindun\YindunSecurityAgent"
 InstallDirRegKey HKCU "Software\YindunSecurityAgent" "InstallDir"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
-VIProductVersion "3.3.0.0"
+VIProductVersion "3.3.2.0"
 VIAddVersionKey "ProductName" "隐盾安全智能体"
-VIAddVersionKey "FileVersion" "V3.3"
+VIAddVersionKey "FileVersion" "V3.3.2"
 VIAddVersionKey "LegalCopyright" "Yindun Team"
 
 !define APP_EXE "YindunSecurityAgent.exe"
@@ -34,8 +38,8 @@ VIAddVersionKey "LegalCopyright" "Yindun Team"
 Section "安装隐盾安全智能体" SecMain
   SectionIn RO
   SetOutPath "$INSTDIR"
-  File /r "dist\YindunSecurityAgent\*.*"
-  File "使用说明.pdf"
+  File /r "..\dist\YindunSecurityAgent\*.*"
+  File "..\docs\使用说明.pdf"
 
   ; 快捷方式
   CreateShortcut "$DESKTOP\隐盾安全智能体.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
@@ -43,8 +47,8 @@ Section "安装隐盾安全智能体" SecMain
   CreateShortcut "$SMPROGRAMS\隐盾安全智能体\卸载隐盾安全智能体.lnk" "$INSTDIR\Uninstall.exe"
 
   ; 注册表：控制面板卸载入口
-  WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "隐盾安全智能体 V3.3"
-  WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "3.3.0"
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "隐盾安全智能体 V3.3.2"
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "3.3.2"
   WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "Yindun Team"
   WriteRegStr HKCU "${UNINST_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
   WriteRegStr HKCU "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
