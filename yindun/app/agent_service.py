@@ -223,12 +223,12 @@ class AgentService:
         "wf_security_check": "project_path",
     }
 
-    def workflow_start(self, template_id: str, path: str = "") -> Dict[str, Any]:
-        """创建工作流实例。path 会按模板映射到对应上下文变量（留空则用沙箱目录）。"""
+    def workflow_start(self, template_id: str, path: str = "", name: str = "") -> Dict[str, Any]:
+        """创建工作流实例。path 按模板映射到上下文变量（留空用沙箱目录）；name 为自定义实例名。"""
         try:
             engine = self._workflow()
             # 引擎契约：create_instance 返回【实例对象】，且实例 id 存在其 template_id 字段上
-            instance = engine.create_instance(template_id)
+            instance = engine.create_instance(template_id, custom_name=(name or "").strip())
             if instance is None:
                 return {"ok": False, "error": f"模板不存在：{template_id}"}
             instance_id = instance.template_id
@@ -322,6 +322,94 @@ class AgentService:
             lines.append(f"| {step.get('name', '')} | {step.get('status', '')} | "
                          f"{step.get('tool_name', '')}{'（演示）' if step.get('demo') else ''} | {summary} |")
         return "\n".join(lines)
+
+    # ── 自定义模型（OpenAI 兼容云端算力）─────────────
+    def custom_models(self) -> List[Dict[str, Any]]:
+        """列出已配置的外部模型（api_key 只说是否已配置，不回传明文）。"""
+        models = self.settings.get("custom_models") or {}
+        out = []
+        for name, info in models.items():
+            if not isinstance(info, dict):
+                continue
+            out.append({
+                "name": name,
+                "model_id": info.get("model_id", ""),
+                "base_url": info.get("base_url", ""),
+                "has_key": bool(info.get("api_key")),
+                "key_invalid": bool(info.get("key_invalid")),
+            })
+        return out
+
+    def add_custom_model(self, name: str, model_id: str, base_url: str, api_key: str) -> Dict[str, Any]:
+        """新增/覆盖一个外部模型配置。api_key 由设置层加密落盘（api_key_enc）。"""
+        name = (name or "").strip()
+        model_id = (model_id or "").strip()
+        base_url = (base_url or "").strip()
+        if not name or not model_id or not base_url:
+            return {"ok": False, "error": "名称、模型 ID、接口地址都不能为空"}
+        if not base_url.lower().startswith(("http://", "https://")):
+            return {"ok": False, "error": "接口地址需以 http:// 或 https:// 开头"}
+        models = dict(self.settings.get("custom_models") or {})
+        models[name] = {"model_id": model_id, "base_url": base_url, "api_key": (api_key or "").strip()}
+        self.settings.set("custom_models", models)
+        self.settings.save()
+        try:
+            from yindun.core.audit_log import AuditEventType, AuditLog, AuditSeverity
+            AuditLog().add_entry(
+                AuditEventType.ACCESS_CONTROL, AuditSeverity.WARNING,
+                f"新增外部算力配置：{name}",
+                {"name": name, "model_id": model_id, "base_url": base_url,
+                 "has_key": bool(api_key)},
+            )
+        except Exception:
+            pass
+        return {"ok": True, "models": self.custom_models()}
+
+    def remove_custom_model(self, name: str) -> Dict[str, Any]:
+        models = dict(self.settings.get("custom_models") or {})
+        if name not in models:
+            return {"ok": False, "error": f"未找到配置：{name}"}
+        models.pop(name, None)
+        self.settings.set("custom_models", models)
+        # 若当前正在用这个模型，回退到本地模型，避免指向已删除的配置
+        if self.settings.get("model") == name:
+            from yindun.app.llm_factory import get_first_available_model
+            fallback = get_first_available_model() or "qwen2.5:7b"
+            self.settings.set("model", fallback)
+            self._llm = None
+        self.settings.save()
+        return {"ok": True, "models": self.custom_models()}
+
+    # ── 安全工具（健康扫描 / 行为画像）───────────────
+    def health_scan(self, root_path: str = "") -> Dict[str, Any]:
+        """扫描目标目录的敏感数据分布（用于"隐私健康体检"）。"""
+        try:
+            from yindun.core.health_scanner import HealthScanner
+            target = (root_path or "").strip() or os.environ.get("SANDBOX_PATH", str(APP_ROOT))
+            report = HealthScanner().scan(target, depth=3)
+            return {"ok": True, "summary": report.summary(), "json": report.to_json(),
+                    "target": target}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def behavior_profile(self, limit: int = 500) -> Dict[str, Any]:
+        """基于审计日志生成"模型行为画像"与异常检测结果。"""
+        try:
+            from yindun.core.audit_log import AuditLog
+            from yindun.core.behavior_analyzer import BehaviorAnalyzer
+            entries = AuditLog().get_entries() or []
+            analyzer = BehaviorAnalyzer()
+            profile = analyzer.build_profile(entries[-max(50, min(int(limit or 500), 2000)):],
+                                             session_id="", )
+            anomalies = analyzer.detect_anomalies(entries, session_id="")
+            return {
+                "ok": True,
+                "summary": profile.summary(),
+                "profile": profile.to_dict(),
+                "anomalies": [a.to_dict() for a in (anomalies or [])][:20],
+            }
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     # ── 插件 ─────────────────────────────────────
     def list_plugins(self) -> List[Dict[str, Any]]:

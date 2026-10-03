@@ -73,6 +73,9 @@
 
   const CLIP_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.1l-8.5 8.5a5 5 0 01-7.1-7.1l8.6-8.5a3.3 3.3 0 014.7 4.7l-8.6 8.5a1.7 1.7 0 01-2.4-2.4l7.9-7.8"/></svg>';
 
+  // 换行符：显式构造，避免源码转义在工具链里被改写
+  const NL = String.fromCharCode(10);
+
   const api = () =>
     (window.pywebview && window.pywebview.api) ||
     (window.__YINDUN_MOCK__ && window.__YINDUN_MOCK__.api) ||   // 开发预览（#mock）
@@ -435,6 +438,47 @@
 
   async function refreshKb() { renderKb(await call("kb_status")); }
 
+  /* ── 外部算力（自定义模型）────────────────────── */
+  function renderCustomModels(list) {
+    const box = $("cm-list");
+    const models = Array.isArray(list) ? list : [];
+    if (!models.length) { box.innerHTML = `<div class="cm-item__meta">尚未配置外部模型（本地模型无需配置）</div>`; return; }
+    box.innerHTML = models.map((m) => `
+      <div class="cm-item">
+        <span>
+          <span class="cm-item__name">${esc(m.name)}</span>
+          <span class="cm-item__meta">${esc(m.model_id)} · ${m.has_key ? (m.key_invalid ? "密钥失效" : "密钥已配置") : "无密钥"}</span>
+        </span>
+        <span class="chip__x" data-cm="${esc(m.name)}" title="移除">×</span>
+      </div>`).join("");
+    box.querySelectorAll("[data-cm]").forEach((el) => {
+      el.onclick = async () => {
+        const res = await call("remove_custom_model", el.dataset.cm);
+        if (res && res.ok) { toast("已移除"); renderCustomModels(res.models); fillSettings(); }
+        else toast("移除失败：" + ((res && res.error) || "未知原因"));
+      };
+    });
+  }
+
+  /* ── 安全工具 ─────────────────────────────────── */
+  async function runTool(which) {
+    const box = $("tool-result");
+    box.style.display = "";
+    box.textContent = which === "health" ? "正在扫描…" : "正在分析…";
+    const res = which === "health" ? await call("health_scan", "")
+                                   : await call("behavior_profile");
+    if (!res || !res.ok) { box.textContent = "失败：" + ((res && res.error) || "未知原因"); return; }
+    if (which === "health") {
+      box.textContent = res.summary || "(无内容)";
+    } else {
+      const lines = (res.anomalies || []).map((a) =>
+        `· [${a.severity || a.level || "提示"}] ${a.description || a.message || JSON.stringify(a)}`);
+      const parts = [res.summary || ""];
+      if (lines.length) { parts.push("", "【异常检测】"); parts.push(...lines); }
+      box.textContent = parts.join(NL);
+    }
+  }
+
   /* ── 工作流 ───────────────────────────────────── */
   const WF_STATUS_LABEL = {
     pending: ["待执行", ""], running: ["执行中", "wf-status--run"],
@@ -455,7 +499,8 @@
       btn.onclick = async () => {
         state.wfTemplateId = btn.dataset.tpl;
         renderWfTemplates(state.wfTemplates);
-        const res = await call("workflow_start", btn.dataset.tpl, $("wf-path").value || "");
+        const res = await call("workflow_start", btn.dataset.tpl,
+                               $("wf-path").value || "", $("wf-name").value || "");
         if (!res || !res.ok) { toast("启动失败：" + ((res && res.error) || "未知原因")); return; }
         state.wfInstance = res.instance_id;
         renderWf(res.status);
@@ -788,6 +833,19 @@
       const res = await call("workflow_export", state.wfInstance);
       toast(res && res.ok ? `已导出：${res.path}` : `导出失败：${(res && res.error) || "未知原因"}`);
     };
+    $("btn-cm-add").onclick = async () => {
+      const payload = [$("cm-name").value.trim(), $("cm-model").value.trim(),
+                       $("cm-url").value.trim(), $("cm-key").value.trim()];
+      if (!payload[0] || !payload[1] || !payload[2]) { toast("名称、模型 ID、接口地址都要填"); return; }
+      const res = await call("add_custom_model", ...payload);
+      if (res && res.ok) {
+        toast("已添加外部模型（密钥已加密保存）");
+        ["cm-name", "cm-model", "cm-url", "cm-key"].forEach((id) => { $(id).value = ""; });
+        renderCustomModels(res.models); fillSettings();
+      } else toast("添加失败：" + ((res && res.error) || "未知原因"));
+    };
+    $("btn-health").onclick = () => runTool("health");
+    $("btn-behavior").onclick = () => runTool("behavior");
     $("btn-audit").onclick = async () => {
       $("audit-drawer").classList.add("is-open");
       renderAudit(await call("audit_snapshot", 300));
@@ -806,6 +864,7 @@
       const info = await call("llm_status");
       if (info) { state.llm = info; }
       fillSettings(); bindWindowControls(); refreshKb(); refreshPlugins();
+      renderCustomModels(await call("custom_models"));
       $("drawer").classList.add("is-open");
     };
     $("btn-drawer-close").onclick = () => $("drawer").classList.remove("is-open");

@@ -221,12 +221,29 @@ class JsApi:
             print(f"[WebView] 窗口操作 {action} 失败：{exc}")
             return False
 
+    # ── 自定义模型（OpenAI 兼容）───────────────────
+    def custom_models(self):
+        return self._svc.custom_models()
+
+    def add_custom_model(self, name: str, model_id: str, base_url: str, api_key: str):
+        return self._svc.add_custom_model(name, model_id, base_url, api_key)
+
+    def remove_custom_model(self, name: str):
+        return self._svc.remove_custom_model(name)
+
+    # ── 安全工具 ─────────────────────────────────
+    def health_scan(self, root_path: str = ""):
+        return self._svc.health_scan(root_path)
+
+    def behavior_profile(self):
+        return self._svc.behavior_profile()
+
     # ── 工作流 ───────────────────────────────────
     def workflow_templates(self):
         return self._svc.workflow_templates()
 
-    def workflow_start(self, template_id: str, path: str = ""):
-        return self._svc.workflow_start(template_id, path)
+    def workflow_start(self, template_id: str, path: str = "", name: str = ""):
+        return self._svc.workflow_start(template_id, path, name)
 
     def workflow_status(self, instance_id: str):
         return self._svc.workflow_status(instance_id)

@@ -338,3 +338,15 @@ select:focus, input[type="text"]:focus { border-color: var(--steel); box-shadow:
 .wf-status--wait { color: var(--amber); border-color: var(--amber); }
 .wf-status--fail { color: var(--stamp); border-color: var(--stamp); }
 .wf-status--run { color: var(--steel); border-color: var(--steel); }
+
+/* ── 外部算力（自定义模型）────────────────────────── */
+.cm-list { display: flex; flex-direction: column; margin-top: var(--sp-3); }
+.cm-item { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); padding: var(--sp-3) 0; border-bottom: 1px solid var(--border-1); font-size: var(--fs-xs); }
+.cm-item__name { font-size: var(--fs-sm); }
+.cm-item__meta { font-family: var(--font-mono); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cm-form { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2); margin-top: var(--sp-3); }
+.cm-form input { font-size: var(--fs-xs); }
+.cm-form .btn { grid-column: 1 / -1; }
+
+/* ── 安全工具结果 ─────────────────────────────────── */
+.tool-result { margin-top: var(--sp-3); padding: var(--sp-4); background: var(--bg-input); border: 1px solid var(--border-1); border-left: 2px solid var(--steel); border-radius: var(--r-chip); font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.65; white-space: pre-wrap; max-height: 300px; overflow-y: auto; }

@@ -141,6 +141,21 @@
 
       <div class="divider"></div>
 
+      <div class="field">
+        <div class="field__label">外部算力（OpenAI 兼容）</div>
+        <div class="field__hint">接入云端模型时，出网内容已在本机脱敏；密钥加密后存本机，不回显。</div>
+        <div class="cm-list" id="cm-list"></div>
+        <div class="cm-form">
+          <input type="text" id="cm-name" placeholder="显示名称（如 云端GLM）">
+          <input type="text" id="cm-model" placeholder="模型 ID（如 glm-4-flash）">
+          <input type="text" id="cm-url" placeholder="接口地址（https://…/v1）">
+          <input type="text" id="cm-key" placeholder="API Key（仅本地加密保存）">
+          <button class="btn btn--primary" id="btn-cm-add" type="button">添加外部模型</button>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
       <div class="switch">
         <div>
           <div class="field__label">隐私隔离网关</div>
@@ -226,6 +241,15 @@
         <label class="field__label" for="audit-filter">事件筛选</label>
         <input type="text" id="audit-filter" placeholder="按类型 / 严重度 / 内容过滤…">
       </div>
+      <div class="field">
+        <div class="field__label">安全工具</div>
+        <div style="display:flex;gap:var(--sp-3)">
+          <button class="btn" id="btn-health">隐私健康体检</button>
+          <button class="btn" id="btn-behavior">模型行为画像</button>
+        </div>
+        <div class="tool-result" id="tool-result" style="display:none"></div>
+      </div>
+
       <div class="audit-list" id="audit-list"></div>
     </div>
   </aside>
@@ -247,6 +271,7 @@
         <label class="field__label" for="wf-path">文档 / 项目路径（可选）</label>
         <input type="text" id="wf-path" placeholder="留空则使用当前沙箱目录">
         <div class="field__hint">合同审查取合同文件路径；代码安全检查取项目目录</div>
+        <input type="text" id="wf-name" placeholder="实例名称（可选，便于区分多次运行）">
       </div>
       <div class="field" id="wf-run" style="display:none">
         <div class="field__label" id="wf-run-title">执行</div>

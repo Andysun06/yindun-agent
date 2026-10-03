@@ -1,6 +1,5 @@
 # 一键安装所有依赖：pip install -r requirements.txt
 # 单独安装 OCR 依赖（扫描件 PDF 识别必需）：pip install rapidocr-onnxruntime Pillow
-PySide6>=6.5.0
 langchain-ollama>=0.1.0
 langchain-openai>=0.1.0
 langchain-core>=0.2.0
@@ -21,6 +20,6 @@ Pillow>=9.0.0
 chromadb>=0.5.0
 langchain-chroma>=0.1.0
 langchain-text-splitters>=0.2.0
-# Web 界面（视图层重构）：pywebview + WebView2（Windows 10/11 通常自带 WebView2 运行时）
-# 用法：python run.py --web   （默认仍是 PySide6 界面，见 yindun/main.py）
+# 界面：pywebview + WebView2（Windows 10/11 通常自带 WebView2 运行时）
+# 说明：Qt（PySide6）已随视图层重构整体移除；`python run.py` 即启动 Web 界面
 pywebview>=5.0

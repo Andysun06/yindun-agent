@@ -127,17 +127,17 @@
 
 ## 🚀 快速开始
 
-### 界面形态（V3.3.2 起）
+### 界面形态（V3.3.2 起：Web 界面，Qt 已移除）
 
-默认界面已切换为**新的 Web 界面**（pywebview + WebView2，本地文件加载、不起本地端口）：
+界面是**新的 Web 界面**（pywebview + WebView2，本地文件加载、不起本地端口）：
 窗口无系统边框、拖动顶栏即可移动；顶栏显示安全态势（隐私网关 / 权限 / 沙箱 / 审计链），
 助手回答以「编号记录」呈现、输入以「指令票」呈现，并内置审计台账、知识库、工作流与插件面板。
 
 ```bash
-python run.py          # 默认：Web 界面
-python run.py --qt     # 回退：旧 PySide6 界面（自定义模型配置、健康扫描、行为画像等尚未迁移）
+python run.py          # 启动 Web 界面
 ```
 
+> 旧的 PySide6 界面已在视图层重构完成后整体移除（`yindun/gui/` 可从 git 历史取回）。
 > 界面预览（不启动后端）：浏览器打开 `yindun/app/web/index.html#mock`（`#mock-audit` 审计、
 > `#mock-settings` 设置与知识库、`#mock-workflow` 工作流、`#mock-approval` 审批弹窗）。
 
@@ -148,7 +148,7 @@ python run.py --qt     # 回退：旧 PySide6 界面（自定义模型配置、�
 - 配置、会话、审计日志、知识库向量数据都写在 **exe 同目录**（放桌面/便携盘均可，卸载 = 删除 exe 与同目录生成的数据）
 - 主密钥由 Windows DPAPI 按当前用户保护，不随 exe 移动
 - 自行构建：`python tools/build_portable.py`（产物在 `dist/`；单文件模式首次启动约需 10~20 秒解压）
-- 打包时**整体排除 PySide6**（默认界面不再需要 Qt），便携包因此明显瘦身
+- 打包不再包含 Qt（界面已改为 Web）：便携包 164MB → 127MB
 
 ### 方式二：源码运行（开发者）
 
@@ -207,20 +207,18 @@ yindun-agent/
 │   │   ├── flow_builder.py     # 工作流构建器
 │   │   └── workflow.py         # 协同工作流编排（合同分析/安全扫描等）
 │   │
-│   ├── gui/                    # 🖼️ 界面组件（PySide6，当前形态）
-│   │   ├── main_window.py      # 主窗口框架（骨架拼接 + 信号路由）
-│   │   ├── styles.py           # 全局 QSS 样式表（亮色/暗色双主题）
-│   │   ├── chat_bubble.py      # 弹性聊天气泡（含元信息栏）
-│   │   ├── chat_display.py     # 聊天显示区域（滚动布局 + 宽度自适应）
-│   │   ├── control_dock.py     # 底部控制栏（输入 + 发送 + 模式切换）
-│   │   ├── settings_panel.py   # 设置面板（模型/安全/界面/思考深度/知识库管理）
-│   │   ├── audit_panel.py      # 审计日志查看面板（哈希链/统计/导出）
-│   │   ├── workflow_panel.py   # 工作流编排面板
-│   │   ├── data_dashboard.py   # 数据看板（模型/对话次数/Token）
-│   │   ├── status_bar.py       # 动画状态栏（思考进度 + 取消按钮）
-│   │   ├── session_selector.py # 会话选择页（历史会话列表）
-│   │   ├── *_dialog.py         # 新建会话 / 外部模型配置 / 高危审批弹窗
-│   │   └── rounded_scrollbar.py# 圆角滚动条样式
+│   ├── app/                    # 🖥️ 应用服务层与 Web 界面（与界面无关的业务逻辑 + 前端）
+│   │   ├── agent_service.py    #   推理编排（建 Worker、转发事件、审批、取消、落库）
+│   │   ├── attachment.py       #   文档解析 / 题号锚点 / 附件上下文
+│   │   ├── session_store.py    #   会话持久化（整条消息加密、保留工具消息）
+│   │   ├── settings_store.py   #   配置读写（自定义模型密钥加密落盘）
+│   │   ├── llm_factory.py      #   算力构建 + 本地模型探测（零网络）
+│   │   ├── webview_app.py      #   pywebview 承载 + js_api 桥 + 事件推送
+│   │   └── web/                #   前端（原生 ES + 设计 token，无构建步骤）
+│   │
+│   ├── plugins/                # 🧩 插件系统（最小内核 + 按需能力；只允许建议型钩子）
+│   │   ├── host.py             #   发现 / 校验 / 依赖检查 / 启停 / 调用
+│   │   └── builtin/decision_hint/  # 审批决策提示（本地模型判断"操作是否与请求相符"）
 │   │
 │   ├── worker/                 # ⚙️ 后台推理引擎
 │   │   └── agent_worker.py     # ReAct 循环 + Tool Calling + 可中断 LLM 调用
@@ -344,7 +342,6 @@ yindun-agent/
 
 | 包 | 用途 |
 |---|------|
-| `PySide6 >= 6.5` | Qt 图形界面引擎 |
 | `langchain-ollama` | 本地 Ollama 算力连接 + 本地 embedding |
 | `langchain-openai` | 外部 OpenAI 兼容流算力 |
 | `langchain-core` | 消息管道、Tool Calling、ChatMessageHistory |
