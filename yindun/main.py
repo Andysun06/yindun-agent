@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """隐盾 — 🚀 全局点火总入口
 
-界面选择（视图层重构的过渡期支持双界面）：
-  · 默认        → PySide6 桌面界面（功能最全，含工作流/审计/知识库面板）
-  · `--web`     → Web 界面（pywebview + WebView2；阶段 1 骨架，逐页迁移中）
-  · `YINDUN_UI=web` 环境变量等价于 `--web`
+界面选择：
+  · 默认        → Web 界面（pywebview + WebView2；阶段 2 迁移完成，界面能力已对齐）
+  · `--qt`      → 旧的 PySide6 桌面界面（保留为回退：自定义模型配置、健康扫描、
+                  行为画像、工作流自定义等功能尚未迁移到 Web 界面）
+  · `YINDUN_UI=qt` 环境变量等价于 `--qt`
 
-Qt 相关导入放在函数内部（延迟导入）：Web 界面路径完全不依赖 PySide6，
-这也为阶段 3 彻底移除 Qt 依赖留好了口子。
+Qt 相关导入放在函数内部（延迟导入）：默认路径完全不加载 PySide6，
+因此打包时可以整体排除 Qt（exe 明显瘦身），Qt 代码只在显式 `--qt` 时才需要。
 """
 import os
 import sys
@@ -17,12 +18,12 @@ os.environ["NO_PROXY"] = "localhost,127.0.0.1"
 os.environ["no_proxy"] = "localhost,127.0.0.1"
 
 
-def _use_web_ui(argv) -> bool:
-    if "--web" in argv or "--web-ui" in argv:
+def _use_qt_ui(argv) -> bool:
+    if "--qt" in argv or "--qt-ui" in argv:
         return True
-    if "--qt" in argv:
+    if "--web" in argv or "--web-ui" in argv:
         return False
-    return (os.environ.get("YINDUN_UI", "").strip().lower() == "web")
+    return (os.environ.get("YINDUN_UI", "").strip().lower() == "qt")
 
 
 def run_qt_ui() -> int:
@@ -70,9 +71,9 @@ def run_web_ui() -> int:
 
 
 def main() -> int:
-    if _use_web_ui(sys.argv[1:]):
-        return run_web_ui()
-    return run_qt_ui()
+    if _use_qt_ui(sys.argv[1:]):
+        return run_qt_ui()
+    return run_web_ui()
 
 
 if __name__ == "__main__":

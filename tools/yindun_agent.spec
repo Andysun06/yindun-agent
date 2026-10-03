@@ -43,6 +43,8 @@ hiddenimports += collect_submodules("yindun")
 # ★ 路径基准锚定仓库根目录（spec 内的相对路径以 spec 所在目录为基准，故必须用绝对路径）
 _ROOT = os.path.normpath(os.path.join(SPECPATH, ".."))
 datas += [
+    # ★ Web 前端资源必须打进包：冻结后前端由 file:// 从这里加载
+    (os.path.join(_ROOT, "yindun", "app", "web"), os.path.join("yindun", "app", "web")),
     (os.path.join(_ROOT, "docs", "使用说明.pdf"), "."),
     (os.path.join(_ROOT, "assets", "demo_contract.txt"), "assets"),
     (os.path.join(_ROOT, "assets", "知识库演示文档"), os.path.join("assets", "知识库演示文档")),
@@ -56,7 +58,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["tkinter", "torch", "tensorflow", "IPython", "jupyter"],
+    excludes=["PySide6", "shiboken6", "tkinter", "torch", "tensorflow", "IPython", "jupyter"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

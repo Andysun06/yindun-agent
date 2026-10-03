@@ -62,6 +62,8 @@ except Exception as exc:
 # ── 产品代码与随包文档 ──
 hiddenimports += collect_submodules("yindun")
 datas += [
+    # ★ Web 前端资源必须打进包：冻结后前端由 file:// 从这里加载
+    (os.path.join(_ROOT, "yindun", "app", "web"), os.path.join("yindun", "app", "web")),
     (os.path.join(_ROOT, "docs", "使用说明.pdf"), "."),   # 随包附使用说明
     (os.path.join(_ROOT, "assets", "demo_contract.txt"), "assets"),
     (os.path.join(_ROOT, "assets", "知识库演示文档"), os.path.join("assets", "知识库演示文档")),
@@ -75,7 +77,10 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["tkinter", "torch", "tensorflow", "IPython", "jupyter", "matplotlib", "pytest"],
+    # ★ 默认界面是 Web（pywebview + WebView2），Qt 只在显式 `--qt` 时才需要；
+    #   这里整体排除 PySide6，便携包因此明显瘦身（旧 Qt 界面请在源码环境运行 `python run.py --qt`）。
+    excludes=["PySide6", "shiboken6", "tkinter", "torch", "tensorflow",
+              "IPython", "jupyter", "matplotlib", "pytest"],
     noarchive=False,
 )
 
