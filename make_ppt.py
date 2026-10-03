@@ -392,7 +392,7 @@ kicker(s, "核心创新 · 二")
 title(s, "物理副作用的四层纵深防御")
 defs = [("路径沙箱", "realpath+commonpath 越界校验\n文件名 basename 化，杜绝 ../ 穿越"),
         ("权限分级", "完全控制 / 安全只读 / 彻底审计\n只读与审计模式断开写盘"),
-        ("命令白名单", "仅 python/pip/git/echo\nshlex 解析 + shell=False，去注入"),
+        ("命令白名单", "仅 python/pip/git/echo\nshlex + shell=False + 子命令级校验（封堵内联代码/安装入口）"),
         ("熔断审批", "高危操作挂起后台线程\n强制人工二次确认，超时自动驳回")]
 bx, bw = M, (W-2*M-1.2)/4
 for i, (hd, d) in enumerate(defs):
@@ -411,8 +411,9 @@ for i, (hd, d) in enumerate(defs):
         rect(s, x+bw+0.02, 3.7, 0.36, 0.4, fill=LINEC, shape=MSO_SHAPE.CHEVRON)
 tf = box(s, M, 5.5, 11.4, 1.7)
 para(tf, "实测拦截验证", size=15, color=PRIM, bold=True, first=True, space_after=5)
-for t in ["tasklist 不在白名单 → 拒绝执行", "echo 命令含 > 重定向 / ../ 穿越 → 参数级拦截",
-          "读取/写入 C:\\Windows → 越界判定拒绝", "安全只读模式下任何写盘 → 权限拦截"]:
+for t in ["tasklist 不在白名单 → 拒绝执行", "python -c 内联代码 / pip install → 子命令级拒绝",
+          "echo 命令含 > 重定向 / ../ 穿越 → 参数级拦截", "读取/写入 C:\\Windows → 越界判定拒绝",
+          "安全只读模式下任何写盘 → 权限拦截"]:
     para(tf, [("✓  ", {"color": PRIM, "bold": True}), (t, {"color": TEXT})], size=13.5, space_after=3)
 pagenum(s, 7)
 
@@ -422,14 +423,14 @@ kicker(s, "核心创新 · 二")
 title(s, "高危操作：熔断挂起，人类安全员拍板")
 tf = box(s, M, 1.8, 6.0, 4.4)
 for hd, d in [("独立审批弹窗", "检测到越界写盘 / 删除 / 命令执行时，后台写盘线程强行阻塞，等待人工决策"),
-              ("透明展示上下文", "弹窗展示申请工具与目标路径，杜绝“盲批”"),
+              ("透明展示上下文", "弹窗展示申请工具、目标路径与即将执行的命令/写入内容，杜绝“盲批”"),
               ("授权 / 驳回双通道", "驳回则工具不执行并如实反馈模型；授权才放行"),
               ("超时安全兜底", "5 分钟无响应自动按驳回处理，并关闭残留弹窗防误导"),
               ("审批入审计", "批准/驳回均记入哈希链，critical 级告警")]:
     para(tf, [(hd, {"bold": True, "color": PRIM, "size": 16}), ("   " + d, {"color": TEXT, "size": 13})],
          first=(hd == "独立审批弹窗"), space_after=12, line=1.15)
-pic_card(s, "docs/screenshots/05_高危操作审批弹窗.png", 1.849, 7.05, 2.0, 5.55,
-         cap="图 2  隐盾安全决策网关拦截弹窗（实测）")
+pic_card(s, "docs/screenshots/05b_审批弹窗_含待审内容.png", 1.849, 7.05, 2.0, 5.55,
+         cap="图 2  隐盾安全决策网关拦截弹窗（含待审命令/内容）")
 pagenum(s, 8)
 
 # ══════════════════ 9 · 审计黑匣子 ══════════════════
@@ -515,9 +516,9 @@ s = slide()
 kicker(s, "安全工程")
 title(s, "红队 → 修复 → 回归：自我攻击式质量闭环")
 # 左：pipeline
-pipe = [("红队对抗测试", "20+ 攻击用例动态验证\n通读 15 个核心模块"),
-        ("分级问题清单", "P0–P3 严重度分级\n含复现证据"),
-        ("逐项修复加固", "15 项修复\n含调用方一致性"),
+pipe = [("红队对抗测试", "两轮红队：动态攻击验证 + 通读 15 个核心模块"),
+        ("分级问题清单", "P0–P3 严重度分级\n含可复现证据"),
+        ("逐项修复加固", "20+ 项修复\n含调用方一致性"),
         ("回归测试固化", "用例沉淀为测试\n防复发")]
 py = 1.85
 for i, (t, d) in enumerate(pipe):
@@ -566,20 +567,23 @@ kicker(s, "质量与交付")
 title(s, "全量回归通过 · 一键安装包就绪")
 # 左：测试套件
 tf = box(s, M, 1.72, 6.2, 0.55)
-para(tf, "5 个测试套件 · 40+ 断言 · 全量通过", size=14.5, color=PRIM, bold=True, first=True)
-suites = [("隐私引擎", "实体/脱敏/还原/nonce/strict"), ("审计黑匣子", "哈希链/防篡改/调用一致性 14/14"),
-          ("记忆管理", "摘要/跨轮还原/序列化 6/6"), ("工作流引擎", "执行/审批链/自定义/导出"),
-          ("知识库管线", "入库/检索/向量库零明文验证")]
-yy = 2.35
+para(tf, "8 个测试套件 · 全部通过（含攻防评测 9 项实验）", size=14.5, color=PRIM, bold=True, first=True)
+suites = [("隐私引擎", "实体/脱敏/还原/nonce/strict"),
+          ("审计黑匣子", "哈希链/防篡改/一致性 14/14"),
+          ("记忆管理", "摘要/跨轮还原/序列化 6/6"),
+          ("工作流 + 知识库", "执行/审批链/导出；入库检索零明文"),
+          ("白名单（新增）", "16 项高危入口全拦截"),
+          ("取消 + 回归（新增）", "取消 0.33s 返回；泄露 0 / 误伤 0")]
+yy = 2.30
 for name, d in suites:
-    rect(s, M, yy, 6.0, 0.72, fill=CARD, shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.1); 
-    tf = box(s, M+0.3, yy, 2.4, 0.72, anchor=MSO_ANCHOR.MIDDLE)
-    para(tf, name, size=14.5, color=TEXT, bold=True, first=True)
-    tf = box(s, M+2.75, yy, 2.7, 0.72, anchor=MSO_ANCHOR.MIDDLE)
+    rect(s, M, yy, 6.0, 0.66, fill=CARD, shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.1); 
+    tf = box(s, M+0.3, yy, 2.4, 0.66, anchor=MSO_ANCHOR.MIDDLE)
+    para(tf, name, size=14, color=TEXT, bold=True, first=True)
+    tf = box(s, M+2.75, yy, 2.7, 0.66, anchor=MSO_ANCHOR.MIDDLE)
     para(tf, d, size=11.5, color=MUTED, first=True)
-    tf = box(s, M+5.4, yy, 0.5, 0.72, anchor=MSO_ANCHOR.MIDDLE)
+    tf = box(s, M+5.4, yy, 0.5, 0.66, anchor=MSO_ANCHOR.MIDDLE)
     para(tf, "✓", size=18, color=PRIM, bold=True, first=True)
-    yy += 0.86
+    yy += 0.75
 # 右：安装包强调
 card = rect(s, 7.15, 1.9, 5.45, 4.6, fill=PRIM_D, shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.05); shadow(card)
 tf = box(s, 7.45, 2.25, 4.85, 1.0, anchor=MSO_ANCHOR.MIDDLE)
@@ -601,7 +605,7 @@ para(tf, "总结与展望", size=14, color="8FD3B4", bold=True, first=True)
 tf = box(s, M, 1.4, W-2*M, 1.0)
 para(tf, "一套让大模型安全处理涉密办公数据的端到端方案", size=30, color="FFFFFF", bold=True, first=True)
 # 回顾指标
-recap = [("1.6万", "行 Python"), ("20+", "类实体脱敏"), ("4", "层纵深防御"), ("15", "项安全修复"), ("5", "套件回归通过")]
+recap = [("1.6万", "行 Python"), ("27", "类实体脱敏"), ("4", "层纵深防御"), ("20+", "项安全修复"), ("8", "套件回归通过")]
 bx, bw = M, (W-2*M-0.4*4)/5
 for i, (n, lab) in enumerate(recap):
     x = M + i*(bw+0.4)
