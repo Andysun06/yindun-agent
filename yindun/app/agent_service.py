@@ -329,6 +329,10 @@ class AgentService:
             "session_id": session_id,
             "tool_calls": tool_calls,
             "context_tokens": context_tokens,
+            "message_count": len(messages),
+            "model": self.settings.get("model"),
+            "privacy": bool(self.settings.get("privacy", True)),
+            "think_mode": self.settings.get("think_mode") or "快速回答",
         }
 
     def cancel(self) -> None:

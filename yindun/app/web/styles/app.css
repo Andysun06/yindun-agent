@@ -60,6 +60,13 @@ button { cursor: pointer; border: none; background: none; }
 }
 .session-item:hover { background: var(--bg-hover); }
 .session-item.is-active { background: var(--bg-active); border-color: var(--border-2); }
+.session-item { position: relative; }
+.session-item__ops { position: absolute; right: var(--sp-2); top: var(--sp-2); display: none; gap: 2px; }
+.session-item:hover .session-item__ops { display: inline-flex; }
+.op { width: 22px; height: 22px; border-radius: var(--r-sm); font-size: 11px; color: var(--text-3); background: var(--bg-surface); border: 1px solid var(--border-1); display: grid; place-items: center; }
+.op:hover { color: var(--text-1); background: var(--bg-hover); }
+.op--danger { color: #fff; background: var(--danger-500); border-color: transparent; width: auto; padding: 0 6px; }
+.session-item__edit { width: 100%; padding: 2px 6px; border-radius: var(--r-sm); border: 1px solid var(--brand-500); background: var(--bg-input); font-size: var(--fs-md); }
 .session-item__title { font-size: var(--fs-md); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-item__meta { font-size: var(--fs-xs); color: var(--text-3); }
 
@@ -84,6 +91,12 @@ button { cursor: pointer; border: none; background: none; }
 .seg__btn.is-active { background: var(--brand-600); color: #fff; }
 
 .status-line { font-size: var(--fs-xs); color: var(--text-3); padding: var(--sp-2) var(--sp-5) 0; min-height: 22px; }
+
+/* 数据看板（顶栏统计条） */
+.stats { display: flex; align-items: center; gap: var(--sp-2); padding: 4px var(--sp-3); border: 1px solid var(--border-1); border-radius: var(--r-full); background: var(--bg-raised); font-size: var(--fs-xs); color: var(--text-2); white-space: nowrap; }
+.stats__sep { width: 1px; height: 12px; background: var(--border-2); }
+.stats__item--bad { color: var(--danger-500); }
+@media (max-width: 1100px) { .stats { display: none; } }
 
 /* 聊天区 */
 .chat { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-5) var(--sp-5) var(--sp-6); display: flex; flex-direction: column; gap: var(--sp-4); scroll-behavior: smooth; }

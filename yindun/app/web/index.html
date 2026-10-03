@@ -61,6 +61,15 @@
           <button class="seg__btn is-active" data-mode="快速回答">快速</button>
           <button class="seg__btn" data-mode="深度思考">思考</button>
         </div>
+        <div class="stats" id="stats-strip" title="数据看板：模型 / 本轮工具调用 / 上下文估算 / 隐私网关">
+          <span class="stats__item" id="stat-model">—</span>
+          <span class="stats__sep"></span>
+          <span class="stats__item" id="stat-tools">工具 0</span>
+          <span class="stats__sep"></span>
+          <span class="stats__item" id="stat-tokens">上下文 0</span>
+          <span class="stats__sep"></span>
+          <span class="stats__item" id="stat-privacy">隐私网关 —</span>
+        </div>
         <button class="btn btn--ghost" id="btn-theme" title="切换主题">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>

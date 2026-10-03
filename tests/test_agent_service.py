@@ -235,6 +235,30 @@ raw_att = (TMP / "svc2_sess.json").read_text(encoding="utf-8")
 check("附件正文与手机号均未明文落盘", FAKE_PHONE not in raw_att and "供应商服务合同" not in raw_att)
 
 print("\n" + "=" * 78)
+print("【5】会话管理：重命名 / 删除 / 持久化")
+print("=" * 78)
+mg_cfg = TMP / "mg_cfg.json"
+mg_sess = TMP / "mg_sess.json"
+mg = AgentService(settings=SettingsStore(path=mg_cfg), sessions=SessionStore(path=mg_sess))
+mg.initialize()
+first = mg.create_session("初始标题")
+second = mg.create_session("待删除")
+mg.sessions.set_messages(second, [{"role": "user", "content": "临时内容"}])
+mg.sessions.save()
+
+check("新建会话进入列表", len(mg.list_sessions()) == 2)
+check("重命名生效", mg.rename_session(second, "改过名字") and
+      any(s["title"] == "改过名字" for s in mg.list_sessions()))
+check("删除生效", mg.delete_session(second) and len(mg.list_sessions()) == 1)
+check("删除的是指定会话", mg.list_sessions()[0]["id"] == first)
+check("删除不存在的会话返回 False", mg.delete_session("不存在") is False)
+
+reloaded_mg = SessionStore(path=mg_sess)
+reloaded_mg.load()
+check("删除已持久化（重新加载后仍只剩 1 个）", len(reloaded_mg.list_sessions()) == 1,
+      str(reloaded_mg.list_sessions()))
+
+print("\n" + "=" * 78)
 if failures:
     print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))
     sys.exit(1)

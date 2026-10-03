@@ -94,13 +94,78 @@
       return;
     }
     for (const s of state.sessions) {
-      const el = document.createElement("button");
+      const el = document.createElement("div");
       el.className = "session-item" + (s.id === state.currentId ? " is-active" : "");
       el.innerHTML = `<span class="session-item__title">${esc(s.title)}</span>
-        <span class="session-item__meta">${s.message_count} 条消息 · ${esc((s.updated_at || "").replace("T", " "))}</span>`;
-      el.onclick = () => openSession(s.id);
+        <span class="session-item__meta">${s.message_count} 条消息 · ${esc((s.updated_at || "").replace("T", " "))}</span>
+        <span class="session-item__ops">
+          <button class="op" data-act="rename" title="重命名">✎</button>
+          <button class="op" data-act="delete" title="删除">🗑</button>
+        </span>`;
+      el.onclick = (e) => { if (!e.target.closest(".op")) openSession(s.id); };
+      el.querySelector('[data-act="rename"]').onclick = (e) => { e.stopPropagation(); renameSession(s); };
+      el.querySelector('[data-act="delete"]').onclick = (e) => { e.stopPropagation(); deleteSession(s, e.target); };
       box.appendChild(el);
     }
+  }
+
+  /* ── 会话管理：重命名 / 删除（删除为两步确认，避免误删）────── */
+  async function renameSession(session) {
+    const item = [...document.querySelectorAll(".session-item")].find(
+      (el) => el.querySelector(".session-item__title").textContent === session.title);
+    const titleEl = item && item.querySelector(".session-item__title");
+    if (!titleEl) return;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = session.title;
+    input.className = "session-item__edit";
+    titleEl.replaceWith(input);
+    input.focus(); input.select();
+    const commit = async () => {
+      const title = input.value.trim();
+      if (title && title !== session.title) {
+        await call("rename_session", session.id, title);
+        if (session.id === state.currentId) $("chat-title").textContent = title;
+        await refreshSessions();
+      } else {
+        await refreshSessions();
+      }
+    };
+    input.onblur = commit;
+    input.onkeydown = (e) => {
+      if (e.key === "Enter") { e.preventDefault(); input.onblur = null; commit(); }
+      if (e.key === "Escape") { input.onblur = null; refreshSessions(); }
+    };
+  }
+
+  async function deleteSession(session, button) {
+    if (button.dataset.armed !== "1") {
+      button.dataset.armed = "1";
+      button.textContent = "确认";
+      button.classList.add("op--danger");
+      setTimeout(() => { button.dataset.armed = ""; button.textContent = "🗑"; button.classList.remove("op--danger"); }, 3000);
+      return;
+    }
+    await call("delete_session", session.id);
+    await refreshSessions();
+    if (session.id === state.currentId) {
+      state.currentId = null; state.messages = []; renderMessages();
+      $("chat-title").textContent = "新对话";
+    }
+    toast("会话已删除");
+  }
+
+  /* ── 数据看板 ─────────────────────────────────── */
+  function renderStats(payload) {
+    const model = (payload && payload.model) || state.settings.model || "—";
+    $("stat-model").textContent = model.length > 26 ? model.slice(0, 24) + "…" : model;
+    $("stat-tools").textContent = `工具 ${(payload && payload.tool_calls) || 0}`;
+    const tokens = (payload && payload.context_tokens) || 0;
+    $("stat-tokens").textContent = `上下文 ${tokens >= 1000 ? (tokens / 1000).toFixed(1) + "k" : tokens}`;
+    const privacy = payload ? payload.privacy : state.settings.privacy;
+    const el = $("stat-privacy");
+    el.textContent = privacy ? "隐私网关 开" : "隐私网关 关";
+    el.className = "stats__item" + (privacy ? "" : " stats__item--bad");
   }
 
   /* ── 渲染：消息 ───────────────────────────────────── */
@@ -325,6 +390,7 @@
       case "approval_expired": hideApproval(); setStatus("审批超时，已按驳回处理"); break;
       case "state": {
         setBusy(!!payload.busy);
+        renderStats(payload);
         if (!payload.busy) {
           hideApproval();
           const sid = payload.session_id;
@@ -377,7 +443,7 @@
     const seg = state.settings.think_mode || "快速回答";
     document.querySelectorAll("#mode-switch .seg__btn").forEach((b) =>
       b.classList.toggle("is-active", b.dataset.mode === seg));
-    fillSettings(); renderSessions();
+    fillSettings(); renderSessions(); renderStats({ model: state.settings.model, privacy: state.settings.privacy });
     if (state.currentId) await openSession(state.currentId); else renderMessages();
     onEvent("llm_status", state.llm);
   }
