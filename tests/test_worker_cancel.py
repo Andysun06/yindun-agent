@@ -25,9 +25,9 @@ import time
 sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 仓库根目录
 
-from PySide6.QtCore import QCoreApplication  # noqa: E402
-
 from yindun.worker.agent_worker import Worker  # noqa: E402
+
+# 注意：重构后 Worker 已与 Qt 解耦（不再是 QObject），因此本测试无需 QApplication/Qt 环境。
 
 FAKE_LLM_SECONDS = 5.0
 CANCEL_AFTER = 0.3
@@ -43,8 +43,6 @@ class SlowFakeLLM:
 
 
 def main() -> int:
-    _app = QCoreApplication.instance() or QCoreApplication([])
-
     print("=" * 78)
     print("【推理取消语义回归测试】慢速模型下取消必须立即返回")
     print("=" * 78)

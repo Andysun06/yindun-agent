@@ -4,24 +4,39 @@
 彻底抛弃正则解析与结构化字段提取，全面迁移到 LangChain 原生工具调用协议。
 
 核心架构：
-1. llm 已经在 main_window.py 中通过 bind_tools(tools_list) 绑定了所有可用工具
+1. llm 已经在界面层通过 bind_tools(tools_list) 绑定了所有可用工具
 2. ReAct 循环：llm.invoke(messages) -> 检查 tool_calls -> 执行工具 -> 追加 ToolMessage -> 循环
 3. 路径解析：在工具执行前独立完成，从 tool_call args 中提取 target_directory
-4. 权限熔断：跨目录操作触发 need_confirm 信号等待人工审批
+4. 权限熔断：跨目录操作触发 need_confirm 事件等待人工审批
 5. 隐私脱敏：PrivacyEngine 在输入/输出层面统一处理
+
+★ 与界面解耦（视图层重构第一步）：本模块**不依赖任何界面框架**（无 Qt）。
+  对外的过程事件统一走 `self.bus`（yindun.core.event_bus.EventBus），
+  主题见下方 WORKER_EVENTS；界面通过订阅总线接收（Qt 旧界面用 gui/worker_bridge.py 桥接，
+  后续 Web 界面直接订阅）。
 """
 import os
 import re
 import threading
 import time
 import concurrent.futures
-from PySide6.QtCore import QObject, Signal
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
+from yindun.core.event_bus import EventBus
 from yindun.core.privacy_engine import PrivacyEngine, _NEW_PLACEHOLDER_RE
 from yindun.core.memory_manager import SummarizableChatHistory
 from yindun.core.audit_log import AuditLog
 from yindun.core.policy_manager import PolicyManager
+
+# 推理引擎对外发布的事件主题（界面只需订阅这些）
+WORKER_EVENTS = (
+    "status",               # str：过程状态文本（状态栏）
+    "intermediate_result",  # str：中间结果（渐进展示）
+    "finished",             # str：最终回答
+    "error",                # str：错误信息（已翻译为友好文案）
+    "need_confirm",         # dict：{name, args, path} 请求人工审批
+    "approval_expired",     # None：审批超时，界面应关闭残留弹窗
+)
 
 # ──────────────────────────────────────────────
 # Agent 系统提示词：告诉模型它能做什么，以及工具使用规范
@@ -125,14 +140,25 @@ _SYSTEM_PROMPT = (
 )
 
 
-class Worker(QObject):
-    """Agent Worker：基于 LangChain 原生 Tool Calling 协议"""
-    finished = Signal(str)
-    error = Signal(str)
-    status = Signal(str)
-    need_confirm = Signal(dict)
-    approval_expired = Signal()   # 审批等待超时：通知 GUI 关闭残留弹窗，避免"死弹窗"误导用户
-    intermediate_result = Signal(str)  # 思考过程中的中间结果，用于渐进输出
+class _EventTopic:
+    """把 `self.status.emit(x)` 这类调用面映射到事件总线。
+
+    内核不再依赖 Qt；保留 `.emit(payload)` 形态是为了让既有调用点零改动，
+    而 `bus` 才是对外契约（界面订阅总线，见 WORKER_EVENTS）。
+    """
+
+    __slots__ = ("_bus", "_topic")
+
+    def __init__(self, bus: EventBus, topic: str):
+        self._bus = bus
+        self._topic = topic
+
+    def emit(self, payload=None) -> None:
+        self._bus.emit(self._topic, payload)
+
+
+class Worker:
+    """Agent Worker：基于 LangChain 原生 Tool Calling 协议（与界面框架无关）"""
 
     # 跨轮映射表上限：超出后按插入顺序 FIFO 淘汰最早的条目
     _BOX_MAPPING_MAX = 300
@@ -141,7 +167,15 @@ class Worker(QObject):
     # 取消执行机制
     # ──────────────────────────────────────────
     def __init__(self):
-        super().__init__()
+        # 事件总线：界面（Qt 桥 / Web 桥）订阅它接收推理过程事件
+        self.bus = EventBus()
+        # 兼容别名：self.status.emit(...) 等价于 self.bus.emit("status", ...)
+        self.status = _EventTopic(self.bus, "status")
+        self.intermediate_result = _EventTopic(self.bus, "intermediate_result")
+        self.finished = _EventTopic(self.bus, "finished")
+        self.error = _EventTopic(self.bus, "error")
+        self.need_confirm = _EventTopic(self.bus, "need_confirm")
+        self.approval_expired = _EventTopic(self.bus, "approval_expired")
         self.user_input = ""
         self.messages_snapshot: list[dict] = []
         self.think_mode = "快速回答"

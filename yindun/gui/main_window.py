@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from yindun import APP_ROOT
 from yindun.core.memory_manager import SummarizableChatHistory
+from yindun.gui.worker_bridge import WorkerQtBridge
 from yindun import __display_version__
 
 from PySide6.QtWidgets import (
@@ -923,14 +924,17 @@ class MainWindow(QWidget):
         self.worker.session_id = sid
 
         self.thread = QThread()
-        self.worker.moveToThread(self.thread)
-        
-        self.worker.finished.connect(self._on_reply_received)
-        self.worker.error.connect(self._on_error_caught)
-        self.worker.status.connect(self.status_bar.set_static_text)
-        self.worker.need_confirm.connect(self._on_intercept_confirm)
-        self.worker.approval_expired.connect(self._close_stale_confirm_dialogs)
-        self.worker.intermediate_result.connect(self._on_intermediate_result)
+        # ★ 推理引擎已去 Qt 化：它只往 worker.bus 发事件，由桥接器转成 Qt 信号。
+        #   不再需要 moveToThread（非 QObject）；thread.started 在【新线程】中发出，
+        #   直接连接的普通可调用对象因此也运行在新线程里，线程语义与原来一致。
+        self.worker_bridge = WorkerQtBridge(self.worker)
+
+        self.worker_bridge.finished.connect(self._on_reply_received)
+        self.worker_bridge.error.connect(self._on_error_caught)
+        self.worker_bridge.status.connect(self.status_bar.set_static_text)
+        self.worker_bridge.need_confirm.connect(self._on_intercept_confirm)
+        self.worker_bridge.approval_expired.connect(self._close_stale_confirm_dialogs)
+        self.worker_bridge.intermediate_result.connect(self._on_intermediate_result)
         # 取消按钮：采用"先断后连"的单一连接，避免每轮 _start_worker 累积 lambda
         # （累积后点一次取消会对当前 worker 重复调用 cancel N 次）
         try:
@@ -945,8 +949,8 @@ class MainWindow(QWidget):
         self.chat_display.add_message_bubble("assistant", "⌛ 正在为您分析，请稍候...", self.width(), meta_info="")
         
         self.thread.started.connect(self.worker.run)
-        self.worker.finished.connect(self.thread.quit)
-        self.worker.error.connect(self.thread.quit)
+        self.worker_bridge.finished.connect(self.thread.quit)
+        self.worker_bridge.error.connect(self.thread.quit)
         self.thread.start()
 
     def _on_mode_changed(self, mode: str):
@@ -971,18 +975,22 @@ class MainWindow(QWidget):
             # 旧实现只断开了 finished/error/need_confirm，遗留的 status /
             # intermediate_result / approval_expired 仍会把已取消那轮的中间结果
             # 写进新气泡或状态栏（取消后立刻重发消息即可复现）。
-            for signal, slot in (
-                (self.worker.finished, self._on_reply_received),
-                (self.worker.error, self._on_error_caught),
-                (self.worker.need_confirm, self._on_intercept_confirm),
-                (self.worker.status, self.status_bar.set_static_text),
-                (self.worker.intermediate_result, self._on_intermediate_result),
-                (self.worker.approval_expired, self._close_stale_confirm_dialogs),
-            ):
-                try:
-                    signal.disconnect(slot)
-                except Exception:
-                    pass
+            bridge = getattr(self, "worker_bridge", None)
+            if bridge is not None:
+                for signal, slot in (
+                    (bridge.finished, self._on_reply_received),
+                    (bridge.error, self._on_error_caught),
+                    (bridge.need_confirm, self._on_intercept_confirm),
+                    (bridge.status, self.status_bar.set_static_text),
+                    (bridge.intermediate_result, self._on_intermediate_result),
+                    (bridge.approval_expired, self._close_stale_confirm_dialogs),
+                ):
+                    try:
+                        signal.disconnect(slot)
+                    except Exception:
+                        pass
+                # 同时退订事件总线，确保被取消的那一轮不再向界面投递任何事件
+                bridge.detach()
             # 强制驳回并关闭所有活动审批弹窗，防止残留弹窗放行已取消的高危写盘操作
             # 顺序：先 approve(False) 唤醒 worker 审批等待，再 close 关闭弹窗
             for dlg in list(self._active_confirm_dialogs):
