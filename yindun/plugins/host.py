@@ -41,7 +41,8 @@ HOOKS = {
 }
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_]{2,32}$")
-_HOOK_TIMEOUT = 3.0          # 单个插件的单次钩子调用超时（秒）
+_HOOK_TIMEOUT = 5.0          # 单次钩子调用的默认超时（秒）
+_HOOK_TIMEOUT_MAX = 120.0    # 插件可在 manifest 里声明更长超时（如调用本地模型），上限 120s
 _REQUIRED_FIELDS = ("id", "name", "version", "hooks")
 
 
@@ -58,6 +59,7 @@ class PluginRecord:
     requires: Dict[str, Any] = field(default_factory=dict)
     permissions: Dict[str, Any] = field(default_factory=dict)
     entry: str = "plugin.py"
+    timeout_seconds: float = _HOOK_TIMEOUT
     error: Optional[str] = None      # manifest 校验失败的原因
     missing: List[str] = field(default_factory=list)   # 未满足的依赖（人类可读）
     enabled: bool = False
@@ -69,6 +71,7 @@ class PluginRecord:
             "description": self.description, "source": self.source,
             "hooks": list(self.hooks), "permissions": dict(self.permissions),
             "enabled": bool(self.enabled), "error": self.error,
+            "timeout_seconds": self.timeout_seconds,
             "missing": list(self.missing),
             "usable": self.error is None and not self.missing,
         }
@@ -134,6 +137,11 @@ class PluginHost:
             permissions=dict(data.get("permissions") or {}),
             entry=str(data.get("entry") or "plugin.py"),
         )
+        try:
+            declared = float(data.get("timeout_seconds") or _HOOK_TIMEOUT)
+        except Exception:
+            declared = _HOOK_TIMEOUT
+        record.timeout_seconds = max(1.0, min(declared, _HOOK_TIMEOUT_MAX))
         if missing_fields:
             record.error = f"manifest 缺少必填字段：{', '.join(missing_fields)}"
             return record
@@ -248,10 +256,11 @@ class PluginHost:
 
             thread = threading.Thread(target=_run, daemon=True)
             started = time.monotonic()
+            timeout = getattr(record, "timeout_seconds", _HOOK_TIMEOUT)
             thread.start()
-            thread.join(timeout=_HOOK_TIMEOUT)
+            thread.join(timeout=timeout)
             if thread.is_alive():
-                print(f"[PluginHost] 插件 {record.plugin_id} 的 {hook} 超时（>{_HOOK_TIMEOUT}s），已跳过")
+                print(f"[PluginHost] 插件 {record.plugin_id} 的 {hook} 超时（>{timeout:.0f}s），已跳过")
                 continue
             if outcome.get("error"):
                 print(f"[PluginHost] 插件 {record.plugin_id} 的 {hook} 失败：{outcome['error']}")

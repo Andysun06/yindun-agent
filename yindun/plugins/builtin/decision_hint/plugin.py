@@ -28,21 +28,43 @@ _PROMPT = """你是涉密办公场景的安全审批助手。请判断：Agent �
 待执行操作：工具={tool}；目标={path}；参数={args}"""
 
 
-def _parse(text: str) -> Optional[Dict[str, str]]:
-    """从模型输出里宽松地取出 verdict / reason（模型常爱加解释或代码块）。"""
+def _verdict_from_text(text: str) -> Optional[str]:
+    """从自由文本里判断结论。7B 模型常写成 "不符|越权" 这类带后缀的形式，
+    所以先按"不符 → 存疑 → 相符"的顺序做关键词判定（注意"不符合"含"符合"，必须先判"不符"）。"""
     if not text:
         return None
+    if any(k in text for k in ("不符", "不符合", "不匹配", "不一致", "越权", "无关", "不相关")):
+        return "不符"
+    if any(k in text for k in ("存疑", "可疑", "不确定", "不确定", "有风险", "需确认", "谨慎")):
+        return "存疑"
+    if any(k in text for k in ("相符", "符合", "匹配", "一致", "相关")):
+        return "相符"
+    return None
+
+
+def _parse(text: str) -> Optional[Dict[str, str]]:
+    """从模型输出里宽松地取出 verdict / reason（模型常加解释、代码块或后缀）。"""
+    if not text:
+        return None
+    verdict = None
+    reason = ""
     match = re.search(r"\{[^{}]*\}", text, re.S)
-    if not match:
+    if match:
+        try:
+            data = json.loads(match.group(0))
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            verdict = _verdict_from_text(str(data.get("verdict", ""))) or _verdict_from_text(str(data.get("reason", "")))
+            reason = str(data.get("reason", "")).strip()
+    if verdict is None:
+        verdict = _verdict_from_text(text)
+    if verdict is None:
         return None
-    try:
-        data = json.loads(match.group(0))
-    except Exception:
-        return None
-    verdict = str(data.get("verdict", "")).strip()
-    reason = str(data.get("reason", "")).strip()
-    if verdict not in ("相符", "存疑", "不符"):
-        return None
+    if not reason:
+        # 没有结构化理由时，截取模型输出里最有信息量的一段
+        cleaned = re.sub(r"\{|\}|\"verdict\"|\"reason\"|:", " ", text).strip()
+        reason = cleaned[:40] or "模型未给出理由"
     return {"verdict": verdict, "reason": reason[:60]}
 
 

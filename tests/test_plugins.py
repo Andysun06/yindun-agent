@@ -141,6 +141,7 @@ make_plugin("boom_plugin", {
 make_plugin("slow_plugin", {
     "id": "slow_plugin", "name": "会卡住的插件", "version": "1.0.0",
     "hooks": ["advisory_for_approval"],
+    "timeout_seconds": 1,     # 插件可声明超时（默认 5s；调用本地模型的插件会声明更长）
 }, "import time\ndef advisory_for_approval(ctx):\n    time.sleep(30)\n    return {'level': 'info', 'text': '不该被等到'}\n")
 
 state4 = {}
@@ -159,7 +160,10 @@ elapsed = time.monotonic() - started
 texts = [r.get("text") for r in results]
 check("启用后返回建议", texts == ["来自正常插件"], str(results))
 check("抛异常的插件被隔离（其它插件照常返回）", len(results) == 1, str(results))
-check("卡住的插件被超时跳过（整体不超 4 秒）", elapsed < 4.0, f"实际 {elapsed:.1f}s")
+check("卡住的插件按声明的超时被跳过（1s 放弃，整体不超 3 秒）", elapsed < 3.0, f"实际 {elapsed:.1f}s")
+check("插件声明的超时被记录（供界面展示）",
+      float(host4.get("slow_plugin").to_public().get("timeout_seconds", 0)) == 1.0,
+      str(host4.get("slow_plugin").to_public().get("timeout_seconds")))
 check("未知钩子直接返回空", host4.call_hook("decide_everything", {}) == [])
 
 # ── 5) 服务层集成 ──────────────────────────────────

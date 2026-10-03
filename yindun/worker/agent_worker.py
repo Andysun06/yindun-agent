@@ -406,6 +406,7 @@ class Worker:
             # ──────────────────────────────────────────
             forced_tool_result = None
             forced_tool_name = None
+            forced_tool_args = None      # 注入 ToolMessage 时需要回填对应的 tool_call 参数
             _path_match = re.search(r'([A-Za-z]:[\\/][^\s]+)', self.user_input)
             _has_analyze = any(w in self.user_input for w in ["分析", "项目结构", "代码", "项目"])
             _has_list = any(w in self.user_input for w in ["列出", "查看目录", "有什么文件", "目录下", "列出文件"])
@@ -424,6 +425,7 @@ class Worker:
                             _raw = self._execute_with_approval("analyze_project", _args)
                             forced_tool_result, _ = self._anonymize_tool_output(_raw, "analyze_project")
                             forced_tool_name = "analyze_project"
+                            forced_tool_args = dict(_args)
                         elif (_has_list or _has_read) and os.path.isdir(_resolved_path):
                             if "list_local_files" in self.tools_map:
                                 self.status.emit(f"[工具执行] 列出目录: {_resolved_path}")
@@ -431,6 +433,27 @@ class Worker:
                                 _raw = self._execute_with_approval("list_local_files", _args)
                                 forced_tool_result, _ = self._anonymize_tool_output(_raw, "list_local_files")
                                 forced_tool_name = "list_local_files"
+                                forced_tool_args = dict(_args)
+                    except Exception as _e:
+                        forced_tool_result = f"[工具执行出错] {_e}"
+                    self.tool_call_count += 1
+
+            # ★ 补充强制分支：**没有显式路径**、但明确在问"目录/沙箱里有什么"时，
+            #   也强制走 list_local_files。实测 7B 模型在这类请求下会不调工具、
+            #   直接编造一段回答（"没有生成报告的功能"之类），对用户来说等于答非所问。
+            #   触发条件收紧为"列举动词 + 目录类名词"同时命中，避免劫持普通问答。
+            _list_verb = any(w in self.user_input for w in
+                             ["列出", "列一下", "看看", "查看", "有哪些", "有什么", "显示"])
+            _dir_noun = any(w in self.user_input for w in ["文件", "文件夹", "目录", "沙箱"])
+            if forced_tool_result is None and not _path_match and _list_verb and _dir_noun:
+                if "list_local_files" in self.tools_map:
+                    self.status.emit(f"[工具执行] 列出沙箱目录: {self.sandbox_path}")
+                    try:
+                        _args = {"target_directory": self.sandbox_path}
+                        _raw = self._execute_with_approval("list_local_files", _args)
+                        forced_tool_result, _ = self._anonymize_tool_output(_raw, "list_local_files")
+                        forced_tool_name = "list_local_files"
+                        forced_tool_args = dict(_args)
                     except Exception as _e:
                         forced_tool_result = f"[工具执行出错] {_e}"
                     self.tool_call_count += 1
@@ -445,7 +468,8 @@ class Worker:
             final_reply = self._run_react_loop(
                 ai_input, box, memory, engine, max_rounds,
                 forced_tool_result=forced_tool_result,
-                forced_tool_name=forced_tool_name
+                forced_tool_name=forced_tool_name,
+                forced_tool_args=forced_tool_args,
             )
 
             _reply_before_restore = final_reply  # ★ 脱敏态副本：审计记录用，避免还原后明文落盘
@@ -590,7 +614,8 @@ class Worker:
     # 核心：ReAct 循环 — 推理 -> 工具调用 -> 观察 -> 总结
     # ──────────────────────────────────────────
     def _run_react_loop(self, ai_input, box, memory, engine, max_rounds: int,
-                         forced_tool_result=None, forced_tool_name=None) -> str:
+                         forced_tool_result=None, forced_tool_name=None,
+                         forced_tool_args=None) -> str:
         """
         ReAct 循环（LangChain 原生 Tool Calling）
         每轮：
@@ -628,8 +653,17 @@ class Worker:
         # ──────────────────────────────────────────
         has_executed_tool = False  # 追踪是否执行过工具，用于决定是否强制总结
         if forced_tool_result and forced_tool_name:
-            # 注入模拟的 AI 消息 + 工具结果消息（作为上下文
-            messages.append(AIMessage(content="正在为您分析项目..."))
+            # ★ 协议要求：ToolMessage 必须回应一条"声明了对应 tool_call 的 AIMessage"。
+            #   旧实现注入的是无 tool_calls 的 AIMessage + 孤立 ToolMessage —— 对模型属非法序列，
+            #   实测 7B 模型会因此完全忽略工具结果、答非所问（"请提供文件名或目录"）。
+            messages.append(AIMessage(
+                content="",
+                tool_calls=[{
+                    "name": forced_tool_name,
+                    "args": dict(forced_tool_args or {}),
+                    "id": "forced_tool_001",
+                }],
+            ))
             messages.append(ToolMessage(
                 content=f"[{forced_tool_name} 执行结果]\n{forced_tool_result}",
                 tool_call_id="forced_tool_001"
@@ -725,6 +759,9 @@ class Worker:
 
                 if content and isinstance(content, str) and content.strip():
                     final_reply = self._clean(content)
+                    # ★ 落地性兜底：模型若无视工具结果（实测 7B 常发生），把真实读取结果一并呈现
+                    if forced_tool_result and forced_tool_name:
+                        final_reply = self._ensure_grounded(final_reply, forced_tool_name, forced_tool_result)
                     # 保存完整工具调用链（从本轮的 HumanMessage 之后到结束）
                     chain = messages[round_start_idx:]
                     memory.update_with_full_chain(chain)
@@ -1611,6 +1648,42 @@ class Worker:
         resp = self._invoke_llm_with_cancel_check(messages)
         content = getattr(resp, "content", "")
         return content if isinstance(content, str) else str(content)
+
+    # ──────────────────────────────────────────
+    # 工具结果落地性兜底
+    # ──────────────────────────────────────────
+    @staticmethod
+    def _evidence_tokens(tool_result: str, limit: int = 12) -> list:
+        """从工具结果里抽取"可核对的证据词"——只取形如 xxx.ext 的文件名。
+
+        只取带扩展名的文件名，避免把"文件/目录"这类通用词当证据
+        （否则模型的敷衍回答也会被误判为"已经用上了工具结果"）。
+        """
+        import re as _re
+        tokens = _re.findall(r"[A-Za-z0-9_\u4e00-\u9fa5\-]{2,40}\.[A-Za-z0-9]{1,6}", tool_result or "")
+        uniq = []
+        for token in tokens:
+            if token not in uniq:
+                uniq.append(token)
+        return uniq[:limit]
+
+    def _ensure_grounded(self, reply: str, tool_name: str, tool_result: str) -> str:
+        """兜底：强制工具已执行、但模型回答没引用任何工具读到的文件名时，把真实结果附给用户。
+
+        背景：7B 本地模型实测会完全无视工具结果（回答"请提供文件名或目录"），
+        用户因此拿不到本该给出的文件列表。与其依赖模型自觉，不如把本地工具的真实
+        读取结果直接呈现——数据本来就该以工具为准，模型的话只作补充。
+        """
+        if not tool_result or not reply:
+            return reply
+        tokens = self._evidence_tokens(tool_result)
+        if not tokens or any(token in reply for token in tokens):
+            return reply
+        trimmed = tool_result.strip()
+        if len(trimmed) > 1500:
+            trimmed = trimmed[:1500] + "\n…（内容较长，已截断）"
+        return (reply.rstrip() + "\n\n"
+                f"—— 以下为本地工具（{tool_name}）实际读取到的内容，供你核对 ——\n{trimmed}")
 
     @staticmethod
     def _clean(text):
