@@ -249,7 +249,11 @@ class AuditLog:
     def add_entry(self, event_type: AuditEventType, severity: AuditSeverity,
                   message: str, details: dict = None):
         try:
-            details = _mask_details(details)  # ★ 落盘前统一掩码，杜绝敏感明文入审计
+            # ★ 落盘前统一掩码：message 与 details 都必须过脱敏管线。
+            #   此前只掩码 details，message 原样落盘 —— 调用方一旦把路径/参数写进 message
+            #   （工作流步骤审计就是这么做的），敏感明文就会进入审计日志，审计反成泄露源。
+            details = _mask_details(details)
+            message = _mask_text(message) if isinstance(message, str) else message
             with self._lock:
                 entry = AuditEntry(
                     event_type=event_type,

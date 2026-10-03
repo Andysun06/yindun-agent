@@ -77,6 +77,32 @@
       missing: ["缺少 Python 依赖：torch>=2.0（pip install torch）"], usable: false },
   ];
 
+  const wfTemplates = [
+    { id: "wf_contract_review", name: "合同审查工作流", description: "自动解析合同、提取关键条款、生成审查意见、导出报告" },
+    { id: "wf_weekly_report", name: "周报生成工作流", description: "收集工作记录、整理结构、生成周报草稿、人工审核、导出" },
+    { id: "wf_security_check", name: "代码安全检查工作流", description: "扫描代码仓库、识别安全漏洞、风险评估、生成报告" },
+  ];
+  const wfStatus = {
+    instance_id: "5021f4c2", template_name: "合同审查工作流",
+    is_complete: false, has_failed: false,
+    progress: { total: 5, completed: 2, waiting_approval: 1, failed: 0, percentage: 40.0 },
+    demo_notice: "标记为「演示」的步骤目前返回模拟结果，未接入真实数据源。",
+    steps: [
+      { step_id: "s1", name: "读取合同文件", description: "读取待审查的合同文档内容", tool_name: "read_local_file",
+        approval_type: "auto", status: "completed", demo: false,
+        result: "{'ok': True, 'tool': 'read_local_file', 'summary': '已读取《供应商服务合同_示例.md》（18422 字符）'}" },
+      { step_id: "s2", name: "提取关键条款", description: "从合同中提取付款条款、违约条款、保密条款等关键信息",
+        tool_name: "analyze_contract", approval_type: "auto", status: "completed", demo: false,
+        result: "{'ok': True, 'summary': '已提取 6 条关键条款（本地模型）'}" },
+      { step_id: "s3", name: "风险点分析", description: "识别合同中的潜在风险和不利条款",
+        tool_name: "analyze_contract", approval_type: "auto", status: "waiting_approval", demo: false, result: null },
+      { step_id: "s4", name: "生成审查意见", description: "基于分析结果生成专业的审查意见书",
+        tool_name: "generate_report", approval_type: "manual", status: "pending", demo: false, result: null },
+      { step_id: "s5", name: "导出PDF报告", description: "将审查意见导出为PDF文件",
+        tool_name: "export_file", approval_type: "manual", status: "pending", demo: false, result: null },
+    ],
+  };
+
   const api = {
     bootstrap: () => Promise.resolve({
       version: "V3.3.2",
@@ -102,6 +128,12 @@
     kb_pick_and_add: () => Promise.resolve({ ok: true, status: kb }),
     kb_add_paths: () => Promise.resolve({ ok: true, status: kb }),
     kb_remove: () => Promise.resolve({ ok: true, status: kb }),
+    workflow_templates: () => Promise.resolve(wfTemplates),
+    workflow_start: () => Promise.resolve({ ok: true, instance_id: "5021f4c2", status: wfStatus }),
+    workflow_status: () => Promise.resolve(wfStatus),
+    workflow_execute: () => Promise.resolve({ ok: true, step: "风险点分析" }),
+    workflow_approve: () => Promise.resolve({ ok: true, status: wfStatus }),
+    workflow_export: () => Promise.resolve({ ok: true, path: "workflow_reports/20261004_合同审查工作流_执行记录.md" }),
     plugins_list: () => Promise.resolve(plugins),
     plugin_set_enabled: () => Promise.resolve({ ok: true, plugins }),
     window_action: noop,
@@ -127,6 +159,18 @@
       const btn = document.getElementById("btn-audit");
       btn && btn.click();
     }, 350);
+  }
+
+  // 预览工作流面板：加 #mock-workflow
+  if (location.hash.indexOf("workflow") >= 0) {
+    setTimeout(async () => {
+      const d = document.getElementById("workflow-drawer");
+      d.style.transition = "none";
+      document.getElementById("btn-workflow").click();
+      await new Promise((r) => setTimeout(r, 300));
+      const tpl = document.querySelector("[data-tpl]");
+      tpl && tpl.click();
+    }, 500);
   }
 
   // 预览设置抽屉：加 #mock-settings

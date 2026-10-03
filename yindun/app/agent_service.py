@@ -81,6 +81,10 @@ class AgentService:
         self._kb_error: Optional[str] = None
         # 用户本轮原话（供插件做"是否与请求相符"的判断；不含附件正文）
         self._last_user_request: str = ""
+        # 工作流引擎与实例（引擎单例；实例仅在内存，重启即丢——已在界面注明）
+        self._wf_engine = None
+        self._wf_instances: Dict[str, str] = {}
+        self._wf_running = False
         # 插件宿主：重依赖能力按需启用，内核保持精简
         self._plugins = PluginHost(
             enabled_lookup=lambda pid: bool((self.settings.get("plugins_enabled") or {}).get(pid, False)),
@@ -194,6 +198,130 @@ class AgentService:
 
     def attachment_count(self) -> int:
         return len(self._attachments)
+
+    # ── 工作流 ───────────────────────────────────
+    # 这些 handler 目前返回"（模拟）"结果（见 core/workflow.py 的注册处）。
+    # 界面必须如实标注，不能让人以为它们真在采集数据/画图。
+    DEMO_STEP_TOOLS = frozenset({"human_review", "fetch_data", "clean_data", "analyze_data", "generate_chart"})
+
+    def _workflow(self):
+        if self._wf_engine is None:
+            from yindun.core.workflow import get_workflow_engine
+            self._wf_engine = get_workflow_engine()
+        return self._wf_engine
+
+    def workflow_templates(self) -> List[Dict[str, Any]]:
+        try:
+            return self._workflow().list_templates()
+        except Exception as exc:
+            print(f"[AgentService] 读取工作流模板失败：{exc}")
+            return []
+
+    # 各模板需要的上下文变量（界面只需给一个"文档/项目路径"）
+    _WF_PATH_KEY = {
+        "wf_contract_review": "contract_path",
+        "wf_security_check": "project_path",
+    }
+
+    def workflow_start(self, template_id: str, path: str = "") -> Dict[str, Any]:
+        """创建工作流实例。path 会按模板映射到对应上下文变量（留空则用沙箱目录）。"""
+        try:
+            engine = self._workflow()
+            # 引擎契约：create_instance 返回【实例对象】，且实例 id 存在其 template_id 字段上
+            instance = engine.create_instance(template_id)
+            if instance is None:
+                return {"ok": False, "error": f"模板不存在：{template_id}"}
+            instance_id = instance.template_id
+            context: Dict[str, Any] = {}
+            key = self._WF_PATH_KEY.get(template_id)
+            if key:
+                context[key] = (path or "").strip() or os.environ.get("SANDBOX_PATH", str(APP_ROOT))
+            engine.set_instance_context(instance_id, context)
+            self._wf_instances[instance_id] = template_id
+            return {"ok": True, "instance_id": instance_id, "context": context,
+                    "status": self.workflow_status(instance_id)}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def workflow_status(self, instance_id: str) -> Dict[str, Any]:
+        try:
+            status = self._workflow().get_workflow_status(instance_id)
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}: {exc}"}
+        for step in status.get("steps", []) or []:
+            step["demo"] = step.get("tool_name") in self.DEMO_STEP_TOOLS
+        status["demo_notice"] = "标记为「演示」的步骤目前返回模拟结果，未接入真实数据源。"
+        mappable = [(sid, tid) for sid, tid in self._wf_instances.items() if sid == instance_id]
+        status["tracked"] = bool(mappable)
+        return status
+
+    def workflow_execute_next(self, instance_id: str) -> Dict[str, Any]:
+        """执行下一个可执行步骤（可能调用 LLM，故放后台线程；进度以 workflow 事件推送）。"""
+        try:
+            engine = self._workflow()
+            step = engine.get_next_executable_step(instance_id)
+            if step is None:
+                return {"ok": False, "error": "没有可执行的步骤（可能都在等待审批或已完成）"}
+            step_name, step_id = step.name, step.step_id
+            with self._lock:
+                if self._wf_running:
+                    return {"ok": False, "error": "已有步骤正在执行"}
+                self._wf_running = True
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        def _run() -> None:
+            self._emit("workflow", {"phase": "start", "instance_id": instance_id, "step": step_name})
+            try:
+                result = engine.execute_step(instance_id, step_id)
+                payload = {"phase": "done", "instance_id": instance_id, "step": step_name,
+                           "success": bool(result.get("success")), "error": result.get("error"),
+                           "status": self.workflow_status(instance_id)}
+            except Exception as exc:
+                payload = {"phase": "done", "instance_id": instance_id, "step": step_name,
+                           "success": False, "error": f"{type(exc).__name__}: {exc}",
+                           "status": self.workflow_status(instance_id)}
+            finally:
+                with self._lock:
+                    self._wf_running = False
+            self._emit("workflow", payload)
+
+        threading.Thread(target=_run, daemon=True).start()
+        return {"ok": True, "step": step_name}
+
+    def workflow_approve(self, instance_id: str, step_id: str, approved: bool) -> Dict[str, Any]:
+        try:
+            engine = self._workflow()
+            ok = engine.approve_step(instance_id, step_id, reviewer="user") if approved \
+                else engine.reject_step(instance_id, step_id, reviewer="user")
+            return {"ok": bool(ok), "status": self.workflow_status(instance_id)}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def workflow_export(self, instance_id: str) -> Dict[str, Any]:
+        """导出执行记录（Markdown，落盘前由引擎统一脱敏）。"""
+        try:
+            engine = self._workflow()
+            status = self.workflow_status(instance_id)
+            title = f"{status.get('template_name', '工作流')}_执行记录"
+            path = engine._write_report_to_file(title, self._render_instance_report(instance_id), "md")
+            return {"ok": True, "path": str(path)}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def _render_instance_report(self, instance_id: str) -> str:
+        status = self.workflow_status(instance_id)
+        progress = status.get("progress", {}) or {}
+        lines = [f"# {status.get('template_name', '工作流')} · 执行记录", "",
+                 f"- 实例：{instance_id}",
+                 f"- 进度：{progress.get('completed', 0)}/{progress.get('total', 0)} 步",
+                 f"- 是否完成：{'是' if status.get('is_complete') else '否'}", "",
+                 "| 步骤 | 状态 | 工具 | 结果摘要 |", "| --- | --- | --- | --- |"]
+        for step in status.get("steps", []) or []:
+            summary = str(step.get("result") or step.get("error") or "")[:80].replace("\n", " ")
+            lines.append(f"| {step.get('name', '')} | {step.get('status', '')} | "
+                         f"{step.get('tool_name', '')}{'（演示）' if step.get('demo') else ''} | {summary} |")
+        return "\n".join(lines)
 
     # ── 插件 ─────────────────────────────────────
     def list_plugins(self) -> List[Dict[str, Any]]:

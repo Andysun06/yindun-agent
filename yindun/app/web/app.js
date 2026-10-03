@@ -435,6 +435,86 @@
 
   async function refreshKb() { renderKb(await call("kb_status")); }
 
+  /* ── 工作流 ───────────────────────────────────── */
+  const WF_STATUS_LABEL = {
+    pending: ["待执行", ""], running: ["执行中", "wf-status--run"],
+    completed: ["已完成", "wf-status--done"], failed: ["失败", "wf-status--fail"],
+    skipped: ["已跳过", ""], waiting_approval: ["待审批", "wf-status--wait"],
+  };
+
+  function renderWfTemplates(list) {
+    const box = $("wf-templates");
+    state.wfTemplates = Array.isArray(list) ? list : [];
+    if (!state.wfTemplates.length) { box.innerHTML = `<div class="wf-template__desc">没有可用模板</div>`; return; }
+    box.innerHTML = state.wfTemplates.map((t) => `
+      <button class="wf-template ${t.id === state.wfTemplateId ? "is-active" : ""}" data-tpl="${esc(t.id)}">
+        <span class="wf-template__name">${esc(t.name)}</span>
+        <span class="wf-template__desc">${esc(t.description || "")}</span>
+      </button>`).join("");
+    box.querySelectorAll("[data-tpl]").forEach((btn) => {
+      btn.onclick = async () => {
+        state.wfTemplateId = btn.dataset.tpl;
+        renderWfTemplates(state.wfTemplates);
+        const res = await call("workflow_start", btn.dataset.tpl, $("wf-path").value || "");
+        if (!res || !res.ok) { toast("启动失败：" + ((res && res.error) || "未知原因")); return; }
+        state.wfInstance = res.instance_id;
+        renderWf(res.status);
+      };
+    });
+  }
+
+  function renderWf(status) {
+    if (!status || status.error) { toast("工作流状态读取失败"); return; }
+    state.wfStatus = status;
+    $("wf-run").style.display = "";
+    $("wf-run-title").textContent = status.template_name || "执行";
+    const p = status.progress || {};
+    $("wf-progress").innerHTML = `<span>${p.completed || 0}/${p.total || 0} 步</span>
+      <span class="wf-progress__bar"><span class="wf-progress__fill" style="width:${p.percentage || 0}%"></span></span>
+      <span>${p.percentage || 0}%</span>`;
+    $("wf-steps").innerHTML = (status.steps || []).map((st, i) => {
+      const [label, cls] = WF_STATUS_LABEL[st.status] || [st.status, ""];
+      const ops = st.status === "waiting_approval"
+        ? `<div class="wf-step__ops">
+             <button class="btn" data-approve="${esc(st.step_id)}" data-ok="1">审批通过</button>
+             <button class="btn btn--danger" data-approve="${esc(st.step_id)}" data-ok="0">驳回</button>
+           </div>` : "";
+      const result = st.error ? `<div class="wf-step__result">⚠︎ ${esc(st.error)}</div>`
+        : (st.result ? `<div class="wf-step__result">${esc(String(st.result).slice(0, 240))}</div>` : "");
+      return `<div class="wf-step">
+        <div class="wf-step__idx">${pad(i + 1)}</div>
+        <div class="wf-step__body">
+          <div class="wf-step__name">${esc(st.name)}
+            <span class="wf-status ${cls}">${esc(label)}</span>
+            ${st.demo ? `<span class="plugin-badge plugin-badge--warn">演示步骤</span>` : ""}
+            ${st.approval_type === "manual" ? `<span class="plugin-badge">需审批</span>` : ""}
+          </div>
+          <div class="wf-step__desc">${esc(st.description || "")}</div>
+          ${result}
+        </div>
+        ${ops}
+      </div>`;
+    }).join("");
+    $("wf-steps").querySelectorAll("[data-approve]").forEach((btn) => {
+      btn.onclick = async () => {
+        const res = await call("workflow_approve", state.wfInstance, btn.dataset.approve, btn.dataset.ok === "1");
+        if (res && res.ok) { toast(btn.dataset.ok === "1" ? "已通过审批" : "已驳回"); renderWf(res.status); }
+        else toast("操作失败：" + ((res && res.error) || "该步骤当前不在待审批状态"));
+      };
+    });
+    const demo = (status.steps || []).filter((x) => x.demo).length;
+    $("wf-notice").innerHTML = [
+      status.demo_notice || "",
+      demo ? `本模板含 ${demo} 个演示步骤。` : "",
+      "工作流实例仅保存在内存中，重启后不保留；导出记录落盘前已脱敏。",
+    ].filter(Boolean).join(" ");
+  }
+
+  async function refreshWorkflow() {
+    if (!state.wfTemplates) renderWfTemplates(await call("workflow_templates"));
+    else renderWfTemplates(state.wfTemplates);
+  }
+
   /* ── 插件 ─────────────────────────────────────── */
   const SOURCE_LABEL = { builtin: "内置", user: "用户安装" };
   const PERM_LABEL = { "local-only": "仅本机网络", none: "无网络" };
@@ -563,6 +643,16 @@
       case "need_confirm": showApproval(payload || {}); break;
       case "attachments": state.attachments = Array.isArray(payload) ? payload : []; renderChips(); break;
       case "advisories": renderAdvisories(payload); break;
+      case "workflow": {
+        if (payload && payload.phase === "start") {
+          setStatus(`工作流执行中：${payload.step || ""}`);
+        } else if (payload && payload.status) {
+          setStatus("");
+          if (payload.success === false) toast(`步骤失败：${payload.error || "未知原因"}`);
+          if (state.wfInstance === payload.instance_id) renderWf(payload.status);
+        }
+        break;
+      }
       case "approval_expired": hideApproval(); setStatus("审批超时，已按驳回处理"); break;
       case "state": {
         setBusy(!!payload.busy);
@@ -681,6 +771,22 @@
         state.attachments = Array.isArray(list) ? list : state.attachments;
         renderChips();
       }
+    };
+    $("btn-workflow").onclick = async () => {
+      $("workflow-drawer").classList.add("is-open");
+      await refreshWorkflow();
+    };
+    $("btn-wf-close").onclick = () => $("workflow-drawer").classList.remove("is-open");
+    $("btn-wf-exec").onclick = async () => {
+      if (!state.wfInstance) { toast("请先选择模板"); return; }
+      const res = await call("workflow_execute", state.wfInstance);
+      if (res && res.ok) setStatus(`正在执行：${res.step}`);
+      else toast((res && res.error) || "执行失败");
+    };
+    $("btn-wf-export").onclick = async () => {
+      if (!state.wfInstance) { toast("请先选择模板"); return; }
+      const res = await call("workflow_export", state.wfInstance);
+      toast(res && res.ok ? `已导出：${res.path}` : `导出失败：${(res && res.error) || "未知原因"}`);
     };
     $("btn-audit").onclick = async () => {
       $("audit-drawer").classList.add("is-open");

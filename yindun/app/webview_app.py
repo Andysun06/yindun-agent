@@ -221,6 +221,25 @@ class JsApi:
             print(f"[WebView] 窗口操作 {action} 失败：{exc}")
             return False
 
+    # ── 工作流 ───────────────────────────────────
+    def workflow_templates(self):
+        return self._svc.workflow_templates()
+
+    def workflow_start(self, template_id: str, path: str = ""):
+        return self._svc.workflow_start(template_id, path)
+
+    def workflow_status(self, instance_id: str):
+        return self._svc.workflow_status(instance_id)
+
+    def workflow_execute(self, instance_id: str):
+        return self._svc.workflow_execute_next(instance_id)
+
+    def workflow_approve(self, instance_id: str, step_id: str, approved: bool):
+        return self._svc.workflow_approve(instance_id, step_id, bool(approved))
+
+    def workflow_export(self, instance_id: str):
+        return self._svc.workflow_export(instance_id)
+
     # ── 插件 ─────────────────────────────────────
     def plugins_list(self):
         return self._svc.list_plugins()

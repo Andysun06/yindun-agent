@@ -38,6 +38,9 @@
           <span class="session-item__meta" id="llm-label" title="算力状态">未就绪</span>
         </div>
         <div style="display:flex;gap:2px">
+          <button class="btn btn--ghost" id="btn-workflow" title="工作流编排">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h6M14 6h6M4 12h4M12 12h8M4 18h10"/><path d="M10 4v4M8 10v4M14 16v4"/></svg>
+          </button>
           <button class="btn btn--ghost" id="btn-audit" title="审计黑匣子">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14v16H5z"/><path d="M8 9h8M8 13h8M8 17h4"/></svg>
           </button>
@@ -224,6 +227,37 @@
         <input type="text" id="audit-filter" placeholder="按类型 / 严重度 / 内容过滤…">
       </div>
       <div class="audit-list" id="audit-list"></div>
+    </div>
+  </aside>
+
+  <!-- ── 工作流抽屉 ─────────────────────────────── -->
+  <aside class="drawer" id="workflow-drawer">
+    <div class="drawer__head">
+      <div class="drawer__title">工作流编排</div>
+      <button class="btn btn--ghost" id="btn-wf-close" title="关闭">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="drawer__body">
+      <div class="field">
+        <div class="field__label">选择模板</div>
+        <div class="wf-templates" id="wf-templates"></div>
+      </div>
+      <div class="field">
+        <label class="field__label" for="wf-path">文档 / 项目路径（可选）</label>
+        <input type="text" id="wf-path" placeholder="留空则使用当前沙箱目录">
+        <div class="field__hint">合同审查取合同文件路径；代码安全检查取项目目录</div>
+      </div>
+      <div class="field" id="wf-run" style="display:none">
+        <div class="field__label" id="wf-run-title">执行</div>
+        <div class="wf-progress" id="wf-progress"></div>
+        <div class="wf-steps" id="wf-steps"></div>
+        <div style="display:flex;gap:var(--sp-3);margin-top:var(--sp-4)">
+          <button class="btn btn--primary" id="btn-wf-exec">执行下一步</button>
+          <button class="btn" id="btn-wf-export">导出记录</button>
+        </div>
+        <div class="field__hint" id="wf-notice"></div>
+      </div>
     </div>
   </aside>
 

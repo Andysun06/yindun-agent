@@ -559,7 +559,9 @@ class WorkflowEngine:
             return {"error": "实例不存在"}
 
         return {
-            "instance_id": instance.template_id,
+            # 说明：create_instance 会用实例 id 覆盖副本的 template_id 字段（引擎既有设计），
+            # 因此这里直接回填调用方传入的实例 id，界面才能拿它去 approve/execute。
+            "instance_id": instance_id,
             "template_name": instance.name,
             "is_complete": instance.is_complete(),
             "has_failed": instance.has_failed(),
@@ -1270,3 +1272,6 @@ def init_workflow_integration(engine: WorkflowEngine):
 
         engine._after_step_hook = _after_step
         engine._after_approval_hook = _after_approval
+        # 把报告落盘能力暴露到引擎实例上：界面/服务层的"导出执行记录"需要它，
+        # 而它定义在本函数的闭包里（挂引用比复制那段"脱敏+多格式"逻辑更安全）。
+        engine._write_report_to_file = _write_report_to_file
