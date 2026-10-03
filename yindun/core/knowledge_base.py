@@ -394,10 +394,19 @@ class KnowledgeBase:
         """
         if not text or not mapping:
             return text
-        restored = text
-        for placeholder, original_value in mapping.items():
-            restored = restored.replace(placeholder, original_value)
-        return restored
+        # ★ 修复：mapping 的值是 Fernet 密文（由 PrivacyEngine 加密存储），
+        #   旧实现直接 str.replace 会把密文当明文写回，界面出现 "gAAAAA..." 垃圾。
+        #   这里复用隐私引擎已验证的还原语义：解密后替换；解不开则保留占位符（绝不写密文）。
+        try:
+            from yindun.core.privacy_engine import PrivacyEngine
+            return PrivacyEngine().deanonymize(text, mapping, strict=True)
+        except Exception as exc:
+            print(f"[KnowledgeBase] 调用隐私引擎还原失败，退回逐项替换（兼容旧版明文映射）：{exc}")
+            restored = text
+            for placeholder, original_value in mapping.items():
+                if isinstance(original_value, str):
+                    restored = restored.replace(placeholder, original_value)
+            return restored
 
     # ──────────────────────────────────────────
     # 4. 列出已入库文档

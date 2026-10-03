@@ -676,7 +676,9 @@
       case "status":
         setStatus(payload); break;
       case "intermediate_result":
-        ensureStreamBubble().querySelector(".bubble").innerHTML = md(payload || ""); scrollToEnd(); break;
+        // 注意：助手回答现在是"编号记录条目"（.entry__body），不再是 .bubble。
+        // 旧选择器会返回 null，导致流式中间结果更新静默失败（界面长时间只显示等待点）。
+        ensureStreamBubble().querySelector(".entry__body").innerHTML = md(payload || ""); scrollToEnd(); break;
       case "finished": {
         const tag = (state.settings.think_mode || "").includes("深度") ? "思考" : "快速";
         finalizeBubble(payload || "", tag); setStatus(""); break;

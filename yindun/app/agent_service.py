@@ -402,11 +402,21 @@ class AgentService:
             profile = analyzer.build_profile(entries[-max(50, min(int(limit or 500), 2000)):],
                                              session_id="", )
             anomalies = analyzer.detect_anomalies(entries, session_id="")
+            # AnomalyRecord / 画像对象都是 dataclass（没有 to_dict），用 asdict 序列化
+            from dataclasses import asdict, is_dataclass
+
+            def _plain(obj: Any) -> Dict[str, Any]:
+                if hasattr(obj, "to_dict"):
+                    return obj.to_dict()
+                if is_dataclass(obj):
+                    return asdict(obj)
+                return {"summary": str(obj)}
+
             return {
                 "ok": True,
                 "summary": profile.summary(),
-                "profile": profile.to_dict(),
-                "anomalies": [a.to_dict() for a in (anomalies or [])][:20],
+                "profile": _plain(profile),
+                "anomalies": [_plain(a) for a in (anomalies or [])][:20],
             }
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
