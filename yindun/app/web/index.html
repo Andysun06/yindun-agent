@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>隐盾安全智能体</title>
+  <link rel="stylesheet" href="styles/tokens.css">
+  <link rel="stylesheet" href="styles/app.css">
+</head>
+<body>
+  <div class="app">
+    <!-- ── 侧栏：会话 ─────────────────────────────── -->
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <svg class="brand__mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 3l7 3v5.5c0 4.5-2.9 8.3-7 9.5-4.1-1.2-7-5-7-9.5V6l7-3z"/>
+          <path d="M9 12l2 2 4-4"/>
+        </svg>
+        <div>
+          <div class="brand__name">隐盾</div>
+          <div class="brand__ver" id="brand-version">V—</div>
+        </div>
+      </div>
+
+      <button class="btn btn--primary btn--block" id="btn-new-session">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        新建对话
+      </button>
+
+      <div class="session-list" id="session-list"></div>
+
+      <div class="sidebar__foot">
+        <div style="display:flex;align-items:center;gap:var(--sp-2);min-width:0">
+          <span class="dot" id="llm-dot"></span>
+          <span class="session-item__meta" id="llm-label" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">算力未就绪</span>
+        </div>
+        <button class="btn btn--ghost" id="btn-settings" title="设置">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1A1.7 1.7 0 008.9 19a1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1A1.7 1.7 0 004.6 8.9a1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.9.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/>
+          </svg>
+        </button>
+      </div>
+    </aside>
+
+    <!-- ── 主区：对话 ─────────────────────────────── -->
+    <main class="main">
+      <header class="topbar">
+        <button class="btn btn--ghost" id="btn-sidebar" title="会话列表" style="display:none">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <div class="topbar__title" id="chat-title">新对话</div>
+        <div class="topbar__spacer"></div>
+        <div class="seg" id="mode-switch">
+          <button class="seg__btn is-active" data-mode="快速回答">快速</button>
+          <button class="seg__btn" data-mode="深度思考">思考</button>
+        </div>
+        <button class="btn btn--ghost" id="btn-theme" title="切换主题">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>
+          </svg>
+        </button>
+      </header>
+
+      <div class="status-line" id="status-line"></div>
+      <div class="chat" id="chat"></div>
+
+      <form class="composer" id="composer" autocomplete="off">
+        <div class="composer__box">
+          <textarea id="input" rows="1" placeholder="输入涉密指令…（Enter 发送，Shift+Enter 换行）"></textarea>
+          <button class="icon-btn" id="btn-send" type="submit" title="发送">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 8 6 8-16-8z"/></svg>
+          </button>
+        </div>
+        <div class="composer__hint" id="composer-hint">数据在本机脱敏后才送入模型</div>
+      </form>
+    </main>
+  </div>
+
+  <!-- ── 设置抽屉 ─────────────────────────────── -->
+  <aside class="drawer" id="drawer">
+    <div class="drawer__head">
+      <div class="drawer__title">设置</div>
+      <button class="btn btn--ghost" id="btn-drawer-close" title="关闭">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="drawer__body">
+      <div class="field">
+        <label class="field__label" for="sel-model">算力底座（模型）</label>
+        <select id="sel-model"></select>
+        <div class="field__hint" id="model-hint">来自本机 Ollama 已下载模型</div>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="switch">
+        <div>
+          <div class="field__label">隐私隔离网关</div>
+          <div class="field__hint">开启后：敏感实体在内存中被占位符替换，模型只见占位符</div>
+        </div>
+        <label class="switch"><input type="checkbox" id="sw-privacy"><span class="switch__track"></span></label>
+      </div>
+
+      <div class="field">
+        <label class="field__label" for="rng-depth">深度思考强度：<span id="depth-value">3</span></label>
+        <input class="range" type="range" id="rng-depth" min="1" max="10" step="1">
+        <div class="field__hint">影响最大推理轮次与最低思考轮数（思考模式生效）</div>
+      </div>
+
+      <div class="field">
+        <label class="field__label" for="sel-permission">权限等级</label>
+        <select id="sel-permission">
+          <option value="完全控制 (读/写/列表)">完全控制（读 / 写 / 列表）</option>
+          <option value="安全只读 (仅读/列表)">安全只读（仅读 / 列表）</option>
+          <option value="彻底审计 (仅对话)">彻底审计（仅对话）</option>
+        </select>
+        <div class="field__hint">高危操作（写盘 / 删除 / 执行命令）始终触发人工审批</div>
+      </div>
+
+      <div class="switch">
+        <div>
+          <div class="field__label">窗口始终置顶</div>
+          <div class="field__hint">悬浮于其他窗口之上</div>
+        </div>
+        <label class="switch"><input type="checkbox" id="sw-topmost"><span class="switch__track"></span></label>
+      </div>
+
+      <div class="divider"></div>
+      <div class="field__hint" id="settings-note">设置修改后立即生效；配置与会话均在本机加密保存。</div>
+    </div>
+  </aside>
+
+  <!-- ── 审批弹窗 ─────────────────────────────── -->
+  <div class="modal-root" id="approval-root">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="approval-title">
+      <div class="modal__head">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3l9 16H3L12 3z"/><path d="M12 10v4M12 17h.01"/>
+        </svg>
+        <span id="approval-title">隐盾安全决策网关拦截</span>
+      </div>
+      <div class="modal__body">
+        <div style="color:var(--text-2);font-size:var(--fs-sm)">
+          安全内核检测到 Agent 请求执行高危操作，已熔断挂起后台线程，等待人工安全审批。
+        </div>
+        <dl class="kv">
+          <dt>申请工具</dt><dd id="approval-tool">—</dd>
+          <dt>目标路径</dt><dd id="approval-path">—</dd>
+        </dl>
+        <div id="approval-payload-wrap" style="display:none">
+          <div class="payload__title">⚠︎ 请核对以下内容后再决定是否授权</div>
+          <div class="payload" id="approval-payload"></div>
+        </div>
+      </div>
+      <div class="modal__foot">
+        <button class="btn btn--danger" id="btn-deny">驳回拦截</button>
+        <button class="btn btn--primary" id="btn-allow">授权执行</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-root" id="toast-root"></div>
+
+  <!-- 开发预览假桥接：仅当 URL 带 #mock 时生效（见 dev-mock.js 顶部说明） -->
+  <script src="dev-mock.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

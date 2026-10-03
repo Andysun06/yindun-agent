@@ -1,0 +1,104 @@
+/* ==========================================================================
+   隐盾 · 设计 Token（唯一风格源）
+   规则：颜色/间距/圆角/字号/阴影一律从这里取值，组件样式不得写死数值。
+   主题：html[data-theme="dark" | "light"]
+   ========================================================================== */
+
+:root {
+  /* ── 品牌色：品牌绿（沉稳版，替代原先的高饱和绿） ── */
+  --brand-50:  #eefaf3;
+  --brand-100: #d3f2e2;
+  --brand-300: #6fd3a5;
+  --brand-500: #10935f;
+  --brand-600: #0b7a4d;
+  --brand-700: #075c3a;
+
+  /* ── 语义色（仅用于状态，克制使用） ── */
+  --danger-500: #dc2626;
+  --danger-100: #fee2e2;
+  --warn-500:   #d97706;
+  --warn-100:   #fef3c7;
+  --info-500:   #2563eb;
+  --info-100:   #dbeafe;
+
+  /* ── 间距（8px 基准） ── */
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 20px; --sp-6: 24px; --sp-8: 32px; --sp-10: 40px;
+
+  /* ── 圆角 ── */
+  --r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-xl: 20px; --r-full: 999px;
+
+  /* ── 字号与行高 ── */
+  --fs-xs: 12px; --fs-sm: 13px; --fs-md: 14px; --fs-lg: 16px;
+  --fs-xl: 20px; --fs-2xl: 26px;
+  --lh-tight: 1.35; --lh-body: 1.7;
+
+  /* ── 字体：中文优先，等宽用于命令/代码 ── */
+  --font-sans: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
+               system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, "JetBrains Mono", ui-monospace, monospace;
+
+  /* ── 动效 ── */
+  --ease: cubic-bezier(.22, .61, .36, 1);
+  --dur-fast: 120ms; --dur: 200ms;
+
+  /* ── 尺寸 ── */
+  --sidebar-w: 264px;
+  --topbar-h: 56px;
+}
+
+/* ── 深色主题（默认） ─────────────────────────────────────── */
+html[data-theme="dark"] {
+  --bg-app:      #0d1117;
+  --bg-surface:  #151b23;
+  --bg-raised:   #1b232d;
+  --bg-hover:    #222c38;
+  --bg-active:   #26313d;
+  --bg-input:    #10161d;
+
+  --text-1:      #e8eef6;
+  --text-2:      #a8b6c6;
+  --text-3:      #6f7f90;
+
+  --border-1:    #232d39;
+  --border-2:    #2e3a48;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
+  --shadow-md: 0 6px 20px rgba(0, 0, 0, .35);
+  --shadow-lg: 0 18px 50px rgba(0, 0, 0, .5);
+
+  --bubble-user:      var(--brand-600);
+  --bubble-user-text: #ffffff;
+  --bubble-ai:        #1b232d;
+  --bubble-ai-text:   var(--text-1);
+
+  --overlay: rgba(4, 8, 12, .62);
+}
+
+/* ── 浅色主题 ─────────────────────────────────────────────── */
+html[data-theme="light"] {
+  --bg-app:      #f5f7fa;
+  --bg-surface:  #ffffff;
+  --bg-raised:   #ffffff;
+  --bg-hover:    #eef2f6;
+  --bg-active:   #e4eaf1;
+  --bg-input:    #ffffff;
+
+  --text-1:      #16212e;
+  --text-2:      #4d5c6d;
+  --text-3:      #7d8b9a;
+
+  --border-1:    #e3e8ee;
+  --border-2:    #d3dae2;
+
+  --shadow-sm: 0 1px 2px rgba(16, 30, 45, .06);
+  --shadow-md: 0 6px 20px rgba(16, 30, 45, .08);
+  --shadow-lg: 0 18px 50px rgba(16, 30, 45, .14);
+
+  --bubble-user:      var(--brand-600);
+  --bubble-user-text: #ffffff;
+  --bubble-ai:        #ffffff;
+  --bubble-ai-text:   var(--text-1);
+
+  --overlay: rgba(20, 30, 40, .38);
+}
