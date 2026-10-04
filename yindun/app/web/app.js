@@ -213,22 +213,43 @@
     </div>`;
   }
 
-  /** 助手回答 = 案卷记录：左侧编号栏 + 发丝竖线 */
+  /** 助手回答：画布上的纯文本（Codex 式，无卡片）+ 一行极小的标记 */
   function entryEl(html, metaHtml = "", index = null) {
     const row = document.createElement("div");
     row.className = "row";
     row.innerHTML = `<div class="entry">
-      <div class="entry__gutter">${index === null ? "" : pad(index)}</div>
+      <div class="entry__marker"><span class="entry__dot"></span><span>隐盾</span>${index === null ? "" : `<span>#${pad(index)}</span>`}</div>
       <div class="entry__body">${html}${metaHtml ? `<div class="bubble__meta">${metaHtml}</div>` : ""}</div>
     </div>`;
     return row;
+  }
+
+  /** 工具/状态行：紧凑单行（Codex 式的活动流），最多保留 6 行 */
+  function appendToolLine(text) {
+    const entry = state.streamBubble;
+    if (!entry) return;
+    const body = entry.querySelector(".entry__body");
+    if (!body) return;
+    let box = entry.querySelector(".entry__tools");
+    if (!box) {
+      box = document.createElement("div");
+      entry.insertBefore(box, body);
+    }
+    const last = box.lastElementChild;
+    if (last && last.textContent.trim() === String(text).trim()) return;   // 去重连续重复
+    const line = document.createElement("div");
+    line.className = "tool-line";
+    line.innerHTML = `<span class="tool-line__mark">▸</span><span class="tool-line__text">${esc(text)}</span>`;
+    box.appendChild(line);
+    while (box.children.length > 6) box.removeChild(box.firstElementChild);
+    scrollToEnd();
   }
 
   /** 用户输入 = 指令票：左轨加粗 + 小标签 */
   function slipEl(html) {
     const row = document.createElement("div");
     row.className = "row row--user";
-    row.innerHTML = `<div class="slip"><div class="slip__mark">指令</div><div class="bubble">${html}</div></div>`;
+    row.innerHTML = `<div class="slip"><div class="bubble">${html}</div></div>`;
     return row;
   }
 
@@ -673,8 +694,13 @@
   /* ── 事件：来自 Python ───────────────────────────── */
   const onEvent = (event, payload) => {
     switch (event) {
-      case "status":
-        setStatus(payload); break;
+      case "status": {
+        const text = String(payload || "").trim();
+        setStatus(text);
+        // 忙时把过程状态作为紧凑"工具行"追加到当前条目（Codex 式活动流）
+        if (text && state.busy) appendToolLine(text);
+        break;
+      }
       case "intermediate_result":
         // 注意：助手回答现在是"编号记录条目"（.entry__body），不再是 .bubble。
         // 旧选择器会返回 null，导致流式中间结果更新静默失败（界面长时间只显示等待点）。

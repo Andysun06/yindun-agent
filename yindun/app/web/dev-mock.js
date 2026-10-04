@@ -107,7 +107,8 @@
     bootstrap: () => Promise.resolve({
       version: "V3.3.2",
       settings: {
-        model: "qwen2.5:7b-instruct", privacy: true, dark_mode: true, topmost: true,
+        model: "qwen2.5:7b-instruct", privacy: true,
+        dark_mode: location.hash.indexOf("light") < 0, topmost: true,
         thinking_depth: 4, permission: "完全控制 (读/写/列表)", think_mode: "深度思考", frameless: true, sandbox: "E:\yindun-agent",
         ollama_models_cache: ["qwen2.5:7b-instruct", "nomic-embed-text:latest"],
       },
@@ -144,6 +145,8 @@
   };
 
   window.__YINDUN_MOCK__ = { api };
+
+
 
   // 预览用：把附件挂到界面上（真实运行时由 pick_files → attachments 事件驱动）
   setTimeout(() => {

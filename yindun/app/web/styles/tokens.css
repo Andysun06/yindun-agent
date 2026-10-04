@@ -1,124 +1,110 @@
 /* ==========================================================================
-   隐盾 · 设计 Token —— "密件流转" 设计语言
+   隐盾 · 设计 Token —— "Codex 式"极简布局
    --------------------------------------------------------------------------
-   取材自产品本身：涉密文件的密级标注、黑条涂改、编号台账、印章闸门。
-   规则：
-   1) 颜色按语义分工，不按"好看"分配——
-      印泥红只表示「密级/拦截/危险」，竹青只表示「放行/通过」，
-      钢青承担全部交互与信息态。品牌不靠一个亮色撐，而靠这套语义体系。
-   2) 字体三档各司其职：文书标记（宋体）/ 界面正文（雅黑 UI）/ 机器数据（等宽）。
-   3) 层级用"色调块 + 发丝线 + 字重"表达，不靠统一的圆角卡片 + 柔和阴影。
+   参考 Codex 一类 agent 的界面语言：
+     · 画布极简、几乎没有"容器感"（不要卡片套卡片）
+     · 助手输出是画布上的纯文本，用户输入是右对齐的浅色块
+     · 元信息一律小号等宽、低对比度；工具/状态是紧凑单行
+     · 只有一个强调色，其余全是中性灰阶
+   本文件只改观感与布局尺度，不改任何功能语义。
    ========================================================================== */
 
 :root {
-  /* ── 墨与纸（底色，冷调，不用纯黑） ── */
-  --ink-900: #0C1116;   /* 最深：窗口底 */
-  --ink-850: #10151C;   /* 面板底 */
-  --ink-800: #151C25;
-  --ink-700: #1B2430;
-  --ink-600: #232E3C;   /* 抬升块 */
-  --ink-500: #2C3948;   /* 悬停 */
-  --line-800: #1E2833;  /* 发丝线 */
-  --line-600: #2A3745;
+  /* ── 中性灰阶（承担 95% 的界面，Codex 式"无色彩"基底） ── */
+  --gray-0:  #FFFFFF;
+  --gray-25: #FCFCFD;
+  --gray-50: #F7F8F9;
+  --gray-100:#F1F2F4;
+  --gray-150:#E9EBEE;
+  --gray-200:#E1E4E8;
+  --gray-300:#CFD4DA;
+  --gray-400:#A9B0B8;
+  --gray-500:#7C848C;
+  --gray-600:#5A626B;
+  --gray-700:#3F464E;
+  --gray-800:#2A2F35;
+  --gray-900:#1A1E22;
+  --gray-950:#0E1114;
 
-  --paper: #E9EDF2;     /* "文书"上的正文色 */
-  --paper-dim: #A9B6C4; /* 次级文字 */
-  --paper-mute: #6F7E8E;/* 三级文字/时间戳 */
+  /* ── 唯一强调色：品牌绿（只用于可交互/当前项，其余一律灰） ── */
+  --accent-50:  #EDF7F1;
+  --accent-300: #86CBA8;
+  --accent-500: #16A163;
+  --accent-600: #0E7A4A;
+  --accent-700: #0A5C38;
 
-  /* ── 语义色 ── */
-  --stamp: #B4232A;         /* 印泥红：密级 / 拦截 / 危险 */
-  --stamp-soft: #E0524F;
-  --stamp-wash: rgba(180, 35, 42, .12);
+  /* ── 语义色（仅状态） ── */
+  --danger-500: #C4362F;
+  --danger-50:  #FDF1F0;
+  --warn-500:   #A9761B;
+  --warn-50:    #FDF7EA;
 
-  --steel: #5B86B8;         /* 钢青：交互 / 信息 / 焦点 */
-  --steel-soft: #8FB3D9;
-  --steel-wash: rgba(91, 134, 184, .14);
+  /* ── 间距（4px 基准） ── */
+  --sp-1: 4px;  --sp-2: 6px;  --sp-3: 8px;  --sp-4: 12px;
+  --sp-5: 16px; --sp-6: 20px; --sp-7: 28px; --sp-8: 40px; --sp-9: 56px;
 
-  --bamboo: #4E8A66;        /* 竹青：放行 / 通过 */
-  --bamboo-wash: rgba(78, 138, 102, .14);
+  /* ── 圆角：对话块 10px、控件 8px、标签 4px ── */
+  --r-block: 10px;
+  --r-ctrl: 8px;
+  --r-chip: 4px;
 
-  --amber: #B98237;         /* 琥珀：待处理 / 超时 */
-  --amber-wash: rgba(185, 130, 55, .14);
-
-  /* ── 字体：三档各司其职 ── */
-  --font-doc: "SimSun", "Songti SC", "Noto Serif CJK SC", serif;   /* 文书标记/台账表头 */
-  --font-ui: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  /* ── 字体：界面正文 / 机器数据（等宽）；去掉装饰性衬线，随 Codex 的极简感 ── */
+  --font-sans: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "Cascadia Mono", Consolas, "SFMono-Regular", ui-monospace, monospace;
 
-  /* ── 字号阶（收紧行高，界面文字不需要正文级松弛） ── */
-  --fs-mark: 11px;   /* 标记/密级/表头 */
-  --fs-xs: 11.5px;
+  /* ── 字号：正文 14，元信息 11.5 等宽 ── */
+  --fs-meta: 11.5px;
   --fs-sm: 12.5px;
-  --fs-base: 13.5px;
-  --fs-md: 15px;
-  --fs-lg: 18px;
-  --fs-xl: 24px;
-  --lh-ui: 1.55;     /* 界面正文 */
-  --lh-doc: 1.75;    /* 文书正文（中文长文本需要更松） */
+  --fs-base: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 22px;
+  --lh-body: 1.72;
 
-  /* ── 间距（8px 基准，但有 4px 细档用于密排的元信息） ── */
-  --sp-1: 4px; --sp-2: 6px; --sp-3: 8px; --sp-4: 12px;
-  --sp-5: 16px; --sp-6: 20px; --sp-7: 28px; --sp-8: 40px;
+  /* ── 对话列宽（Codex 式窄栏，阅读舒适） ── */
+  --thread-w: 780px;
 
-  /* ── 圆角：小圆角直线风格（最大 4px；直线感来自发丝线与对齐，不来自留白） ── */
-  --r-block: 4px;
-  --r-row: 3px;
-  --r-chip: 2px;
-  --r-pill: 3px;
-
-  /* ── 动效：只用于"回应操作"，不做无触发的入场动画 ── */
   --ease: cubic-bezier(.2, .7, .3, 1);
-  --dur: 140ms;
-
-  /* ── 尺寸 ── */
-  --rail-w: 268px;
-  --band-h: 46px;
+  --dur: 130ms;
 }
 
-/* ── 深色（默认，也是这个产品的正确形态：长时间盯屏的安全工具） ── */
-html[data-theme="dark"] {
-  --bg-window: var(--ink-900);
-  --bg-panel: var(--ink-850);
-  --bg-raised: var(--ink-700);
-  --bg-hover: var(--ink-600);
-  --bg-active: var(--ink-500);
-  --bg-input: var(--ink-800);
-  --bg-sheet: #121922;          /* "案卷页"表面：比面板略亮，形成纸感 */
-
-  --text-1: var(--paper);
-  --text-2: var(--paper-dim);
-  --text-3: var(--paper-mute);
-
-  --border-1: var(--line-800);
-  --border-2: var(--line-600);
-
-  --shadow-pop: 0 18px 48px rgba(0, 0, 0, .55);
-  --shadow-sheet: 0 1px 0 rgba(255, 255, 255, .02), 0 8px 24px rgba(0, 0, 0, .28);
-
-  --bubble-user-bg: #1D2A3A;
-  --bubble-user-line: #33465E;
-}
-
-/* ── 浅色（纸质公文形态；同样只改映射，不改语义分工） ── */
+/* ── 浅色（默认；Codex 一类的"白纸"观感） ── */
 html[data-theme="light"] {
-  --bg-window: #E7EAEF;
-  --bg-panel: #F3F5F8;
-  --bg-raised: #FFFFFF;
-  --bg-hover: #E9EDF3;
-  --bg-active: #DDE4EC;
-  --bg-input: #FFFFFF;
-  --bg-sheet: #FBFCFD;
+  --bg-canvas: var(--gray-0);
+  --bg-side: var(--gray-25);
+  --bg-subtle: var(--gray-100);     /* 用户输入块 / 代码块底 */
+  --bg-hover: var(--gray-100);
+  --bg-active: var(--gray-150);
+  --bg-input: var(--gray-0);
 
-  --text-1: #131A22;
-  --text-2: #4A5A6B;
-  --text-3: #7A8798;
+  --text-1: var(--gray-900);
+  --text-2: var(--gray-600);
+  --text-3: var(--gray-400);
 
-  --border-1: #DCE2EA;
-  --border-2: #C6D0DC;
+  --border-1: var(--gray-150);
+  --border-2: var(--gray-200);
 
-  --shadow-pop: 0 18px 48px rgba(20, 32, 48, .18);
-  --shadow-sheet: 0 1px 0 rgba(255, 255, 255, .6), 0 6px 18px rgba(20, 32, 48, .06);
+  --shadow-pop: 0 16px 48px rgba(16, 22, 28, .14);
+  --code-bg: var(--gray-50);
+  --code-border: var(--gray-150);
+}
 
-  --bubble-user-bg: #E8EEF6;
-  --bubble-user-line: #C3D2E4;
+/* ── 深色（同结构，只换映射） ── */
+html[data-theme="dark"] {
+  --bg-canvas: #101317;
+  --bg-side: #0C0F12;
+  --bg-subtle: #1A1E23;
+  --bg-hover: #1E232A;
+  --bg-active: #262C34;
+  --bg-input: #16191E;
+
+  --text-1: #E7EAEE;
+  --text-2: #98A1AB;
+  --text-3: #6A737D;
+
+  --border-1: #22272E;
+  --border-2: #2C333B;
+
+  --shadow-pop: 0 16px 48px rgba(0, 0, 0, .5);
+  --code-bg: #16191E;
+  --code-border: #22272E;
 }
