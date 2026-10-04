@@ -21,6 +21,8 @@
 """
 import re
 import secrets
+import threading
+from typing import Any, Callable, Dict, List, Tuple
 
 from yindun.core.secret_manager import SecretManager
 
@@ -40,6 +42,51 @@ def _generate_nonce(used: set, length: int = 4) -> str:
         if nonce not in used:
             used.add(nonce)
             return nonce
+
+
+# ──────────────────────────────────────────────
+# 插件识别器注册表（内核扩展点：只增不减）
+# ──────────────────────────────────────────────
+# 安全不变量：本扩展点**只能追加识别**——外部识别器返回的区间经净化后并入脱敏流程，
+# 效果等价于"再多脱敏一点"。这里不存在任何"让某段内容免于脱敏"的入口，
+# 因此插件无法借助该扩展点削弱隐私网关（见 tests/test_plugin_capabilities.py）。
+#
+# 用法（由界面层调用，内核不认识插件）：
+#   register_extra_recognizer("plugins", fn, ...)   fn(text) -> [{"start","end","type","level"}]
+PLUGIN_ENTITY_PREFIX = "PLUGIN_"
+_EXTRA_RECOGNIZERS: Dict[str, Callable[[str], Any]] = {}
+_EXTRA_CLASSIFICATION: Dict[str, str] = {}      # 插件实体类型 → 分级（由识别器声明/兜底）
+_EXTRA_LEVELS = ("绝密", "机密", "内部", "公开")
+_EXTRA_ENTITY_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,31}$")
+_EXTRA_LOCK = threading.RLock()
+
+_MAX_EXTRA_SPANS = 400          # 单次脱敏最多并入的插件区间数
+_MAX_EXTRA_SPAN_CHARS = 120     # 单个区间最长字符数（超长视为异常，丢弃）
+_MAX_EXTRA_COVER = 0.5          # 插件区间合计允许覆盖的正文比例上限（防"整篇打码"）
+
+
+def register_extra_recognizer(name: str, fn: Callable[[str], Any]) -> None:
+    """注册一个"追加识别器"。同名覆盖（便于插件启停时热更新）。"""
+    if not name or not callable(fn):
+        return
+    with _EXTRA_LOCK:
+        _EXTRA_RECOGNIZERS[str(name)] = fn
+
+
+def unregister_extra_recognizer(name: str) -> bool:
+    with _EXTRA_LOCK:
+        return _EXTRA_RECOGNIZERS.pop(str(name), None) is not None
+
+
+def clear_extra_recognizers() -> None:
+    with _EXTRA_LOCK:
+        _EXTRA_RECOGNIZERS.clear()
+        _EXTRA_CLASSIFICATION.clear()
+
+
+def list_extra_recognizers() -> List[str]:
+    with _EXTRA_LOCK:
+        return sorted(_EXTRA_RECOGNIZERS)
 
 
 class PrivacyEngine:
@@ -110,6 +157,18 @@ class PrivacyEngine:
         for _ent in _entities:
             ENTITY_TO_GROUP[_ent] = _grp
     del _grp, _entities, _ent
+
+    @classmethod
+    def classify(cls, entity_type: str) -> str:
+        """实体类型 → 数据分级。
+
+        插件实体（PLUGIN_ 前缀）按其声明分级；未声明的一律按"机密"从严，
+        避免"插件加了一类实体、风险统计却当它不重要"的错配。
+        """
+        if entity_type in cls.DATA_CLASSIFICATION:
+            return cls.DATA_CLASSIFICATION[entity_type]
+        with _EXTRA_LOCK:
+            return _EXTRA_CLASSIFICATION.get(entity_type, "机密")
 
     # ──────────────────────────────────────────
     # 1. 正则实体规则表
@@ -425,6 +484,78 @@ class PrivacyEngine:
         self._crypto = SecretManager.get_instance()
 
     # ──────────────────────────────────────────
+    # 阶段 0：插件识别器（内核扩展点，只增不减）
+    # ──────────────────────────────────────────
+    def _apply_extra_recognizers(self, text, mapping, counts, value_to_placeholder, used_nonces) -> str:
+        """把外部识别器补充命中的区间并入脱敏结果。
+
+        契约：识别器接收**原始正文**，返回 [{"start","end","type","level"}]。
+        内核只接受"区间内确有其文"的短片段；越界 / 超长 / 跨行 / 重叠 / 超量一律丢弃。
+        因此识别器越好 -> 脱敏越全；识别器写坏了 -> 只是没生效，不会造成泄露或豁免。
+        """
+        with _EXTRA_LOCK:
+            recognizers = list(_EXTRA_RECOGNIZERS.items())
+        if not recognizers:
+            return text
+        raw_spans: List[Tuple[int, int, str]] = []
+        occupied: List[Tuple[int, int]] = []
+        covered = 0
+        for name, fn in recognizers:
+            try:
+                items = fn(text)
+            except Exception as exc:
+                print(f"[PrivacyEngine] 追加识别器 {name} 失败：{exc}")
+                continue
+            if isinstance(items, dict):
+                items = items.get("spans")
+            if not isinstance(items, (list, tuple)):
+                continue
+            limit = max(64, int(len(text) * _MAX_EXTRA_COVER))
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                etype = str(item.get("type") or "").strip().upper()
+                if not etype.startswith(PLUGIN_ENTITY_PREFIX):
+                    etype = PLUGIN_ENTITY_PREFIX + etype
+                if not _EXTRA_ENTITY_RE.match(etype):
+                    continue
+                try:
+                    start, end = int(item.get("start")), int(item.get("end"))
+                except Exception:
+                    continue
+                if not (0 <= start < end <= len(text)):
+                    continue
+                if end - start > _MAX_EXTRA_SPAN_CHARS:
+                    continue
+                fragment = text[start:end]
+                if not fragment.strip() or "\n" in fragment or "\r" in fragment:
+                    continue
+                if any(s < end and start < e for s, e in occupied):
+                    continue                      # 与已并入区间重叠：先到先得
+                if len(raw_spans) >= _MAX_EXTRA_SPANS or covered + (end - start) > limit:
+                    print(f"[PrivacyEngine] 追加识别器 {name} 命中过多，超出上限的部分已忽略")
+                    break
+                level = item.get("level") if item.get("level") in _EXTRA_LEVELS else "机密"
+                with _EXTRA_LOCK:
+                    _EXTRA_CLASSIFICATION[etype] = level
+                occupied.append((start, end))
+                raw_spans.append((start, end, etype))
+                covered += end - start
+        # 按区间从右向左替换：坐标基于原始正文，左侧坐标不受右侧替换影响
+        for start, end, etype in sorted(raw_spans, key=lambda x: x[0], reverse=True):
+            target = text[start:end]
+            if target in value_to_placeholder:
+                placeholder = value_to_placeholder[target]
+            else:
+                idx = counts.get(etype, 0)
+                placeholder = f"[{etype}_{idx}_{_generate_nonce(used_nonces)}]"
+                mapping[placeholder] = self._crypto.encrypt(target)
+                value_to_placeholder[target] = placeholder
+                counts[etype] = idx + 1
+            text = text[:start] + placeholder + text[end:]
+        return text
+
+    # ──────────────────────────────────────────
     # 正向脱敏（接口完全保持兼容）
     # ──────────────────────────────────────────
     def anonymize(self, text: str):
@@ -450,6 +581,13 @@ class PrivacyEngine:
         value_to_placeholder = {}
         # 同批 anonymize 内 nonce 去重（防止两个占位符使用相同 nonce）
         used_nonces = set()
+
+        # === 阶段 0：插件识别器（内核扩展点，只增不减）===
+        #  必须放在最前：插件返回的区间坐标基于**原始正文**，此时正文尚未替换，
+        #  坐标天然有效；后续正则阶段在"已含占位符"的文本上继续工作。
+        anonymized = self._apply_extra_recognizers(
+            anonymized, mapping, counts, value_to_placeholder, used_nonces
+        )
 
         # === 阶段 1：正则实体脱敏 ===
         # 按固定顺序处理，避免相互干扰（D4）
@@ -711,7 +849,7 @@ class PrivacyEngine:
         """
         result = {}
         for entity_type, count in self._last_stats.items():
-            level = self.DATA_CLASSIFICATION.get(entity_type, "内部")
+            level = self.classify(entity_type)
             result.setdefault(level, {})[entity_type] = count
         return result
 
@@ -742,6 +880,9 @@ class PrivacyEngine:
         result = {}
         for entity_type, count in self._last_stats.items():
             group = self.ENTITY_TO_GROUP.get(entity_type)
+            if not group and entity_type.startswith(PLUGIN_ENTITY_PREFIX):
+                # 插件补充识别的实体统一归组：审计里一眼看出"这部分是多识别出来的"
+                group = "插件识别"
             if not group:
                 # 新增实体未归类时告警（防止后续开发漏配分组）
                 continue

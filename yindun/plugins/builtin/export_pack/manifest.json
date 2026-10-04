@@ -1,0 +1,29 @@
+{
+  "id": "export_pack",
+  "name": "导出格式扩展",
+  "version": "0.2.0",
+  "description": "给审计与工作流补两种插件渲染的导出格式：审计报告导出 Markdown 表格、工作流报告导出卡片式 HTML。内核自带格式（JSON/HTML/Markdown/Word）保留为兜底，停用本插件不影响任何导出。",
+  "author": "隐盾（内置）",
+  "hooks": ["export_renderer"],
+  "export_formats": {
+    "audit": ["markdown"],
+    "workflow": ["html_card"]
+  },
+  "format_labels": {
+    "markdown": "Markdown 表格",
+    "html_card": "卡片式 HTML"
+  },
+  "requires": {
+    "python": [],
+    "ollama_models": []
+  },
+  "permissions": {
+    "network": "none",
+    "filesystem": "none"
+  },
+  "timeout_seconds": 10,
+  "provides": [
+    "审计导出：Markdown 表格",
+    "工作流报告导出：卡片式 HTML"
+  ]
+}

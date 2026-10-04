@@ -1,0 +1,21 @@
+{
+  "id": "office_wf",
+  "name": "办公工作流模板包",
+  "version": "0.1.0",
+  "description": "给工作流编排补两个模板：代码安全体检（增强版，含修复建议与导出）与本周工作总结（全部为真实步骤，替换掉内核模板里的演示步骤）。模板注册时由内核校验：高危步骤（写盘/删除/执行/导出）一律强制人工审批，插件无权降低审批强度。",
+  "author": "隐盾（内置）",
+  "hooks": ["workflow_template"],
+  "requires": {
+    "python": [],
+    "ollama_models": []
+  },
+  "permissions": {
+    "network": "none",
+    "filesystem": "none"
+  },
+  "timeout_seconds": 5,
+  "provides": [
+    "工作流模板：代码安全体检（增强版）",
+    "工作流模板：本周工作总结（无演示步骤）"
+  ]
+}

@@ -5,7 +5,7 @@
     python tools/build_portable.py
 
 产物：
-    dist/YindunPortable.exe → 自动重命名为 dist/隐盾安全智能体_V3.3.2_便携版.exe
+    dist/YindunPortable.exe → 自动重命名为 dist/隐盾安全智能体_V3.4.0_便携版.exe
 
 说明：
 - 使用 PyInstaller 的 **Python API**（`PyInstaller.__main__.run`）而非 subprocess，
@@ -24,7 +24,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPEC = os.path.join("tools", "yindun_agent_portable.spec")
 DIST = os.path.join(ROOT, "dist")
 RAW_EXE = os.path.join(DIST, "YindunPortable.exe")
-FINAL_NAME = "隐盾安全智能体_V3.3.2_便携版.exe"
+FINAL_NAME = "隐盾安全智能体_V3.4.0_便携版.exe"
 FINAL_EXE = os.path.join(DIST, FINAL_NAME)
 
 

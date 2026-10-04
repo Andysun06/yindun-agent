@@ -1,0 +1,28 @@
+{
+  "id": "custom_dict",
+  "name": "自定义敏感词表",
+  "version": "0.1.0",
+  "description": "把本单位的项目代号、内部称谓、专用术语加入脱敏范围：命中的词在送往模型/外部算力之前被替换为占位符，还原仍只在本机完成。只做加法——多识别一点，不会让任何原有内容免于脱敏。",
+  "author": "隐盾（内置）",
+  "hooks": ["recognizer"],
+  "requires": {
+    "python": [],
+    "ollama_models": []
+  },
+  "permissions": {
+    "network": "none",
+    "filesystem": "read"
+  },
+  "timeout_seconds": 3,
+  "config_files": [
+    {
+      "name": "words.txt",
+      "label": "敏感词表",
+      "hint": "每行一条：普通词按字面匹配；re: 开头按正则（如 re:项目[0-9]{3}）；# 开头是注释。改动后立即生效。"
+    }
+  ],
+  "provides": [
+    "自定义实体识别（词表 / 正则）",
+    "命中项计入审计的「插件识别」分组"
+  ]
+}

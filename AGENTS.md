@@ -15,8 +15,15 @@
 - **安全不变量不可破坏**：动手前先读 [开发记忆.md §5](开发记忆.md)。改到隐私引擎 / 文件工具 / 审计 / 审批 / 取消逻辑，必须连带跑对应测试。
 - **回归门禁**：改动后跑 `tests/` 下相关套件；隐私/工具/审计相关改动要跑全量（`python tests/...` 逐个执行，任一非 0 即失败）。知识库套件需 Ollama，不在线会自动跳过。
 - **提交**：中文提交信息，`主题：要点1；要点2`。先开分支、提交后快进合并到 `main`；**不要 push**（推送由项目负责人决定）。
-- **架构边界**：`yindun/core/`、`yindun/utils/` 必须保持**与界面无关**（不得引入 PySide6/Qt）；Qt 只允许出现在 `yindun/gui/` 与 `yindun/worker/agent_worker.py`。这条是为视图层重构保留的迁移空间（见 §8 技术栈评估）。
-- **不要把运行时状态提交进库**：`chat_sessions.json`、`global_config.json`、`config/`、`audit_logs/`、`workflow_reports/`、`data/`、`*.mp4`、`*.exe` 均已忽略，勿用 `-f` 强加。
+- **架构边界**：`yindun/core/`、`yindun/utils/` 必须保持**与界面无关**（不得引入 PySide6/Qt）。现状（V3.4.0）：`yindun/gui/` 已整体移除，界面只有 Web（pywebview），`core/`、`utils/`、`worker/` 全部零 Qt；需要向外通知就走 `yindun/core/event_bus.py`。
+- **插件只能做加法（不可破坏）**：`yindun/plugins/host.py` 的 `HOOK_SPECS` 是唯一钩子清单，`FORBIDDEN_HOOKS` 是永不开放的判定类能力。新增/修改钩子必须同时满足：
+  1. 插件不得参与脱敏豁免 / 白名单 / 审批放行 / 审计写入；
+  2. 增强型钩子（识别 / 解析 / 模板 / 导出）只能扩大能力范围，返回值必须经 `normalize` 净化；
+  3. 内核兜底不可被顶替（内核导出格式保留名、内核原生附件格式优先）；
+  4. 能力跟着开关走：启停插件后必须能立刻注册/注销它贡献的能力；
+  5. 不允许静默失效：钩子函数缺失要报错、自检要能发现、读不到配置要告警。
+  回归门禁：`tests/test_plugins.py` + `tests/test_plugin_capabilities.py`；契约与示例见 `docs/插件开发.md`。
+- **不要把运行时状态提交进库**：`chat_sessions.json`、`global_config.json`、`config/`、`audit_logs/`、`workflow_reports/`、`data/`、`plugins_data/`、`*.mp4`、`*.exe` 均已忽略，勿用 `-f` 强加。
 
 ## 本仓库的环境陷阱（Mimosa 安全门禁）
 

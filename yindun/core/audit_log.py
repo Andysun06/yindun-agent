@@ -569,3 +569,16 @@ class AuditLog:
         filepath = self._storage_path / Path(filename).name
         filepath.write_text(content, encoding='utf-8')
         return str(filepath)
+
+    def save_rendered(self, content: str, filename: str) -> str:
+        """保存**外部渲染好**的报告内容（如插件贡献的导出格式）到审计目录。
+
+        与 save_report 的区别：内容不是内核生成的，内核只负责落点与文件名清洗。
+        落点固定为审计目录、文件名只保留 basename——导出功能无法写到别处。
+        """
+        name = Path(str(filename or "")).name
+        if not name or ".." in name:
+            name = f"audit_report_plugin_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        filepath = self._storage_path / name
+        filepath.write_text(str(content), encoding='utf-8')
+        return str(filepath)

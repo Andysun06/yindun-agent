@@ -317,6 +317,22 @@ html[data-theme="dark"] .chain-badge--ok { color: var(--accent-300); background:
 .plugin-badge { font-size: var(--fs-meta); padding: 0 5px; border-radius: var(--r-chip); border: 1px solid var(--border-2); color: var(--text-3); font-family: var(--font-mono); }
 .plugin-badge--warn { color: var(--warn-500); border-color: var(--warn-500); }
 .plugin-badge--src { color: var(--accent-600); border-color: var(--accent-300); }
+/* 能力清单：逐条写清"这个插件提供了什么"，而不是让人猜 */
+.plugin-caps { display: flex; flex-direction: column; gap: 2px; border-left: 2px solid var(--border-2); padding-left: var(--sp-3); }
+.cap { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--sp-2); align-items: baseline; font-size: var(--fs-meta); color: var(--text-3); }
+.cap__hook { font-family: var(--font-mono); color: var(--text-2); }
+.cap__text { flex: 1; min-width: 0; line-height: 1.6; }
+.cap__ok { color: var(--accent-600); }
+.cap__bad { color: var(--warn-500); }
+.plugin-item__ops { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.plugin-cfg { display: flex; flex-direction: column; gap: var(--sp-2); border: 1px solid var(--border-1); border-radius: var(--r-ctrl); padding: var(--sp-3); background: var(--bg-2); }
+/* 显式 display 会盖掉 UA 的 [hidden]{display:none}，必须自己补一条，否则折叠态永远显示 */
+.plugin-cfg[hidden] { display: none; }
+.plugin-cfg__head { display: flex; align-items: center; justify-content: space-between; font-size: var(--fs-sm); }
+.plugin-cfg__text { width: 100%; resize: vertical; font-family: var(--font-mono); font-size: var(--fs-meta); line-height: 1.6; }
+.plugin-cfg__ops { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.plugin-cfg__ops .field__hint { flex: 1; min-width: 0; }
+.panel__actions { display: flex; align-items: center; gap: 2px; }
 
 /* ── 外部算力 ────────────────────────────────────── */
 .cm-list { display: flex; flex-direction: column; margin-top: var(--sp-3); }

@@ -155,7 +155,7 @@ para(tf, "面向涉密办公场景的本地化隐私防护桌面智能体", size
 rect(s, M, 6.15, 6.2, 0.02, fill="2E6B50")
 tf = box(s, M, 6.35, 11, 0.6)
 para(tf, [("Yindun Security Agent", {"bold": True, "color": "FFFFFF"}),
-          ("    ·    V3.3    ·    LangChain · PySide6 · 本地/云端双算力    ·    2026", {"color": "8FD3B4"})],
+          ("    ·    V3.4    ·    LangChain · pywebview/WebView2 · 本地/云端双算力    ·    2026", {"color": "8FD3B4"})],
      size=13, first=True)
 
 # ══════════════════ 2 · 背景痛点 ══════════════════
@@ -507,7 +507,50 @@ para(tf, [("闭环要点：", {"bold": True, "color": PRIM}),
      size=13, first=True)
 pagenum(s)
 
-# ══════════════════ 11 · 全链路演示 ══════════════════
+# ══════════════════ 11 · 插件体系 ══════════════════
+s = slide()
+kicker(s, "核心创新 · 五")
+title(s, "插件体系：内核不可插件化，其余皆可插", size=27)
+# 左：边界表
+tf = box(s, M, 1.75, 5.9, 0.35)
+para(tf, "边界按「能力性质」划分，而不是按模块归属", size=13, color=MUTED, first=True)
+bnd = [("安全内核（永不开放）", "脱敏网关 / 白名单 / 审批放行 / 审计链 / 沙箱 / 模型接入"),
+       ("能力扩展（开放，只做加法）", "补充识别 · 扩展解析 · 工作流模板 · 导出格式 · 审批提示")]
+by = 2.25
+for i, (t, d) in enumerate(bnd):
+    col = ACC if i == 0 else PRIM
+    rect(s, M, by, 0.06, 1.5, fill=col)
+    tf = box(s, M+0.28, by, 5.5, 0.36)
+    para(tf, t, size=15.5, color=col, bold=True, first=True)
+    tf = box(s, M+0.28, by+0.4, 5.5, 1.0)
+    para(tf, d, size=12.5, color=TEXT, first=True, line=1.25)
+    by += 1.72
+tf = box(s, M, 5.75, 5.9, 1.1)
+para(tf, "为什么这么切：判定权一旦可插拔，等于把「安全」交给任意第三方代码；\n而只增不减的能力（多识别一类实体、多解析一种格式）插件化，\n既能保持内核精简，又让系统可以持续长大。",
+     size=12.5, color=MUTED, first=True, line=1.3)
+# 右：五条可验证约束
+tf = box(s, 6.75, 1.75, 5.9, 0.35)
+para(tf, "「只能做加法」落在代码里的五条约束", size=13.5, color=PRIM, bold=True, first=True)
+rules = [("识别只增不减", "追加区间由内核复核（越界/超长/重叠丢弃），无「免于脱敏」入口"),
+         ("模板不降审批", "高危步骤（写盘/删除/执行/导出）强制人工审批，声明 auto 也被纠正"),
+         ("内核兜底不可顶替", "导出格式名保留、附件解析内核原生格式优先"),
+         ("能力跟着开关走", "停用即注销模板、摘除识别器，「关了还在跑」不允许"),
+         ("不允许静默失效", "钩子函数缺失记为错误 + 界面插件自检 + 读不到配置要告警")]
+ry = 2.25
+for i, (t, d) in enumerate(rules):
+    rect(s, 6.75, ry, 0.34, 0.34, fill=PRIM, shape=MSO_SHAPE.OVAL)
+    tf = box(s, 6.75, ry, 0.34, 0.34, anchor=MSO_ANCHOR.MIDDLE)
+    para(tf, str(i+1), size=11, color="FFFFFF", bold=True, align=PP_ALIGN.CENTER, first=True)
+    tf = box(s, 7.25, ry-0.02, 5.4, 0.34)
+    para(tf, t, size=14.5, color=TEXT, bold=True, first=True)
+    tf = box(s, 7.25, ry+0.36, 5.4, 0.66)
+    para(tf, d, size=12, color=MUTED, first=True, line=1.2)
+    ry += 1.02
+tf = box(s, 6.75, 7.4, 5.9, 0.4)
+para(tf, "内置 5 个插件（默认关闭，按需启用；启停与配置改动均写审计）", size=12.5, color=PRIM, bold=True, first=True)
+pagenum(s)
+
+# ══════════════════ 12 · 全链路演示 ══════════════════
 s = slide()
 kicker(s, "功能实测")
 title(s, "全链路演示：脱敏 → 审批 → 写盘 → 还原", size=27)

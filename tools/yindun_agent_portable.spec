@@ -64,7 +64,11 @@ hiddenimports += collect_submodules("yindun")
 datas += [
     # ★ Web 前端资源必须打进包：冻结后前端由 file:// 从这里加载
     (os.path.join(_ROOT, "yindun", "app", "web"), os.path.join("yindun", "app", "web")),
+    # ★ 内置插件必须打进包：插件是按【文件路径】加载的（不是 import），PyInstaller 不会自动收集；
+    #   漏了会表现为"设置页里一个插件都没有"，而且不会有任何报错
+    (os.path.join(_ROOT, "yindun", "plugins", "builtin"), os.path.join("yindun", "plugins", "builtin")),
     (os.path.join(_ROOT, "docs", "使用说明.pdf"), "."),   # 随包附使用说明
+    (os.path.join(_ROOT, "docs", "插件开发.md"), "."),    # 随包附插件开发指南
     (os.path.join(_ROOT, "assets", "demo_contract.txt"), "assets"),
     (os.path.join(_ROOT, "assets", "知识库演示文档"), os.path.join("assets", "知识库演示文档")),
 ]

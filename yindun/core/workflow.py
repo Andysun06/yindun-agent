@@ -15,6 +15,7 @@ from yindun import APP_ROOT
 """
 import uuid
 import json
+import pathlib as _pathlib
 from enum import Enum
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Any, Optional, Callable
@@ -57,6 +58,9 @@ class WorkflowStep:
     completed_at: Optional[str] = None
     reviewer: str = ""            # 审批人
     review_comment: str = ""      # 审批意见
+    # 插件贡献的模板专用：标明来源，并记录"审批是否被内核强制"（不是插件声明的）
+    source_plugin: str = ""
+    forced_approval: bool = False
 
     def to_dict(self) -> dict:
         data = {
@@ -74,6 +78,8 @@ class WorkflowStep:
             "completed_at": self.completed_at,
             "reviewer": self.reviewer,
             "review_comment": self.review_comment,
+            "source_plugin": self.source_plugin,
+            "forced_approval": self.forced_approval,
         }
         return data
 
@@ -112,6 +118,7 @@ class WorkflowTemplate:
     description: str = ""
     steps: List[WorkflowStep] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    source_plugin: str = ""       # 非空 = 由插件贡献（内置模板为空）
 
     def to_dict(self) -> dict:
         return {
@@ -183,11 +190,104 @@ class WorkflowEngine:
         self._after_step_hook: Optional[Callable] = None
         self._after_approval_hook: Optional[Callable] = None
         self._instance_context: Dict[str, Dict[str, Any]] = {}
+        # 插件贡献的模板：template_id → plugin_id（用于卸载与界面标注来源）
+        self._external_templates: Dict[str, str] = {}
+        self._external_path_vars: Dict[str, str] = {}
         self._register_builtin_templates()
 
     def register_execution_handler(self, tool_name: str, handler: Callable):
         """注册工具执行处理器"""
         self._execution_handlers[tool_name] = handler
+
+    # ── 插件模板注册（安全约束由内核执行，插件层无权绕过）──────────
+    # 高危工具：凡是"写盘 / 删除 / 执行命令 / 导出文件"的步骤，无论插件声明什么，
+    # 一律强制人工审批——插件只能增加自动化程度，绝不能降低审批强度。
+    RISKY_TOOLS = frozenset({
+        "create_local_file", "delete_local_file", "modify_local_file",
+        "run_local_command", "export_file",
+    })
+
+    def register_external_template(self, spec: Dict[str, Any], plugin_id: str,
+                                  index: int = 0) -> Dict[str, Any]:
+        """注册一个由插件贡献的模板。返回 {"ok", "template_id", "error", "forced_approval"}。
+
+        内核侧校验（插件层无法跳过）：
+          · 模板 id 不得覆盖既有模板：内核内置模板与其它插件的模板都不许被顶掉，
+            同一插件重复注册自己的模板视为更新（启停/热更新幂等）；
+          · 每一步的 tool_name 必须是引擎已注册的执行器，否则整条模板拒绝——
+            不然用户看到的是"能跑但必然失败"的假模板；
+          · 高危工具的步骤强制 MANUAL 审批，并在步骤上标记 forced_approval=True
+            （界面据此显示"审批由内核强制"）。
+        """
+        template_id = str(spec.get("id") or "").strip()
+        if not template_id:
+            template_id = f"ext_{plugin_id}_{max(0, int(index))}"
+        steps_raw = spec.get("steps") or []
+        if not isinstance(steps_raw, (list, tuple)) or not steps_raw:
+            return {"ok": False, "template_id": template_id, "error": "模板没有任何步骤"}
+        if template_id in self._templates:
+            if self._external_templates.get(template_id) == plugin_id:
+                self.unregister_external_template(template_id)   # 同插件重复注册 = 更新
+            else:
+                return {"ok": False, "template_id": template_id,
+                        "error": f"模板 id 已被占用（禁止覆盖内核模板或其它插件的模板）：{template_id}"}
+        steps: List[WorkflowStep] = []
+        forced = 0
+        for raw in steps_raw:
+            if not isinstance(raw, dict):
+                continue
+            tool = str(raw.get("tool_name") or "").strip()
+            if tool not in self._execution_handlers:
+                return {"ok": False, "template_id": template_id,
+                        "error": f"步骤使用了引擎未注册的工具：{tool or '(空)'}（模板已整条拒绝）"}
+            declared = str(raw.get("approval") or "manual").strip().lower()
+            is_risky = tool in self.RISKY_TOOLS
+            if is_risky:
+                approval_type = ApprovalType.MANUAL
+                forced += 1
+            else:
+                approval_type = ApprovalType.AUTO if declared == "auto" else ApprovalType.MANUAL
+            steps.append(WorkflowStep(
+                name=str(raw.get("name") or "未命名步骤")[:60],
+                description=str(raw.get("description") or "")[:200],
+                tool_name=tool,
+                tool_args=dict(raw.get("tool_args") or {}),
+                approval_type=approval_type,
+                source_plugin=plugin_id,
+                forced_approval=is_risky,
+            ))
+        if not steps:
+            return {"ok": False, "template_id": template_id, "error": "模板没有任何有效步骤"}
+        self._templates[template_id] = WorkflowTemplate(
+            template_id=template_id,
+            name=str(spec.get("name") or template_id)[:60],
+            description=str(spec.get("description") or "")[:200],
+            steps=steps,
+            source_plugin=plugin_id,
+        )
+        self._external_templates[template_id] = plugin_id
+        path_var = str(spec.get("path_var") or "").strip()[:40]
+        if path_var:
+            self._external_path_vars[template_id] = path_var
+        return {"ok": True, "template_id": template_id, "forced_approval": forced,
+                "steps": len(steps)}
+
+    def unregister_external_template(self, template_id: str) -> bool:
+        """卸载插件模板。只允许卸载插件贡献的模板；已创建的实例不受影响（实例是副本）。"""
+        if template_id not in self._external_templates:
+            return False
+        self._external_templates.pop(template_id, None)
+        self._external_path_vars.pop(template_id, None)
+        self._templates.pop(template_id, None)
+        return True
+
+    def external_template_ids(self, plugin_id: str = "") -> List[str]:
+        return [tid for tid, pid in self._external_templates.items()
+                if not plugin_id or pid == plugin_id]
+
+    def external_path_var(self, template_id: str) -> str:
+        """插件模板声明的"路径变量名"（界面只给一个"文档/项目路径"，由它决定写进哪个变量）。"""
+        return self._external_path_vars.get(template_id, "")
 
     def create_instance(self, template_id: str, instance_id: str = None,
                         custom_name: str = "") -> Optional[WorkflowTemplate]:
@@ -227,8 +327,12 @@ class WorkflowEngine:
         return self._instance_context.get(instance_id, {})
 
     def list_templates(self) -> List[Dict]:
-        """列出所有可用模板"""
-        return [{"id": t.template_id, "name": t.name, "description": t.description}
+        """列出所有可用模板（含来源标注：内置 / 插件贡献）。"""
+        return [{"id": t.template_id, "name": t.name, "description": t.description,
+                 "source": "plugin" if t.template_id in self._external_templates else "builtin",
+                 "plugin_id": self._external_templates.get(t.template_id, ""),
+                 "forced_approvals": sum(1 for s in t.steps if s.forced_approval),
+                 "steps": len(t.steps)}
                 for t in self._templates.values()]
 
     def get_next_executable_step(self, instance_id: str) -> Optional[WorkflowStep]:
@@ -552,6 +656,27 @@ class WorkflowEngine:
         ))
         self._templates["wf_security_check"] = security_template
 
+    def write_rendered_report(self, title: str, content: str, ext: str = "txt",
+                              out_dir: str = None) -> str:
+        """写入**已由外部渲染好**的报告内容（如插件贡献的导出格式）。
+
+        与 _write_report_to_file 的区别：不做 Markdown→HTML 转换、不做二次脱敏
+        （内容来源已在脱敏链路上产出），因此绝不能拿它写内核报告。
+        落点固定在报告目录、文件名只保留安全字符。
+        """
+        import os
+        out_dir = out_dir or os.path.abspath(os.path.join(
+            os.environ.get("SANDBOX_PATH", "."), "workflow_reports"
+        ))
+        os.makedirs(out_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_title = "".join(c for c in str(title or "") if c.isalnum() or c in "-_ ")[:30].strip()
+        safe_title = safe_title or "workflow_report"
+        safe_ext = "".join(c for c in str(ext or "txt").lower() if c.isalnum())[:5] or "txt"
+        path = os.path.join(out_dir, f"{timestamp}_{safe_title}.{safe_ext}")
+        _pathlib.Path(path).write_text(str(content), encoding="utf-8")   # 落点受控：报告目录内
+        return path
+
     def get_workflow_status(self, instance_id: str) -> Dict[str, Any]:
         """获取工作流实例的完整状态"""
         instance = self._instances.get(instance_id)
@@ -563,6 +688,7 @@ class WorkflowEngine:
             # 因此这里直接回填调用方传入的实例 id，界面才能拿它去 approve/execute。
             "instance_id": instance_id,
             "template_name": instance.name,
+            "source_plugin": getattr(instance, "source_plugin", ""),
             "is_complete": instance.is_complete(),
             "has_failed": instance.has_failed(),
             "current_step": instance.get_current_step().to_dict() if instance.get_current_step() else None,

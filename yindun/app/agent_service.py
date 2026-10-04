@@ -54,12 +54,19 @@ def build_tools() -> List[Any]:
     ]
 
 
+def _time_stamp() -> str:
+    """文件名用的时间戳（插件渲染导出失败时兜底命名）。"""
+    from datetime import datetime
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
 class AgentService:
     """推理编排服务：一次对话的完整生命周期。"""
 
     def __init__(self,
                  settings: Optional[SettingsStore] = None,
-                 sessions: Optional[SessionStore] = None) -> None:
+                 sessions: Optional[SessionStore] = None,
+                 plugin_data_root: Optional[Path] = None) -> None:
         self.settings = settings or SettingsStore()
         self.sessions = sessions or SessionStore()
         self._listener: Optional[Listener] = None
@@ -86,17 +93,24 @@ class AgentService:
         self._wf_instances: Dict[str, str] = {}
         self._wf_running = False
         # 插件宿主：重依赖能力按需启用，内核保持精简
+        # plugin_data_root 可注入（默认 <APP_ROOT>/plugins_data）：内置插件的可写数据落在这里，
+        # 打包版解包目录只读，所以不能放插件自身目录内。
         self._plugins = PluginHost(
             enabled_lookup=lambda pid: bool((self.settings.get("plugins_enabled") or {}).get(pid, False)),
             enabled_setter=self._persist_plugin_enabled,
             model_lister=detect_ollama_models,
+            data_root=plugin_data_root,
         )
+        # 最近一次能力同步的结果（注册了哪些模板、识别器是否挂上），供界面与审计展示
+        self._plugin_sync: Dict[str, Any] = {"templates": [], "templates_removed": [],
+                                             "recognizer": False, "errors": []}
 
     # ── 生命周期 ──────────────────────────────────
     def initialize(self) -> None:
-        """加载配置与会话（同步、只读磁盘，很快）。"""
+        """加载配置与会话（同步、只读磁盘，很快），并把插件能力挂到内核扩展点。"""
         self.settings.load()
         self.sessions.load()
+        self._sync_plugin_capabilities()
 
     def set_listener(self, listener: Optional[Listener]) -> None:
         self._listener = listener
@@ -170,8 +184,32 @@ class AgentService:
         return ok
 
     # ── 附件 ─────────────────────────────────────
+    # 内核原生解析的格式：这些格式以内核为准（插件不能顶替），插件只在内核解析不出内容时兜底。
+    # 其余扩展名（.eml/.html/…）由声明了该扩展名的插件优先解析，内核仍是兜底。
+    # 这条规则让"插件增强"与"内核兜底"同时成立：插件永远抢不走内核的既有能力，
+    # 但可以补上内核本来就不支持的格式，并且解析结果一样要过脱敏管线。
+    KERNEL_NATIVE_EXTS = frozenset({
+        "pdf", "docx", "xlsx", "xls", "csv", "txt", "md",
+        "mp3", "wav", "flac", "m4a", "aac", "ogg", "opus", "wma",
+    })
+
+    def supported_exts(self) -> List[str]:
+        """文件对话框可选的扩展名 = 内核支持的 + 已启用插件声明的（内核优先）。"""
+        from yindun.app.attachment import SUPPORTED_EXTS
+        out = list(SUPPORTED_EXTS)
+        try:
+            for ext in self._plugins.claimed_exts():
+                if ext not in out:
+                    out.append(ext)
+        except Exception as exc:
+            print(f"[AgentService] 读取插件扩展名失败：{exc}")
+        return out
+
     def attach_files(self, paths: List[str]) -> List[Dict[str, Any]]:
         """解析并挂载附件（同步；解析大文档时前端可显示等待态）。
+
+        内核解析器优先；内核不认识的格式（如 .eml / .html）由声明了该扩展名的
+        插件解析——**插件产出的文本同样要过隐私扫描与脱敏**，与内核路径完全一致。
 
         返回解析结果摘要列表：[{name, chars, error}]，供界面提示。
         """
@@ -181,12 +219,76 @@ class AgentService:
             if not path or path in existing:
                 continue
             self._emit("status", f"正在解析附件：{Path(path).name} …")
-            record = parse_attachment(path)
+            ext = Path(path).suffix.lower().lstrip(".")
+            claimed = ext and ext not in self.KERNEL_NATIVE_EXTS and ext in self._plugin_exts()
+            if claimed:
+                # 插件优先（该格式不属内核原生）：插件接不住再回落到内核兜底解析
+                record = self._parse_attachment_with_plugins(path)
+                if not (record.get("text") or "").strip():
+                    record = parse_attachment(path)
+            else:
+                record = parse_attachment(path)
+                if not (record.get("text") or "").strip():
+                    record = self._parse_attachment_with_plugins(path, record)
             self._attachments.append(record)
-            added.append({"name": record["name"], "chars": record["chars"], "error": record["error"]})
+            added.append({"name": record["name"], "chars": record["chars"],
+                          "error": record.get("error"), "via": record.get("via", "内核解析")})
         self._emit("status", "")
         self._emit("attachments", self.list_attachments())
         return added
+
+    def _plugin_exts(self) -> List[str]:
+        try:
+            return self._plugins.claimed_exts()
+        except Exception as exc:
+            print(f"[AgentService] 读取插件扩展名失败：{exc}")
+            return []
+
+    def _parse_attachment_with_plugins(self, path: str,
+                                       record: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """把附件交给声明了该扩展名的插件解析。
+
+        插件返回的文本与内核路径同待遇：先做隐私扫描，再进入会话快照；
+        送模型时同样走脱敏网关。插件失败 / 超时 / 返回空 → 保持原记录
+        （record 为 None 时返回一条"未解析成功"的空白记录，交给内核兜底）。
+        """
+        base = dict(record) if isinstance(record, dict) else {
+            "name": Path(path).name, "path": str(path), "text": "", "chars": 0, "error": None,
+        }
+        ext = Path(path).suffix.lower().lstrip(".")
+        if not ext:
+            return base
+        try:
+            results = self._plugins.call_hook("attachment_parser", {
+                "path": str(path), "ext": ext, "name": base.get("name", ""),
+                "max_chars": 200000,
+            })
+        except Exception as exc:
+            print(f"[AgentService] 插件解析附件失败：{exc}")
+            return base
+        for item in results:
+            text = (item.get("text") or "").strip()
+            if not text:
+                continue
+            patched = dict(base)
+            patched["text"] = text
+            patched["chars"] = len(text)
+            patched["error"] = None
+            patched["via"] = f"插件解析（{item.get('source') or item.get('plugin_id')}）"
+            note = (item.get("note") or "").strip()
+            if note:
+                patched["via"] += f"：{note}"
+            if item.get("truncated"):
+                patched["via"] += "（超长已截断）"
+            try:      # 与内核路径一致的隐私扫描（只出报告，不改正文）
+                from yindun.utils.privacy_scanner import PrivacyScanner
+                PrivacyScanner().scan(text)
+            except Exception:
+                pass
+            return patched
+        if not (base.get("text") or "").strip() and not base.get("error"):
+            base["error"] = "未能提取到文本（内核不解析该格式，插件也未接住）"
+        return base
 
     def clear_attachments(self) -> None:
         self._attachments = []
@@ -194,7 +296,8 @@ class AgentService:
 
     def list_attachments(self) -> List[Dict[str, Any]]:
         return [{"name": item.get("name", ""), "chars": item.get("chars", 0),
-                 "error": item.get("error")} for item in self._attachments]
+                 "error": item.get("error"), "via": item.get("via", "内核解析")}
+                for item in self._attachments]
 
     def attachment_count(self) -> int:
         return len(self._attachments)
@@ -224,7 +327,10 @@ class AgentService:
     }
 
     def workflow_start(self, template_id: str, path: str = "", name: str = "") -> Dict[str, Any]:
-        """创建工作流实例。path 按模板映射到上下文变量（留空用沙箱目录）；name 为自定义实例名。"""
+        """创建工作流实例。path 按模板映射到上下文变量（留空用沙箱目录）；name 为自定义实例名。
+
+        变量名来源：内核模板查 `_WF_PATH_KEY`；插件模板用它在 manifest 里声明的 path_var。
+        """
         try:
             engine = self._workflow()
             # 引擎契约：create_instance 返回【实例对象】，且实例 id 存在其 template_id 字段上
@@ -233,7 +339,7 @@ class AgentService:
                 return {"ok": False, "error": f"模板不存在：{template_id}"}
             instance_id = instance.template_id
             context: Dict[str, Any] = {}
-            key = self._WF_PATH_KEY.get(template_id)
+            key = self._WF_PATH_KEY.get(template_id) or engine.external_path_var(template_id)
             if key:
                 context[key] = (path or "").strip() or os.environ.get("SANDBOX_PATH", str(APP_ROOT))
             engine.set_instance_context(instance_id, context)
@@ -298,14 +404,60 @@ class AgentService:
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
-    def workflow_export(self, instance_id: str) -> Dict[str, Any]:
-        """导出执行记录（Markdown，落盘前由引擎统一脱敏）。"""
+    CORE_WORKFLOW_FORMATS = ("md", "html", "json", "docx")
+
+    def workflow_export_formats(self) -> List[Dict[str, Any]]:
+        """可用的导出格式 = 内核自带（兜底，永远可选）+ 已启用插件贡献的。
+
+        内核格式不因插件启停而消失——这是"内核兜底、插件增强"的落地约束：
+        插件只能追加格式，不能替换或删掉内核格式。
+        """
+        out: List[Dict[str, Any]] = [
+            {"format": "md", "label": "Markdown", "source": "内核", "plugin_id": ""},
+            {"format": "html", "label": "HTML", "source": "内核", "plugin_id": ""},
+            {"format": "docx", "label": "Word（兼容格式）", "source": "内核", "plugin_id": ""},
+        ]
+        try:
+            for item in self._plugins.export_formats("workflow"):
+                out.append({"format": item["format"],
+                            "label": f"{item.get('label') or item['format']}（插件：{item['source']}）",
+                            "source": item["source"], "plugin_id": item["plugin_id"]})
+        except Exception as exc:
+            print(f"[AgentService] 读取插件导出格式失败：{exc}")
+        return out
+
+    def workflow_export(self, instance_id: str, format: str = "md") -> Dict[str, Any]:
+        """导出执行记录。
+
+        · 内核格式：由引擎写盘并统一脱敏（原有行为）；
+        · 插件格式：由插件（export_renderer）渲染，但**送进插件的数据来自已脱敏链路**
+          （实例状态与报告正文），落盘仍走引擎的报告目录与文件名清洗。
+        """
+        fmt = (format or "md").strip().lower()
         try:
             engine = self._workflow()
             status = self.workflow_status(instance_id)
             title = f"{status.get('template_name', '工作流')}_执行记录"
-            path = engine._write_report_to_file(title, self._render_instance_report(instance_id), "md")
-            return {"ok": True, "path": str(path)}
+            if fmt in self.CORE_WORKFLOW_FORMATS:
+                path = engine._write_report_to_file(title, self._render_instance_report(instance_id), fmt)
+                return {"ok": True, "path": str(path), "format": fmt, "renderer": "内核"}
+            from datetime import datetime
+            rendered = self._plugins.call_hook("export_renderer", {
+                "kind": "workflow", "format": fmt,
+                "payload": {"instance_id": instance_id, "status": status,
+                            "report_markdown": self._render_instance_report(instance_id),
+                            "generated_at": datetime.now().isoformat(timespec="seconds")},
+            })
+            for item in rendered:
+                text = (item.get("text") or "").strip()
+                if not text:
+                    continue
+                path = engine.write_rendered_report(title, item.get("text"),
+                                                    item.get("ext") or fmt)
+                return {"ok": True, "path": str(path), "format": fmt,
+                        "renderer": f"插件 {item.get('source')}",
+                        "plugin_id": item.get("plugin_id")}
+            return {"ok": False, "error": f"没有插件提供该导出格式：{fmt}"}
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -421,18 +573,60 @@ class AgentService:
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
-    # ── 插件 ─────────────────────────────────────
+    # ── 插件（能力扩展）───────────────────────────
     def list_plugins(self) -> List[Dict[str, Any]]:
-        """列出可用插件（内置 + 用户安装），含依赖满足情况与启用状态。"""
+        """列出可用插件（内置 + 用户安装），含能力贡献、依赖满足情况与启用状态。"""
         try:
             return self._plugins.list_plugins()
         except Exception as exc:
             print(f"[AgentService] 插件发现失败：{exc}")
             return []
 
+    def plugin_sync_state(self) -> Dict[str, Any]:
+        """最近一次能力同步的结果：注册了哪些模板、识别器是否挂上、有没有失败。"""
+        return dict(self._plugin_sync)
+
+    def plugin_config_read(self, plugin_id: str, name: str) -> Dict[str, Any]:
+        return self._plugins.read_config_file(plugin_id, name)
+
+    def plugin_selfcheck(self) -> Dict[str, Any]:
+        """逐个导入插件模块，确认声明的钩子都真的有同名函数。
+
+        为什么必须有：钩子函数缺失时调用侧只会"什么都没发生"——用户以为启用了、
+        其实一次都没生效。这种静默失效必须能被一次显式自检戳破。
+        """
+        try:
+            return self._plugins.selfcheck()
+        except Exception as exc:
+            return {"ok": False, "plugins": [], "error": f"{type(exc).__name__}: {exc}"}
+
+    def plugin_config_write(self, plugin_id: str, name: str, text: str) -> Dict[str, Any]:
+        """写入插件声明的配置文件（如敏感词表）。
+
+        为什么留痕：词表直接决定脱敏范围，改它等于改安全策略的一部分，
+        与"启用插件"同级重要——审计里必须能看到"谁在什么时候改了词表"。
+        """
+        result = self._plugins.write_config_file(plugin_id, name, text)
+        if result.get("ok"):
+            try:
+                from yindun.core.audit_log import AuditEventType, AuditLog, AuditSeverity
+                AuditLog().add_entry(
+                    AuditEventType.ACCESS_CONTROL, AuditSeverity.WARNING,
+                    f"插件配置更新：{plugin_id}/{name}",
+                    {"plugin_id": plugin_id, "file": name, "bytes": result.get("bytes")},
+                )
+            except Exception:
+                pass
+        return result
+
     def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> Dict[str, Any]:
-        """启用/停用插件。能力变更写入审计（插件是可执行代码，必须留痕）。"""
+        """启用/停用插件，并**立即同步它贡献的能力**。
+
+        能力变更写入审计（插件是可执行代码，必须留痕）；审计详情里带上同步结果，
+        这样"启用了但没生效""停用了能力还在"这类问题在日志里一眼可查。
+        """
         result = self._plugins.set_enabled(plugin_id, bool(enabled))
+        sync = self._sync_plugin_capabilities() if result.get("ok") else {}
         try:
             from yindun.core.audit_log import AuditEventType, AuditLog, AuditSeverity
             AuditLog().add_entry(
@@ -440,7 +634,11 @@ class AgentService:
                 AuditSeverity.WARNING if enabled else AuditSeverity.INFO,
                 f"插件{'启用' if enabled else '停用'}：{plugin_id}",
                 {"plugin_id": plugin_id, "enabled": bool(enabled),
-                 "ok": bool(result.get("ok")), "error": result.get("error")},
+                 "ok": bool(result.get("ok")), "error": result.get("error"),
+                 "templates_registered": sync.get("templates"),
+                 "templates_removed": sync.get("templates_removed"),
+                 "recognizer_active": sync.get("recognizer"),
+                 "sync_errors": sync.get("errors")},
             )
         except Exception:
             pass
@@ -451,6 +649,116 @@ class AgentService:
         state[plugin_id] = bool(enabled)
         self.settings.set("plugins_enabled", state)
         self.settings.save()
+
+    # ── 能力同步：把"已启用插件"的能力挂到内核扩展点 ──
+    def _sync_plugin_capabilities(self) -> Dict[str, Any]:
+        """启动时与每次启停后调用。
+
+        原则：**能力跟着开关走**。停用插件必须立刻收回它贡献的能力——
+        "界面显示已停用、实际还在生效"对安全产品是欺骗级缺陷。
+        """
+        summary: Dict[str, Any] = {"templates": [], "templates_removed": [],
+                                   "recognizer": False, "errors": []}
+
+        # 1) 工作流模板：先收回该插件的历史模板，再按当前启用状态重新注册
+        #    （引擎懒加载：没有任何模板插件、且引擎尚未创建时，不为了同步去初始化它）
+        if self._wf_engine is not None or self._plugins.enabled_plugins("workflow_template"):
+            try:
+                engine = self._workflow()
+                for plugin in self.list_plugins():
+                    for template_id in engine.external_template_ids(plugin.get("id", "")):
+                        if engine.unregister_external_template(template_id):
+                            summary["templates_removed"].append(template_id)
+                for item in self._plugins.call_hook("workflow_template", {"mode": "templates"}):
+                    for spec in item.get("templates") or []:
+                        result = engine.register_external_template(spec, item["plugin_id"])
+                        if result.get("ok"):
+                            summary["templates"].append(result["template_id"])
+                        else:
+                            summary["errors"].append(
+                                f"{item['plugin_id']} / {result.get('template_id')}："
+                                f"{result.get('error')}")
+            except Exception as exc:
+                summary["errors"].append(f"工作流模板同步失败：{type(exc).__name__}: {exc}")
+
+        # 2) 识别器：有启用的识别类插件才挂适配器（没有挂载 = 脱敏路径零额外开销）
+        try:
+            from yindun.core.privacy_engine import (register_extra_recognizer,
+                                                    unregister_extra_recognizer)
+            if self._plugins.enabled_plugins("recognizer"):
+                register_extra_recognizer("plugins", self._plugin_recognizer)
+                summary["recognizer"] = True
+            else:
+                unregister_extra_recognizer("plugins")
+        except Exception as exc:
+            summary["errors"].append(f"识别器挂载失败：{type(exc).__name__}: {exc}")
+
+        if summary["errors"]:
+            for message in summary["errors"]:
+                print(f"[AgentService] 能力同步：{message}")
+        self._plugin_sync = summary
+        return summary
+
+    def _plugin_recognizer(self, text: str) -> List[Dict[str, Any]]:
+        """内核脱敏流程的"追加识别器"适配器（由 PrivacyEngine 在脱敏前调用）。
+
+        只返回**追加**命中的区间；内核会再复核一遍（越界 / 超长 / 跨行 / 重叠丢弃）。
+        因此插件写坏了最坏是"没生效"，不存在"让内容免于脱敏"的路径。
+        """
+        try:
+            results = self._plugins.call_hook("recognizer", {"text": text})
+        except Exception as exc:
+            print(f"[AgentService] 插件识别器调用失败：{exc}")
+            return []
+        spans: List[Dict[str, Any]] = []
+        for item in results:
+            spans.extend(item.get("spans") or [])
+        return spans
+
+    # ── 审计导出（内核格式 + 插件格式）─────────────
+    CORE_AUDIT_FORMATS = ("json", "html")
+
+    def audit_export_formats(self) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = [
+            {"format": "json", "label": "JSON", "source": "内核", "plugin_id": ""},
+            {"format": "html", "label": "HTML", "source": "内核", "plugin_id": ""},
+        ]
+        try:
+            for item in self._plugins.export_formats("audit"):
+                out.append({"format": item["format"],
+                            "label": f"{item.get('label') or item['format']}（插件：{item['source']}）",
+                            "source": item["source"], "plugin_id": item["plugin_id"]})
+        except Exception as exc:
+            print(f"[AgentService] 读取插件导出格式失败：{exc}")
+        return out
+
+    def export_audit(self, fmt: str = "json") -> str:
+        """导出审计报告，返回落盘路径；失败时返回"导出失败：…"（沿用界面既有契约）。"""
+        fmt = (fmt or "json").strip().lower()
+        try:
+            from yindun.core.audit_log import AuditLog
+            log = AuditLog()
+            if fmt in self.CORE_AUDIT_FORMATS:
+                return log.save_report(fmt)
+            import json as _json
+            from datetime import datetime
+            payload = _json.loads(log.export_report("json"))
+            payload["generated_at"] = datetime.now().isoformat(timespec="seconds")
+            rendered = self._plugins.call_hook("export_renderer", {
+                "kind": "audit", "format": fmt,
+                "payload": payload, "generated_at": payload["generated_at"],
+            })
+            for item in rendered:
+                text = (item.get("text") or "").strip()
+                if not text:
+                    continue
+                ext = str(item.get("ext") or fmt)
+                name = Path(str(item.get("suggested_name")
+                                 or f"audit_report_plugin_{_time_stamp()}.{ext}")).name
+                return log.save_rendered(item.get("text"), name)
+            return f"导出失败：没有插件提供该格式（{fmt}）"
+        except Exception as exc:
+            return f"导出失败：{type(exc).__name__}: {exc}"
 
     def _emit_advisories(self, approval: Dict[str, Any]) -> None:
         """审批出现后，**在后台**向已启用的插件征集建议。

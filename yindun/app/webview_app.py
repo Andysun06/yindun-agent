@@ -87,14 +87,17 @@ class JsApi:
 
     # ── 附件 ─────────────────────────────────────
     def pick_files(self):
-        """弹出系统文件对话框选择附件（解析后挂载到本轮；返回解析摘要）。"""
+        """弹出系统文件对话框选择附件（解析后挂载到本轮；返回解析摘要）。
+
+        可选扩展名 = 内核支持的 + 已启用插件声明的（插件停用后自动从列表消失）。
+        """
         window = self._window.get("window")
         if window is None:
             return []
         try:
             import webview as _wv
-            from yindun.app.attachment import SUPPORTED_EXTS, normalize_paths
-            patterns = " ".join(f"*.{ext}" for ext in SUPPORTED_EXTS)
+            from yindun.app.attachment import normalize_paths
+            patterns = " ".join(f"*.{ext}" for ext in self._svc.supported_exts())
             picked = window.create_file_dialog(
                 _wv.OPEN_DIALOG, allow_multiple=True, file_types=(f"文档 ({patterns})", "所有文件 (*.*)")
             )
@@ -163,13 +166,12 @@ class JsApi:
             return {"stats": {}, "chain_ok": False, "entries": [], "error": str(exc)}
 
     def audit_export(self, fmt: str = "json"):
-        """导出审计报告（json/html），返回落盘路径。"""
-        try:
-            from yindun.core.audit_log import AuditLog
-            fmt = "html" if str(fmt).lower() == "html" else "json"
-            return AuditLog().save_report(fmt)
-        except Exception as exc:
-            return f"导出失败：{exc}"
+        """导出审计报告（内核格式 json/html，或插件贡献的格式），返回落盘路径。"""
+        return self._svc.export_audit(str(fmt or "json"))
+
+    def audit_export_formats(self):
+        """可用导出格式：内核自带 + 已启用插件贡献的（界面据此生成菜单）。"""
+        return self._svc.audit_export_formats()
 
     # ── 知识库（脱敏 RAG）─────────────────────────
     def kb_status(self):
@@ -182,8 +184,8 @@ class JsApi:
             return {"ok": False, "error": "窗口未就绪"}
         try:
             import webview as _wv
-            from yindun.app.attachment import SUPPORTED_EXTS, normalize_paths
-            patterns = " ".join(f"*.{ext}" for ext in SUPPORTED_EXTS)
+            from yindun.app.attachment import normalize_paths
+            patterns = " ".join(f"*.{ext}" for ext in self._svc.supported_exts())
             picked = window.create_file_dialog(
                 _wv.OPEN_DIALOG, allow_multiple=True, file_types=(f"文档 ({patterns})", "所有文件 (*.*)"))
         except Exception as exc:
@@ -258,15 +260,32 @@ class JsApi:
     def workflow_approve(self, instance_id: str, step_id: str, approved: bool):
         return self._svc.workflow_approve(instance_id, step_id, bool(approved))
 
-    def workflow_export(self, instance_id: str):
-        return self._svc.workflow_export(instance_id)
+    def workflow_export(self, instance_id: str, format: str = "md"):
+        return self._svc.workflow_export(instance_id, format)
 
-    # ── 插件 ─────────────────────────────────────
+    def workflow_export_formats(self):
+        return self._svc.workflow_export_formats()
+
+    # ── 插件（能力扩展）──────────────────────────
     def plugins_list(self):
         return self._svc.list_plugins()
 
     def plugin_set_enabled(self, plugin_id: str, enabled: bool):
         return self._svc.set_plugin_enabled(plugin_id, bool(enabled))
+
+    def plugin_sync_state(self):
+        """最近一次能力同步结果：注册了哪些模板、识别器是否生效、有无失败。"""
+        return self._svc.plugin_sync_state()
+
+    def plugin_config_read(self, plugin_id: str, name: str):
+        return self._svc.plugin_config_read(plugin_id, name)
+
+    def plugin_config_write(self, plugin_id: str, name: str, text: str):
+        return self._svc.plugin_config_write(plugin_id, name, text)
+
+    def plugin_selfcheck(self):
+        """插件自检：确认每个声明的钩子都真的有同名函数（避免"启用了却没反应"）。"""
+        return self._svc.plugin_selfcheck()
 
     # ── 设置 ─────────────────────────────────────
     def save_settings(self, patch: Dict[str, Any]) -> bool:

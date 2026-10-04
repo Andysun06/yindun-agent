@@ -1,0 +1,21 @@
+{
+  "id": "doc_extra",
+  "name": "扩展附件解析（邮件 / 网页）",
+  "version": "0.1.0",
+  "description": "让内核不认识的 .eml / .html / .mht 也能当附件用：邮件按正文与主题抽取、网页按可见文字抽取，产出文本后走同一条脱敏管线（先脱敏、再送模型）。仅用标准库，不联网。",
+  "author": "隐盾（内置）",
+  "hooks": ["attachment_parser"],
+  "file_exts": ["eml", "html", "htm", "mht"],
+  "requires": {
+    "python": [],
+    "ollama_models": []
+  },
+  "permissions": {
+    "network": "none",
+    "filesystem": "read"
+  },
+  "timeout_seconds": 20,
+  "provides": [
+    "附件格式扩展：.eml / .html / .htm / .mht"
+  ]
+}

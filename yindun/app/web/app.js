@@ -13,6 +13,7 @@
     settings: {}, llm: { ready: false, model: "", models: [] },
     streamBubble: null, startedAt: 0,
     attachments: [], audit: null,
+    pane: "settings", auditFormats: [], wfFormats: [],
   };
 
   /* ── 工具 ─────────────────────────────────────────── */
@@ -370,7 +371,9 @@
       const chip = document.createElement("span");
       chip.className = "chip" + (item.error ? " chip--bad" : "");
       const size = item.chars ? `${(item.chars / 1000).toFixed(1)}k 字` : (item.error || "空");
-      chip.innerHTML = `<span class="chip__ico">` + CLIP_ICON + `</span><span>${esc(item.name)}</span>` +
+      // 解析来源要显示出来：插件解析的附件与内核解析的走同一条脱敏管线，但用户有权知道是谁解析的
+      const via = item.via ? ` title="解析来源：${esc(item.via)}"` : "";
+      chip.innerHTML = `<span class="chip__ico"${via}>` + CLIP_ICON + `</span><span>${esc(item.name)}</span>` +
         `<span class="chip__size">${esc(size)}</span><span class="chip__x" title="移除">×</span>`;
       chip.querySelector(".chip__x").onclick = async () => {
         await call("clear_attachments");
@@ -513,7 +516,9 @@
     if (!state.wfTemplates.length) { box.innerHTML = `<div class="wf-template__desc">没有可用模板</div>`; return; }
     box.innerHTML = state.wfTemplates.map((t) => `
       <button class="wf-template ${t.id === state.wfTemplateId ? "is-active" : ""}" data-tpl="${esc(t.id)}">
-        <span class="wf-template__name">${esc(t.name)}</span>
+        <span class="wf-template__name">${esc(t.name)}
+          ${t.source === "plugin" ? `<span class="plugin-badge plugin-badge--src">插件</span>` : ""}
+        </span>
         <span class="wf-template__desc">${esc(t.description || "")}</span>
       </button>`).join("");
     box.querySelectorAll("[data-tpl]").forEach((btn) => {
@@ -553,7 +558,7 @@
           <div class="wf-step__name">${esc(st.name)}
             <span class="wf-status ${cls}">${esc(label)}</span>
             ${st.demo ? `<span class="plugin-badge plugin-badge--warn">演示步骤</span>` : ""}
-            ${st.approval_type === "manual" ? `<span class="plugin-badge">需审批</span>` : ""}
+            ${st.approval_type === "manual" ? `<span class="plugin-badge">${st.forced_approval ? "审批由内核强制" : "需审批"}</span>` : ""}
           </div>
           <div class="wf-step__desc">${esc(st.description || "")}</div>
           ${result}
@@ -581,9 +586,13 @@
     else renderWfTemplates(state.wfTemplates);
   }
 
-  /* ── 插件 ─────────────────────────────────────── */
+  /* ── 插件（能力扩展）────────────────────────────── */
   const SOURCE_LABEL = { builtin: "内置", user: "用户安装" };
   const PERM_LABEL = { "local-only": "仅本机网络", none: "无网络" };
+  const KIND_LABEL = { advisory: "建议型", additive: "增强型" };
+
+  // 自检结果缓存：{plugin_id: {hook: {ok, error}}}
+  let pluginCheck = null;
 
   function renderPlugins(list) {
     const box = $("plugin-list");
@@ -593,13 +602,40 @@
       return;
     }
     box.innerHTML = plugins.map((p) => {
+      const caps = Array.isArray(p.capabilities) ? p.capabilities : [];
       const badges = [
         `<span class="plugin-badge plugin-badge--src">${esc(SOURCE_LABEL[p.source] || p.source)}</span>`,
+        ...caps.map((c) => `<span class="plugin-badge">${esc(KIND_LABEL[c.kind] || c.kind)}</span>`),
         p.permissions && p.permissions.network ? `<span class="plugin-badge">${esc(PERM_LABEL[p.permissions.network] || p.permissions.network)}</span>` : "",
         (p.missing && p.missing.length) ? `<span class="plugin-badge plugin-badge--warn">依赖未满足</span>` : "",
         p.error ? `<span class="plugin-badge plugin-badge--warn">${esc(p.error)}</span>` : "",
       ].filter(Boolean).join("");
       const disabled = !p.usable || !!p.error;
+      // 能力清单：把"这个插件到底提供了什么"逐条写出来，而不是让人猜
+      const capList = caps.map((c) => {
+        const check = pluginCheck && pluginCheck[p.id] && pluginCheck[p.id][c.hook];
+        const state = check ? (check.ok ? `<span class="cap__ok">自检通过</span>`
+                                       : `<span class="cap__bad">${esc(check.error || "自检未通过")}</span>`) : "";
+        return `<div class="cap"><span class="cap__hook">${esc(c.hook)}</span>
+          <span class="cap__text">${esc(c.summary)}${c.detail ? `　·　${esc(c.detail)}` : ""}</span>${state}</div>`;
+      }).join("");
+      // 可编辑配置（如敏感词表）：直接嵌在卡片里，改完立即生效
+      const cfgFiles = Array.isArray(p.config_files) ? p.config_files : [];
+      const cfg = cfgFiles.map((f) => `
+        <div class="plugin-cfg" data-cfg-for="${esc(p.id)}" data-cfg-name="${esc(f.name)}" hidden>
+          <div class="plugin-cfg__head">
+            <span>${esc(f.label || f.name)}<span class="plugin-item__ver">${esc(f.name)}</span></span>
+            <button class="btn btn--ghost" data-cfg-toggle>收起</button>
+          </div>
+          <textarea class="plugin-cfg__text" rows="7" spellcheck="false"></textarea>
+          <div class="plugin-cfg__ops">
+            <span class="field__hint">${esc(f.hint || "")}</span>
+            <button class="btn btn--primary" data-cfg-save>保存并生效</button>
+          </div>
+        </div>`).join("");
+      const cfgBtns = cfgFiles.map((f) =>
+        `<button class="btn btn--ghost" data-cfg-open="${esc(f.name)}" data-cfg-plugin="${esc(p.id)}">编辑${esc(f.label || f.name)}</button>`
+      ).join("");
       return `<div class="plugin-item">
         <div class="plugin-item__head">
           <span class="plugin-item__name">${esc(p.name)}<span class="plugin-item__ver">v${esc(p.version)}</span></span>
@@ -607,7 +643,10 @@
         </div>
         <div class="plugin-item__desc">${esc(p.description || "")}</div>
         <div class="plugin-item__meta">${badges}</div>
+        ${capList ? `<div class="plugin-caps">${capList}</div>` : ""}
         ${(p.missing && p.missing.length) ? `<div class="plugin-item__desc">${p.missing.map(esc).join("<br>")}</div>` : ""}
+        ${cfgBtns ? `<div class="plugin-item__ops">${cfgBtns}</div>` : ""}
+        ${cfg}
       </div>`;
     }).join("");
     box.querySelectorAll("[data-plugin]").forEach((input) => {
@@ -616,15 +655,72 @@
         if (res && res.ok) {
           toast(input.checked ? "插件已启用（已写入审计）" : "插件已停用");
           renderPlugins(res.plugins);
+          refreshSyncState();
+          refreshExportFormats();
         } else {
           toast("操作失败：" + ((res && res.error) || "未知原因"));
           input.checked = !input.checked;
         }
       };
     });
+    // 打开配置编辑器：内容按需读取（不预读，避免一次拉一堆文件）
+    box.querySelectorAll("[data-cfg-open]").forEach((btn) => {
+      btn.onclick = async () => {
+        const holder = box.querySelector(
+          `[data-cfg-for="${btn.dataset.cfgPlugin}"][data-cfg-name="${btn.dataset.cfgOpen}"]`);
+        if (!holder) return;
+        const res = await call("plugin_config_read", btn.dataset.cfgPlugin, btn.dataset.cfgOpen);
+        if (!res || !res.ok) { toast("读取失败：" + ((res && res.error) || "未知原因")); return; }
+        holder.hidden = false;
+        holder.querySelector(".plugin-cfg__text").value = res.text || "";
+        holder.querySelector(".plugin-cfg__text").dataset.path = res.path || "";
+      };
+    });
+    box.querySelectorAll("[data-cfg-toggle]").forEach((btn) => {
+      btn.onclick = () => { btn.closest(".plugin-cfg").hidden = true; };
+    });
+    box.querySelectorAll("[data-cfg-save]").forEach((btn) => {
+      btn.onclick = async () => {
+        const holder = btn.closest(".plugin-cfg");
+        const res = await call("plugin_config_write", holder.dataset.cfgFor,
+                               holder.dataset.cfgName, holder.querySelector(".plugin-cfg__text").value);
+        if (res && res.ok) {
+          toast("已保存并立即生效（改动已写入审计）");
+          refreshSyncState();
+        } else {
+          toast("保存失败：" + ((res && res.error) || "未知原因"));
+        }
+      };
+    });
   }
 
   async function refreshPlugins() { renderPlugins(await call("plugins_list")); }
+
+  async function refreshSyncState() {
+    const el = $("plugin-sync");
+    if (!el) return;
+    try {
+      const sync = await call("plugin_sync_state");
+      const parts = [];
+      if (sync.recognizer) parts.push("追加识别已挂载（脱敏范围含插件词表）");
+      if (sync.templates && sync.templates.length) parts.push(`插件模板 ${sync.templates.length} 个已注册`);
+      if (sync.errors && sync.errors.length) parts.push(`⚠︎ ${sync.errors.join("；")}`);
+      el.textContent = parts.length ? "能力同步：" + parts.join("；") : "能力同步：当前没有插件能力生效（全部为内核自带能力）";
+    } catch (err) {
+      el.textContent = "能力同步：读取失败";
+    }
+  }
+
+  // 插件自检：点一次就知道"启用了的插件到底能不能跑"，不靠猜
+  async function runPluginCheck() {
+    const res = await call("plugin_selfcheck");
+    pluginCheck = {};
+    (res && res.plugins ? res.plugins : []).forEach((item) => { pluginCheck[item.id] = item.hooks || {}; });
+    const bad = (res && res.plugins ? res.plugins : []).filter((x) => !x.ok && !x.skipped);
+    toast(res && res.ok ? "插件自检通过：所有声明的钩子都有对应实现"
+                        : `插件自检发现问题：${bad.map((x) => x.name).join("、") || "见插件卡片"}`);
+    renderPlugins(await call("plugins_list"));
+  }
 
   /* ── 插件建议（审批弹窗内）──────────────────────── */
   function renderAdvisories(list) {
@@ -644,6 +740,7 @@
       const info = await call("llm_status");
       if (info) state.llm = info;
       fillSettings(); bindWindowControls(); refreshKb(); refreshPlugins();
+      refreshSyncState(); refreshExportFormats();
       renderCustomModels(await call("custom_models"));
     },
     audit: async () => { renderAudit(await call("audit_snapshot", 300)); },
@@ -669,11 +766,56 @@
     document.querySelectorAll(".ptab").forEach((t) => t.classList.toggle("is-active", t.dataset.pane === name));
     document.querySelectorAll(".pane").forEach((p) => p.classList.toggle("is-active", p.id === "pane-" + name));
     state.pane = name;
-    const exportBtns = ["btn-audit-export-json", "btn-audit-export-html"];
-    exportBtns.forEach((id) => { const el = $(id); if (el) el.style.display = name === "audit" ? "" : "none"; });
     setRightCollapsed(false);
+    await renderPanelActions(name);
     const loader = PANE_LOADERS[name];
     if (loader) await loader();
+  }
+
+  /** 面板顶部动作区：按当前页显示导出入口（格式来自内核 + 已启用插件） */
+  async function renderPanelActions(name) {
+    const box = $("panel-actions");
+    if (!box) return;
+    box.innerHTML = "";
+    if (name === "audit") {
+      const formats = state.auditFormats || await refreshExportFormats();
+      (formats || []).forEach((f) => {
+        const btn = document.createElement("button");
+        btn.className = "btn btn--ghost";
+        btn.textContent = f.label;
+        btn.title = f.source === "内核" ? "内核自带格式（始终可用）" : `由插件提供：${f.source}`;
+        btn.onclick = async () => {
+          const res = await call("audit_export", f.format);
+          toast(typeof res === "string" && res.startsWith("导出失败") ? res : `已导出：${res}`);
+        };
+        box.appendChild(btn);
+      });
+    } else if (name === "workflow" && state.wfInstance) {
+      const btn = document.createElement("button");
+      btn.className = "btn btn--ghost";
+      btn.textContent = "导出记录";
+      btn.onclick = () => $("btn-wf-export").click();
+      box.appendChild(btn);
+    }
+  }
+
+  /** 拉取可用导出格式（审计 + 工作流），供面板动作区与工作流导出下拉使用 */
+  async function refreshExportFormats() {
+    try {
+      state.auditFormats = await call("audit_export_formats");
+      state.wfFormats = await call("workflow_export_formats");
+    } catch (err) {
+      state.auditFormats = state.auditFormats || [];
+      state.wfFormats = state.wfFormats || [];
+    }
+    const sel = $("wf-format");
+    if (sel) {
+      const keep = sel.value;
+      sel.innerHTML = (state.wfFormats || []).map((f) =>
+        `<option value="${esc(f.format)}">${esc(f.label)}</option>`).join("");
+      if (keep) sel.value = keep;
+    }
+    return state.auditFormats;
   }
 
   function restoreLayout() {
@@ -904,8 +1046,10 @@
     };
     $("btn-wf-export").onclick = async () => {
       if (!state.wfInstance) { toast("请先选择模板"); return; }
-      const res = await call("workflow_export", state.wfInstance);
-      toast(res && res.ok ? `已导出：${res.path}` : `导出失败：${(res && res.error) || "未知原因"}`);
+      const fmt = ($("wf-format") && $("wf-format").value) || "md";
+      const res = await call("workflow_export", state.wfInstance, fmt);
+      toast(res && res.ok ? `已导出（${res.renderer || "内核"}）：${res.path}`
+                          : `导出失败：${(res && res.error) || "未知原因"}`);
     };
     $("btn-cm-add").onclick = async () => {
       const payload = [$("cm-name").value.trim(), $("cm-model").value.trim(),
@@ -922,14 +1066,7 @@
     $("btn-behavior").onclick = () => runTool("behavior");
     $("btn-audit").onclick = () => openPane("audit");
     $("audit-filter").oninput = paintAuditList;
-    $("btn-audit-export-json").onclick = async () => {
-      const path = await call("audit_export", "json");
-      toast(path ? `已导出：${path}` : "导出失败");
-    };
-    $("btn-audit-export-html").onclick = async () => {
-      const path = await call("audit_export", "html");
-      toast(path ? `已导出：${path}` : "导出失败");
-    };
+    $("btn-plugin-check").onclick = runPluginCheck;
     $("btn-settings").onclick = () => openPane("settings");
     $("btn-toggle-right").onclick = () => setRightCollapsed(!rightCollapsed());
     $("btn-panel-collapse").onclick = () => setRightCollapsed(true);

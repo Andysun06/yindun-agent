@@ -135,8 +135,7 @@
           <button class="ptab" data-pane="audit">审计</button>
           <button class="ptab" data-pane="workflow">工作流</button>
           <span class="panel__spacer"></span>
-          <button class="btn btn--ghost" id="btn-audit-export-json" title="导出 JSON">JSON</button>
-          <button class="btn btn--ghost" id="btn-audit-export-html" title="导出 HTML">HTML</button>
+          <span class="panel__actions" id="panel-actions"></span>
           <button class="btn btn--ghost" id="btn-panel-collapse" title="收起面板">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
           </button>
@@ -223,9 +222,13 @@
       <div class="divider"></div>
 
       <div class="field">
-        <div class="field__label">插件</div>
-        <div class="field__hint">重依赖能力按需启用。插件是本地代码，隐盾不会联网下载插件；启用与停用都会写入审计。</div>
+        <div class="field__label">插件（能力扩展）</div>
+        <div class="field__hint">插件只能"做加法"：多识别一类敏感实体、多解析一种格式、多一种导出格式、多一个工作流模板。内核的脱敏网关 / 审批放行 / 审计链 / 沙箱文件工具不开放给插件。插件是本地代码，隐盾不会联网下载插件；启停与配置改动都会写入审计。</div>
         <div class="plugin-list" id="plugin-list"></div>
+        <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-2)">
+          <button class="btn" id="btn-plugin-check" type="button">插件自检</button>
+        </div>
+        <div class="field__hint" id="plugin-sync">—</div>
       </div>
 
       <div class="divider"></div>
@@ -259,15 +262,16 @@
       <div class="field">
         <label class="field__label" for="wf-path">文档 / 项目路径（可选）</label>
         <input type="text" id="wf-path" placeholder="留空则使用当前沙箱目录">
-        <div class="field__hint">合同审查取合同文件路径；代码安全检查取项目目录</div>
+        <div class="field__hint">合同审查取合同文件路径；代码安全检查取项目目录；插件模板按其声明的路径变量填入</div>
         <input type="text" id="wf-name" placeholder="实例名称（可选，便于区分多次运行）">
       </div>
       <div class="field" id="wf-run" style="display:none">
         <div class="field__label" id="wf-run-title">执行</div>
         <div class="wf-progress" id="wf-progress"></div>
         <div class="wf-steps" id="wf-steps"></div>
-        <div style="display:flex;gap:var(--sp-3);margin-top:var(--sp-4)">
+        <div style="display:flex;gap:var(--sp-3);margin-top:var(--sp-4);align-items:center">
           <button class="btn btn--primary" id="btn-wf-exec">执行下一步</button>
+          <select id="wf-format" style="width:auto" title="导出格式：内核格式始终可用，插件格式需启用对应插件"></select>
           <button class="btn" id="btn-wf-export">导出记录</button>
         </div>
         <div class="field__hint" id="wf-notice"></div>
