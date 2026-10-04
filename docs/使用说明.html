@@ -176,8 +176,13 @@ python run.py
 <li><strong>配置</strong>：程序目录下 <code>global_config.json</code>（模型、权限、界面等；免安装版即 exe 同目录）。</li>
 <li><strong>会话</strong>：<code>chat_sessions.json</code>，内容加密存储。</li>
 <li><strong>审计</strong>：<code>audit_logs/</code>，哈希链防篡改，仅存脱敏预览。</li>
-<li><strong>知识库</strong>：<code>data/knowledge_base/</code>，只存占位符向量。</li>
-<li>免安装版：删除 exe 与其同目录生成的数据即可；安装版：卸载即清除以上全部本地数据。</li>
+<li><strong>知识库</strong>：<code>data/knowledge_base/</code>，只存占位符向量（元数据只留文件名，不写本机路径）。</li>
+<li><strong>用户目录</strong>（<code>%APPDATA%\Yindun\</code>）：只有两样东西——脱敏主密钥（Windows DPAPI 按当前用户保护）
+  与<strong>审计链锚点</strong>（<code>audit_chain.anchor.&lt;审计目录指纹&gt;.json</code>，用于发现"整链改写/尾部截断"）。
+  这两样刻意放在用户目录而不是程序目录：<strong>不能与它们要保护的数据同盘</strong>，否则"删掉密钥/锚点"
+  就能绕过保护。也因此它们不随 exe 移动（换机器后旧审计链需要重新确认，见 4.4）。</li>
+<li>免安装版：删除 exe 与其同目录生成的数据即可；如需彻底清除，再删除上述用户目录下的 <code>Yindun\</code> 文件夹。
+  安装版：卸载即清除程序目录数据，用户目录同上。</li>
 </ul>
 <hr />
 <h2>七、常见问题（FAQ）</h2>
