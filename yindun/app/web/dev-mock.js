@@ -247,6 +247,17 @@
     }, 500);
   }
 
+  // 预览闪发浮条：加 #mock-mini（折叠态；真实运行时窗口本身会缩成浮条）
+  if (location.hash.indexOf("mini") >= 0) {
+    setTimeout(() => {
+      document.body.classList.add("is-mini");
+      document.getElementById("mini-status").textContent = "推理中…";
+      document.getElementById("mini-status").classList.add("is-busy");
+      document.getElementById("mini-input").value = "把客户张伟的手机号保存到 客户信息.txt";
+      document.getElementById("mini-input").focus();
+    }, 500);
+  }
+
   // 预览诊断：加 #mock-diag → 把三栏实测宽度写进 DOM（便于无头 --dump-dom 校验）
   if (location.hash.indexOf("diag") >= 0) {
     setTimeout(() => {

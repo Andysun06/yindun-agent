@@ -23,11 +23,12 @@ import json
 import os
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import webview
 
 from yindun import APP_ROOT, __display_version__
+from yindun.app import window_layout
 from yindun.app.agent_service import AgentService
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -40,6 +41,8 @@ class JsApi:
     def __init__(self, service: AgentService, window_holder: Dict[str, Any]) -> None:
         self._svc = service
         self._window = window_holder
+        # 折叠前的完整几何（极简闪发折叠模式用；None = 当前未折叠）
+        self._saved_geometry: Optional[Tuple[int, int, int, int]] = None
 
     # ── 启动数据 ─────────────────────────────────
     def bootstrap(self) -> Dict[str, Any]:
@@ -201,11 +204,16 @@ class JsApi:
 
     # ── 窗口控制（无边框悬浮模式）─────────────────
     def window_action(self, action: str) -> bool:
-        """无边框模式下的窗口操作：minimize / toggle_top / close。
+        """无边框模式下的窗口操作：minimize / toggle_top / close / mini / restore_window。
 
         ★ 注意：`toggle_top` 只**更新设置**（下次启动生效），不在运行时改窗口置顶标志——
         实测从 JS 触发的运行时窗口标志变更会卡住 pywebview 事件循环（窗口假死）。
         置顶这种"形态类"设置走重启生效，风险最低。
+
+        `mini` / `restore_window` 是**极简闪发折叠模式**（旧 Qt 界面的同名功能迁移）：
+        折叠成一条浮条（底边对齐、水平居中），展开时精确还原折叠前的几何。
+        ★ 折叠前必须临时放宽 min_size：创建窗口时设了 (880, 600) 的最小尺寸，
+          不放开的话 420×60 的浮条会被窗口管理器直接卡回原尺寸（表现为"点了没反应"）。
         """
         window = self._window.get("window")
         if window is None:
@@ -218,6 +226,10 @@ class JsApi:
                 self._svc.settings.set("topmost", new_value)
                 self._svc.settings.save()
                 self._svc._emit("status", f"置顶已设为「{'开' if new_value else '关'}」，重启后生效")
+            elif action == "mini":
+                self._collapse_to_mini(window)
+            elif action == "restore_window":
+                self._restore_from_mini(window)
             elif action == "close":
                 window.destroy()
             else:
@@ -226,6 +238,39 @@ class JsApi:
         except Exception as exc:
             print(f"[WebView] 窗口操作 {action} 失败：{exc}")
             return False
+
+    # ── 极简闪发折叠模式（几何计算见 app/window_layout.py）──
+    def _current_geometry(self, window) -> Optional[Tuple[int, int, int, int]]:
+        """读取当前窗口几何；任一维度取不到就返回 None（宁可不折叠，也不要乱跳）。"""
+        try:
+            x, y, w, h = window.x, window.y, window.width, window.height
+        except Exception:
+            return None
+        if None in (x, y, w, h):
+            return None
+        return int(x), int(y), int(w), int(h)
+
+    def _collapse_to_mini(self, window) -> None:
+        geometry = self._current_geometry(window)
+        if geometry is None:
+            print("[WebView] 取不到窗口几何，已跳过折叠（避免窗口跳到错误位置）")
+            return
+        self._saved_geometry = geometry          # 展开时精确还原
+        x, y, w, h = geometry
+        nx, ny, nw, nh = window_layout.collapse_to_mini(x, y, w, h)
+        window.move(nx, ny)
+        window.resize(nw, nh)
+
+    def _restore_from_mini(self, window) -> None:
+        geometry = self._current_geometry(window)
+        if geometry is None:
+            print("[WebView] 取不到窗口几何，已跳过展开")
+            return
+        x, y, w, h = geometry
+        nx, ny, nw, nh = window_layout.restore_from_mini(self._saved_geometry, x, y)
+        window.move(nx, ny)
+        window.resize(nw, nh)
+        self._saved_geometry = None
 
     # ── 自定义模型（OpenAI 兼容）───────────────────
     def custom_models(self):
@@ -346,9 +391,13 @@ class WebApp:
         # 若拖动异常，可在设置里关掉"无边框悬浮模式"回退到系统边框。
         frameless = bool(settings.get("frameless", True))
         window_kwargs: Dict[str, Any] = {
-            "width": 1180,
-            "height": 780,
-            "min_size": (880, 600),
+            "width": window_layout.EXPANDED_W,
+            "height": window_layout.EXPANDED_H,
+            # ★ min_size 必须按**折叠态**给：pywebview/WinForms 的 MinimumSize 只在创建窗口时
+            #   作用到原生窗口，运行期改 `window.min_size` 不会生效——按展开态设会静默卡住折叠
+            #   （实测：折叠请求 420×60，实际被卡回 880×600）。无边框窗口本身没有用户拖拽改尺寸的
+            #   入口，所以这里的下限只影响我们自己的程序化缩放。
+            "min_size": window_layout.MINI_MIN_SIZE,
             "on_top": bool(settings.get("topmost", True)),
             "confirm_close": False,
         }

@@ -8,6 +8,21 @@
   <link rel="stylesheet" href="styles/app.css">
 </head>
 <body>
+  <!-- ── 极简闪发浮条（折叠态）：旧 Qt 界面「极简闪发折叠模式」的迁移 ──
+       折叠后窗口本身会缩成一条浮条（底边对齐、水平居中），
+       在这里输入指令回车 = 自动展开完整界面并发送。 -->
+  <div class="minibar" id="minibar">
+    <button class="minibar__expand" id="btn-mini-expand" title="展开完整界面（Esc）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4v5H4M15 20v-5h5"/></svg>
+    </button>
+    <input class="minibar__input" id="mini-input" type="text" autocomplete="off"
+           placeholder="闪发模式：输入指令直接回车，自动展开并发送…">
+    <span class="minibar__status" id="mini-status"></span>
+    <button class="minibar__send" id="btn-mini-send" title="发送（Enter）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h15M13 6l6 6-6 6"/></svg>
+    </button>
+  </div>
+
   <div class="app">
     <!-- ── 侧栏：会话 ─────────────────────────────── -->
     <aside class="side side--left">
@@ -65,6 +80,9 @@
         <div class="topbar__title" id="chat-title">新对话</div>
         <span class="band__id" id="session-id-mark"></span>
         <div class="topbar__spacer"></div>
+        <button class="btn btn--ghost" id="btn-mini" title="折叠为闪发浮条（浮条内输入回车即自动展开并发送）">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h16M4 16h16"/></svg>
+        </button>
         <div class="stats" id="stats-strip" title="数据看板">
           <span class="stats__item" id="stat-model">—</span>
           <span class="stats__sep"></span>

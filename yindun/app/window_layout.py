@@ -1,0 +1,55 @@
+# -*- coding: utf-8 -*-
+"""隐盾 · 窗口几何计算（与界面框架无关）
+
+从旧 Qt 界面的**极简闪发折叠模式**迁出：窗口折叠成一条浮条、展开时精确还原。
+把这些算术放在这里（而不是散在界面代码里）的原因：
+  · 纯函数、无框架依赖，可被回归测试直接锁住；
+  · 折叠/展开是"窗口几何"这一件事的两半，必须成对演进，写在一起才不会各自漂移。
+
+几何语义（与旧实现一致，用户已习惯）：
+  · 折叠：**底边对齐**（浮条贴着原窗口底边）、**水平居中**、宽度取记忆值（不小于 280）；
+  · 展开：优先回到折叠前保存的完整几何；没有保存值时保持当前位置、用默认展开尺寸。
+"""
+from __future__ import annotations
+
+from typing import Optional, Sequence, Tuple
+
+# 展开态默认尺寸（首次运行兜底；实际由用户拖动决定）
+EXPANDED_W, EXPANDED_H = 1180, 780
+# 折叠态：44px 浮条 + 16px 容器留白（沿用旧实现数值）
+MINI_H = 60
+MINI_W_DEFAULT = 420
+MINI_W_MIN = 280
+# 窗口最小尺寸：**必须按折叠态给**（见 webview_app 里的说明）——
+# pywebview/WinForms 的 MinimumSize 只在创建窗口时生效，运行期改它不会作用到原生窗口，
+# 若按展开态 (880,600) 设，折叠就会被悄悄卡回 880×600（表现为"点了折叠但窗口没变小"）。
+MINI_MIN_SIZE = (MINI_W_MIN, MINI_H)
+# 展开态的最小尺寸：作为布局层的最小可用尺寸记录在案（无边框窗口没有用户拖拽改尺寸的入口，
+# 因此它不靠操作系统强制，而是由前端布局与这里的几何兜底保证）。
+EXPANDED_MIN_SIZE = (880, 600)
+
+
+def collapse_to_mini(x: int, y: int, w: int, h: int,
+                     mini_w: Optional[int] = None) -> Tuple[int, int, int, int]:
+    """计算折叠后的 (x, y, w, h)。"""
+    width = max(MINI_W_MIN, int(mini_w or MINI_W_DEFAULT))
+    new_x = int(x + (w - width) // 2)
+    new_y = int(y + h - MINI_H)
+    return new_x, new_y, width, MINI_H
+
+
+def restore_from_mini(saved: Optional[Sequence[int]],
+                      x: int, y: int) -> Tuple[int, int, int, int]:
+    """计算展开后的 (x, y, w, h)：优先精确还原折叠前的几何。"""
+    if saved is not None and len(saved) == 4:
+        sx, sy, sw, sh = (int(v) for v in saved)
+        if sw > 0 and sh > 0:
+            return sx, sy, sw, sh
+    return int(x), int(y), EXPANDED_W, EXPANDED_H
+
+
+def clamp_geometry(x: int, y: int, w: int, h: int) -> Tuple[int, int, int, int]:
+    """兜底清洗：尺寸异常（0/负数）时退回默认展开尺寸，避免窗口"消失"。"""
+    if w <= 0 or h <= 0:
+        return int(x), int(y), EXPANDED_W, EXPANDED_H
+    return int(x), int(y), int(w), int(h)

@@ -334,6 +334,61 @@
 
   function setStatus(text) { $("status-line").textContent = text || ""; }
 
+  /* ── 极简闪发浮条（折叠态）──────────────────────────
+     旧 Qt 界面「极简闪发折叠模式」的迁移：
+       · 折叠后窗口本身缩成一条浮条（几何由 Python 侧计算：底边对齐 + 水平居中）
+       · 浮条内输入回车 = 自动展开完整界面并发送（与旧实现一致）
+       · 浮条常显一行状态，折叠时也能看出"是否在推理" */
+  function miniOn() { return document.body.classList.contains("is-mini"); }
+
+  function setMiniStatus(text, busy) {
+    const el = $("mini-status");
+    if (!el) return;
+    el.textContent = text || "";
+    el.classList.toggle("is-busy", !!busy);
+  }
+
+  async function setMini(on) {
+    if (on === miniOn()) return;
+    document.body.classList.toggle("is-mini", on);
+    const ok = await call("window_action", on ? "mini" : "restore_window");
+    if (ok === false) {
+      // 窗口没动成就别让界面假装已折叠（否则用户会看到"界面没了但窗口还在"）
+      document.body.classList.toggle("is-mini", !on);
+      toast("窗口折叠失败：可能是系统不允许改变窗口尺寸");
+      return;
+    }
+    if (on) {
+      setMiniStatus(state.busy ? "推理中…" : "", state.busy);
+      $("mini-input").focus();
+    } else {
+      $("mini-input").value = "";
+      $("mini-input").focus();
+    }
+  }
+
+  async function sendText(text) {
+    text = (text || "").trim();
+    if (!text) return;
+    appendUser(text);
+    state.startedAt = Date.now();
+    setBusy(true);
+    const ok = await call("send", text);
+    if (!ok) { setBusy(false); toast("发送失败：算力未就绪或正在推理"); }
+    else await refreshSessions();
+  }
+
+  /** 浮条闪发：展开 → 发送（顺序与旧实现一致，避免在浮条里发送后看不到结果） */
+  async function miniSubmit() {
+    const input = $("mini-input");
+    const text = (input.value || "").trim();
+    if (!text) return;
+    input.value = "";
+    if (state.busy) { toast("正在推理中，请稍候或先停止"); return; }
+    if (miniOn()) await setMini(false);
+    await sendText(text);
+  }
+
   /* ── 审批弹窗 ─────────────────────────────────────── */
   function formatPayload(args) {
     if (!args || typeof args !== "object") return "";
@@ -889,6 +944,8 @@
       case "status": {
         const text = String(payload || "").trim();
         setStatus(text);
+        // 折叠态下浮条也要能看出进展（否则用户不知道点没点上）
+        if (miniOn()) setMiniStatus(text || (state.busy ? "推理中…" : ""), state.busy);
         // 忙时把过程状态作为紧凑"工具行"追加到当前条目（Codex 式活动流）
         if (text && state.busy) appendToolLine(text);
         break;
@@ -922,6 +979,7 @@
       case "state": {
         setBusy(!!payload.busy);
         renderStats(payload);
+        if (miniOn()) setMiniStatus(payload.busy ? "推理中…" : "已完成", payload.busy);
         if (!payload.busy) {
           hideApproval();
           const sid = payload.session_id;
@@ -994,12 +1052,20 @@
       const text = input.value.trim();
       if (!text) return;
       input.value = ""; input.style.height = "auto";
-      appendUser(text);
-      state.startedAt = Date.now();
-      setBusy(true);
-      const ok = await call("send", text);
-      if (!ok) { setBusy(false); toast("发送失败：算力未就绪或正在推理"); }
-      else await refreshSessions();
+      await sendText(text);
+    });
+
+    // 闪发浮条：回车发送（自动展开）、Esc 展开、按钮发送
+    $("btn-mini").onclick = () => setMini(true);
+    $("btn-mini-expand").onclick = () => setMini(false);
+    $("btn-mini-send").onclick = miniSubmit;
+    $("mini-input").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); miniSubmit(); }
+      if (e.key === "Escape") { e.preventDefault(); setMini(false); }
+    });
+    document.addEventListener("keydown", (e) => {
+      // 全局 Esc：折叠态下展开（浮条只有一个输入框，不会与其它 Esc 语义冲突）
+      if (e.key === "Escape" && miniOn()) { e.preventDefault(); setMini(false); }
     });
 
     $("input").addEventListener("keydown", (e) => {

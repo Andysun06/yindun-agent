@@ -46,6 +46,39 @@ button { cursor: pointer; border: none; background: none; }
 .side--left > .sidebar { width: 248px; flex: none; }
 .side--right > .panel__inner { width: 400px; flex: none; }
 
+/* ── 极简闪发浮条（折叠态）────────────────────────────────
+   旧 Qt 界面的「极简闪发折叠模式」迁移：窗口缩成一条浮条，
+   浮条内输入回车 = 自动展开完整界面并发送。
+   拖动沿用 pywebview 的 easy_drag（无边框窗口整体可拖），这里不重复声明 app-region，
+   避免"两套拖拽同时生效"造成抖动。 */
+.minibar { display: none; }
+body.is-mini .app { display: none; }
+body.is-mini .minibar {
+  display: flex; align-items: center; gap: var(--sp-2);
+  height: 100vh; padding: 0 var(--sp-3);
+  background: var(--bg-side); border: 1px solid var(--border-2); border-radius: var(--r-ctrl);
+}
+.minibar__expand, .minibar__send {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: var(--r-chip);
+  border: 1px solid var(--border-2); color: var(--text-2); background: transparent;
+}
+.minibar__expand:hover, .minibar__send:hover { color: var(--accent-600); border-color: var(--accent-300); }
+.minibar__send { background: var(--accent-500); border-color: var(--accent-500); color: #fff; }
+.minibar__send:hover { background: var(--accent-600); border-color: var(--accent-600); color: #fff; }
+.minibar__expand svg, .minibar__send svg { width: 14px; height: 14px; }
+.minibar__input {
+  flex: 1; min-width: 0; height: 28px; border: none; background: transparent;
+  color: var(--text-1); font-size: var(--fs-sm); -webkit-app-region: no-drag;
+}
+.minibar__input::placeholder { color: var(--text-3); }
+.minibar__input:focus { outline: none; }
+.minibar__status {
+  flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--fs-meta); color: var(--text-3); font-family: var(--font-mono);
+}
+.minibar__status.is-busy { color: var(--accent-600); }
+
 /* ── 侧栏 ─────────────────────────────────────────────── */
 .sidebar { display: flex; flex-direction: column; min-height: 0; }
 .brand { display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-6) var(--sp-5) var(--sp-5); }
