@@ -24,7 +24,7 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, Tool
 from langchain_core.tools import BaseTool
 from yindun.core.event_bus import EventBus
 from yindun.core.privacy_engine import PrivacyEngine, _NEW_PLACEHOLDER_RE
-from yindun.core.memory_manager import SummarizableChatHistory
+from yindun.core.memory_manager import DEFAULT_MAX_HISTORY_TOKENS, SummarizableChatHistory
 from yindun.core.audit_log import AuditLog
 from yindun.core.policy_manager import PolicyManager
 
@@ -293,7 +293,7 @@ class Worker:
                 self._box_mapping = dict(self._box_mapping_restore)
                 self._box_mapping_restore.clear()
             memory = SummarizableChatHistory.from_dict_list(
-                self.messages_snapshot, max_tokens=5000
+                self.messages_snapshot, max_tokens=DEFAULT_MAX_HISTORY_TOKENS
             )
             engine = PrivacyEngine()
             self._engine = engine  # ★ 新增：供 _anonymize_tool_output 复用

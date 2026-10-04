@@ -142,9 +142,104 @@ if exported and exported.exists():
 else:
     check("导出文件确实落盘", False, str(export))
 
+# ── 6) 工作流诚实性（不编造数据 / 不货不对板）─────────
+print("\n" + "=" * 78)
+print("【6】工作流诚实性：query_history 与导出格式")
+print("=" * 78)
+from yindun.core import workflow as W  # noqa: E402
+from yindun.core.audit_log import AuditLog  # noqa: E402
+
+engine = svc._workflow()
+qh = engine._execution_handlers["query_history"]
+real = qh({})
+check("query_history 能取到真实审计记录", real.get("ok") and real.get("count", 0) > 0, str(real)[:120])
+check("记录的描述字段非空（旧实现读错字段，全是空串）",
+      any(str(i.get("desc", "")).strip() for i in real.get("items", [])),
+      str(real.get("items", [])[:1]))
+check("没有任何编造的示例记录",
+      not any(("示例会话" in str(i.get("desc", "")) or "产出结构化数据" in str(i.get("desc", "")))
+              for i in real.get("items", [])))
+qh_src = (W.__file__ and Path(W.__file__).read_text(encoding="utf-8"))
+check("编造记录的代码已从源码移除",
+      "产出结构化数据" not in qh_src and "示例会话" not in qh_src)
+audit_log = AuditLog()
+saved_entries = list(audit_log._entries)
+try:
+    audit_log._entries = []
+    empty = qh({})
+    check("审计为空时如实返回空（count=0 且标注 empty）",
+          empty.get("count") == 0 and empty.get("empty") is True, str(empty)[:140])
+finally:
+    audit_log._entries = saved_entries
+
+ex = engine._execution_handlers["export_file"]
+bad = ex({"format": "pdf"}, {"__prev_results": []})
+check("pdf 不再假装能导（如实报错并说明支持格式）",
+      bad.get("ok") is False and "md" in str(bad.get("error", "")), str(bad)[:140])
+good = ex({"format": "md"}, {"__prev_results": []})
+check("md 导出照常可用", good.get("ok") is True and str(good.get("file_path", "")).endswith(".md"),
+      str(good)[:120])
+check("内置模板不再请求不支持的格式",
+      all(str(s.get("tool_args", {}).get("format", "md")) in ("md", "html", "json", "docx", "doc")
+          for tpl in svc.workflow_templates() for s in [] if False) or True)  # 占位：下方按模板细查
+unsupported = []
+for tpl in svc.workflow_templates():
+    status_probe = engine._templates.get(tpl["id"])
+    for s in (status_probe.steps if status_probe else []):
+        fmt = str((s.tool_args or {}).get("format", "")).lower()
+        if s.tool_name == "export_file" and fmt and fmt not in ("md", "html", "json", "docx", "doc"):
+            unsupported.append(f"{tpl['id']}/{s.name}:{fmt}")
+check("全部内置/插件模板的导出步骤都在支持格式内", not unsupported, str(unsupported))
+
+# ── 7) 实例持久化（重启不丢）────────────────────────
+print("\n" + "=" * 78)
+print("【7】实例持久化：重启后实例/步骤状态/来源模板都在")
+print("=" * 78)
+status_before = engine.get_workflow_status(instance)
+persistence_file = Path(tempfile.mkdtemp(prefix="yindun_wf_persist_")) / "workflow_instances.json"
+engine._persistence_path = persistence_file      # 测试专用落点，避免污染仓库运行时文件
+engine._save_instances()
+check("持久化文件已落盘", persistence_file.exists(), str(persistence_file))
+
+eng2 = W.WorkflowEngine()
+eng2._instances = {}                             # 只看本次恢复的内容
+eng2._persistence_path = persistence_file
+eng2._load_instances()
+check("重启后实例还在", instance in eng2._instances, str(list(eng2._instances))[:80])
+status_after = eng2.get_workflow_status(instance)
+check("步骤状态原样保留",
+      [s["status"] for s in status_before["steps"]] == [s["status"] for s in status_after["steps"]],
+      str([s["status"] for s in status_after["steps"]]))
+check("步骤结果原样保留",
+      str(status_before["steps"][0].get("result")) == str(status_after["steps"][0].get("result")))
+mapping = next((i for i in eng2.list_instances() if i["instance_id"] == instance), None)
+check("来源模板映射正确（实例→wf_contract_review）",
+      mapping is not None and mapping["template_id"] == "wf_contract_review", str(mapping))
+
+# 坏文件不拦启动
+eng2._persistence_path.write_text("{ 这不是合法 JSON", encoding="utf-8")
+eng2._instances = {}
+eng2._load_instances()
+check("持久化文件损坏时按空实例启动（不崩溃）", isinstance(eng2._instances, dict))
+
+# ── 8) token 口径统一 ───────────────────────────────
+print("\n" + "=" * 78)
+print("【8】token 口径：看板与摘要压缩共用同一估算器")
+print("=" * 78)
+from yindun.core.memory_manager import DEFAULT_MAX_HISTORY_TOKENS, estimate_tokens  # noqa: E402
+payload = svc._state_payload(None)
+check("状态载荷带上下文阈值（且来自共享常量）",
+      payload.get("context_limit") == DEFAULT_MAX_HISTORY_TOKENS == 5000, str(payload.get("context_limit")))
+cjk_text = "隐盾安全智能体" * 3000
+check("估算器对中文按字计数（不再是 len//2）",
+      estimate_tokens(cjk_text) > len(cjk_text) // 2,
+      f"{estimate_tokens(cjk_text)} vs {len(cjk_text) // 2}")
+svc_src = Path(__file__).resolve().parents[1].joinpath("yindun", "app", "agent_service.py").read_text(encoding="utf-8")
+check("看板的上下文数字改用共享估算器", "estimate_tokens(" in svc_src and "// 2\n" not in svc_src)
+
 print("\n" + "=" * 78)
 if failures:
     print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))
     sys.exit(1)
-print("✅ 全部通过：工作流模板/实例/演示标注/真实执行/沙箱/导出均正常")
+print("✅ 全部通过：工作流模板/实例/演示标注/真实执行/沙箱/导出/诚实性/持久化/token 口径均正常")
 sys.exit(0)

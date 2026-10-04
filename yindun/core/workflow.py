@@ -119,6 +119,8 @@ class WorkflowTemplate:
     steps: List[WorkflowStep] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     source_plugin: str = ""       # 非空 = 由插件贡献（内置模板为空）
+    origin_template_id: str = ""  # 实例化时来源的模板 id（实例的 template_id 会被实例 id 覆盖，
+                                  #   持久化恢复后要靠它把"实例→模板"的映射接回去）
 
     def to_dict(self) -> dict:
         return {
@@ -193,11 +195,116 @@ class WorkflowEngine:
         # 插件贡献的模板：template_id → plugin_id（用于卸载与界面标注来源）
         self._external_templates: Dict[str, str] = {}
         self._external_path_vars: Dict[str, str] = {}
+        # 实例持久化：重启不丢（正在走的审批链 / 执行进度保得下来）
+        self._persistence_path = APP_ROOT / "workflow_instances.json"
         self._register_builtin_templates()
+        self._load_instances()
 
     def register_execution_handler(self, tool_name: str, handler: Callable):
         """注册工具执行处理器"""
         self._execution_handlers[tool_name] = handler
+
+    # ── 实例持久化：重启不丢 ──────────────────────────
+    # 此前实例只存在内存里：执行到一半（尤其是"等待人工审批"的步骤）重启应用，
+    # 整条审批链就没了。现在把实例（每步状态/结果/审批人/上下文）序列化到 APP_ROOT 下，
+    # 状态一变就落盘；恢复时按快照重建。
+    # 注意：EXECUTING 中的步骤恢复为 PENDING——进程死过一次，"正在执行"不可信，
+    # 宁可让用户重跑一步，也不要留一个永远卡在执行中的假状态。
+    def _serialize_instance(self, instance: WorkflowTemplate, instance_id: str) -> Dict[str, Any]:
+        return {
+            "instance_id": instance_id,
+            "origin_template_id": getattr(instance, "origin_template_id", "") or "",
+            "name": instance.name,
+            "created_at": instance.created_at,
+            "context": self._instance_context.get(instance_id, {}),
+            "steps": [{
+                "step_id": s.step_id, "name": s.name, "description": s.description,
+                "tool_name": s.tool_name, "tool_args": s.tool_args,
+                "approval_type": s.approval_type.value if isinstance(s.approval_type, ApprovalType) else str(s.approval_type),
+                "required": s.required,
+                "status": s.status.value if isinstance(s.status, StepStatus) else str(s.status),
+                "result": s.result, "error": s.error,
+                "started_at": s.started_at, "completed_at": s.completed_at,
+                "reviewer": s.reviewer, "review_comment": s.review_comment,
+                "source_plugin": s.source_plugin, "forced_approval": s.forced_approval,
+            } for s in instance.steps],
+        }
+
+    def _save_instances(self) -> None:
+        if self._persistence_path is None or not self._instances:
+            return
+        try:
+            payload = {
+                "version": 1,
+                "saved_at": datetime.now().isoformat(timespec="seconds"),
+                "instances": [self._serialize_instance(inst, iid)
+                              for iid, inst in self._instances.items()],
+            }
+            self._persistence_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8")     # 落点受控：APP_ROOT 下的运行时状态文件（已 gitignore）
+        except Exception as exc:
+            print(f"[WorkflowEngine] 实例持久化失败（不影响当前执行）：{type(exc).__name__}: {exc}")
+
+    def _load_instances(self) -> None:
+        if self._persistence_path is None or not self._persistence_path.exists():
+            return
+        try:
+            payload = json.loads(self._persistence_path.read_text(encoding="utf-8"))
+            restored = 0
+            for item in payload.get("instances", []):
+                instance_id = str(item.get("instance_id") or "")[:64]
+                if not instance_id or instance_id in self._instances:
+                    continue
+                steps: List[WorkflowStep] = []
+                for raw in item.get("steps", []):
+                    try:
+                        approval = ApprovalType(str(raw.get("approval_type") or "manual"))
+                    except ValueError:
+                        approval = ApprovalType.MANUAL
+                    try:
+                        status = StepStatus(str(raw.get("status") or "pending"))
+                    except ValueError:
+                        status = StepStatus.PENDING
+                    if status is StepStatus.EXECUTING:
+                        status = StepStatus.PENDING      # 进程死过一次，执行态不可信
+                    steps.append(WorkflowStep(
+                        step_id=str(raw.get("step_id") or uuid.uuid4().hex[:8]),
+                        name=str(raw.get("name") or ""),
+                        description=str(raw.get("description") or ""),
+                        tool_name=str(raw.get("tool_name") or ""),
+                        tool_args=dict(raw.get("tool_args") or {}),
+                        approval_type=approval,
+                        required=bool(raw.get("required", True)),
+                        status=status,
+                        result=raw.get("result"),
+                        error=str(raw.get("error") or ""),
+                        started_at=raw.get("started_at"),
+                        completed_at=raw.get("completed_at"),
+                        reviewer=str(raw.get("reviewer") or ""),
+                        review_comment=str(raw.get("review_comment") or ""),
+                        source_plugin=str(raw.get("source_plugin") or ""),
+                        forced_approval=bool(raw.get("forced_approval", False)),
+                    ))
+                if not steps:
+                    continue
+                instance = WorkflowTemplate(
+                    template_id=instance_id,
+                    name=str(item.get("name") or instance_id),
+                    steps=steps,
+                    created_at=str(item.get("created_at") or datetime.now().isoformat()),
+                    origin_template_id=str(item.get("origin_template_id") or ""),
+                )
+                self._instances[instance_id] = instance
+                context = item.get("context")
+                if isinstance(context, dict) and context:
+                    self._instance_context[instance_id] = context
+                restored += 1
+            if restored:
+                print(f"[WorkflowEngine] 已恢复 {restored} 个工作流实例（重启前的状态）")
+        except Exception as exc:
+            # 坏文件不拦启动：按空实例开始，原文件保留以便排查
+            print(f"[WorkflowEngine] 实例恢复失败（按空实例启动）：{type(exc).__name__}: {exc}")
 
     # ── 插件模板注册（安全约束由内核执行，插件层无权绕过）──────────
     # 高危工具：凡是"写盘 / 删除 / 执行命令 / 导出文件"的步骤，无论插件声明什么，
@@ -299,6 +406,7 @@ class WorkflowEngine:
         instance_id = instance_id or str(uuid.uuid4())[:8]
         import copy
         instance = copy.deepcopy(template)
+        instance.origin_template_id = template_id   # 记住来源模板（实例 id 会覆盖 template_id）
         instance.template_id = instance_id
         # 应用自定义名称
         if custom_name and custom_name.strip():
@@ -314,14 +422,23 @@ class WorkflowEngine:
             s.review_comment = ""
 
         self._instances[instance_id] = instance
+        self._save_instances()
         return instance
 
     def get_instance(self, instance_id: str) -> Optional[WorkflowTemplate]:
         return self._instances.get(instance_id)
 
+    def list_instances(self) -> List[Dict[str, str]]:
+        """列出全部实例（含从磁盘恢复的），供服务层接回"实例→模板"映射。"""
+        return [{"instance_id": iid,
+                 "template_id": getattr(inst, "origin_template_id", "") or "",
+                 "name": inst.name}
+                for iid, inst in self._instances.items()]
+
     def set_instance_context(self, instance_id: str, context: Dict[str, Any]):
         """设置工作流实例的上下文变量（如合同路径、项目路径）。"""
         self._instance_context[instance_id] = dict(context or {})
+        self._save_instances()          # 上下文影响后续步骤能否继续，随实例一并落盘
 
     def get_instance_context(self, instance_id: str) -> Dict[str, Any]:
         return self._instance_context.get(instance_id, {})
@@ -351,6 +468,7 @@ class WorkflowEngine:
         for step in instance.steps:
             if step.step_id == step_id and step.status == StepStatus.WAITING_APPROVAL:
                 step.approve(reviewer, comment)
+                self._save_instances()
                 try:
                     if self._after_approval_hook:
                         self._after_approval_hook(instance, step, True, reviewer, comment)
@@ -368,6 +486,7 @@ class WorkflowEngine:
         for step in instance.steps:
             if step.step_id == step_id and step.status == StepStatus.WAITING_APPROVAL:
                 step.reject(reviewer, comment)
+                self._save_instances()
                 try:
                     if self._after_approval_hook:
                         self._after_approval_hook(instance, step, False, reviewer, comment)
@@ -389,6 +508,7 @@ class WorkflowEngine:
             for s in instance.steps:
                 if s.status in (StepStatus.PENDING, StepStatus.WAITING_APPROVAL):
                     s.status = StepStatus.SKIPPED
+        self._save_instances()
 
     def execute_step(self, instance_id: str, step_id: str,
                      context: Dict[str, Any] = None) -> Dict[str, Any]:
@@ -484,6 +604,7 @@ class WorkflowEngine:
                 result.setdefault("summary", f"{step.name} 执行成功")
 
             step.complete(result)
+            self._save_instances()
             # 执行成功回调
             try:
                 if self._after_step_hook:
@@ -558,10 +679,13 @@ class WorkflowEngine:
             approval_type=ApprovalType.MANUAL,  # 生成报告需审批
         ))
         contract_template.add_step(WorkflowStep(
-            name="导出PDF报告",
-            description="将审查意见导出为PDF文件",
+            # ★ 旧步骤名叫"导出PDF报告"、参数 format=pdf，但内核实际只会写出一个 .md 文件
+            #   （pdf 掉进默认分支）——名字与产物不符。现在如实导出 Markdown；
+            #   export_file 对不支持的格式会直接报错而不是货不对板。
+            name="导出审查报告",
+            description="将审查意见导出为 Markdown 文件（如需 PDF，可打开 HTML/MD 后自行打印）",
             tool_name="export_file",
-            tool_args={"format": "pdf"},
+            tool_args={"format": "md"},
             approval_type=ApprovalType.MANUAL,  # 导出文件需审批
         ))
         self._templates["wf_contract_review"] = contract_template
@@ -988,38 +1112,40 @@ def init_workflow_integration(engine: WorkflowEngine):
 
     # 3.2 query_history / collect records（周报模板用）-> 读最近审计日志
     def _h_query_history(args: dict) -> dict:
+        """读取最近的审计记录（真实数据，绝不编造）。
+
+        ★ 修掉的三处历史缺陷（实测确认，不是猜测）：
+          ① 读错字段：AuditEntry 没有 description 属性（真实字段是 message）；
+          ② 枚举假设错误：AuditEntry 在内存里把 event_type/severity 存成**字符串**
+            （构造函数里就转了 .value），旧代码却按 Enum 取 .value——只要审计里真有数据
+            就必然抛 AttributeError，然后掉进"兜底"分支返回**编造的示例记录**。
+            也就是说旧版这个功能从未真正收集过审计记录，永远返回假数据；
+          ③ 空审计/失败时编造示例记录顶包。现在：审计为空如实返回空，读取失败如实报错。
+        """
         try:
-            if HAS_AUDIT:
-                audit = AuditLog()
-                entries_list = getattr(audit, 'entries', None) or getattr(audit, '_entries', [])
-                recent = entries_list[-50:] if entries_list else []
-                items = [{"t": e.timestamp, "event": e.event_type.value,
-                          "severity": e.severity.value,
-                          "desc": (getattr(e, 'description', '') or '')[:120]}
-                         for e in recent]
-            else:
-                items = [{"t": _dt.now().isoformat(), "event": "info",
-                          "desc": "示例会话: 审计日志集成未启用"}]
+            if not HAS_AUDIT:
+                return {"ok": True, "tool": "query_history", "items": [], "count": 0,
+                        "empty": True,
+                        "summary": "审计日志组件未启用，无历史记录可收集"}
+            audit = AuditLog()
+            entries_list = getattr(audit, 'entries', None) or getattr(audit, '_entries', [])
+            recent = entries_list[-50:] if entries_list else []
+            items = [{"t": e.timestamp,
+                      "event": str(getattr(e.event_type, "value", e.event_type) or ""),
+                      "severity": str(getattr(e.severity, "value", e.severity) or ""),
+                      "desc": (getattr(e, 'message', '') or '')[:120]}
+                     for e in recent]
             if not items:
-                # 没有审计数据也给两条示例，确保周报内容不空
-                items = [
-                    {"t": _dt.now().isoformat(), "event": "tool_call", "severity": "info",
-                     "desc": "调用文件读取工具完成文档解析"},
-                    {"t": _dt.now().isoformat(), "event": "session_end", "severity": "info",
-                     "desc": "会话完成，产出结构化数据3份"},
-                ]
+                return {"ok": True, "tool": "query_history", "items": [], "count": 0,
+                        "empty": True,
+                        "summary": "审计日志暂无记录（刚安装或已被清理），后续步骤将基于空记录生成"}
             return {"ok": True, "tool": "query_history",
                     "items": items, "count": len(items),
                     "summary": f"收集到 {len(items)} 条最近记录"}
         except Exception as e:
-            # 失败也给示例数据，不影响流程
-            import traceback
-            items = [
-                {"t": _dt.now().isoformat(), "event": "error", "severity": "warning",
-                 "desc": f"query_history fallback: {str(e)[:60]}"},
-            ]
-            return {"ok": True, "tool": "query_history", "items": items, "count": 1,
-                    "summary": f"兜底收集 {len(items)} 条记录"}
+            # 读取失败如实上报失败（步骤会被标为失败并展示原因），不拿示例数据顶包
+            return {"ok": False, "tool": "query_history",
+                    "error": f"读取审计日志失败：{type(e).__name__}: {str(e)[:80]}"}
 
     engine.register_execution_handler("query_history", _h_query_history)
 
@@ -1316,7 +1442,15 @@ def init_workflow_integration(engine: WorkflowEngine):
 
     # 3.8 export_file：真正把报告写入磁盘
     def _h_export_file(args: dict, context: dict) -> dict:
+        # ★ 格式白名单：内核实际能渲染的只有这几种。旧实现对 "pdf" 会掉进 md 分支、
+        #   写出一个 .md 文件——步骤名叫"导出PDF"，产物却是 Markdown，属于误导。
+        #   现在不支持的格式如实报错（写清支持哪些），绝不再"能跑但货不对板"。
+        supported = ("md", "html", "json", "docx", "doc")
         fmt = str(args.get("format") or "md").lower()
+        if fmt not in supported:
+            return {"ok": False, "tool": "export_file",
+                    "error": (f"暂不支持导出为 {fmt}（当前支持：{', '.join(supported)}）。"
+                              f"如需 PDF，可先导出 HTML/Markdown 后自行打印为 PDF")}
         prev = context.get("__prev_results", []) if isinstance(context, dict) else []
 
         title, body = "工作流执行报告", ""

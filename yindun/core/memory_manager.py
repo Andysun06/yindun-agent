@@ -34,6 +34,17 @@ def _estimate_tokens(text: str) -> int:
     return max(1, cjk + other // 4)
 
 
+# 对外名称：这是全项目**唯一**的 token 估算口径（看板展示与摘要压缩共用）。
+# 此前看板用 len//2、记忆模块用本函数，两套口径数字对不上（P2-11）。
+def estimate_tokens(text: str) -> int:
+    return _estimate_tokens(text)
+
+
+# 触发历史摘要压缩的默认阈值。agent_worker 的构建参数与界面的说明文字都引用这一个常量，
+# 避免"阈值 5000 / 说明 8192 / 上下文窗口 16384"各写一个数、彼此对不上。
+DEFAULT_MAX_HISTORY_TOKENS = 5000
+
+
 def _count_message_tokens(msg: BaseMessage) -> int:
     """估算单条消息的 token 数（内容 + 角色标记开销约 4 token）"""
     content = msg.content if isinstance(msg.content, str) else str(msg.content)
@@ -58,7 +69,7 @@ class SummarizableChatHistory(BaseChatMessageHistory):
         "以便后续追问能据此回溯。只输出总结文本，不要附加任何额外说明：\n\n"
     )
 
-    def __init__(self, max_tokens: int = 5000):
+    def __init__(self, max_tokens: int = DEFAULT_MAX_HISTORY_TOKENS):
         super().__init__()
         self._messages: list[BaseMessage] = []
         self.max_tokens = max_tokens
@@ -319,7 +330,7 @@ class SummarizableChatHistory(BaseChatMessageHistory):
         return result
 
     @classmethod
-    def from_dict_list(cls, messages: list[dict], max_tokens: int = 5000) -> "SummarizableChatHistory":
+    def from_dict_list(cls, messages: list[dict], max_tokens: int = DEFAULT_MAX_HISTORY_TOKENS) -> "SummarizableChatHistory":
         """从 chat_sessions.json 的消息列表恢复实例。支持 Human/AIMessage/ToolMessage。"""
         from langchain_core.messages import ToolMessage
         instance = cls(max_tokens=max_tokens)

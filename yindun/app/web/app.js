@@ -189,7 +189,9 @@
     $("stat-model").textContent = model.length > 24 ? model.slice(0, 22) + "…" : model;
     $("stat-tools").textContent = `工具 ${(payload && payload.tool_calls) || 0}`;
     const tokens = (payload && payload.context_tokens) || 0;
-    $("stat-tokens").textContent = `上下文 ${tokens >= 1000 ? (tokens / 1000).toFixed(1) + "k" : tokens}`;
+    const limit = (payload && payload.context_limit) || 5000;
+    $("stat-tokens").textContent = `上下文 ${tokens >= 1000 ? (tokens / 1000).toFixed(1) + "k" : tokens}/${limit >= 1000 ? (limit / 1000).toFixed(0) + "k" : limit}`;
+    $("stat-tokens").title = `按中英文分权重估算的上下文占用；超过 ${limit} 会触发历史摘要压缩（估算口径与摘要压缩一致）`;
     renderPosture(payload);
   }
 

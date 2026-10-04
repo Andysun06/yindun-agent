@@ -311,6 +311,13 @@ class AgentService:
         if self._wf_engine is None:
             from yindun.core.workflow import get_workflow_engine
             self._wf_engine = get_workflow_engine()
+            # 实例现在会从磁盘恢复（重启不丢）：把"实例→模板"映射接回来，
+            # 否则恢复出来的实例在界面上显示为"未跟踪"，没法继续执行/审批。
+            try:
+                for item in self._wf_engine.list_instances():
+                    self._wf_instances.setdefault(item["instance_id"], item["template_id"])
+            except Exception as exc:
+                print(f"[AgentService] 同步工作流实例映射失败：{exc}")
         return self._wf_engine
 
     def workflow_templates(self) -> List[Dict[str, Any]]:
@@ -995,12 +1002,16 @@ class AgentService:
         worker = worker or self._worker
         tool_calls = getattr(worker, "tool_call_count", 0) if worker else 0
         messages = getattr(worker, "result_messages", []) if worker else []
-        context_tokens = sum(len(str(m.get("content", ""))) for m in messages) // 2
+        # ★ 用记忆模块的中英文感知估算器（全项目唯一口径）：
+        #   旧实现 len//2 与触发摘要压缩的估算器不是一套，看板数字和"何时压缩"对不上。
+        from yindun.core.memory_manager import DEFAULT_MAX_HISTORY_TOKENS, estimate_tokens
+        context_tokens = sum(estimate_tokens(str(m.get("content", ""))) for m in messages)
         return {
             "busy": self.busy,
             "session_id": session_id,
             "tool_calls": tool_calls,
             "context_tokens": context_tokens,
+            "context_limit": DEFAULT_MAX_HISTORY_TOKENS,
             "message_count": len(messages),
             "model": self.settings.get("model"),
             "privacy": bool(self.settings.get("privacy", True)),
