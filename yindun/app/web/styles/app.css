@@ -366,6 +366,10 @@ html[data-theme="dark"] .chain-badge--ok { color: var(--accent-300); background:
 .plugin-cfg__ops { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
 .plugin-cfg__ops .field__hint { flex: 1; min-width: 0; }
 .panel__actions { display: flex; align-items: center; gap: 2px; }
+/* 链校验原因 + 可执行动作（只在需要时出现，平时不占位） */
+.chain-detail { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-2); }
+.chain-detail:empty { display: none; }
+.chain-detail__text { font-size: var(--fs-meta); color: var(--text-3); line-height: 1.65; }
 
 /* ── 外部算力 ────────────────────────────────────── */
 .cm-list { display: flex; flex-direction: column; margin-top: var(--sp-3); }

@@ -34,7 +34,11 @@ from yindun.utils.document_parser import extract_file_text
 # 占位符解析正则：兼容新旧两套格式
 #   旧格式 [PHONE_0]       → group(3) 为 None
 #   新格式 [PHONE_0_a3f9]  → group(3) 为 nonce（含 4 位随机 nonce）
-_PLACEHOLDER_RE = re.compile(r"\[([A-Z]+)_(\d+)(?:_([a-z0-9]{4}))?\]")
+_PLACEHOLDER_RE = re.compile(r"\[([A-Z][A-Z0-9_]*)_(\d+)(?:_([a-z0-9]{4}))?\]")
+# ★ 类型段必须允许下划线与数字：内核实体里有 MEDICAL_RECORD / IDCARD15 / PRIVATE_KEY /
+#   ACCESS_TOKEN，插件补充识别的实体是 PLUGIN_*。旧正则 [A-Z]+ 匹配不到这些名字，后果是
+#   检索时它们既不参与全局重编号、也不带隔离前缀 —— 多文档检索时可能把 A 文档的真实值
+#   还原到 B 文档的同名占位符上（串值），KB_ 隔离形同虚设。
 
 
 class KnowledgeBase:
@@ -139,6 +143,39 @@ class KnowledgeBase:
     # ──────────────────────────────────────────
     # 1. 入库：文档 → 切块 → 脱敏 → 向量化 → 存储
     # ──────────────────────────────────────────
+    # ──────────────────────────────────────────
+    # 文本管线：整篇脱敏 → 切块 → 每块映射（与向量库解耦，可独立测试）
+    # ──────────────────────────────────────────
+    @classmethod
+    def mask_and_split(cls, full_text: str, engine):
+        """把一篇原文变成"可直接入库的脱敏分块"。
+
+        顺序不可颠倒：**先整篇脱敏，再切块**。
+        旧实现是"先切块、再逐块脱敏"，任何长于 CHUNK_SIZE 的实体（PEM 私钥、长连接串、
+        大段 base64）会被切碎，碎片两边都匹配不到正则，于是明文碎片进了向量库。
+        整篇脱敏后长实体已被单个占位符替换，再切块就不可能把它切碎。
+
+        返回 (chunks, chunk_mappings, stats)：
+          · chunks          已脱敏的文本块
+          · chunk_mappings  每块只含"本块真的出现"的占位符映射（跨块不串值，体积也更小）
+          · stats           整篇的脱敏类型统计
+        """
+        anon_full, full_mapping = engine.anonymize(full_text)
+        stats = dict(engine.get_last_stats())
+        from langchain_text_splitters import RecursiveCharacterTextSplitter   # 延迟导入：不拉重依赖
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=cls.CHUNK_SIZE,
+            chunk_overlap=cls.CHUNK_OVERLAP,
+            separators=["\n\n", "\n", "。", "！", "？", "；", ".", "!", "?", ";", " ", ""],
+        )
+        chunks = splitter.split_text(anon_full)
+        mappings = []
+        for chunk_text in chunks:
+            mappings.append({m.group(0): full_mapping[m.group(0)]
+                             for m in _PLACEHOLDER_RE.finditer(chunk_text)
+                             if m.group(0) in full_mapping})
+        return chunks, mappings, stats
+
     def add_document(self, file_path: str) -> dict:
         """
         将一个文档加入知识库。
@@ -151,7 +188,6 @@ class KnowledgeBase:
         """
         with self._lock:
             self._ensure_ready()
-            from langchain_text_splitters import RecursiveCharacterTextSplitter
 
             file_name = os.path.basename(file_path)
             if not os.path.exists(file_path):
@@ -165,46 +201,38 @@ class KnowledgeBase:
             if full_text.startswith("[文档解析失败"):
                 raise RuntimeError(full_text)
 
-            # 2. 切块
-            splitter = RecursiveCharacterTextSplitter(
-                chunk_size=self.CHUNK_SIZE,
-                chunk_overlap=self.CHUNK_OVERLAP,
-                separators=["\n\n", "\n", "。", "！", "？", "；", ".", "!", "?", ";", " ", ""],
-            )
-            chunks = splitter.split_text(full_text)
+            # 2. ★ 整篇脱敏 → 切块（顺序不可颠倒，见 mask_and_split 的说明）
+            chunks, chunk_mappings, total_sensitive = self.mask_and_split(full_text, self.engine)
             if not chunks:
                 raise RuntimeError(f"切块后无有效内容: {file_name}")
 
             # 3. 同名文档先删旧数据（去重）
             self._remove_by_source(file_name)
 
-            # 4. 逐块脱敏 + 准备入库数据
+            # 4. 准备入库数据
+            #    chunk id 用文件名（而非完整路径）派生：避免把本机目录结构写进向量库。
+            #    这里的哈希只用来生成稳定的 chunk id，不承担任何完整性校验（校验另有审计哈希链）。
             documents = []
             metadatas = []
             ids = []
-            total_sensitive = {}
-            file_hash = hashlib.md5(file_path.encode("utf-8")).hexdigest()[:8]
+            file_hash = hashlib.sha256(file_name.encode("utf-8")).hexdigest()[:8]
 
             for idx, chunk_text in enumerate(chunks):
-                # 每块独立脱敏
-                anon_text, mapping = self.engine.anonymize(chunk_text)
-                # 统计脱敏情况
-                for k, v in self.engine.get_last_stats().items():
-                    total_sensitive[k] = total_sensitive.get(k, 0) + v
-
+                chunk_mapping = chunk_mappings[idx]
                 chunk_id = f"{file_hash}_{idx:04d}"
-                documents.append(anon_text)
+                documents.append(chunk_text)
                 # 把整个 mapping dict 序列化后再整体加密，metadata 只存密文
-                mapping_json = json.dumps(mapping, ensure_ascii=False)
+                mapping_json = json.dumps(chunk_mapping, ensure_ascii=False)
                 encrypted_mapping = self._crypto.encrypt(mapping_json)
                 metadatas.append({
                     "source": file_name,
-                    "file_path": file_path,
+                    # ★ 不写 file_path：向量库属落盘面，完整路径会泄露本机目录结构，
+                    #   而它从来没被读过（列表/删除都只按 source 文件名）。
                     "chunk_index": idx,
                     "total_chunks": len(chunks),
                     "added_at": int(time.time()),
                     "mapping_encrypted": encrypted_mapping,
-                    "has_mapping": bool(mapping),  # 标记是否有敏感数据，便于检索时快速判断
+                    "has_mapping": bool(chunk_mapping),  # 标记是否有敏感数据，便于检索时快速判断
                 })
                 ids.append(chunk_id)
 

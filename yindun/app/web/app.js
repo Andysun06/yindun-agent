@@ -446,10 +446,30 @@
     state.audit = data || { stats: {}, chain_ok: false, entries: [] };
     const stats = state.audit.stats || {};
     const ok = !!state.audit.chain_ok;
-    $("audit-chain").className = "chain-badge " + (ok ? "chain-badge--ok" : "chain-badge--bad");
-    $("audit-chain").textContent = ok
-      ? "✔ 哈希链完整性验证通过（HMAC-SHA256 链式校验）"
-      : "⚠︎ 哈希链校验未通过（存在被篡改或密钥不匹配的可能）";
+    const badge = $("audit-chain");
+    badge.className = "chain-badge " + (ok ? "chain-badge--ok" : "chain-badge--bad");
+    badge.textContent = ok
+      ? "✔ 哈希链完整性验证通过（HMAC-SHA256 链式校验 + 链锚点）"
+      : "⚠︎ 哈希链校验未通过";
+    // 校验未通过时给出**人话原因**，并在"锚点缺失"这一种情况下给出可执行动作。
+    // 只显示 ❌ 会让人无从下手：是数据坏了、还是刚升级需要重建锚点，必须说清楚。
+    const reason = String(stats.chain_reason || "");
+    const anchor = String(stats.chain_anchor || "none");
+    const box = $("audit-chain-detail");
+    if (box) {
+      const needsAnchor = !ok && reason.includes("锚点缺失");
+      box.innerHTML = (ok && !reason) ? "" :
+        `<span class="chain-detail__text">${esc(reason || "校验未通过")}</span>` +
+        (needsAnchor
+          ? `<button class="btn btn--ghost" id="btn-reanchor" title="把当前链作为新的信任起点。确认后，此前的尾部截断将无法再被发现">重建锚点（接受当前链）</button>`
+          : "");
+      const btn = $("btn-reanchor");
+      if (btn) btn.onclick = async () => {
+        const res = await call("audit_reanchor", "用户在审计面板确认重建锚点");
+        toast(res && res.ok ? `已重建锚点（当前 ${res.count} 条）` : `重建失败：${(res && res.error) || "未知原因"}`);
+        renderAudit(await call("audit_snapshot", 300));
+      };
+    }
     const num = (v) => (v === undefined || v === null ? "—" : String(v));
     const pairs = [
       ["总日志数", num(stats.total_entries)],

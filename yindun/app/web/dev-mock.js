@@ -43,6 +43,7 @@
     chain_ok: true,
     stats: { total_entries: 128, tool_calls: 23, privacy_events: 41, approvals: 6,
              llm_calls: 18, chain_valid: true,
+             chain_reason: "", chain_anchor: "verified", chain_legacy: 0,
              by_type: { tool_call: 23, privacy_sensitive: 41, access_control: 6, llm_input: 18 },
              by_severity: { info: 114, warning: 12, security: 2 } },
     entries: [
@@ -53,6 +54,15 @@
       { time: "2026-10-03T10:08:55", type: "privacy_detected", severity: "info", message: "检测到敏感实体 5 类：NAME/PHONE/MONEY/BANKCARD/ADDRESS", preview: "", hash: "cd77b2190ae4f38a", prev: "2b90fa4c17de6a55" },
     ],
   };
+  // 预览"链校验未通过 + 需要重建锚点"这一态（加 #mock-chainbad）
+  const auditBad = JSON.parse(JSON.stringify(audit));
+  auditBad.chain_ok = false;
+  auditBad.stats.chain_valid = false;
+  auditBad.stats.chain_anchor = "none";
+  auditBad.stats.chain_reason =
+    "锚点缺失但审计链非空 —— 审计目录可能被整体替换、锚点被删除，或这是首次升级" +
+    "（可在审计面板点「重建锚点」确认接受当前链）";
+  const auditData = () => Promise.resolve(location.hash.indexOf("chainbad") >= 0 ? auditBad : audit);
 
   const kb = {
     available: true,
@@ -65,8 +75,7 @@
     ],
     error: null,
   };
-  const capOf = (hook, summary, detail) => [{ hook, kind: hook === "advisory_for_approval" ? "advisory" : "additive", summary, detail, timeout_cap: 5 }];
-  const plugins = [
+  const capOf = (hook, summary, detail) => [{ hook, kind: hook === "advisory_for_approval" ? "advisory" : "additive", summary, detail, timeout_cap: 5 }];  const plugins = [
     { id: "custom_dict", name: "自定义敏感词表", version: "0.1.0",
       description: "把本单位的项目代号、内部称谓、专用术语加入脱敏范围：命中的词在送往模型/外部算力之前被替换为占位符，还原仍只在本机完成。",
       source: "builtin", hooks: ["recognizer"],
@@ -212,7 +221,8 @@
     }),
     plugin_config_write: () => Promise.resolve({ ok: true, bytes: 128 }),
     window_action: noop,
-    audit_snapshot: () => Promise.resolve(audit),
+    audit_snapshot: () => auditData(),
+    audit_reanchor: () => Promise.resolve({ ok: true, count: 128 }),
     audit_export: () => Promise.resolve("（预览模式）audit_report_demo.json"),
     audit_export_formats: () => Promise.resolve([
       { format: "json", label: "JSON", source: "内核", plugin_id: "" },

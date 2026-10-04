@@ -130,10 +130,14 @@ class JsApi:
 
         注意：`get_stats()` 的 by_type/by_severity 以枚举为键，直接返回无法 JSON 序列化，
         这里统一转成字符串键的普通字典再交给前端。
+
+        链校验用 `verify_chain_detail()`：界面要能直接显示**人话原因**
+        （"尾部被截断""锚点缺失""疑似抹掉 HMAC 标记"），而不是只给一个 ❌。
         """
         try:
             from yindun.core.audit_log import AuditLog
             log = AuditLog()
+            detail = log.verify_chain_detail()
             raw_stats = log.get_stats() or {}
             by_type = {str(getattr(k, "value", k)): int(v)
                        for k, v in (raw_stats.get("by_type") or {}).items()}
@@ -141,7 +145,11 @@ class JsApi:
                            for k, v in (raw_stats.get("by_severity") or {}).items()}
             stats = {
                 "total_entries": int(raw_stats.get("total_entries", 0)),
-                "chain_valid": bool(raw_stats.get("chain_valid", False)),
+                # 以 verify_chain_detail 的结论为准（get_stats 内部也会校验，但拿不到原因）
+                "chain_valid": bool(detail.get("valid")),
+                "chain_reason": str(detail.get("reason") or ""),
+                "chain_anchor": str(detail.get("anchor") or "none"),
+                "chain_legacy": int(detail.get("legacy", 0)),
                 "tool_calls": by_type.get("tool_call", 0),
                 "privacy_events": sum(v for k, v in by_type.items() if k.startswith("privacy")),
                 "approvals": by_type.get("access_control", 0),
@@ -175,6 +183,18 @@ class JsApi:
     def audit_export_formats(self):
         """可用导出格式：内核自带 + 已启用插件贡献的（界面据此生成菜单）。"""
         return self._svc.audit_export_formats()
+
+    def audit_reanchor(self, reason: str = ""):
+        """显式重建审计链锚点（升级/拷贝审计目录后的确认动作）。
+
+        界面必须在用户点确认后才调用：确认之后，此前发生的"尾部截断"将无法再被发现——
+        这一点由调用方负责向用户讲清楚（按钮文案里已写明）。
+        """
+        try:
+            from yindun.core.audit_log import AuditLog
+            return AuditLog().reanchor(str(reason or ""))
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     # ── 知识库（脱敏 RAG）─────────────────────────
     def kb_status(self):

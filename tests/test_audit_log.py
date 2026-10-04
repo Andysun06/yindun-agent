@@ -21,6 +21,14 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 仓库根目录
 
+# ★ 审计 HMAC 密钥与链锚点都落在【用户目录】(%APPDATA%/Yindun)。测试必须把它们也隔离到
+#   临时目录：否则跑一次测试就会往真实用户目录写锚点（也可能动到真实密钥）。
+_TEST_APPDATA = os.path.join(tempfile.gettempdir(), "yindun_test_audit_appdata")
+if os.path.exists(_TEST_APPDATA):
+    shutil.rmtree(_TEST_APPDATA, ignore_errors=True)
+os.makedirs(_TEST_APPDATA, exist_ok=True)
+os.environ["APPDATA"] = _TEST_APPDATA
+
 # 临时审计日志目录，测试后清理
 _TEST_AUDIT_DIR = os.path.join(tempfile.gettempdir(), "yindun_test_audit")
 os.environ["YINDUN_AUDIT_TEST_DIR"] = _TEST_AUDIT_DIR
@@ -290,6 +298,124 @@ def test_14_tool_result_caller_consistency():
     print(f"✅ 测试14通过: {len(call_lines)} 处 log_tool_result 调用点参数顺序均正确")
 
 
+# ══════════════════════════════════════════════════════════════
+# 链锚点加固（防"降级改写"与"尾部截断"）
+#
+# 背景：哈希链只能证明"中间没被改"。旧实现里 legacy（无 HMAC）标记是**从文件里读的**，
+# 攻击者抹掉 hash_algo 再用无密钥 sha256 重算整链即可通过校验；尾部截断也无人察觉。
+# 现在用 HMAC 锚点（条数 + 链头 + 历史 legacy 前缀长度）把这两条路堵上。
+# ══════════════════════════════════════════════════════════════
+def _fresh_chain(count: int = 5):
+    """重建一条干净的链（清掉链文件与锚点后重新加载单例）。"""
+    from pathlib import Path
+    log = AuditLog()
+    chain = Path(_TEST_AUDIT_DIR) / "audit_chain.json"
+    anchor = log._anchor_path()
+    for path in (chain, anchor):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    AuditLog._instance = None
+    log = AuditLog()
+    for i in range(count):
+        log.add_entry(AuditEventType.TOOL_CALL, AuditSeverity.INFO, f"锚点测试事件{i}", {"i": i})
+    return log
+
+
+def _reload_singleton():
+    AuditLog._instance = None
+    return AuditLog()
+
+
+def _chain_path():
+    from pathlib import Path
+    return Path(_TEST_AUDIT_DIR) / "audit_chain.json"
+
+
+def test_15_anchor_created_and_outside_audit_dir():
+    """测试15：正常写入会建立锚点，且锚点不在审计目录内（同盘就等于没做）"""
+    log = _fresh_chain(5)
+    detail = log.verify_chain_detail()
+    assert detail["valid"] is True, f"正常链应校验通过：{detail}"
+    assert detail["anchor"] == "verified", f"应已建立并校验锚点：{detail}"
+    anchor = log._anchor_path()
+    assert anchor.exists(), f"锚点文件应存在：{anchor}"
+    assert anchor.parent != log._storage_path, (
+        f"锚点必须放在密钥旁边（用户目录），不能与审计日志同盘：{anchor.parent} vs {log._storage_path}"
+    )
+    # 追加条目后锚点跟着刷新，仍应通过
+    log.add_entry(AuditEventType.TOOL_CALL, AuditSeverity.INFO, "追加一条")
+    assert _reload_singleton().verify_chain_detail()["valid"] is True, "追加后链应仍有效"
+    print(f"✅ 测试15通过: 锚点已建立在 {anchor.parent.name}/（审计目录之外），追加后仍有效")
+
+
+def test_16_downgrade_rewrite_is_detected():
+    """测试16：抹掉 HMAC 标记 + 无密钥重算整链（降级改写）必须被判无效"""
+    import hashlib
+    from yindun.core.audit_log import AuditEntry, _canonical
+
+    log = _fresh_chain(5)
+    data = json.loads(_chain_path().read_text(encoding="utf-8"))
+    prev = ""
+    for item in data:
+        item.pop("hash_algo", None)                       # 抹掉 HMAC 标记 → 变成 legacy
+        entry = AuditEntry.from_dict(item)
+        entry.entry_hash = hashlib.sha256(_canonical(entry, prev)).hexdigest()
+        item["entry_hash"] = entry.entry_hash
+        item["previous_hash"] = prev
+        prev = entry.entry_hash
+    _chain_path().write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    detail = _reload_singleton().verify_chain_detail()
+    assert detail["valid"] is False, f"降级改写必须被判无效，实际：{detail}"
+    assert "旧版条目" in detail["reason"] or "降级" in detail["reason"], detail["reason"]
+    print(f"✅ 测试16通过: 降级改写被识破 —— {detail['reason']}")
+
+
+def test_17_tail_truncation_is_detected():
+    """测试17：删掉尾部条目（掩盖最近行为）必须被判无效"""
+    log = _fresh_chain(5)
+    data = json.loads(_chain_path().read_text(encoding="utf-8"))
+    _chain_path().write_text(json.dumps(data[:-2], ensure_ascii=False, indent=2), encoding="utf-8")
+
+    detail = _reload_singleton().verify_chain_detail()
+    assert detail["valid"] is False, f"尾部截断必须被判无效，实际：{detail}"
+    assert "截断" in detail["reason"], detail["reason"]
+    print(f"✅ 测试17通过: 尾部截断被识破 —— {detail['reason']}")
+
+
+def test_18_anchor_tamper_is_detected():
+    """测试18：改写锚点（把条数改小以掩盖截断）必须被判无效"""
+    log = _fresh_chain(5)
+    anchor = log._anchor_path()
+    payload = json.loads(anchor.read_text(encoding="utf-8"))
+    payload["count"] = 1                                   # 只改内容，不重签
+    anchor.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    detail = _reload_singleton().verify_chain_detail()
+    assert detail["valid"] is False, f"锚点被改写必须被判无效，实际：{detail}"
+    assert "锚点" in detail["reason"], detail["reason"]
+    print(f"✅ 测试18通过: 锚点改写被识破 —— {detail['reason']}")
+
+
+def test_19_reanchor_after_explicit_confirmation():
+    """测试19：锚点缺失（升级/拷贝审计目录）时判无效，显式确认后可重建"""
+    log = _fresh_chain(5)
+    log._anchor_path().unlink()                            # 模拟"锚点被删/首次升级"
+
+    detail = _reload_singleton().verify_chain_detail()
+    assert detail["valid"] is False and "锚点缺失" in detail["reason"], f"锚点缺失应判无效：{detail}"
+
+    log = _reload_singleton()
+    result = log.reanchor(reason="单元测试：确认接受当前链")
+    assert result.get("ok") is True, f"链自洽时重建锚点应成功：{result}"
+    detail = _reload_singleton().verify_chain_detail()
+    assert detail["valid"] is True and detail["anchor"] == "verified", f"重建后应恢复有效：{detail}"
+    print("✅ 测试19通过: 锚点缺失被判无效 → 显式重建后恢复有效（且重建动作本身写入审计）")
+
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("隐盾全链路审计黑匣子 - 功能验证测试")
@@ -310,6 +436,11 @@ if __name__ == "__main__":
         test_12_access_control_log,
         test_13_tool_result_contract,
         test_14_tool_result_caller_consistency,
+        test_15_anchor_created_and_outside_audit_dir,
+        test_16_downgrade_rewrite_is_detected,
+        test_17_tail_truncation_is_detected,
+        test_18_anchor_tamper_is_detected,
+        test_19_reanchor_after_explicit_confirmation,
     ]
     passed = 0
     failed = 0

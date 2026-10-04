@@ -229,6 +229,92 @@ class AuditLog:
             except Exception as e:
                 print(f"[AuditLog] 审计日志加载失败：{e}")
 
+    # ── 链锚点：防"整链改写 + 尾部截断" ────────────────
+    # 为什么需要它：哈希链只能证明"中间没被改"，防不住两种攻击——
+    #   ① 降级改写：把条目里的 hash_algo 抹掉（legacy 标记是**从文件里读的**），
+    #      再用无密钥的 sha256 重算整链，校验就会"通过"；
+    #   ② 尾部截断：删掉最后若干条（或整份文件），剩下的链依然自洽。
+    # 锚点把"最后一次已知的条数、链头、历史 legacy 前缀长度"用 HMAC 固定下来。
+    #
+    # ★ 锚点放在**密钥旁边**（用户目录），不放在审计目录里：与密钥同一个理由——
+    #   锚点若与它要保护的审计日志同盘，攻击者删掉锚点就能让"截断"重新不可发现，等于白做。
+    #   文件名带审计目录指纹：同一台机器上可能有多份便携副本，各自的链互不干扰。
+    #   残余局限（如实记录）：能同时改写用户目录的攻击者（≈本机已被完全控制）
+    #   仍可连锚点一起重做——任何纯本地审计都挡不住这一层。
+    def _anchor_path(self) -> Path:
+        fingerprint = hashlib.sha256(str(self._storage_path).encode("utf-8")).hexdigest()[:8]
+        return _audit_key_file().parent / f"audit_chain.anchor.{fingerprint}.json"
+
+    @staticmethod
+    def _anchor_payload(count: int, head: str, legacy_prefix: int) -> str:
+        """锚点被签名的内容（字段固定、顺序固定，避免 JSON 序列化差异导致校验漂移）。"""
+        return json.dumps({"count": int(count), "head": str(head),
+                           "legacy_prefix": int(legacy_prefix)},
+                          ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    def _read_anchor(self) -> Optional[dict]:
+        """读取并校验锚点。返回 None 表示"没有锚点"；返回 {"tampered": True} 表示锚点本身不可信。"""
+        path = self._anchor_path()
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"[AuditLog] 锚点文件解析失败：{type(exc).__name__}: {exc}")
+            return {"tampered": True, "reason": f"锚点文件损坏：{exc}"}
+        key = _get_hmac_key()
+        if key is None:
+            return {"tampered": True, "reason": "密钥缺失，无法校验锚点"}
+        payload = self._anchor_payload(data.get("count", -1), data.get("head", ""),
+                                      data.get("legacy_prefix", 0))
+        expected = hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(str(data.get("mac", "")), expected):
+            return {"tampered": True, "reason": "锚点签名不匹配（可能被改写）"}
+        return {"count": int(data.get("count", 0)), "head": str(data.get("head", "")),
+                "legacy_prefix": int(data.get("legacy_prefix", 0))}
+
+    def _write_anchor(self) -> None:
+        """按当前链状态刷新锚点（追加条目后调用）。"""
+        key = _get_hmac_key()
+        if key is None:
+            return
+        count = len(self._entries)
+        head = self._entries[-1].entry_hash if count else ""
+        legacy_prefix = 0
+        for entry in self._entries:            # 只有"开头的连续 legacy 段"才算历史前缀
+            if not entry.legacy:
+                break
+            legacy_prefix += 1
+        payload = self._anchor_payload(count, head, legacy_prefix)
+        mac = hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        try:
+            path = self._anchor_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps({"count": count, "head": head, "legacy_prefix": legacy_prefix, "mac": mac},
+                           ensure_ascii=False, indent=2),
+                encoding="utf-8")
+        except Exception as exc:
+            print(f"[AuditLog] 锚点写入失败（下次启动将无法发现截断）：{exc}")
+
+    def reanchor(self, reason: str = "") -> dict:
+        """显式重建锚点（用于迁移/拷贝审计目录后的确认动作）。
+
+        只在"链自洽但锚点缺失"时才有意义：这是把当前链作为新的信任起点。
+        调用方（界面）必须让用户明确知道"确认之后，此前的截断将无法再被发现"。
+        """
+        detail = self.verify_chain_detail(allow_missing_anchor=True)
+        if not detail.get("valid"):
+            return {"ok": False, "error": detail.get("reason") or "链本身不自洽，拒绝重建锚点"}
+        self._write_anchor()
+        try:
+            self.add_entry(AuditEventType.ACCESS_CONTROL, AuditSeverity.WARNING,
+                           "审计链锚点已重建（确认接受当前链为新的信任起点）",
+                           {"reason": reason or "", "count": len(self._entries)})
+        except Exception:
+            pass
+        return {"ok": True, "count": len(self._entries)}
+
     def _save_logs(self):
         log_file = self._storage_path / "audit_chain.json"
         tmp_file = log_file.with_suffix(".json.tmp")
@@ -240,6 +326,8 @@ class AuditLog:
                     json.dumps([e.to_dict() for e in self._entries],
                                ensure_ascii=False, indent=2), encoding='utf-8')
                 os.replace(tmp_file, log_file)
+                # 链落盘与锚点刷新必须成对发生：否则新写入的条目会被下一次校验当成"截断"
+                self._write_anchor()
         except Exception as e:
             print(f"[AuditLog] 审计日志保存失败：{e}")
 
@@ -435,26 +523,91 @@ class AuditLog:
         return entry
 
     def verify_chain(self) -> bool:
+        """链完整性（兼容旧调用方）。判定细节见 verify_chain_detail()。"""
+        return bool(self.verify_chain_detail().get("valid"))
+
+    def verify_chain_detail(self, allow_missing_anchor: bool = False) -> dict:
+        """完整校验审计链，返回结论与**人话原因**（界面直接展示，不让人猜）。
+
+        判定规则（比旧实现严格，且规则本身可被测试锁住）：
+          1. 密钥缺失 → 无效（没有密钥就无法证明任何条目未被篡改）；
+          2. 锚点签名不匹配 → 无效（锚点被改写）；
+          3. 逐条重算哈希：HMAC 条目用 HMAC，legacy 条目用旧 sha256；
+          4. ★ legacy 条目只允许出现在**锚点固定的历史前缀**内。
+             旧实现只要文件里写着 legacy 就用弱校验 —— 而 legacy 标记是从文件里读的，
+             攻击者抹掉 hash_algo 再重算整链即可"通过校验"（降级改写）。现在这样做会因
+             "legacy 条数超过锚定的历史前缀"被判无效；
+          5. 锚点存在时：条数少于锚点记录 → 尾部被截断；锚点位置那条的哈希对不上 → 尾部被替换；
+          6. 锚点缺失但链非空 → 无效（审计目录被整体替换、或锚点被删）。
+             迁移/拷贝审计目录属于合法场景，用 `reanchor()` 显式确认后重建锚点。
+             `allow_missing_anchor=True` 供 reanchor 自身使用（此时跳过第 6 条）。
+        """
+        detail = {"valid": False, "total": len(self._entries), "legacy": 0,
+                  "legacy_prefix": 0, "anchor": "none", "reason": ""}
         key = _get_hmac_key()
         if key is None:
+            detail["reason"] = "密钥缺失，无法校验审计链（无法证明条目未被篡改）"
             print("[AuditLog] 审计链无法校验（密钥缺失）")
-            return False
+            return detail
+
+        anchor = self._read_anchor()
+        if anchor is not None and anchor.get("tampered"):
+            detail["anchor"] = "tampered"
+            detail["reason"] = anchor.get("reason") or "锚点不可信"
+            print(f"[AuditLog] 审计链校验失败：{detail['reason']}")
+            return detail
+
+        if anchor is None and self._entries and not allow_missing_anchor:
+            detail["reason"] = ("锚点缺失但审计链非空 —— 审计目录可能被整体替换、锚点被删除，"
+                               "或这是首次升级（可在审计面板点「重建锚点」确认接受当前链）")
+            print(f"[AuditLog] 审计链校验失败：{detail['reason']}")
+            return detail
+
+        legacy_total = sum(1 for e in self._entries if e.legacy)
+        detail["legacy"] = legacy_total
+        allowed_legacy = int(anchor.get("legacy_prefix", 0)) if anchor else 0
+        detail["legacy_prefix"] = allowed_legacy
+        detail["anchor"] = "verified" if anchor else "absent"
+
+        # 逐条重算哈希（legacy 条目仍按旧算法重算，但"能用弱校验"的资格受锚点限制）
         prev_hash = ""
-        warned_legacy = False
-        for entry in self._entries:
+        for index, entry in enumerate(self._entries):
             canonical = _canonical(entry, prev_hash)
             if entry.legacy:
-                # 旧版无 HMAC 条目：按旧 sha256 校验，并提示已降级
-                if not warned_legacy:
-                    print("[AuditLog] 发现旧版(无HMAC)审计条目，按旧 sha256 校验（已降级）")
-                    warned_legacy = True
+                if index >= allowed_legacy:
+                    detail["reason"] = (f"第 {index + 1} 条出现未受保护的旧版条目（超出锚定的历史前缀 "
+                                        f"{allowed_legacy} 条）—— 疑似抹掉 HMAC 标记后重算整链")
+                    print(f"[AuditLog] 审计链校验失败：{detail['reason']}")
+                    return detail
                 expected_hash = hashlib.sha256(canonical).hexdigest()
             else:
                 expected_hash = hmac.new(key, canonical, hashlib.sha256).hexdigest()
             if entry.entry_hash != expected_hash:
-                return False
+                detail["reason"] = f"第 {index + 1} 条哈希不匹配（该条内容被改动）"
+                print(f"[AuditLog] 审计链校验失败：{detail['reason']}")
+                return detail
             prev_hash = entry.entry_hash
-        return True
+
+        if anchor:
+            if len(self._entries) < int(anchor.get("count", 0)):
+                detail["reason"] = (f"条目数少于锚点记录（现有 {len(self._entries)} 条 / 锚点 "
+                                    f"{anchor.get('count')} 条）—— 尾部被截断")
+                print(f"[AuditLog] 审计链校验失败：{detail['reason']}")
+                return detail
+            anchor_count = int(anchor.get("count", 0))
+            if anchor_count > 0 and self._entries[anchor_count - 1].entry_hash != anchor.get("head"):
+                detail["reason"] = "锚点位置的链头不匹配 —— 尾部条目被替换或重排"
+                print(f"[AuditLog] 审计链校验失败：{detail['reason']}")
+                return detail
+
+        detail["valid"] = True
+        if anchor is None and self._entries:
+            # 仅 reanchor 路径会走到这里：显式确认后由调用方写入锚点
+            detail["anchor"] = "accepted_without_anchor"
+        if legacy_total:
+            detail["reason"] = (f"链自洽，但含 {legacy_total} 条旧版（无 HMAC）历史条目，"
+                                f"其真实性弱于 HMAC 条目")
+        return detail
 
     def get_entries(self, filters: dict = None) -> List[AuditEntry]:
         result = self._entries[:]
