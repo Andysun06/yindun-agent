@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """隐盾 — 🚀 全局点火总入口
 
-界面：**Web 界面**（pywebview + WebView2，本地文件加载、不起本地端口）。
+界面：**Web 界面**（pywebview + WebView2；前端 file:// 本地加载，js_api 桥经
+回环随机端口 + 随机会话 UUID，非本机进程无法调用）。
 
 历史说明：V3.3.2 之前有两套界面（PySide6 桌面版 + Web 版）。视图层重构完成后，
 Qt 界面已整体移除（`yindun/gui/`），本入口只负责启动 Web 界面。
