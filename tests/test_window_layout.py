@@ -166,6 +166,50 @@ check("Esc 可展开", 'e.key === "Escape" && miniOn()' in js)
 check("主输入与浮条共用同一个发送实现（避免两套行为漂移）",
       js.count("await sendText(text)") >= 2, f"sendText 调用次数 {js.count('await sendText(text)')}")
 
+# ── 4) 三栏可拖宽（V3.4.0 新增）────────────────────
+print("\n" + "=" * 78)
+print("【4】三栏宽度：拖拽手柄 / 上下限 / 持久化 / 与折叠共存")
+print("=" * 78)
+check("两侧各有一个拖拽手柄（含无障碍语义）",
+      html.count('class="col-resizer"') == 2
+      and 'data-resize="left"' in html and 'data-resize="right"' in html
+      and 'role="separator"' in html, str(html.count("col-resizer")))
+check("手柄绝对定位、不占栅格轨道（否则会多出隐式列）",
+      ".col-resizer {" in css and "position: absolute" in css and "z-index" in css)
+check("列宽只由 JS 写行内样式，CSS 里不再有折叠态的列宽规则（两套来源会互相覆盖）",
+      re.search(r"\.app\.is-(?:left|right)-collapsed[^{]*\{[^}]*grid-template-columns", css) is None,
+      "CSS 里仍存在 .app.is-*-collapsed 的 grid-template-columns 规则")
+check("存在明确的上下限与对话区保底",
+      "centerMin: 420" in js and "min: 200, max: 420" in js and "min: 300, max: 640" in js)
+check("拖拽监听挂在 window 上（指针移出手柄也不断）",
+      'window.addEventListener("pointermove", onMove)' in js
+      and "setPointerCapture(" not in js,
+      "仍依赖 setPointerCapture 或未把 move/up 挂到 window")
+check("拖动时关闭栅格过渡（否则手感发飘）", ".app.is-resizing { transition: none; }" in css)
+check("宽度写入 localStorage 并在启动时恢复",
+      'localStorage.setItem("yd_layout"' in js and "loadLayout()" in js)
+check("双击复位 + 方向键微调", 'handle.addEventListener("dblclick"' in js
+      and 'handle.addEventListener("keydown"' in js)
+check("自动收起不写偏好（临时变窄不该被永久记住）",
+      "setRightCollapsed(true, false)" in js and "persist = true" in js)
+check("窗口变宽时自动把右栏放回来（只对自动收起生效）",
+      "autoCollapsedRight" in js and "setRightCollapsed(false, false)" in js)
+check("提供只读布局快照供自动化校验", "window.__ydLayout = () =>" in js)
+
+# ── 5) 置顶即时生效（复测后的行为修正）──────────────
+print("\n" + "=" * 78)
+print("【5】置顶：运行时即时生效（不再要求重启）")
+print("=" * 78)
+check("桥接层在保存设置后立即写窗口标志",
+      "window.on_top = new_value" in webview_src and "即时应用置顶失败" in webview_src)
+check("界面不再声称「置顶需重启」",
+      "置顶（立即生效）" in html and "重启生效）" not in html.split("btn-pin")[1][:80])
+check("切换后按实际结果提示（含失败时的诚实降级）",
+      "已置顶显示（立即生效）" in js and "置顶切换失败" in js)
+check("设置面板的置顶开关同样即时生效",
+      "立即生效）</div>" in html and "save_settings" in webview_src
+      and "topmost" in webview_src.split("def save_settings")[1][:600])
+
 print("\n" + "=" * 78)
 if failures:
     print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))

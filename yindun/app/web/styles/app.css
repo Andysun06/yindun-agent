@@ -29,15 +29,29 @@ button { cursor: pointer; border: none; background: none; }
 
 /* ── 骨架 ─────────────────────────────────────────────── */
 .app {
+  position: relative;              /* 拖拽手柄按列边界绝对定位 */
   display: grid;
-  grid-template-columns: 248px minmax(0, 1fr) 400px;
+  grid-template-columns: 248px minmax(0, 1fr) 400px;   /* 初始值；运行时由 JS 写行内样式 */
   height: 100vh; overflow: hidden;
   transition: grid-template-columns 180ms var(--ease);   /* 折叠/展开有过渡 */
 }
-/* 折叠态直接写列宽，不用自定义属性间接传值（Chromium 不会因 var 变化重算栅格列） */
-.app.is-left-collapsed.is-right-collapsed { grid-template-columns: 0px minmax(0, 1fr) 0px; }
-.app.is-left-collapsed:not(.is-right-collapsed) { grid-template-columns: 0px minmax(0, 1fr) 400px; }
-.app.is-right-collapsed:not(.is-left-collapsed) { grid-template-columns: 248px minmax(0, 1fr) 0px; }
+/* ★ 列宽只由 JS 写行内 grid-template-columns，CSS 类不再各自定义列宽：
+   两套来源会互相覆盖，表现为"拖了没反应 / 折叠后又跳回来"。
+   is-left-collapsed / is-right-collapsed 仅作状态标记（供下面的样式与 JS 判定使用）。 */
+
+/* 拖拽手柄：贴在列边界上，不占栅格轨道 */
+.col-resizer {
+  position: absolute; top: 0; bottom: 0; width: 10px; z-index: 6;
+  cursor: col-resize; background: transparent; border: none; padding: 0;
+}
+.col-resizer::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 4px; width: 2px;
+  background: transparent; border-radius: 1px; transition: background 120ms var(--ease);
+}
+.col-resizer:hover::after, .col-resizer:focus-visible::after { background: var(--accent-300); }
+.col-resizer:focus-visible { outline: none; }
+.app.is-resizing { transition: none; }              /* 拖动时关掉过渡，手感才跟手 */
+.app.is-resizing, .app.is-resizing * { user-select: none; }
 
 /* 栏容器：折叠时裁切内容而不是压扁内容 */
 .side { overflow: hidden; min-width: 0; display: flex; }

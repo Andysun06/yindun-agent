@@ -226,14 +226,14 @@ class JsApi:
     def window_action(self, action: str) -> bool:
         """无边框模式下的窗口操作：minimize / toggle_top / close / mini / restore_window。
 
-        ★ 注意：`toggle_top` 只**更新设置**（下次启动生效），不在运行时改窗口置顶标志——
-        实测从 JS 触发的运行时窗口标志变更会卡住 pywebview 事件循环（窗口假死）。
-        置顶这种"形态类"设置走重启生效，风险最低。
+        ★ 置顶是**即时生效**的：早前记录过"运行时改窗口标志会卡住 pywebview 事件循环"，
+        因此曾做成"重启生效"；后来用当前版本复测（三种调用路径 × 连续切换，并直接读 Win32
+        的 WS_EX_TOPMOST 位核对）确认——运行时写 `window.on_top` 真的作用到原生窗口，
+        事件循环也保持响应，所以改回即时生效，不再让用户为一次开关去重启。
+        万一某台机器上应用失败（异常），退回"已保存、重启生效"并如实告知，而不是假装成功。
 
         `mini` / `restore_window` 是**极简闪发折叠模式**（旧 Qt 界面的同名功能迁移）：
         折叠成一条浮条（底边对齐、水平居中），展开时精确还原折叠前的几何。
-        ★ 折叠前必须临时放宽 min_size：创建窗口时设了 (880, 600) 的最小尺寸，
-          不放开的话 420×60 的浮条会被窗口管理器直接卡回原尺寸（表现为"点了没反应"）。
         """
         window = self._window.get("window")
         if window is None:
@@ -245,7 +245,12 @@ class JsApi:
                 new_value = not bool(self._svc.settings.get("topmost", True))
                 self._svc.settings.set("topmost", new_value)
                 self._svc.settings.save()
-                self._svc._emit("status", f"置顶已设为「{'开' if new_value else '关'}」，重启后生效")
+                try:
+                    window.on_top = new_value            # 立即作用到原生窗口
+                    self._svc._emit("status", f"置顶已{'开启' if new_value else '关闭'}")
+                except Exception as exc:
+                    print(f"[WebView] 即时应用置顶失败（已保存，重启后生效）：{exc}")
+                    self._svc._emit("status", f"置顶已设为「{'开' if new_value else '关'}」，本机需重启后生效")
             elif action == "mini":
                 self._collapse_to_mini(window)
             elif action == "restore_window":

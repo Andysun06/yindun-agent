@@ -71,6 +71,10 @@
     </div>
     </aside>
 
+    <!-- 拖拽手柄：位置由 JS 贴着列边界摆（不参与栅格，避免多出隐式列） -->
+    <div class="col-resizer" data-resize="left" role="separator" aria-orientation="vertical"
+         tabindex="0" title="拖动调整会话栏宽度（双击复位，方向键微调）"></div>
+
     <!-- ── 主区 ─────────────────────────────── -->
     <main class="main">
       <header class="band topbar">
@@ -107,7 +111,7 @@
           <button class="win-btn" data-win="minimize" title="最小化">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg>
           </button>
-          <button class="win-btn" data-win="toggle_top" id="btn-pin" title="置顶（重启生效）">
+          <button class="win-btn" data-win="toggle_top" id="btn-pin" title="置顶（立即生效）">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h6l-1 6 3 3H7l3-3-1-6zM12 13v7"/></svg>
           </button>
           <button class="win-btn win-btn--close" data-win="close" title="关闭">
@@ -145,6 +149,8 @@
         </form>
       </div>
     </main>
+    <div class="col-resizer" data-resize="right" role="separator" aria-orientation="vertical"
+         tabindex="0" title="拖动调整面板宽度（双击复位，方向键微调）"></div>
     <!-- ── 右侧面板：设置 / 审计 / 工作流（与中栏并排，可折叠） ── -->
     <aside class="side side--right" id="panel">
       <div class="panel__inner">
@@ -211,7 +217,7 @@
       <div class="switch">
         <div>
           <div class="field__label">窗口始终置顶</div>
-          <div class="field__hint">悬浮于其他窗口之上</div>
+          <div class="field__hint">悬浮于其他窗口之上（立即生效）</div>
         </div>
         <label class="switch"><input type="checkbox" id="sw-topmost"><span class="switch__track"></span></label>
       </div>

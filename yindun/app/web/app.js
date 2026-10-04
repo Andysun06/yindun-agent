@@ -822,18 +822,149 @@
     workflow: async () => { await refreshWorkflow(); },
   };
 
-  function setLeftCollapsed(collapsed) {
-    document.querySelector(".app").classList.toggle("is-left-collapsed", collapsed);
-    try { localStorage.setItem("yd_left_collapsed", collapsed ? "1" : "0"); } catch (e) {}
+  /* ── 三栏宽度（可拖拽调整 + 折叠，状态持久化）─────────
+     单一出口原则：**宽度只由 JS 写进 .app 的 inline grid-template-columns**，
+     CSS 类只作状态标记（供"折叠态隐藏某块""迷你浮条"等样式用），不再各自定义列宽——
+     否则"类里的列宽"与"行内列宽"会互相覆盖，出现"拖了没反应""折叠后又跳回来"。 */
+  const LAYOUT = {
+    left: { min: 200, max: 420, def: 248 },
+    right: { min: 300, max: 640, def: 400 },
+    centerMin: 420,          // 对话区保底宽度：两侧都展开时不允许把它挤没
+  };
+  const layoutState = { left: LAYOUT.left.def, right: LAYOUT.right.def };
+  // 因"窗口太窄"被自动收起的右栏：窗口重新变宽时应当自动恢复。
+  // 与"用户主动收起"区分开——用户主动收起的，窗口再宽也不该擅自展开。
+  let autoCollapsedRight = false;
+  const NARROW_W = 1180;
+
+  function collapsed(side) {
+    return document.querySelector(".app").classList.contains(`is-${side}-collapsed`);
   }
 
-  function setRightCollapsed(collapsed) {
-    document.querySelector(".app").classList.toggle("is-right-collapsed", collapsed);
-    try { localStorage.setItem("yd_right_collapsed", collapsed ? "1" : "0"); } catch (e) {}
+  /** 把当前状态写成栅格列宽（折叠 = 0px），并把拖拽手柄挪到列边界上 */
+  function applyLayout() {
+    const app = document.querySelector(".app");
+    if (!app) return;
+    const leftW = collapsed("left") ? 0 : layoutState.left;
+    const rightW = collapsed("right") ? 0 : layoutState.right;
+    app.style.gridTemplateColumns = `${leftW}px minmax(0, 1fr) ${rightW}px`;
+    document.querySelectorAll("[data-resize]").forEach((handle) => {
+      const isLeft = handle.dataset.resize === "left";
+      handle.hidden = collapsed(isLeft ? "left" : "right");
+      if (isLeft) { handle.style.left = Math.max(0, leftW - 5) + "px"; handle.style.right = ""; }
+      else { handle.style.right = Math.max(0, rightW - 5) + "px"; handle.style.left = ""; }
+    });
+  }
+
+  /** 收敛到合法范围：单侧上下限 + 中心区保底（窄窗口时优先让出右栏） */
+  function clampLayout() {
+    layoutState.left = Math.min(LAYOUT.left.max, Math.max(LAYOUT.left.min, Math.round(layoutState.left)));
+    layoutState.right = Math.min(LAYOUT.right.max, Math.max(LAYOUT.right.min, Math.round(layoutState.right)));
+    const used = (collapsed("left") ? 0 : layoutState.left) + (collapsed("right") ? 0 : layoutState.right);
+    const room = window.innerWidth - LAYOUT.centerMin;
+    if (used > room) {
+      let over = used - room;
+      if (!collapsed("right")) {
+        const canGive = Math.min(over, layoutState.right - LAYOUT.right.min);
+        layoutState.right -= canGive; over -= canGive;
+      }
+      if (over > 0 && !collapsed("left")) {
+        const canGive = Math.min(over, layoutState.left - LAYOUT.left.min);
+        layoutState.left -= canGive;
+      }
+    }
+  }
+
+  function saveLayout() {
+    try {
+      localStorage.setItem("yd_layout", JSON.stringify({ left: layoutState.left, right: layoutState.right }));
+    } catch (e) {}
+  }
+
+  /** 只读布局快照：供自动化校验（无头/驱动脚本）直接读状态，不必从像素反推 */
+  window.__ydLayout = () => {
+    const app = document.querySelector(".app");
+    return {
+      left: layoutState.left, right: layoutState.right,
+      leftCollapsed: collapsed("left"), rightCollapsed: collapsed("right"),
+      cols: app ? app.style.gridTemplateColumns : "",
+      innerWidth: window.innerWidth,
+      limits: LAYOUT,
+    };
+  };
+
+  function loadLayout() {
+    try {
+      const raw = localStorage.getItem("yd_layout");
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      if (saved && Number(saved.left) > 0) layoutState.left = Number(saved.left);
+      if (saved && Number(saved.right) > 0) layoutState.right = Number(saved.right);
+    } catch (e) {}
+  }
+
+  /** 拖拽手柄：拖动改宽度、双击复位、方向键微调（Shift 加速）
+   *  按下时把 pointermove/pointerup 挂到 window 上（而不是靠 setPointerCapture）：
+   *  指针一旦移出手柄，挂在手柄上的监听就收不到事件了，拖拽会"中途断掉"。 */
+  function bindResizeHandles() {
+    document.querySelectorAll("[data-resize]").forEach((handle) => {
+      const side = handle.dataset.resize;              // left | right
+      handle.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        const app = document.querySelector(".app");
+        const startX = e.clientX;
+        const startW = layoutState[side];
+        app.classList.add("is-resizing");
+        const onMove = (ev) => {
+          // 左栏向右拖 = 变宽；右栏向左拖 = 变宽（对称手感）
+          const delta = side === "left" ? ev.clientX - startX : startX - ev.clientX;
+          layoutState[side] = startW + delta;
+          clampLayout(); applyLayout();
+        };
+        const onUp = () => {
+          window.removeEventListener("pointermove", onMove);
+          window.removeEventListener("pointerup", onUp);
+          window.removeEventListener("pointercancel", onUp);
+          app.classList.remove("is-resizing");
+          saveLayout();
+        };
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
+        window.addEventListener("pointercancel", onUp);
+      });
+      handle.addEventListener("dblclick", () => {
+        layoutState[side] = LAYOUT[side].def;
+        clampLayout(); applyLayout(); saveLayout();
+        toast(`已恢复${side === "left" ? "会话栏" : "面板"}默认宽度`);
+      });
+      handle.addEventListener("keydown", (e) => {
+        if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+        e.preventDefault();
+        const step = (e.shiftKey ? 40 : 16) * (side === "left" ? 1 : -1);
+        layoutState[side] += (e.key === "ArrowRight" ? step : -step);
+        clampLayout(); applyLayout(); saveLayout();
+      });
+    });
+  }
+
+  function setLeftCollapsed(isCollapsed) {
+    document.querySelector(".app").classList.toggle("is-left-collapsed", isCollapsed);
+    try { localStorage.setItem("yd_left_collapsed", isCollapsed ? "1" : "0"); } catch (e) {}
+    applyLayout();
+  }
+
+  /** 收起/展开右栏。persist=false 用于"因窗口窄而自动收起"——
+   *  自动行为不能被当成用户意图存下来，否则"临时窄一下"会被永久记住。 */
+  function setRightCollapsed(isCollapsed, persist = true) {
+    document.querySelector(".app").classList.toggle("is-right-collapsed", isCollapsed);
+    if (persist) {
+      try { localStorage.setItem("yd_right_collapsed", isCollapsed ? "1" : "0"); } catch (e) {}
+    }
+    applyLayout();
   }
 
   function rightCollapsed() {
-    return document.querySelector(".app").classList.contains("is-right-collapsed");
+    return collapsed("right");
   }
 
   /** 打开右侧面板的某一页（若已收起则展开） */
@@ -899,10 +1030,27 @@
       left = localStorage.getItem("yd_left_collapsed") === "1";
       right = localStorage.getItem("yd_right_collapsed") === "1";
     } catch (e) {}
-    // 窄窗口默认收起右栏，把空间让给对话
-    if (window.innerWidth < 1180) right = true;
-    setLeftCollapsed(left);
-    setRightCollapsed(right);
+    loadLayout();                 // 恢复上次拖出来的三栏宽度
+    // 窄窗口默认收起右栏，把空间让给对话（记为"自动收起"，窗口变宽时自动恢复；不写偏好）
+    if (window.innerWidth < NARROW_W) { right = true; autoCollapsedRight = true; }
+    document.querySelector(".app").classList.toggle("is-left-collapsed", left);
+    document.querySelector(".app").classList.toggle("is-right-collapsed", right);
+    bindResizeHandles();
+    clampLayout();
+    applyLayout();
+  }
+
+  /** 窗口尺寸变化：窄了自动收右栏、宽了自动放回来（只对"自动收起"生效，且不写偏好） */
+  function onViewportResize() {
+    if (window.innerWidth < NARROW_W && !rightCollapsed()) {
+      autoCollapsedRight = true;
+      setRightCollapsed(true, false);
+    } else if (window.innerWidth >= NARROW_W && autoCollapsedRight && rightCollapsed()) {
+      autoCollapsedRight = false;
+      setRightCollapsed(false, false);
+    }
+    clampLayout();          // 窗口变窄时收敛列宽，别把对话区挤没
+    applyLayout();
   }
 
   /* ── 窗口控制 ─────────────────────────────────── */
@@ -912,8 +1060,16 @@
     document.querySelectorAll("[data-win]").forEach((btn) => {
       btn.onclick = async () => {
         const action = btn.dataset.win;
-        await call("window_action", action);
-        if (action === "toggle_top") toast("置顶设置已保存，重启后生效");
+        const ok = await call("window_action", action);
+        // 置顶现在是即时生效的（复测确认运行时改 on_top 会作用到原生窗口）：
+        // 成功就按实际结果提示，失败则如实说"重启后生效"，不假装成功。
+        if (action === "toggle_top") {
+          if (ok === false) { toast("置顶切换失败"); return; }
+          state.settings.topmost = !state.settings.topmost;
+          toast(state.settings.topmost ? "已置顶显示（立即生效）" : "已取消置顶（立即生效）");
+          const sw = $("sw-topmost");
+          if (sw) sw.checked = !!state.settings.topmost;
+        }
       };
     });
   }
@@ -1154,8 +1310,8 @@
     $("audit-filter").oninput = paintAuditList;
     $("btn-plugin-check").onclick = runPluginCheck;
     $("btn-settings").onclick = () => openPane("settings");
-    $("btn-toggle-right").onclick = () => setRightCollapsed(!rightCollapsed());
-    $("btn-panel-collapse").onclick = () => setRightCollapsed(true);
+    $("btn-toggle-right").onclick = () => { autoCollapsedRight = false; setRightCollapsed(!rightCollapsed()); };
+    $("btn-panel-collapse").onclick = () => { autoCollapsedRight = false; setRightCollapsed(true); };
     $("btn-sidebar").onclick = () => {
       const app = document.querySelector(".app");
       setLeftCollapsed(!app.classList.contains("is-left-collapsed"));
@@ -1187,7 +1343,7 @@
     $("rng-depth").onchange = (e) => persist({ thinking_depth: Number(e.target.value) });
 
     restoreLayout();
-    window.addEventListener("resize", () => { if (window.innerWidth < 1180 && !rightCollapsed()) setRightCollapsed(true); });
+    window.addEventListener("resize", onViewportResize);
     window.addEventListener("pywebviewready", bootstrap);
     // 开发预览：假桥接已就绪，直接走一次 bootstrap（正式运行时该分支不成立）
     if (window.__YINDUN_MOCK__) bootstrap();
