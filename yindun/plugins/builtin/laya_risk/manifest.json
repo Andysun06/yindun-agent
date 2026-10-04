@@ -1,0 +1,34 @@
+{
+  "id": "laya_risk",
+  "name": "laya 风险分级",
+  "version": "0.1.0",
+  "description": "审批弹窗补一行风险分级（高危/中危/低危）：本机装了 laya 决策模型（pip install laya）就用模型打分；没装、还在加载或推理失败时，自动回退到正则规则分级（规则文件可在设置页编辑）。无论哪条路径，提示都写明本次来源；推理与规则匹配全在本机、数据不出本机（注意：laya 首次加载需联网下载权重，涉密环境请预先离线导入）。只影响弹窗提示，不参与放行判定。",
+  "author": "隐盾（内置）",
+  "hooks": [
+    "advisory_for_approval"
+  ],
+  "requires": {
+    "python": [],
+    "ollama_models": []
+  },
+  "permissions": {
+    "network": "local-only",
+    "filesystem": "read"
+  },
+  "timeout_seconds": 60,
+  "config_files": [
+    {
+      "name": "risk_rules.txt",
+      "label": "风险分级规则（正则回退）",
+      "hint": "每行一条：级别|正则|说明（级别=高危/中危；# 开头是注释）。仅在 laya 模型不可用时生效；改动立即生效。"
+    },
+    {
+      "name": "backend.txt",
+      "label": "分级后端",
+      "hint": "一行一个字：auto（默认，装了 laya 用模型、否则正则）/ laya（只用模型，缺 laya 则不提示）/ regex（强制只用正则）。"
+    }
+  ],
+  "provides": [
+    "审批弹窗风险分级（laya 模型打分 / 正则规则回退）"
+  ]
+}

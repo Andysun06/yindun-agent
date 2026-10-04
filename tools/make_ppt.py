@@ -547,7 +547,7 @@ for i, (t, d) in enumerate(rules):
     para(tf, d, size=12, color=MUTED, first=True, line=1.2)
     ry += 1.02
 tf = box(s, 6.75, 7.4, 5.9, 0.4)
-para(tf, "内置 5 个插件（默认关闭，按需启用；启停与配置改动均写审计）", size=12.5, color=PRIM, bold=True, first=True)
+para(tf, "内置 6 个插件（默认关闭，按需启用；启停与配置改动均写审计）", size=12.5, color=PRIM, bold=True, first=True)
 pagenum(s)
 
 # ══════════════════ 12 · 全链路演示 ══════════════════
@@ -624,7 +624,7 @@ kicker(s, "质量与交付")
 title(s, "全量回归通过 · 免安装单文件 exe 就绪")
 # 左：测试套件
 tf = box(s, M, 1.72, 6.2, 0.55)
-para(tf, "8 个测试套件 · 全部通过（含攻防评测 9 项实验）", size=14.5, color=PRIM, bold=True, first=True)
+para(tf, "18 个测试套件 · 全部通过（含攻防评测 9 项实验）", size=14.5, color=PRIM, bold=True, first=True)
 suites = [("隐私引擎", "实体/脱敏/还原/nonce/strict"),
           ("审计黑匣子", "哈希链/防篡改/一致性 14/14"),
           ("记忆管理", "摘要/跨轮还原/序列化 6/6"),
@@ -662,7 +662,7 @@ para(tf, "总结与展望", size=14, color="8FD3B4", bold=True, first=True)
 tf = box(s, M, 1.4, W-2*M, 1.0)
 para(tf, "一套让大模型安全处理涉密办公数据的端到端方案", size=30, color="FFFFFF", bold=True, first=True)
 # 回顾指标
-recap = [("1.6万", "行 Python"), ("27", "类实体脱敏"), ("4", "层纵深防御"), ("20+", "项安全修复"), ("8", "套件回归通过")]
+recap = [("1.6万", "行 Python"), ("27", "类实体脱敏"), ("4", "层纵深防御"), ("20+", "项安全修复"), ("18", "套件回归通过")]
 bx, bw = M, (W-2*M-0.4*4)/5
 for i, (n, lab) in enumerate(recap):
     x = M + i*(bw+0.4)
