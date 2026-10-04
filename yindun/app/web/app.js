@@ -638,6 +638,56 @@
     wrap.style.display = "";
   }
 
+  /* ── 三栏布局：左栏 / 右面板 折叠与切换 ─────────────── */
+  const PANE_LOADERS = {
+    settings: async () => {
+      const info = await call("llm_status");
+      if (info) state.llm = info;
+      fillSettings(); bindWindowControls(); refreshKb(); refreshPlugins();
+      renderCustomModels(await call("custom_models"));
+    },
+    audit: async () => { renderAudit(await call("audit_snapshot", 300)); },
+    workflow: async () => { await refreshWorkflow(); },
+  };
+
+  function setLeftCollapsed(collapsed) {
+    document.querySelector(".app").classList.toggle("is-left-collapsed", collapsed);
+    try { localStorage.setItem("yd_left_collapsed", collapsed ? "1" : "0"); } catch (e) {}
+  }
+
+  function setRightCollapsed(collapsed) {
+    document.querySelector(".app").classList.toggle("is-right-collapsed", collapsed);
+    try { localStorage.setItem("yd_right_collapsed", collapsed ? "1" : "0"); } catch (e) {}
+  }
+
+  function rightCollapsed() {
+    return document.querySelector(".app").classList.contains("is-right-collapsed");
+  }
+
+  /** 打开右侧面板的某一页（若已收起则展开） */
+  async function openPane(name) {
+    document.querySelectorAll(".ptab").forEach((t) => t.classList.toggle("is-active", t.dataset.pane === name));
+    document.querySelectorAll(".pane").forEach((p) => p.classList.toggle("is-active", p.id === "pane-" + name));
+    state.pane = name;
+    const exportBtns = ["btn-audit-export-json", "btn-audit-export-html"];
+    exportBtns.forEach((id) => { const el = $(id); if (el) el.style.display = name === "audit" ? "" : "none"; });
+    setRightCollapsed(false);
+    const loader = PANE_LOADERS[name];
+    if (loader) await loader();
+  }
+
+  function restoreLayout() {
+    let left = false, right = false;
+    try {
+      left = localStorage.getItem("yd_left_collapsed") === "1";
+      right = localStorage.getItem("yd_right_collapsed") === "1";
+    } catch (e) {}
+    // 窄窗口默认收起右栏，把空间让给对话
+    if (window.innerWidth < 1180) right = true;
+    setLeftCollapsed(left);
+    setRightCollapsed(right);
+  }
+
   /* ── 窗口控制 ─────────────────────────────────── */
   function bindWindowControls() {
     const frameless = !!(state.settings && state.settings.frameless);
@@ -845,11 +895,7 @@
         renderChips();
       }
     };
-    $("btn-workflow").onclick = async () => {
-      $("workflow-drawer").classList.add("is-open");
-      await refreshWorkflow();
-    };
-    $("btn-wf-close").onclick = () => $("workflow-drawer").classList.remove("is-open");
+    $("btn-workflow").onclick = () => openPane("workflow");
     $("btn-wf-exec").onclick = async () => {
       if (!state.wfInstance) { toast("请先选择模板"); return; }
       const res = await call("workflow_execute", state.wfInstance);
@@ -874,11 +920,7 @@
     };
     $("btn-health").onclick = () => runTool("health");
     $("btn-behavior").onclick = () => runTool("behavior");
-    $("btn-audit").onclick = async () => {
-      $("audit-drawer").classList.add("is-open");
-      renderAudit(await call("audit_snapshot", 300));
-    };
-    $("btn-audit-close").onclick = () => $("audit-drawer").classList.remove("is-open");
+    $("btn-audit").onclick = () => openPane("audit");
     $("audit-filter").oninput = paintAuditList;
     $("btn-audit-export-json").onclick = async () => {
       const path = await call("audit_export", "json");
@@ -888,15 +930,16 @@
       const path = await call("audit_export", "html");
       toast(path ? `已导出：${path}` : "导出失败");
     };
-    $("btn-settings").onclick = async () => {
-      const info = await call("llm_status");
-      if (info) { state.llm = info; }
-      fillSettings(); bindWindowControls(); refreshKb(); refreshPlugins();
-      renderCustomModels(await call("custom_models"));
-      $("drawer").classList.add("is-open");
+    $("btn-settings").onclick = () => openPane("settings");
+    $("btn-toggle-right").onclick = () => setRightCollapsed(!rightCollapsed());
+    $("btn-panel-collapse").onclick = () => setRightCollapsed(true);
+    $("btn-sidebar").onclick = () => {
+      const app = document.querySelector(".app");
+      setLeftCollapsed(!app.classList.contains("is-left-collapsed"));
     };
-    $("btn-drawer-close").onclick = () => $("drawer").classList.remove("is-open");
-    $("btn-sidebar").onclick = () => $("sidebar").classList.toggle("is-open");
+    document.querySelectorAll(".ptab").forEach((tab) => {
+      tab.onclick = () => openPane(tab.dataset.pane);
+    });
     $("btn-theme").onclick = () => persist({ dark_mode: document.documentElement.dataset.theme !== "dark" });
     $("btn-allow").onclick = async () => { hideApproval(); await call("approve", true); };
     $("btn-deny").onclick = async () => { hideApproval(); await call("approve", false); };
@@ -920,6 +963,8 @@
     $("rng-depth").oninput = (e) => { $("depth-value").textContent = e.target.value; };
     $("rng-depth").onchange = (e) => persist({ thinking_depth: Number(e.target.value) });
 
+    restoreLayout();
+    window.addEventListener("resize", () => { if (window.innerWidth < 1180 && !rightCollapsed()) setRightCollapsed(true); });
     window.addEventListener("pywebviewready", bootstrap);
     // 开发预览：假桥接已就绪，直接走一次 bootstrap（正式运行时该分支不成立）
     if (window.__YINDUN_MOCK__) bootstrap();

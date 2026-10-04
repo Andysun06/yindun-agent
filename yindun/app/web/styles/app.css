@@ -28,13 +28,26 @@ button { cursor: pointer; border: none; background: none; }
 .bubble__meta, .session-item__meta, .band__id, .stats, .status-line { font-family: var(--font-mono); }
 
 /* ── 骨架 ─────────────────────────────────────────────── */
-.app { display: grid; grid-template-columns: 248px 1fr; height: 100vh; overflow: hidden; }
+.app {
+  display: grid;
+  grid-template-columns: 248px minmax(0, 1fr) 400px;
+  height: 100vh; overflow: hidden;
+  transition: grid-template-columns 180ms var(--ease);   /* 折叠/展开有过渡 */
+}
+/* 折叠态直接写列宽，不用自定义属性间接传值（Chromium 不会因 var 变化重算栅格列） */
+.app.is-left-collapsed.is-right-collapsed { grid-template-columns: 0px minmax(0, 1fr) 0px; }
+.app.is-left-collapsed:not(.is-right-collapsed) { grid-template-columns: 0px minmax(0, 1fr) 400px; }
+.app.is-right-collapsed:not(.is-left-collapsed) { grid-template-columns: 248px minmax(0, 1fr) 0px; }
+
+/* 栏容器：折叠时裁切内容而不是压扁内容 */
+.side { overflow: hidden; min-width: 0; display: flex; }
+.side--left { border-right: 1px solid var(--border-1); background: var(--bg-side); }
+.side--right { border-left: 1px solid var(--border-1); background: var(--bg-side); }
+.side--left > .sidebar { width: 248px; flex: none; }
+.side--right > .panel__inner { width: 400px; flex: none; }
 
 /* ── 侧栏 ─────────────────────────────────────────────── */
-.sidebar {
-  display: flex; flex-direction: column; min-height: 0;
-  background: var(--bg-side); border-right: 1px solid var(--border-1);
-}
+.sidebar { display: flex; flex-direction: column; min-height: 0; }
 .brand { display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-6) var(--sp-5) var(--sp-5); }
 .brand__mark { width: 22px; height: 22px; color: var(--accent-600); flex: none; }
 .brand__name { font-size: var(--fs-base); font-weight: 650; letter-spacing: .01em; }
@@ -72,9 +85,9 @@ button { cursor: pointer; border: none; background: none; }
   flex: none; height: 44px; display: flex; align-items: center; gap: var(--sp-3);
   padding: 0 var(--sp-5); border-bottom: 1px solid var(--border-1);
 }
-.topbar__title { font-size: var(--fs-sm); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topbar__title { font-size: var(--fs-sm); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .topbar__spacer { flex: 1; }
-.band__id { font-size: var(--fs-meta); color: var(--text-3); }
+.band__id { font-size: var(--fs-meta); color: var(--text-3); flex: none; }
 
 /* 安全态势：一行小号等宽、低对比度（保留信息，去掉"框"） */
 .posture {
@@ -89,12 +102,15 @@ button { cursor: pointer; border: none; background: none; }
 .posture__sandbox { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 统计与控制 */
-.seg { display: inline-flex; padding: 2px; gap: 2px; background: var(--bg-subtle); border-radius: var(--r-ctrl); }
-.seg__btn { padding: 3px var(--sp-4); border-radius: var(--r-chip); font-size: var(--fs-meta); color: var(--text-2); }
+.seg { display: inline-flex; padding: 2px; gap: 2px; background: var(--bg-subtle); border-radius: var(--r-ctrl); white-space: nowrap; flex: none; }
+.seg__btn { padding: 3px 10px; border-radius: var(--r-chip); font-size: var(--fs-meta); color: var(--text-2); white-space: nowrap; }
 .seg__btn:hover { color: var(--text-1); }
 .seg__btn.is-active { background: var(--bg-canvas); color: var(--text-1); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
 
 .stats { display: flex; align-items: center; gap: var(--sp-3); font-size: var(--fs-meta); color: var(--text-3); white-space: nowrap; }
+/* 右面板展开时中栏变窄：隐藏次要信息，保证标题与控件不挤压 */
+.app:not(.is-right-collapsed) .stats { display: none; }
+.app:not(.is-right-collapsed) .band__id { display: none; }
 .stats__sep { width: 1px; height: 10px; background: var(--border-2); }
 .stats__item--bad { color: var(--danger-500); }
 @media (max-width: 1240px) { .stats { display: none; } }
@@ -218,18 +234,22 @@ html[data-frameless="1"] .win-ctrls { display: inline-flex; }
 .btn--block { width: 100%; }
 .btn svg { width: 14px; height: 14px; flex: none; }
 
-/* ── 抽屉（设置 / 审计 / 工作流） ─────────────────────────── */
-.drawer {
-  position: fixed; inset: 0 0 0 auto; width: min(460px, 94vw);
-  background: var(--bg-canvas); border-left: 1px solid var(--border-2);
-  box-shadow: var(--shadow-pop);
-  transform: translateX(102%); transition: transform var(--dur) var(--ease);
-  display: flex; flex-direction: column; z-index: 40;
+/* ── 右侧面板（设置 / 审计 / 工作流，三栏中的第三栏） ───────── */
+.panel__inner { display: flex; flex-direction: column; min-height: 0; }
+.panel__tabs {
+  flex: none; display: flex; align-items: center; gap: 2px;
+  padding: var(--sp-3) var(--sp-3) 0; border-bottom: 1px solid var(--border-1);
 }
-.drawer.is-open { transform: none; }
-.drawer__head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); padding: var(--sp-5); border-bottom: 1px solid var(--border-1); }
-.drawer__title { font-size: var(--fs-base); font-weight: 650; }
-.drawer__body { padding: var(--sp-5); overflow-y: auto; display: flex; flex-direction: column; gap: var(--sp-7); }
+.panel__spacer { flex: 1; }
+.ptab {
+  padding: 6px var(--sp-4); border-radius: var(--r-chip) var(--r-chip) 0 0;
+  font-size: var(--fs-sm); color: var(--text-3); border-bottom: 2px solid transparent;
+}
+.ptab:hover { color: var(--text-1); }
+.ptab.is-active { color: var(--text-1); font-weight: 600; border-bottom-color: var(--accent-500); }
+.panel__body { flex: 1; min-height: 0; overflow-y: auto; }
+.pane { display: none; padding: var(--sp-5); flex-direction: column; gap: var(--sp-7); }
+.pane.is-active { display: flex; }
 
 .field { display: flex; flex-direction: column; gap: var(--sp-3); }
 .field__label { font-size: var(--fs-sm); color: var(--text-1); font-weight: 600; }
@@ -347,8 +367,5 @@ html[data-theme="dark"] .chain-badge--ok { color: var(--accent-300); background:
 html[data-theme="dark"] .toast { background: var(--gray-100); color: var(--gray-900); }
 
 @media (max-width: 900px) {
-  .app { grid-template-columns: 0 1fr; }
-  .sidebar { position: fixed; inset: 0 auto 0 0; width: 248px; z-index: 50; transform: translateX(-102%); transition: transform var(--dur) var(--ease); }
-  .sidebar.is-open { transform: none; }
   .chat, .composer { padding-left: var(--sp-4); padding-right: var(--sp-4); }
 }

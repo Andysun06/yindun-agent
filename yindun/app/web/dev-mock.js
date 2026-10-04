@@ -155,34 +155,45 @@
 
   // 预览审计面板：加 #mock-audit
   if (location.hash.indexOf("audit") >= 0) {
-    setTimeout(() => {
-      document.getElementById("audit-drawer").style.transition = "none";
-      document.getElementById("audit-drawer").classList.add("is-open");
-      window.yindun && window.yindun.onEvent("status", "");
-      const btn = document.getElementById("btn-audit");
-      btn && btn.click();
-    }, 350);
+    setTimeout(() => document.getElementById("btn-audit").click(), 500);
   }
 
   // 预览工作流面板：加 #mock-workflow
   if (location.hash.indexOf("workflow") >= 0) {
     setTimeout(async () => {
-      const d = document.getElementById("workflow-drawer");
-      d.style.transition = "none";
       document.getElementById("btn-workflow").click();
-      await new Promise((r) => setTimeout(r, 300));
+      await new Promise((r) => setTimeout(r, 400));
       const tpl = document.querySelector("[data-tpl]");
       tpl && tpl.click();
     }, 500);
   }
 
-  // 预览设置抽屉：加 #mock-settings
-  if (location.hash.indexOf("settings") >= 0) {
+  // 预览诊断：加 #mock-diag → 把三栏实测宽度写进 DOM（便于无头 --dump-dom 校验）
+  if (location.hash.indexOf("diag") >= 0) {
     setTimeout(() => {
-      const d = document.getElementById("drawer");
-      d.style.transition = "none";
-      document.getElementById("btn-settings").click();
+      const L = document.querySelector(".side--left").getBoundingClientRect().width;
+      const C = document.querySelector(".main").getBoundingClientRect().width;
+      const R = document.querySelector(".side--right").getBoundingClientRect().width;
+      const el = document.createElement("div");
+      el.id = "__diag2";
+      const cs = getComputedStyle(document.querySelector(".app"));
+      el.textContent = "APPCLASS=" + document.querySelector(".app").className +
+        " LEFT=" + Math.round(L) + " CENTER=" + Math.round(C) + " RIGHT=" + Math.round(R) +
+        " DISPLAY=" + cs.display + " COLS=" + cs.gridTemplateColumns;
+      document.body.appendChild(el);
+    }, 1800);
+  }
+
+  // 预览：左右两栏都收起（加 #mock-collapsed）
+  if (location.hash.indexOf("collapsed") >= 0) {
+    setTimeout(() => {
+      document.querySelector(".app").classList.add("is-left-collapsed", "is-right-collapsed");
     }, 400);
+  }
+
+  // 预览设置面板：加 #mock-settings
+  if (location.hash.indexOf("settings") >= 0) {
+    setTimeout(() => document.getElementById("btn-settings").click(), 500);
   }
 
   // 预览审批弹窗：加 #mock-approval

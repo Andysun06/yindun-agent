@@ -10,7 +10,8 @@
 <body>
   <div class="app">
     <!-- ── 侧栏：会话 ─────────────────────────────── -->
-    <aside class="sidebar" id="sidebar">
+    <aside class="side side--left">
+    <div class="sidebar" id="sidebar">
       <div class="brand">
         <svg class="brand__mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -52,12 +53,13 @@
           </button>
         </div>
       </div>
+    </div>
     </aside>
 
     <!-- ── 主区 ─────────────────────────────── -->
     <main class="main">
       <header class="band topbar">
-        <button class="btn btn--ghost" id="btn-sidebar" title="会话列表" style="display:none">
+        <button class="btn btn--ghost" id="btn-sidebar" title="折叠 / 展开会话栏" style="display:inline-flex">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
         <div class="topbar__title" id="chat-title">新对话</div>
@@ -74,6 +76,9 @@
           <button class="seg__btn is-active" data-mode="快速回答">快速</button>
           <button class="seg__btn" data-mode="深度思考">思考</button>
         </div>
+        <button class="btn btn--ghost" id="btn-toggle-right" title="折叠 / 展开右侧面板">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"/><path d="M15 5v14"/></svg>
+        </button>
         <button class="btn btn--ghost" id="btn-theme" title="切换明暗">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>
@@ -122,17 +127,23 @@
         </form>
       </div>
     </main>
-  </div>
+    <!-- ── 右侧面板：设置 / 审计 / 工作流（与中栏并排，可折叠） ── -->
+    <aside class="side side--right" id="panel">
+      <div class="panel__inner">
+        <div class="panel__tabs">
+          <button class="ptab is-active" data-pane="settings">设置</button>
+          <button class="ptab" data-pane="audit">审计</button>
+          <button class="ptab" data-pane="workflow">工作流</button>
+          <span class="panel__spacer"></span>
+          <button class="btn btn--ghost" id="btn-audit-export-json" title="导出 JSON">JSON</button>
+          <button class="btn btn--ghost" id="btn-audit-export-html" title="导出 HTML">HTML</button>
+          <button class="btn btn--ghost" id="btn-panel-collapse" title="收起面板">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+          </button>
+        </div>
+        <div class="panel__body">
 
-  <!-- ── 设置抽屉 ─────────────────────────────── -->
-  <aside class="drawer" id="drawer">
-    <div class="drawer__head">
-      <div class="drawer__title">设置</div>
-      <button class="btn btn--ghost" id="btn-drawer-close" title="关闭">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
-      </button>
-    </div>
-    <div class="drawer__body">
+          <section class="pane is-active" id="pane-settings">
       <div class="field">
         <label class="field__label" for="sel-model">算力底座（模型）</label>
         <select id="sel-model"></select>
@@ -219,22 +230,9 @@
 
       <div class="divider"></div>
       <div class="field__hint" id="settings-note">设置修改后立即生效；配置与会话均在本机加密保存。</div>
-    </div>
-  </aside>
+          </section>
 
-  <!-- ── 审计抽屉 ─────────────────────────────── -->
-  <aside class="drawer" id="audit-drawer">
-    <div class="drawer__head">
-      <div class="drawer__title">审计黑匣子</div>
-      <div style="display:flex;gap:var(--sp-2)">
-        <button class="btn btn--ghost" id="btn-audit-export-json" title="导出 JSON">JSON</button>
-        <button class="btn btn--ghost" id="btn-audit-export-html" title="导出 HTML">HTML</button>
-        <button class="btn btn--ghost" id="btn-audit-close" title="关闭">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
-        </button>
-      </div>
-    </div>
-    <div class="drawer__body">
+          <section class="pane" id="pane-audit">
       <div class="stat-grid" id="audit-stats"></div>
       <div class="chain-badge" id="audit-chain">—</div>
       <div class="field">
@@ -251,18 +249,9 @@
       </div>
 
       <div class="audit-list" id="audit-list"></div>
-    </div>
-  </aside>
+          </section>
 
-  <!-- ── 工作流抽屉 ─────────────────────────────── -->
-  <aside class="drawer" id="workflow-drawer">
-    <div class="drawer__head">
-      <div class="drawer__title">工作流编排</div>
-      <button class="btn btn--ghost" id="btn-wf-close" title="关闭">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
-      </button>
-    </div>
-    <div class="drawer__body">
+          <section class="pane" id="pane-workflow">
       <div class="field">
         <div class="field__label">选择模板</div>
         <div class="wf-templates" id="wf-templates"></div>
@@ -283,8 +272,13 @@
         </div>
         <div class="field__hint" id="wf-notice"></div>
       </div>
-    </div>
-  </aside>
+          </section>
+
+        </div>
+      </div>
+    </aside>
+
+  </div>
 
   <!-- ── 审批弹窗 ─────────────────────────────── -->
   <div class="modal-root" id="approval-root">
