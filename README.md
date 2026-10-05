@@ -18,7 +18,7 @@
 
 | 交付物 | 位置 |
 |---|---|
-| 📦 **免安装单文件 exe**（双击即用，无需安装与脚本） | [Release](https://github.com/Andysun06/yindun-agent/releases) → `隐盾安全智能体_V3.4.4_便携版.exe`（本地构建：`python tools/build_portable.py`） |
+| 📦 **免安装单文件 exe**（双击即用，无需安装与脚本） | [Release](https://github.com/Andysun06/yindun-agent/releases) → `Yindun-Portable-v3.4.4.exe`（GitHub 资产名不支持中文，会净化成下划线，故用英文名；本地构建产物名为 `隐盾安全智能体_V3.4.4_便携版.exe`，`python tools/build_portable.py`） |
 | 🎬 **项目演示视频**（1080p，3分28秒） | [Release v3.3.0](https://github.com/Andysun06/yindun-agent/releases/tag/v3.3.0) → `Yindun-Demo-v3.3.0.mp4` |
 | 📄 **技术报告**（含隐私算法形式化 / 威胁模型 / 攻击实验） | [docs/隐盾安全智能体_技术报告.pdf](docs/隐盾安全智能体_技术报告.pdf) |
 | 📽 **汇报 PPT**（20 页） | [docs/隐盾安全智能体_项目汇报.pptx](docs/隐盾安全智能体_项目汇报.pptx) |
@@ -186,7 +186,7 @@ python run.py          # 启动 Web 界面
 
 ### 方式一：免安装单文件 exe（推荐给使用者）
 
-下载 `隐盾安全智能体_V3.4.4_便携版.exe`，**双击即用**——无需安装、无需脚本。
+下载 `Yindun-Portable-v3.4.4.exe`，**双击即用**——无需安装、无需脚本。
 
 - 配置、会话、审计日志、知识库向量数据都写在 **exe 同目录**（放桌面/便携盘均可，卸载 = 删除 exe 与同目录生成的数据）
 - 主密钥由 Windows DPAPI 按当前用户保护，不随 exe 移动
