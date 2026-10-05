@@ -5,7 +5,9 @@
     python tools/build_portable.py
 
 产物：
-    dist/YindunPortable.exe → 自动重命名为 dist/隐盾安全智能体_V3.4.0_便携版.exe
+    dist/YindunPortable.exe → 自动重命名为 dist/隐盾安全智能体_<版本>_便携版.exe
+    （版本号动态取自 yindun/__init__.py 的 __display_version__，
+     避免"改了代码忘了改打包脚本"导致旧版文件名带新构建）
 
 说明：
 - 使用 PyInstaller 的 **Python API**（`PyInstaller.__main__.run`）而非 subprocess，
@@ -21,10 +23,13 @@ import sys
 sys.stdout.reconfigure(encoding="utf-8")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+import yindun as _pkg  # noqa: E402  # 只为取 __display_version__（模块级只有路径/代理设置，无副作用风险）
+
 SPEC = os.path.join("tools", "yindun_agent_portable.spec")
 DIST = os.path.join(ROOT, "dist")
 RAW_EXE = os.path.join(DIST, "YindunPortable.exe")
-FINAL_NAME = "隐盾安全智能体_V3.4.0_便携版.exe"
+FINAL_NAME = f"隐盾安全智能体_{_pkg.__display_version__}_便携版.exe"
 FINAL_EXE = os.path.join(DIST, FINAL_NAME)
 
 
@@ -74,7 +79,7 @@ def main() -> int:
     print("=" * 78)
     print("使用前提（务必告知使用者）：")
     print("  1) 需另行安装 Ollama，并至少拉取一个支持工具调用的模型，例如：")
-    print("       ollama pull qwen2.5:7b")
+    print("       ollama pull qwen3.5:4b")
     print("     （知识库功能还需要：ollama pull nomic-embed-text）")
     print("  2) exe 放在可写目录（桌面/便携盘均可）：配置、会话、审计、向量库")
     print("     会写在 exe 同目录下；主密钥由 Windows DPAPI 按当前用户保护。")
