@@ -305,6 +305,36 @@ reloaded_mg.load()
 check("删除已持久化（重新加载后仍只剩 1 个）", len(reloaded_mg.list_sessions()) == 1,
       str(reloaded_mg.list_sessions()))
 
+# ── 6) 重开会话的展示层还原（V3.4.5 修复：Web 前端不会还原占位符）──
+print("\n" + "=" * 78)
+print("【6】重开会话：历史占位符还原为真实值（仅展示，落库仍脱敏）")
+print("=" * 78)
+from yindun.core.privacy_engine import PrivacyEngine  # noqa: E402
+
+rs_cfg = TMP / "rs_cfg.json"
+rs_sess = TMP / "rs_sess.json"
+rs = AgentService(settings=SettingsStore(path=rs_cfg), sessions=SessionStore(path=rs_sess))
+rs.initialize()
+sid = rs.create_session("还原展示")
+_engine = PrivacyEngine()
+_phone = "13812345678"
+masked_user, box = _engine.anonymize(f"我的手机号是{_phone}")
+rs.sessions.set_messages(sid, [
+    {"role": "user", "content": masked_user},
+    {"role": "assistant", "content": f"已记录：{list(box.keys())[0]}"},
+])
+rs.sessions.set_box_mapping(sid, box)
+rs.sessions.save()
+
+opened = rs.open_session(sid)
+check("重开会话：用户消息里的占位符已还原",
+      _phone in opened["messages"][0]["content"], opened["messages"][0]["content"])
+check("重开会话：助手消息里的占位符已还原",
+      _phone in opened["messages"][1]["content"], opened["messages"][1]["content"])
+raw_session = (TMP / "rs_sess.json").read_text(encoding="utf-8")
+check("落库内容仍是脱敏态（占位符形式，无明文手机号）",
+      _phone not in raw_session and "[PHONE_" in raw_session)
+
 print("\n" + "=" * 78)
 if failures:
     print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))

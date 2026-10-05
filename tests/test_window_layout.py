@@ -233,6 +233,15 @@ check("Esc 可展开", 'e.key === "Escape" && miniOn()' in js)
 check("主输入与浮条共用同一个发送实现（避免两套行为漂移）",
       js.count("await sendText(text)") >= 2, f"sendText 调用次数 {js.count('await sendText(text)')}")
 
+# ── 思考模式工具活动流（真机跑工具链才暴露的渲染缺陷回归）──
+# entryEl 返回的是外层 .row，.entry__body 是 .entry 的子节点；
+# 旧写法 entry.insertBefore(box, body) 必抛 NotFoundError —— 工具活动流从未渲染出来。
+check("工具活动流插到 entry__body 的父节点（回归：旧写法必抛 NotFoundError）",
+      "(body.parentElement || entry).insertBefore(box, body)" in js
+      and "entry.insertBefore(box, body)" not in js)
+check("活动流容器与样式存在（.entry__tools / .tool-line）",
+      "entry__tools" in js and ".tool-line {" in css)
+
 # ── 边缘改尺寸 + 三栏内容重排（本轮 bug 修复的回归护栏）──
 check("边缘热区存在：8 个方向",
       'id="edge-zone"' in html and html.count("data-edge=") == 8)

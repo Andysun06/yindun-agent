@@ -497,14 +497,17 @@ pagenum(s, 10)
 s = slide()
 kicker(s, "核心创新 · 四")
 title(s, "脱敏 RAG 知识库 · 实测闭环", size=27)
-pic_card(s, "docs/screenshots/08_知识库入库.png", 2076/1430, M, 1.85, 5.9,
-         cap="① 3 篇文档入库（入库即逐块脱敏），向量库零明文")
-pic_card(s, "docs/screenshots/08_知识库检索回答.png", 2108/1430, 6.75, 1.85, 5.9,
-         cap="② 检索命中占位符 → 输出层还原真实值呈现")
-tf = box(s, M, 6.85, W-2*M, 0.5)
-para(tf, [("闭环要点：", {"bold": True, "color": PRIM}),
-          ("模型全程只接触占位符；真实值仅在本地输出层还原，云端/向量库/审计均无明文。", {"color": TEXT})],
-     size=13, first=True)
+pic_card(s, "docs/screenshots/08_知识库入库.png", 2720/1806, M, 1.85, 7.4,
+         cap="文档入库即逐块脱敏（实拍：5 篇文档 / 8 个片段，向量库零明文）")
+tb = box(s, M, 5.35, W-2*M, 1.35)
+para(tb, [("① 入库即脱敏：", {"bold": True, "color": PRIM}),
+          ("整篇先脱敏再切块，向量库只存占位符（长实体不被切碎成明文碎片）。", {"color": TEXT})], size=13, first=True)
+para(tb, [("② 检索与还原：", {"bold": True, "color": PRIM}),
+          ("命中片段以占位符形态送入模型（本地或外部算力，出网亦无明文），"
+           "回答中的占位符由输出层在本机还原为真实值。", {"color": TEXT})], size=13)
+para(tb, [("③ 验证口径：", {"bold": True, "color": PRIM}),
+          ("回归 t est_kb_pipeline + 本地 E2E（检索工具被真实调用）；外部模型自行改写占位符编号时该片段以占位符原样显示（已知边界）。"
+           .replace("t est_kb_pipeline", "test_kb_pipeline"), {"color": TEXT})], size=13)
 pagenum(s)
 
 # ══════════════════ 11 · 插件体系 ══════════════════

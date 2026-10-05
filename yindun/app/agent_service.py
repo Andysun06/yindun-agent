@@ -197,18 +197,40 @@ class AgentService:
         return sid
 
     def open_session(self, session_id: str) -> Dict[str, Any]:
-        """打开会话：返回消息列表 + 还原后的展示内容由界面负责渲染。
+        """打开会话：返回**展示用**消息列表（历史占位符已还原）+ 会话级映射表。
 
-        注意：历史消息里的占位符需要会话级映射才能还原，界面应把
-        `box_mapping` 一并交给还原逻辑（与旧界面语义一致）。
+        ★ 还原在服务层完成（V3.4.5 修复）：Web 前端拿不到 Fernet 密钥、也无法解密，
+        此前界面直接渲染落库的脱敏文本——重开会话后历史回答里的占位符
+        （如 [PHONE_0_0x3o]）会原样显示，与"回答返回时自动还原"的承诺不符。
+        还原只作用于**返回值**，落库内容仍是脱敏态（"落盘零真值"不变）。
         """
         self.sessions.set_current(session_id)
         self.sessions.save()
-        return {
-            "id": session_id,
-            "messages": self.sessions.get_messages(session_id),
-            "box_mapping": self.sessions.get_box_mapping(session_id),
-        }
+        messages = self.sessions.get_messages(session_id)
+        box = self.sessions.get_box_mapping(session_id) or {}
+        messages = self._restore_display_text(messages)
+        if box and self.settings.get("privacy", True):
+            messages = self._restore_placeholders(messages, box)
+        return {"id": session_id, "messages": messages, "box_mapping": box}
+
+    @staticmethod
+    def _restore_placeholders(messages: List[Dict[str, Any]],
+                              box_mapping: Dict[str, str]) -> List[Dict[str, Any]]:
+        """把展示副本里的占位符换回真实值（纯函数，不做任何落库写入）。"""
+        if not box_mapping:
+            return messages
+        from yindun.core.privacy_engine import PrivacyEngine
+        engine = PrivacyEngine()
+        restored: List[Dict[str, Any]] = []
+        for message in messages:
+            content = message.get("content")
+            if (message.get("role") in ("user", "assistant")
+                    and isinstance(content, str) and "[" in content):
+                restored.append({**message,
+                                 "content": engine.deanonymize(content, box_mapping)})
+            else:
+                restored.append(message)
+        return restored
 
     def delete_session(self, session_id: str) -> bool:
         ok = self.sessions.delete(session_id)

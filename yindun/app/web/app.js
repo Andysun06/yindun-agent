@@ -236,7 +236,10 @@
     let box = entry.querySelector(".entry__tools");
     if (!box) {
       box = document.createElement("div");
-      entry.insertBefore(box, body);
+      // 注意：entry 是外层 .row，.entry__body 是 .entry 的子节点——
+      // 插到 body 的父节点（.entry）里，否则 insertBefore 会抛
+      // NotFoundError（工具活动流在真实工具链下一直渲染不出来）。
+      (body.parentElement || entry).insertBefore(box, body);
     }
     const last = box.lastElementChild;
     if (last && last.textContent.trim() === String(text).trim()) return;   // 去重连续重复
@@ -562,7 +565,9 @@
       return;
     }
     list.innerHTML = docs.map((doc) => {
-      const name = typeof doc === "string" ? doc : (doc.name || doc.file_name || doc.source || "—");
+      // 后端 kb_status 的文档项用 `file` 字段（list_documents 的结构）；
+      // 只认 name/file_name/source 会让列表全部显示成"—"（真机截图暴露）。
+      const name = typeof doc === "string" ? doc : (doc.name || doc.file_name || doc.file || doc.source || "—");
       const meta = typeof doc === "string" ? "" : (doc.chunks ? `${doc.chunks} 片段` : "");
       return `<div class="kb-item"><span class="kb-item__name">${esc(name)}</span>
         <span class="kb-item__meta">${esc(meta)} <span class="chip__x" data-kb="${esc(name)}" title="移除">×</span></span></div>`;

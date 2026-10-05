@@ -160,6 +160,33 @@ def test_06_memory_serialization_regression():
     print(f"✅ 测试6通过: 序列化往返正常（{len(restored._messages)} 条）")
 
 
+def test_07_internal_prompt_not_persisted():
+    """测试7：ReAct 循环的内部提示词不得当作"用户发言"落库/渲染。
+
+    背景（真机截图暴露）：思考模式下 worker 会自造 HumanMessage
+    （"请基于以上工具执行结果，继续深入分析 / 给用户提供一个详细的总结报告"）
+    驱动深化与总结轮。它们是推理脚手架，却因为 to_dict_list 只看类型被打上
+    role=user —— 于是被渲染成用户气泡、并写进会话文件。现以
+    additional_kwargs={"internal": True} 标记，并在序列化时剔除。"""
+    history = SummarizableChatHistory()
+    history.add_user_message("帮我创建一个文件：客户信息.txt")
+    history._messages.append(AIMessage(content="", tool_calls=[
+        {"name": "create_local_file", "args": {"filename": "客户信息.txt"}, "id": "call_1"}]))
+    history._messages.append(ToolMessage(content="✅ 已创建", tool_call_id="call_1"))
+    history._messages.append(HumanMessage(
+        content="请基于以上工具执行结果，给用户提供一个详细的总结报告。",
+        additional_kwargs={"internal": True}))
+    history._messages.append(AIMessage(content="已创建 客户信息.txt"))
+
+    dict_list = history.to_dict_list()
+    user_texts = [m["content"] for m in dict_list if m.get("role") == "user"]
+    assert user_texts == ["帮我创建一个文件：客户信息.txt"], f"内部提示词被当成用户消息导出：{user_texts}"
+    assert any(m.get("role") == "assistant" for m in dict_list), "正常助手消息应保留"
+    assert any(isinstance(m, HumanMessage) and (m.additional_kwargs or {}).get("internal")
+               for m in history._messages), "内存链不应被裁剪（脚手架仅用于本轮推理）"
+    print("✅ 测试7通过: 内部提示词不落库、不渲染，正常消息不受影响")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("隐盾对话记忆优化 - 功能验证测试")
@@ -172,6 +199,7 @@ if __name__ == "__main__":
         test_04_summary_second_anonymization,
         test_05_cross_turn_mapping_restore,
         test_06_memory_serialization_regression,
+        test_07_internal_prompt_not_persisted,
     ]
     passed = 0
     failed = 0

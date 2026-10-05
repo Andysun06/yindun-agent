@@ -216,7 +216,7 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
     <div class="tbl-caption">表 2　11 类实体专项样本召回（25 例，独立于表 1 的 41 实例语料）</div>
     <div class="callout"><b>关键结论：</b>5.2.1 与 5.2.5 合起来构成核心保证——出网文本零明文，因此模型在信息论上无法被诱导泄露它从未接触的数据；5.2.4 证明还原环节不可被植入劫持（碰撞概率 $\le 36^{-4}$）；5.2.6–5.2.8 证明即使攻击者拿走本地磁盘文件、在无密钥条件下也无法恢复明文。</div>
     <p class="muted">局限：评测语料为合成样例，真实语料上的召回会因未覆盖的实体形态而下降；人名连续列举、依赖背景知识的属性组合重识别不在本机制保证范围内。评测脚本与结果 JSON 随仓库提供，可一键复现。</p>
-    <figure><img src="screenshots/02_隐私对话演示.png" alt="演示" style="max-width:64%"><figcaption><b>图 2</b>　涉密指令实测：模型调用工具、审批放行、文件创建、回复还原的完整闭环</figcaption></figure>
+    <figure><img src="screenshots/02_隐私对话演示.png" alt="演示" style="max-width:64%"><figcaption><b>图 2</b>　涉密指令实测：手机号 / 身份证号 / 邮箱在送模型前替换为占位符，回答中的占位符在本机还原为明文呈现（模型全程未接触真实值）</figcaption></figure>
   </section>
 
   <section id="sec6">
@@ -230,16 +230,15 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
       <div class="card"><h4>链锚点（V3.4 加固）</h4><p>链式哈希只能证明"中间没被改"，防不住两种攻击：<b>降级改写</b>（旧实现里"无 HMAC"标记是从文件里读的，抹掉它再用无密钥 sha256 重算整链即可通过校验）与<b>尾部截断</b>（删掉最近若干条，剩余链依然自洽）。为此增加一枚 HMAC 锚点，固定"条数 + 链头 + 历史 legacy 前缀长度"，并放在<b>密钥旁边</b>（用户目录）而非审计目录内——与密钥同一个理由：不能与它保护的对象同盘，否则删掉锚点就重新不可发现。规则：legacy 条目只允许出现在锚定的历史前缀内、条数不得少于锚点、锚点位置链头必须一致；锚点缺失而链非空则判无效，由用户显式"重建锚点"确认（迁移/拷贝审计目录的合法场景）。<b>残余局限</b>：能同时改写用户目录的攻击者（≈本机已被完全控制）仍可连锚点一起重做——任何纯本地审计都挡不住这一层，故如实声明。</p></div>
     </div>
     <p>另有模式级防线：快速模式禁用一切写操作工具（只读安全），思考模式支持完整工具调用与可调推理深度。本地知识库采用"入库即脱敏"管线，向量库中只存占位符文本。</p>
-    <figure><img src="screenshots/05b_审批弹窗_含待审内容.png" alt="审批" style="max-width:52%"><figcaption><b>图 3</b>　高危操作熔断审批弹窗（V3.3.2 起新增"待审内容"审阅区：完整展示即将执行的命令 / 即将写入的内容，消除盲签）</figcaption></figure>
+    <figure><img src="screenshots/05b_审批弹窗_含待审内容.png" alt="审批" style="max-width:52%"><figcaption><b>图 3</b>　高危操作熔断审批弹窗（"待审内容"审阅区完整展示即将写入的内容，消除盲签；工具决策由受控脚本注入以保证可复现，审批、沙箱写入、审计均为真实执行）</figcaption></figure>
     <figure><img src="screenshots/03_审计面板.png" alt="审计" style="max-width:58%"><figcaption><b>图 4</b>　审计黑匣子面板：统计概览 / 哈希链状态 / 事件筛选 / 报告导出</figcaption></figure>
     <p>下图为实测：当智能体试图执行不在白名单内的系统命令（<span class="commit">tasklist</span>）时，先触发熔断审批，被驳回后如实向用户说明"由于涉及敏感操作，系统未能执行该命令"，全程未产生任何命令执行副作用。</p>
-    <figure><img src="screenshots/07_命令拦截拒绝.png" alt="命令拦截" style="max-width:78%"><figcaption><b>图 5</b>　命令白名单 + 熔断审批实测：非白名单命令被拦截，模型如实反馈</figcaption></figure>
+    <figure><img src="screenshots/07_命令拦截拒绝.png" alt="命令拦截" style="max-width:78%"><figcaption><b>图 5</b>　命令白名单实测：非白名单命令（tasklist）被内核拦截，模型基于真实拦截结果如实反馈（工具决策由受控脚本注入，拦截与回答为真实链路）</figcaption></figure>
     <h3>脱敏 RAG 知识库（实测闭环）</h3>
-    <p>机密文档"入库即逐块脱敏"，向量库中只存占位符；检索命中后，答案中的占位符在输出层还原为真实值呈现给用户。下图为真实闭环：对已入库合同提问"乙方联系人是谁、电话和银行卡号"，系统调用 <span class="commit">search_knowledge_base</span> 检索并还原出真实联系信息——<strong>模型全程只见占位符，真实值仅在本地输出层还原</strong>。</p>
+    <p>机密文档"入库即逐块脱敏"，向量库中只存占位符；检索命中后，答案中的占位符在输出层还原为真实值呈现给用户。实机演示（外部算力 GLM-4.7 接入）：对已入库的《合同_隐盾项目.txt》提问，系统调用 <span class="commit">search_knowledge_base</span> 语义检索并在 <b>占位符形态</b>下交给云端模型作答（出网内容已脱敏），回答里的占位符由输出层在本机还原为真实值呈现给用户——<strong>模型全程只见占位符，真实值仅在本机输出层出现</strong>。该链路的自动化回归见 <span class="commit">tests/test_kb_pipeline.py</span> 与本地 E2E 实测（<span class="commit">tests/test_e2e_local.py</span>，含"检索工具被真实调用"断言）；<b>已知边界</b>：外部模型可能对未在映射表中的占位符（自行改写编号）无能为力，此时该片段以占位符原样显示。</p>
     <p><b>入库顺序（V3.4 修正）</b>：必须<b>先整篇脱敏、再切块</b>。旧实现是"先切块、再逐块脱敏"，任何长于单块尺寸（500 字符）的实体——PEM 私钥、长连接串、大段 base64——会被切碎，碎片两边都匹配不到正则，于是<b>明文碎片进了向量库</b>。整篇脱敏后长实体已被单个占位符替换，再切块就不可能把它切碎；每块只保留"本块真的出现"的占位符映射，跨块还原不串值。同时，占位符解析正则补全了含下划线与数字的实体类型（<span class="commit">MEDICAL_RECORD</span> / <span class="commit">IDCARD15</span> / <span class="commit">PRIVATE_KEY</span> / <span class="commit">ACCESS_TOKEN</span> 与插件实体 <span class="commit">PLUGIN_*</span>），避免这些类型在检索重编号时被漏掉而导致跨文档串值；向量库元数据不再写入本机完整路径（只留文件名）。回归门禁：<span class="commit">tests/test_kb_pipeline.py</span>（纯文本管线，不依赖向量库与网络）。</p>
-    <figure><img src="screenshots/08_知识库入库.png" alt="知识库入库" style="max-width:74%"><figcaption><b>图 6</b>　本地知识库管理：3 篇文档已入库（入库即脱敏），向量库零明文</figcaption></figure>
-    <figure><img src="screenshots/08_知识库检索回答.png" alt="知识库检索" style="max-width:80%"><figcaption><b>图 7</b>　脱敏 RAG 检索实测：命中占位符经输出层还原为真实值呈现</figcaption></figure>
-  </section>
+    <figure><img src="screenshots/08_知识库入库.png" alt="知识库入库" style="max-width:74%"><figcaption><b>图 6</b>　本地知识库管理：文档已入库（入库即逐块脱敏），向量库零明文</figcaption></figure>
+      </section>
 
   <section id="sec7">
     <h2 class="sec">7　安全工程闭环</h2>
@@ -295,7 +294,7 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
       <tr><td>test_workflow / test_knowledge_base</td><td>工作流/审批链/入库检索/向量库零明文</td><td class="num">✅ 通过（知识库需 Ollama 在线）</td></tr>
     </table>
     <div class="tbl-caption">表 4　测试套件汇总（2026-10 复赛评审整改后复测，共 20 个套件）</div>
-    <figure><img src="screenshots/04_设置面板.png" alt="设置" style="max-width:70%"><figcaption><b>图 8</b>　设置面板：模型选择、隐私隔离网关、深度思考强度与脱敏 RAG 知识库管理</figcaption></figure>
+    <figure><img src="screenshots/04_设置面板.png" alt="设置" style="max-width:70%"><figcaption><b>图 8</b>　设置面板：对话模型选择、隐私与权限（含新增「允许执行本地脚本」严格模式开关）、深度思考强度与权限等级</figcaption></figure>
   </section>
 
   <section id="sec9">

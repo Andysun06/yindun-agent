@@ -745,7 +745,8 @@ class Worker:
                         "2. 总结项目的核心功能、技术亮点和潜在风险\n"
                         "3. 如果有遗漏的重要文件，请调用工具继续读取分析"
                     )
-                    messages.append(HumanMessage(content=deepen_prompt))
+                    messages.append(HumanMessage(content=deepen_prompt,
+                                                additional_kwargs={"internal": True}))
                     has_executed_tool = False  # 重置标记，允许下一轮继续强制
                     continue  # 不返回，继续下一轮推理
 
@@ -753,7 +754,8 @@ class Worker:
                     # 达到最低轮数，追加总结轮次
                     self.status.emit("[总结] 工具执行完毕，正在生成最终总结...")
                     summary_prompt = "\n\n请基于以上工具执行结果，给用户提供一个详细的总结报告。"
-                    messages.append(HumanMessage(content=summary_prompt))
+                    messages.append(HumanMessage(content=summary_prompt,
+                                                additional_kwargs={"internal": True}))
                     final_msg = self._invoke_llm_with_cancel_check(messages)
                     content = getattr(final_msg, "content", "")
                     # 渐进输出：把总结也先发给用户

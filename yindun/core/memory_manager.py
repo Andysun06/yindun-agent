@@ -303,12 +303,19 @@ class SummarizableChatHistory(BaseChatMessageHistory):
 
     # ── 序列化（兼容 chat_sessions.json）────────────────────
     def to_dict_list(self) -> list[dict]:
-        """导出为 chat_sessions.json 兼容的消息列表。支持 Human/AIMessage/ToolMessage。"""
+        """导出为 chat_sessions.json 兼容的消息列表。支持 Human/AIMessage/ToolMessage。
+
+        ★ 内部提示词（ReAct 循环自造的"继续深入分析 / 生成总结报告"这类 HumanMessage，
+        以 additional_kwargs={"internal": True} 标记）**不导出**——它们是推理脚手架、
+        不是用户发言；导出会被渲染成用户气泡，并在后续轮次里污染模型上下文。
+        """
         from langchain_core.messages import ToolMessage
         result = []
         if self._summary:
             result.append({"role": "system", "content": f"[SUMMARY]{self._summary}"})
         for m in self._messages:
+            if isinstance(m, HumanMessage) and (getattr(m, "additional_kwargs", None) or {}).get("internal"):
+                continue
             if isinstance(m, HumanMessage):
                 content = m.content if isinstance(m.content, str) else str(m.content)
                 result.append({"role": "user", "content": content})
