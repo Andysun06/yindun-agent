@@ -91,8 +91,10 @@ class FakeWindow:
         self.calls.append(("move", nx, ny))
         self.x, self.y = nx, ny
 
-    def resize(self, nw, nh):
-        self.calls.append(("resize", nw, nh))
+    def resize(self, nw, nh, fix_point=None):
+        # fix_point：边缘拖拽的单次原生 resize 锚点（pywebview ≥5）；
+        # 记录它以便断言"拖哪条边就锚定对侧边"
+        self.calls.append(("resize", nw, nh, fix_point))
         self.width, self.height = nw, nh
 
 
@@ -149,20 +151,31 @@ holder["window"] = win
 check("未知动作返回 False", api.window_action("no_such_action") is False)
 
 # ── 边缘改尺寸桥接（frameless 窗口的 resize 入口）──
+# ★ 拖拽严重抖动的两个根因（均已修，这里锁住契约）：
+#   ① 前端 clientX 相对视口原点，w/n 边拖拽会移动窗口本身 → 视口原点跟着动 →
+#      clientX 混入"窗口位移"形成正反馈 → 改用 screenX/screenY（不随窗口移动变化）；
+#   ② 旧版 move+resize 是两次 SetWindowPos，两次之间窗口位置与尺寸短暂不一致 →
+#      改为**单次** resize(fix_point)（拖哪条边就锚定对侧边），一次原生调用完成定位+改尺寸。
+from webview.window import FixPoint  # noqa: E402
 holder["window"] = win2 = FakeWindow(100, 200, 1180, 780)
 b = api.window_bounds()
 check("window_bounds 返回当前几何", b == {"ok": True, "x": 100, "y": 200, "w": 1180, "h": 780}, str(b))
 win2.calls.clear()
 ok = api.window_resize_edge("e", 120, 0, 100, 200, 1180, 780)
-check("window_resize_edge 真的 move+resize（右边拖宽 120）",
-      ok is True and win2.calls == [("move", 100, 200), ("resize", 1300, 780)], str(win2.calls))
+check("右缘拖宽 120：单次 resize、不再 move（双调用是抖动来源之一）",
+      ok is True and win2.calls == [("resize", 1300, 780, FixPoint.WEST)], str(win2.calls))
 win2.calls.clear()
 api.window_resize_edge("s", 0, -300, 100, 200, 1180, 780)
 check("拖到小于最小尺寸 → 后端 clamp 到 880×600（前端绕不过去）",
-      win2.calls[-1] == ("resize", 1180, 600), str(win2.calls))
+      win2.calls[-1][:3] == ("resize", 1180, 600), str(win2.calls))
 api.window_resize_edge("w", 400, 0, 100, 200, 1180, 780)
-check("clamp 时对侧锚定（左边往里推到底，右边界不漂移）",
-      win2.calls[-1] == ("resize", 880, 780) and win2.calls[-2] == ("move", 400, 200), str(win2.calls[-2:]))
+check("左缘拖拽：单次 resize 且锚定对侧（EAST，右边界不漂移）",
+      win2.calls[-1] == ("resize", 880, 780, FixPoint.EAST), str(win2.calls[-1:]))
+api.window_resize_edge("nw", -60, -40, 100, 200, 1180, 780)
+check("角（nw）拖拽：锚定对侧角（EAST|SOUTH，右下双钉）",
+      win2.calls[-1] == ("resize", 1240, 820, FixPoint.EAST | FixPoint.SOUTH), str(win2.calls[-1:]))
+check("全程无 move 调用（单次原生 resize，双调用抖动根因已除）",
+      not any(c[0] == "move" for c in win2.calls), str(win2.calls))
 holder["window"] = BlindWindow(0, 0, 800, 600)
 check("取不到几何时 window_bounds 明确失败（前端放弃拖拽，不乱动窗口）",
       api.window_bounds().get("ok") is False)

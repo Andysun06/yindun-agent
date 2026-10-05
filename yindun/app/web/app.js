@@ -1004,11 +1004,16 @@
      之后每次 move 只把"相对起点的总位移"发给 window_resize_edge——
      **对侧边钉住与最小尺寸 clamp 全在后端**（window_layout.resize_edge，被回归测试锁住），
      前端不复制这套算术，避免两处 clamp/锚点规则漂移。
-     两个不能忘：
+     三个不能忘（前两个都是"严重抖动"的实测根因）：
+       · 位移必须用**屏幕坐标**（screenX/screenY）：clientX 相对视口原点，而 w/n 边拖拽
+         会移动窗口本身 → 视口原点跟着移动 → clientX 混入"窗口位移"形成正反馈，
+         窗口边缘永远追不上鼠标、来回振荡（修复前拖 w/n 边疯狂抖动的根因）；
+         screenX 以屏幕为原点，不随窗口移动变化。
        · 热区的 mousedown 必须 stopPropagation——pywebview 的 easy_drag 监听 window 上的
          mousedown 会"拖走整个窗口"，不吞事件的话"拖边"会变成"拖窗"；
-       · 改尺寸过程中视口随之变化，会自然触发 onViewportResize（窄屏自动收起右栏），
-         三栏真的跟着窗口大小走。 */
+       · 后端用单次 resize(fix_point) 原生调用完成"改尺寸+锚定对侧边"（不再 move+resize
+         两次 SetWindowPos，两次之间的中间态是抖动另一来源），拖拽期间 body 加
+         is-edge-resizing 禁止文本选中，防止重排时闪选。 */
   function bindEdgeResize() {
     document.querySelectorAll("#edge-zone [data-edge]").forEach((el) => {
       const dir = el.dataset.edge;
@@ -1019,23 +1024,25 @@
         call("window_bounds").then((b) => {
           if (!b || !b.ok || typeof b.x !== "number") return;
           const start = { x: b.x, y: b.y, w: b.w, h: b.h };
-          const sx = e.clientX, sy = e.clientY;
+          const sx = e.screenX, sy = e.screenY;   // 屏幕坐标：不随窗口移动变化（见上）
           let last = null, raf = 0;
           const apply = (dx, dy) => {
             call("window_resize_edge", dir, Math.round(dx), Math.round(dy), start.x, start.y, start.w, start.h);
           };
           const flush = () => { raf = 0; if (last) { const d = last; last = null; apply(d.dx, d.dy); } };
           const onMove = (ev) => {
-            last = { dx: ev.clientX - sx, dy: ev.clientY - sy };
+            last = { dx: ev.screenX - sx, dy: ev.screenY - sy };
             if (!raf) raf = requestAnimationFrame(flush);   // 每帧最多一次桥接调用
           };
           const onUp = () => {
             window.removeEventListener("pointermove", onMove);
             window.removeEventListener("pointerup", onUp);
             window.removeEventListener("pointercancel", onUp);
+            document.body.classList.remove("is-edge-resizing");
             if (raf) { cancelAnimationFrame(raf); raf = 0; }
             if (last) { apply(last.dx, last.dy); last = null; }   // 收尾一次，保证最后一帧落位
           };
+          document.body.classList.add("is-edge-resizing");
           window.addEventListener("pointermove", onMove);
           window.addEventListener("pointerup", onUp);
           window.addEventListener("pointercancel", onUp);
@@ -1175,16 +1182,11 @@
   /* ── 设置抽屉 ─────────────────────────────────────── */
   function fillSettings() {
     const s = state.settings || {};
-    // 模型：可下拉选本机已装模型，也可直接手输（内网/远程 Ollama 的模型本机探测不到）
+    // 模型：自绘下拉（触发器+浮层），列表来自本机探测 / 缓存；
+    // 搜索框同时承担"过滤"与"手输"——内网/远程 Ollama 的模型本机探测不到，直接输入即可。
     const models = (state.llm.models && state.llm.models.length) ? state.llm.models : (s.ollama_models_cache || []);
-    const dl = $("model-options");
-    dl.innerHTML = "";
-    for (const m of models) {
-      const opt = document.createElement("option");
-      opt.value = m;
-      dl.appendChild(opt);
-    }
-    $("model-input").value = s.model || "";
+    state.modelOptions = models;
+    $("model-value").textContent = s.model || "未选择";
     if (!models.length) $("model-hint").textContent = "未检测到本地模型：请先安装 Ollama 并拉取模型（ollama pull qwen3.5:4b）";
     else $("model-hint").textContent = `已检测到 ${models.length} 个本地模型；内网模型可直接输入`;
     $("ollama-host").value = s.ollama_host || "http://127.0.0.1:11434";
@@ -1440,11 +1442,61 @@
       toast("无边框悬浮模式将在重启后生效");
     };
     $("sel-permission").onchange = (e) => persist({ permission: e.target.value });
-    // 模型名：手输/下拉同一个框；Ollama 地址：失焦保存（保存后端会立即重建算力）
-    $("model-input").onchange = (e) => {
-      const v = String(e.target.value || "").trim();
-      if (v && v !== state.settings.model) persist({ model: v });
+    // 模型下拉（自绘，替代原生 datalist——弹层不随主题、内网手输无回显）：
+    // 触发器开合 / 搜索过滤 / 键盘 ↑↓·Enter·Esc / 点选与手输（回车提交非匹配名=内网模型入口）/
+    // 点浮层外关闭。选择即 persist（后端立即重建算力）。
+    const mSel = $("model-select"), mTrig = $("model-trigger"), mPop = $("model-pop"),
+          mSearch = $("model-search"), mList = $("model-list");
+    let mHl = -1;                                   // 键盘高亮 index
+    const closeModelPop = () => {
+      mPop.hidden = true; mTrig.setAttribute("aria-expanded", "false");
+      mSel.classList.remove("is-open"); mHl = -1;
     };
+    const renderModelList = (kw) => {
+      const q = String(kw || "").trim().toLowerCase();
+      const opts = (state.modelOptions || []).filter((m) => !q || m.toLowerCase().includes(q));
+      const manual = q && !opts.some((m) => m.toLowerCase() === q);
+      const cur = state.settings.model || "";
+      let html = "";
+      if (manual) html += `<button type="button" class="model-opt model-opt--manual" role="option" data-model="${esc(q)}">使用「${esc(q)}」</button>`;
+      html += opts.map((m) => `<button type="button" class="model-opt${m === cur ? " is-cur" : ""}" role="option" aria-selected="${m === cur}" data-model="${esc(m)}">${esc(m)}${m === cur ? " ✓" : ""}</button>`).join("");
+      mList.innerHTML = html || `<div class="model-opt model-opt--empty">没有匹配的模型</div>`;
+      mHl = manual ? 0 : (opts.length ? 0 : -1);
+      [...mList.querySelectorAll(".model-opt")].forEach((el, i) => el.classList.toggle("is-hl", i === mHl));
+    };
+    const openModelPop = () => {
+      mPop.hidden = false; mTrig.setAttribute("aria-expanded", "true");
+      mSel.classList.add("is-open");
+      mSearch.value = ""; renderModelList(""); mSearch.focus();
+    };
+    mTrig.onclick = () => (mPop.hidden ? openModelPop() : closeModelPop());
+    mSearch.oninput = () => renderModelList(mSearch.value);
+    mSearch.onkeydown = (e) => {
+      const items = [...mList.querySelectorAll(".model-opt:not(.model-opt--empty)")];
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        if (!items.length) return;
+        mHl = (mHl + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+        [...mList.querySelectorAll(".model-opt")].forEach((el, i) => el.classList.toggle("is-hl", i === mHl));
+        items[Math.max(0, mHl)]?.scrollIntoView({ block: "nearest" });
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const pick = items[Math.max(0, mHl)] || items[0];
+        const name = (pick && pick.dataset.model) || mSearch.value.trim();
+        if (name) { persist({ model: name }); closeModelPop(); }
+      } else if (e.key === "Escape") {
+        closeModelPop();
+      }
+    };
+    mList.onclick = (e) => {
+      const btn = e.target.closest("[data-model]");
+      if (!btn) return;
+      persist({ model: btn.dataset.model });
+      closeModelPop();
+    };
+    document.addEventListener("click", (e) => {
+      if (!mSel.contains(e.target)) closeModelPop();
+    });
     $("ollama-host").onchange = (e) => {
       const v = String(e.target.value || "").trim() || "http://127.0.0.1:11434";
       e.target.value = v;

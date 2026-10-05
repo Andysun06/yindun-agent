@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import webview
+from webview.window import FixPoint   # 边缘改尺寸的单次原生 resize 锚点（pywebview ≥5）
 
 from yindun import APP_ROOT, __display_version__
 from yindun.app import window_layout
@@ -310,16 +311,29 @@ class JsApi:
 
     def window_resize_edge(self, edge: str, dx: int, dy: int,
                            start_x: int, start_y: int, start_w: int, start_h: int) -> bool:
-        """按边改尺寸：前端每次 pointermove 重发"相对拖拽起点的总位移"，
-        这里以起点几何计算目标（对侧锚定 + 最小尺寸由 window_layout.resize_edge 保证）。
+        """按边改尺寸：前端每次 pointermove 重发"相对拖拽起点的总位移"（screenX/screenY，
+        不随窗口自身移动而变化——clientX 相对视口原点，w/n 边拖拽会移动窗口本身，
+        视口原点随之移动，clientX 混入"窗口位移"形成正反馈，是拖拽严重抖动的根因之一）。
+        这里以起点几何计算目标（对侧锚定 + 最小尺寸由 window_layout.resize_edge 保证），
+        并用**单次** resize(fix_point) 原生调用完成"改尺寸+锚定对侧边"——
+        旧版 move+resize 是两次 SetWindowPos，两次之间窗口位置与尺寸短暂不一致（抖动另一根因）；
+        pywebview 6.x 的 winforms resize 内部即一次 SetWindowPos。
         以起点为基准而非当前值累积，DPI 取整误差不会在连续拖帧中漂移。"""
         window = self._window.get("window")
         if window is None:
             return False
         try:
             nx, ny, nw, nh = window_layout.resize_edge(edge, start_x, start_y, start_w, start_h, dx, dy)
-            window.move(nx, ny)
-            window.resize(nw, nh)
+            # 锚点选择：拖哪条边就锚定对侧边（w→EAST、n→SOUTH），winforms 的 resize
+            # 只看 EAST/SOUTH 两个位（缺省=北西角固定），单次 SetWindowPos 完成定位+改尺寸
+            fix = FixPoint.EAST if "w" in edge else FixPoint.WEST
+            if "n" in edge:
+                fix = fix | FixPoint.SOUTH
+            try:
+                window.resize(nw, nh, fix)     # 单次原生调用（pywebview ≥5 支持 fix_point）
+            except TypeError:
+                window.move(nx, ny)            # 旧版 pywebview 兜底：两次调用（退化为轻微抖动）
+                window.resize(nw, nh)
             return True
         except Exception as exc:
             print(f"[WebView] 边缘改尺寸失败：{type(exc).__name__}: {exc}")

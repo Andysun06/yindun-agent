@@ -183,7 +183,7 @@
 
   const api = {
     bootstrap: () => Promise.resolve({
-      version: "V3.4.2",
+      version: "V3.4.3",
       settings: {
         model: "qwen3.5:4b", ollama_host: "http://127.0.0.1:11434", privacy: true,
         dark_mode: location.hash.indexOf("light") < 0, topmost: true,

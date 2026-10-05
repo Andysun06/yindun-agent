@@ -52,6 +52,10 @@ button { cursor: pointer; border: none; background: none; }
 .col-resizer:focus-visible { outline: none; }
 .app.is-resizing { transition: none; }              /* 拖动时关掉过渡，手感才跟手 */
 .app.is-resizing, .app.is-resizing * { user-select: none; }
+/* 窗口边缘拖拽（body 级，与三栏拖拽的 .app.is-resizing 同理）：
+   拖拽期间禁选中——否则连续改尺寸引发的文本闪选会加剧视觉抖动 */
+body.is-edge-resizing, body.is-edge-resizing * { user-select: none !important; }
+body.is-edge-resizing .app { transition: none; }
 
 /* ── 无边框模式的边缘改尺寸热区（8 向）───────────────────────
    frameless 窗口没有系统 resize 边框，改尺寸入口由这 6px 外缘热区 +
@@ -323,6 +327,29 @@ html[data-frameless="1"] .win-ctrls { display: inline-flex; }
 .field__label { font-size: var(--fs-sm); color: var(--text-1); font-weight: 600; }
 /* 提示文字用 text-2（而非 text-3）：设置页要"看得清"，低对比只留给装饰性元信息 */
 .field__hint { font-size: var(--fs-meta); color: var(--text-2); line-height: 1.65; }
+
+/* ── 模型选择（自绘下拉，替代原生 datalist：弹层随主题、内网手输有回显、键盘可达）── */
+.model-select { position: relative; }
+.model-select__trigger { width: 100%; display: flex; align-items: center; justify-content: space-between;
+  gap: var(--sp-3); padding: 7px var(--sp-4); border-radius: var(--r-ctrl);
+  background: var(--bg-canvas); border: 1px solid var(--border-2); font-size: var(--fs-sm); color: var(--text-1); }
+.model-select__trigger:hover, .model-select.is-open .model-select__trigger { border-color: var(--accent-500); }
+.model-select.is-open .model-select__trigger { box-shadow: 0 0 0 3px var(--accent-50); }
+.model-select__value { font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-select__chev { width: 14px; height: 14px; flex: none; color: var(--text-3); transition: transform var(--dur) var(--ease); }
+.model-select.is-open .model-select__chev { transform: rotate(180deg); }
+.model-select__pop { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 4px);
+  background: var(--bg-canvas); border: 1px solid var(--border-2); border-radius: var(--r-ctrl);
+  box-shadow: var(--shadow-pop); padding: var(--sp-2); display: flex; flex-direction: column; gap: var(--sp-2); }
+.model-select__list { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.model-opt { display: flex; align-items: center; gap: var(--sp-3); width: 100%; padding: 6px var(--sp-3);
+  border-radius: var(--r-chip); font-family: var(--font-mono); font-size: var(--fs-sm);
+  color: var(--text-1); text-align: left; }
+.model-opt:hover, .model-opt.is-hl { background: var(--bg-hover); }
+.model-opt.is-cur { color: var(--accent-600); font-weight: 600; }
+.model-opt--manual { color: var(--accent-600); }
+.model-opt--empty { color: var(--text-3); cursor: default; }
+.model-select__foot { font-size: var(--fs-meta); color: var(--text-2); padding: 0 var(--sp-2) var(--sp-1); }
 select, input[type="text"] { width: 100%; padding: 7px var(--sp-4); border-radius: var(--r-ctrl); background: var(--bg-canvas); border: 1px solid var(--border-2); outline: none; font-size: var(--fs-sm); }
 select:focus, input[type="text"]:focus { border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--accent-50); }
 

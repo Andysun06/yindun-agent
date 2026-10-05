@@ -170,10 +170,21 @@
     <div class="set-sec"><span>算力</span></div>
 
     <div class="field">
-      <label class="field__label" for="model-input">对话模型</label>
-      <input type="text" id="model-input" list="model-options" placeholder="选择或输入模型名" spellcheck="false" autocomplete="off">
-      <datalist id="model-options"></datalist>
-      <div class="field__hint" id="model-hint">来自本机 Ollama 已下载模型</div>
+      <!-- 模型选择：自绘下拉（原生 datalist 弹层不随主题、内网手输无回显）。
+           触发器显示当前模型；浮层 = 搜索过滤 + 模型列表 + 手输（回车提交非匹配名，内网模型入口）；
+           键盘 ↑↓/Enter/Esc 可达；点浮层外关闭。选择即保存（后台重建算力）。 -->
+      <span class="field__label" id="model-label">对话模型</span>
+      <div class="model-select" id="model-select">
+        <button type="button" id="model-trigger" class="model-select__trigger" aria-haspopup="listbox" aria-expanded="false">
+          <span class="model-select__value" id="model-value"></span>
+          <svg class="model-select__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="model-select__pop" id="model-pop" hidden>
+          <input type="text" id="model-search" placeholder="搜索或直接输入（内网模型可手输）" autocomplete="off" spellcheck="false">
+          <div class="model-select__list" id="model-list" role="listbox" aria-labelledby="model-label"></div>
+          <div class="model-select__foot" id="model-hint">—</div>
+        </div>
+      </div>
     </div>
 
     <div class="field">
