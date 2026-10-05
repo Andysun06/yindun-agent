@@ -225,6 +225,8 @@
     }),
     plugin_config_write: () => Promise.resolve({ ok: true, bytes: 128 }),
     window_action: noop,
+    window_bounds: () => Promise.resolve({ ok: true, x: 80, y: 60, w: 1180, h: 780 }),
+    window_resize_edge: noop,
     audit_snapshot: () => auditData(),
     audit_reanchor: () => Promise.resolve({ ok: true, count: 128 }),
     audit_export: () => Promise.resolve("（预览模式）audit_report_demo.json"),

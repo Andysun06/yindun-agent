@@ -332,6 +332,36 @@
     $("composer-hint").textContent = busy
       ? "推理中…（可随时点停止，取消立即生效）"
       : "数据在本机脱敏后才送入模型";
+    if (busy) startBusyWatchdog(); else stopBusyWatchdog();
+  }
+
+  /* ── 忙碌看门狗（事件丢失自愈）──────────────────────
+     事件推送是单向的：某条 state/finished 事件一旦丢失（页面重载、渲染异常、
+     桥接抖动），界面会永远停在"推理中"，只能重启。看门狗在忙碌期间每 3 秒
+     向后端要一次状态快照：若后端其实已空闲，就按会话存储重渲染并恢复输入——
+     状态失联最多持续一个轮询周期，而不是永远卡死。 */
+  let watchdogTimer = null;
+
+  function startBusyWatchdog() {
+    if (watchdogTimer) return;
+    watchdogTimer = setInterval(async () => {
+      try {
+        const snap = await call("state_snapshot");
+        if (!snap || snap.busy !== false) return;
+        // 后端已空闲而前端还在忙 → 事件丢了，按会话存储自愈
+        stopBusyWatchdog();
+        setBusy(false);
+        if (snap.session_id) await openSession(snap.session_id);   // 从会话存储重渲染（回复不会丢）
+        const llm = await call("llm_status");
+        if (llm) { state.llm = llm; renderPosture({ model: llm.model }); }
+        await refreshSessions();
+        toast("检测到状态不同步，已自动恢复");
+      } catch (err) { /* 桥接抖动：下个周期再试 */ }
+    }, 3000);
+  }
+
+  function stopBusyWatchdog() {
+    if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
   }
 
   function setStatus(text) { $("status-line").textContent = text || ""; }
@@ -949,6 +979,53 @@
     });
   }
 
+  /* ── 无边框窗口：拖边缘改尺寸 ──────────────────────────────
+     frameless 窗口没有系统 resize 边框，改尺寸入口是窗口外缘的 8 向热区
+     （index.html #edge-zone，仅在 html[data-frameless="1"] 且非折叠态显示）：
+     pointerdown 取起点几何（window_bounds，逻辑像素，与 window.move/resize 同单位），
+     之后每次 move 只把"相对起点的总位移"发给 window_resize_edge——
+     **对侧边钉住与最小尺寸 clamp 全在后端**（window_layout.resize_edge，被回归测试锁住），
+     前端不复制这套算术，避免两处 clamp/锚点规则漂移。
+     两个不能忘：
+       · 热区的 mousedown 必须 stopPropagation——pywebview 的 easy_drag 监听 window 上的
+         mousedown 会"拖走整个窗口"，不吞事件的话"拖边"会变成"拖窗"；
+       · 改尺寸过程中视口随之变化，会自然触发 onViewportResize（窄屏自动收起右栏），
+         三栏真的跟着窗口大小走。 */
+  function bindEdgeResize() {
+    document.querySelectorAll("#edge-zone [data-edge]").forEach((el) => {
+      const dir = el.dataset.edge;
+      el.addEventListener("mousedown", (e) => { e.stopPropagation(); });
+      el.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0) return;
+        e.preventDefault(); e.stopPropagation();
+        call("window_bounds").then((b) => {
+          if (!b || !b.ok || typeof b.x !== "number") return;
+          const start = { x: b.x, y: b.y, w: b.w, h: b.h };
+          const sx = e.clientX, sy = e.clientY;
+          let last = null, raf = 0;
+          const apply = (dx, dy) => {
+            call("window_resize_edge", dir, Math.round(dx), Math.round(dy), start.x, start.y, start.w, start.h);
+          };
+          const flush = () => { raf = 0; if (last) { const d = last; last = null; apply(d.dx, d.dy); } };
+          const onMove = (ev) => {
+            last = { dx: ev.clientX - sx, dy: ev.clientY - sy };
+            if (!raf) raf = requestAnimationFrame(flush);   // 每帧最多一次桥接调用
+          };
+          const onUp = () => {
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
+            window.removeEventListener("pointercancel", onUp);
+            if (raf) { cancelAnimationFrame(raf); raf = 0; }
+            if (last) { apply(last.dx, last.dy); last = null; }   // 收尾一次，保证最后一帧落位
+          };
+          window.addEventListener("pointermove", onMove);
+          window.addEventListener("pointerup", onUp);
+          window.addEventListener("pointercancel", onUp);
+        });
+      });
+    });
+  }
+
   function setLeftCollapsed(isCollapsed) {
     document.querySelector(".app").classList.toggle("is-left-collapsed", isCollapsed);
     try { localStorage.setItem("yd_left_collapsed", isCollapsed ? "1" : "0"); } catch (e) {}
@@ -1038,6 +1115,7 @@
     document.querySelector(".app").classList.toggle("is-left-collapsed", left);
     document.querySelector(".app").classList.toggle("is-right-collapsed", right);
     bindResizeHandles();
+    bindEdgeResize();            // 无边框窗口：拖边缘改尺寸（frameless 模式下热区才可见）
     clampLayout();
     applyLayout();
   }

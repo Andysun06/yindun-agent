@@ -24,8 +24,8 @@ MINI_W_MIN = 280
 # pywebview/WinForms 的 MinimumSize 只在创建窗口时生效，运行期改它不会作用到原生窗口，
 # 若按展开态 (880,600) 设，折叠就会被悄悄卡回 880×600（表现为"点了折叠但窗口没变小"）。
 MINI_MIN_SIZE = (MINI_W_MIN, MINI_H)
-# 展开态的最小尺寸：作为布局层的最小可用尺寸记录在案（无边框窗口没有用户拖拽改尺寸的入口，
-# 因此它不靠操作系统强制，而是由前端布局与这里的几何兜底保证）。
+# 展开态的最小尺寸：无边框模式下由前端边缘热区 + 这里的 resize_edge 兜底执行
+# （系统不会替我们拦，因为窗口没有原生边框；所以拖动改尺寸时由代码保证不小于这个值）。
 EXPANDED_MIN_SIZE = (880, 600)
 
 
@@ -53,3 +53,35 @@ def clamp_geometry(x: int, y: int, w: int, h: int) -> Tuple[int, int, int, int]:
     if w <= 0 or h <= 0:
         return int(x), int(y), EXPANDED_W, EXPANDED_H
     return int(x), int(y), int(w), int(h)
+
+
+def resize_edge(edge: str, x: int, y: int, w: int, h: int,
+                dx: int, dy: int,
+                min_w: int = EXPANDED_MIN_SIZE[0],
+                min_h: int = EXPANDED_MIN_SIZE[1]) -> Tuple[int, int, int, int]:
+    """边缘拖拽改尺寸：在**拖拽起点**几何 (x,y,w,h) 上按方向边（n/s/w/e 及组合）
+    应用累计位移 (dx,dy)，并保证不小于 min_w×min_h，且**对侧边保持钉住**
+    （拖下边时顶边不动、拖左边时右边不动——与原生窗口手感一致）。
+
+    以起点为基准（而不是"当前值+增量"）计算并应用，可避免 DPI 取整误差在连续
+    拖帧中累积漂移；每次 pointermove 重发总位移，结果幂等。"""
+    e = str(edge or "").lower()
+    nx, ny, nw, nh = int(x), int(y), int(w), int(h)
+    if "w" in e:
+        nx += int(dx); nw -= int(dx)
+    if "e" in e:
+        nw += int(dx)
+    if "n" in e:
+        ny += int(dy); nh -= int(dy)
+    if "s" in e:
+        nh += int(dy)
+    min_w, min_h = int(min_w), int(min_h)
+    if nw < min_w:
+        if "w" in e:
+            nx = int(x) + int(w) - min_w   # 对侧锚定：左边收缩到下限后不再左移
+        nw = min_w
+    if nh < min_h:
+        if "n" in e:
+            ny = int(y) + int(h) - min_h
+        nh = min_h
+    return nx, ny, nw, nh

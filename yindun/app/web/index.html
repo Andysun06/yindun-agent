@@ -342,6 +342,18 @@
     </div>
   </div>
 
+  <!-- 无边框窗口的边缘改尺寸热区（8 向；仅 frameless 模式显示，见 app.css/app.js） -->
+  <div class="edge-zone" id="edge-zone" aria-hidden="true">
+    <div class="edge edge-n" data-edge="n"></div>
+    <div class="edge edge-e" data-edge="e"></div>
+    <div class="edge edge-s" data-edge="s"></div>
+    <div class="edge edge-w" data-edge="w"></div>
+    <div class="edge edge-ne" data-edge="ne"></div>
+    <div class="edge edge-nw" data-edge="nw"></div>
+    <div class="edge edge-se" data-edge="se"></div>
+    <div class="edge edge-sw" data-edge="sw"></div>
+  </div>
+
   <div class="toast-root" id="toast-root"></div>
 
   <!-- 开发预览假桥接：仅当 URL 带 #mock 时生效（见 dev-mock.js 顶部说明） -->

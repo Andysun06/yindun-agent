@@ -297,6 +297,34 @@ class JsApi:
         window.resize(nw, nh)
         self._saved_geometry = None
 
+    # ── 边缘拖拽改尺寸（无边框模式下的 resize 入口，由前端热区驱动；单位=逻辑像素）──
+    def window_bounds(self) -> Dict[str, Any]:
+        """当前窗口几何（逻辑像素，与 window.move/resize 同单位）。
+        取不到时明确 ok=False，前端放弃拖拽（不乱动窗口）。"""
+        window = self._window.get("window")
+        geometry = self._current_geometry(window) if window is not None else None
+        if geometry is None:
+            return {"ok": False}
+        x, y, w, h = geometry
+        return {"ok": True, "x": x, "y": y, "w": w, "h": h}
+
+    def window_resize_edge(self, edge: str, dx: int, dy: int,
+                           start_x: int, start_y: int, start_w: int, start_h: int) -> bool:
+        """按边改尺寸：前端每次 pointermove 重发"相对拖拽起点的总位移"，
+        这里以起点几何计算目标（对侧锚定 + 最小尺寸由 window_layout.resize_edge 保证）。
+        以起点为基准而非当前值累积，DPI 取整误差不会在连续拖帧中漂移。"""
+        window = self._window.get("window")
+        if window is None:
+            return False
+        try:
+            nx, ny, nw, nh = window_layout.resize_edge(edge, start_x, start_y, start_w, start_h, dx, dy)
+            window.move(nx, ny)
+            window.resize(nw, nh)
+            return True
+        except Exception as exc:
+            print(f"[WebView] 边缘改尺寸失败：{type(exc).__name__}: {exc}")
+            return False
+
     # ── 自定义模型（OpenAI 兼容）───────────────────
     def custom_models(self):
         return self._svc.custom_models()
@@ -357,6 +385,14 @@ class JsApi:
         """插件自检：确认每个声明的钩子都真的有同名函数（避免"启用了却没反应"）。"""
         return self._svc.plugin_selfcheck()
 
+    def state_snapshot(self):
+        """当前推理状态快照（供前端"忙碌看门狗"轮询）。
+
+        为什么需要：事件推送是单向的，一旦某条事件在传输/渲染中丢失，
+        前端会永远停在"推理中"。有了快照轮询，状态失联最多持续一个轮询周期。
+        """
+        return self._svc._state_payload(self._svc.current_session_id())
+
     # ── 设置 ─────────────────────────────────────
     def save_settings(self, patch: Dict[str, Any]) -> bool:
         if not isinstance(patch, dict):
@@ -406,7 +442,11 @@ class WebApp:
             self._on_service_event(event, payload)
 
     # ── 启动 ─────────────────────────────────────
-    def run(self) -> None:
+    def run(self, driver: Optional[Any] = None) -> None:
+        """启动界面。driver 为可选的回调（真实使用驱动/自动化测试用）：
+        非空时会以 `webview.start(driver, window)` 启动，驱动线程拿到窗口对象，
+        其余装配（监听器、算力预热线程、事件缓存 flush）与生产路径完全一致——
+        保证"驱动里测到的行为"就是"用户看到的行为"。"""
         self.service.initialize()
         self.service.set_listener(self._on_service_event)
 
@@ -420,8 +460,9 @@ class WebApp:
             "height": window_layout.EXPANDED_H,
             # ★ min_size 必须按**折叠态**给：pywebview/WinForms 的 MinimumSize 只在创建窗口时
             #   作用到原生窗口，运行期改 `window.min_size` 不会生效——按展开态设会静默卡住折叠
-            #   （实测：折叠请求 420×60，实际被卡回 880×600）。无边框窗口本身没有用户拖拽改尺寸的
-            #   入口，所以这里的下限只影响我们自己的程序化缩放。
+            #   （实测：折叠请求 420×60，实际被卡回 880×600）。
+            #   边缘拖拽改尺寸由前端热区 + window_resize_edge 实现，最小尺寸在那里按展开态 clamp，
+            #   所以这里给折叠态的小值不会让用户把窗口缩到不可用。
             "min_size": window_layout.MINI_MIN_SIZE,
             "on_top": bool(settings.get("topmost", True)),
             "confirm_close": False,
@@ -447,7 +488,10 @@ class WebApp:
         except Exception:
             pass
 
-        webview.start(debug=bool(os.environ.get("YINDUN_WEB_DEBUG")))
+        if driver is not None:
+            webview.start(driver, self._window, debug=bool(os.environ.get("YINDUN_WEB_DEBUG")))
+        else:
+            webview.start(debug=bool(os.environ.get("YINDUN_WEB_DEBUG")))
 
 
 def run_web_ui() -> None:

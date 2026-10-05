@@ -58,6 +58,20 @@ check("尺寸异常时 clamp 回默认展开尺寸",
       wl.clamp_geometry(10, 20, 0, 0)[2:] == (wl.EXPANDED_W, wl.EXPANDED_H),
       str(wl.clamp_geometry(10, 20, 0, 0)))
 
+# 边缘改尺寸锚点语义（前端热区与后端 clamp 共享这套规则，先由纯函数锁住）
+check("拖下边：只长高，顶边钉住",
+      wl.resize_edge("s", 100, 100, 1180, 780, 0, 100) == (100, 100, 1180, 880))
+check("拖左边：对侧（右）边钉住",
+      wl.resize_edge("w", 100, 100, 1180, 780, -100, 0) == (0, 100, 1280, 780))
+check("拖上边：底边钉住",
+      wl.resize_edge("n", 100, 100, 1180, 780, 0, 50) == (100, 150, 1180, 730))
+check("拖角（nw）：两个方向同时改",
+      wl.resize_edge("nw", 100, 100, 1180, 780, -20, 30) == (80, 130, 1200, 750))
+check("小于最小尺寸被 clamp（下边）",
+      wl.resize_edge("s", 0, 0, 1180, 780, 0, -300) == (0, 0, 1180, 600))
+check("clamp 时对侧锚点不漂移（左边往里推到底）",
+      wl.resize_edge("w", 0, 0, 880, 600, 100, 0) == (0, 0, 880, 600))
+
 # ── 2) 桥接契约（用假窗口验证真的调了 move/resize/min_size）──
 print("\n" + "=" * 78)
 print("【2】桥接契约：window_action('mini' / 'restore_window')")
@@ -133,6 +147,26 @@ holder["window"] = win
 
 check("未知动作返回 False", api.window_action("no_such_action") is False)
 
+# ── 边缘改尺寸桥接（frameless 窗口的 resize 入口）──
+holder["window"] = win2 = FakeWindow(100, 200, 1180, 780)
+b = api.window_bounds()
+check("window_bounds 返回当前几何", b == {"ok": True, "x": 100, "y": 200, "w": 1180, "h": 780}, str(b))
+win2.calls.clear()
+ok = api.window_resize_edge("e", 120, 0, 100, 200, 1180, 780)
+check("window_resize_edge 真的 move+resize（右边拖宽 120）",
+      ok is True and win2.calls == [("move", 100, 200), ("resize", 1300, 780)], str(win2.calls))
+win2.calls.clear()
+api.window_resize_edge("s", 0, -300, 100, 200, 1180, 780)
+check("拖到小于最小尺寸 → 后端 clamp 到 880×600（前端绕不过去）",
+      win2.calls[-1] == ("resize", 1180, 600), str(win2.calls))
+api.window_resize_edge("w", 400, 0, 100, 200, 1180, 780)
+check("clamp 时对侧锚定（左边往里推到底，右边界不漂移）",
+      win2.calls[-1] == ("resize", 880, 780) and win2.calls[-2] == ("move", 400, 200), str(win2.calls[-2:]))
+holder["window"] = BlindWindow(0, 0, 800, 600)
+check("取不到几何时 window_bounds 明确失败（前端放弃拖拽，不乱动窗口）",
+      api.window_bounds().get("ok") is False)
+holder["window"] = win2
+
 # 窗口最小尺寸必须按折叠态给（运行期改 min_size 不生效，见 window_layout 注释）
 webview_src = (ROOT / "yindun" / "app" / "webview_app.py").read_text(encoding="utf-8")
 check("创建窗口时 min_size 用折叠态尺寸（否则折叠会被静默卡住）",
@@ -165,6 +199,22 @@ check("折叠失败时界面不假装已折叠（回滚 + 提示）",
 check("Esc 可展开", 'e.key === "Escape" && miniOn()' in js)
 check("主输入与浮条共用同一个发送实现（避免两套行为漂移）",
       js.count("await sendText(text)") >= 2, f"sendText 调用次数 {js.count('await sendText(text)')}")
+
+# ── 边缘改尺寸 + 三栏内容重排（本轮 bug 修复的回归护栏）──
+check("边缘热区存在：8 个方向",
+      'id="edge-zone"' in html and html.count("data-edge=") == 8)
+check("热区仅在无边框模式显示、折叠浮条态不显示",
+      'html[data-frameless="1"] body:not(.is-mini) .edge-zone { display: contents; }' in css)
+check("热区 mousedown 吞掉事件（否则 pywebview easy_drag 会把『拖边』变成『拖窗』）",
+      'el.addEventListener("mousedown", (e) => { e.stopPropagation(); });' in js)
+check("边缘拖拽已绑定（位移交后端算，前端不复制锚点/clamp 规则）",
+      "bindEdgeResize()" in js and 'call("window_bounds")' in js and 'call("window_resize_edge"' in js)
+check("列内内容跟随栅格宽度（回归护栏：不得写死 248px/400px，否则拖宽时内容不重排、出现遮挡）",
+      "width: 248px; flex: none" not in css and "width: 400px; flex: none" not in css
+      and ".side--left > .sidebar { width: 100%" in css
+      and ".side--right > .panel__inner { width: 100%" in css)
+check("后端桥接方法齐备",
+      "def window_bounds" in webview_src and "def window_resize_edge" in webview_src)
 
 # ── 4) 三栏可拖宽（V3.4.0 新增）────────────────────
 print("\n" + "=" * 78)

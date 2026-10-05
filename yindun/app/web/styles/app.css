@@ -53,12 +53,33 @@ button { cursor: pointer; border: none; background: none; }
 .app.is-resizing { transition: none; }              /* 拖动时关掉过渡，手感才跟手 */
 .app.is-resizing, .app.is-resizing * { user-select: none; }
 
+/* ── 无边框模式的边缘改尺寸热区（8 向）───────────────────────
+   frameless 窗口没有系统 resize 边框，改尺寸入口由这 6px 外缘热区 +
+   window_bounds / window_resize_edge 桥接承担（单位=逻辑像素）。
+   仅在无边框模式（html[data-frameless="1"]）显示；折叠浮条态不显示。
+   热区的 mousedown 必须 stopPropagation：pywebview 的 easy_drag 监听 window 上的
+   mousedown 会拖走整个窗口，不吞掉事件的话"拖边"会变成"拖窗"。 */
+.edge-zone { display: none; }
+html[data-frameless="1"] body:not(.is-mini) .edge-zone { display: contents; }
+.edge-zone .edge { position: fixed; z-index: 90; }
+.edge-n { top: 0; left: 12px; right: 12px; height: 6px; cursor: ns-resize; }
+.edge-s { bottom: 0; left: 12px; right: 12px; height: 6px; cursor: ns-resize; }
+.edge-w { left: 0; top: 12px; bottom: 12px; width: 6px; cursor: ew-resize; }
+.edge-e { right: 0; top: 12px; bottom: 12px; width: 6px; cursor: ew-resize; }
+.edge-nw { top: 0; left: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+.edge-ne { top: 0; right: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+.edge-sw { bottom: 0; left: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+.edge-se { bottom: 0; right: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+
 /* 栏容器：折叠时裁切内容而不是压扁内容 */
 .side { overflow: hidden; min-width: 0; display: flex; }
 .side--left { border-right: 1px solid var(--border-1); background: var(--bg-side); }
 .side--right { border-left: 1px solid var(--border-1); background: var(--bg-side); }
-.side--left > .sidebar { width: 248px; flex: none; }
-.side--right > .panel__inner { width: 400px; flex: none; }
+/* ★ 列内内容必须跟随轨道宽度（width:100% + min-width:0 + flex:1）：
+   拖宽手柄改的是 grid 轨道；若列内元素写死宽度（曾经的 248px/400px），
+   轨道变宽内容不跟、轨道变窄内容溢出被 overflow 裁掉——即"拖动时内容不随宽度变化、出现遮挡"。 */
+.side--left > .sidebar { width: 100%; min-width: 0; flex: 1; }
+.side--right > .panel__inner { width: 100%; min-width: 0; flex: 1; }
 
 /* ── 极简闪发浮条（折叠态）────────────────────────────────
    旧 Qt 界面的「极简闪发折叠模式」迁移：窗口缩成一条浮条，
