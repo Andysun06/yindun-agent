@@ -34,6 +34,26 @@ NONCE_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789"
 # 旧格式占位符：[TYPE_N]（历史数据，deanonymize 时保持兼容）
 _NEW_PLACEHOLDER_RE = re.compile(r"^\[(.+?)_(\d+)_([a-z0-9]{4})\]$")
 
+# 占位符全文匹配（新格式 [TYPE_N_nonce] + 旧格式 [TYPE_N]，数字段限 1-4 位以免误吞
+# 正文里的 "[ID_123456789012345678]" 这类长数字串）。
+# 用途：anonymize 在"已含占位符"的文本上继续跑后续规则时，用它把文本切成
+# **不含占位符的片段**再匹配——禁止规则命中占位符内部或跨越占位符边界。
+_PLACEHOLDER_SPAN_RE = re.compile(
+    r"\[[A-Z][A-Z0-9_]*_\d{1,4}_[a-z0-9]{4}\]"    # [TYPE_N_nonce]
+    r"|\[[A-Z][A-Z0-9_]*_\d{1,4}\]"               # [TYPE_N]（历史格式）
+)
+
+
+def _iter_plain_segments(text: str):
+    """产出不含占位符的 [start, end) 片段（占位符区域被跳过）。"""
+    pos = 0
+    for m in _PLACEHOLDER_SPAN_RE.finditer(text):
+        if m.start() > pos:
+            yield pos, m.start()
+        pos = m.end()
+    if pos < len(text):
+        yield pos, len(text)
+
 
 def _generate_nonce(used: set, length: int = 4) -> str:
     """生成不与 used 集合重复的随机 nonce（保证同一批 anonymize 内唯一）。"""
@@ -195,10 +215,13 @@ class PrivacyEngine:
         # 前缀参考：62(银联)/4(Visa)/5(万事达)/30,36,38(大莱)/35(JCB)/37(运通)
         # (A6) 允许 4 位分组的空格/连字符（如 "6228 4804 0256 4890 018"）。
         # 注意：用 lookaround 替代 \b，因为 \b 在"中文+数字"交界处不触发
-        "BANKCARD": r"(?<![\d])(?:62\d{2}(?:[\s\-]?\d{4}){3}[\s\-]?\d{0,3}"
-                    r"|4\d{3}(?:[\s\-]?\d{4}){3}[\s\-]?\d{0,3}"
+        # (A7) 号段**内部**仍允许空白分组，但尾部可选分组用 [ \t\-]（不含换行）：
+        #      原先尾部的 [\s\-]?\d{0,3} 会把卡号后的换行整体吞进匹配，
+        #      导致脱敏文本行被合并、行长/坐标变化（正文结构被破坏）。
+        "BANKCARD": r"(?<![\d])(?:62\d{2}(?:[\s\-]?\d{4}){3}[ \t\-]?\d{0,3}"
+                    r"|4\d{3}(?:[\s\-]?\d{4}){3}[ \t\-]?\d{0,3}"
                     r"|5\d{3}(?:[\s\-]?\d{4}){3}"
-                    r"|3[0-8]\d{2}(?:[\s\-]?\d{4}){2}[\s\-]?\d{0,6}"
+                    r"|3[0-8]\d{2}(?:[\s\-]?\d{4}){2}[ \t\-]?\d{0,6}"
                     r"|35\d{2}(?:[\s\-]?\d{4}){3}"
                     r"|37\d{2}(?:[\s\-]?\d{4}){3})(?![\d])",
 
@@ -514,6 +537,9 @@ class PrivacyEngine:
             return text
         raw_spans: List[Tuple[int, int, str]] = []
         occupied: List[Tuple[int, int]] = []
+        # 输入若已含占位符（对已脱敏文本二次脱敏），插件区间不得与其重叠：
+        # 占位符内部不是真实实体，改掉它只会让真实值无法还原（同主体阶段的不透明保护）
+        ph_spans = [(m.start(), m.end()) for m in _PLACEHOLDER_SPAN_RE.finditer(text)]
         covered = 0
         for name, fn in recognizers:
             try:
@@ -547,6 +573,8 @@ class PrivacyEngine:
                     continue
                 if any(s < end and start < e for s, e in occupied):
                     continue                      # 与已并入区间重叠：先到先得
+                if ph_spans and any(s < end and start < e for s, e in ph_spans):
+                    continue                      # 覆盖既有占位符：丢弃（保护可还原性）
                 if len(raw_spans) >= _MAX_EXTRA_SPANS or covered + (end - start) > limit:
                     print(f"[PrivacyEngine] 追加识别器 {name} 命中过多，超出上限的部分已忽略")
                     break
@@ -647,20 +675,31 @@ class PrivacyEngine:
                 )
                 # 用快照精验上下文，并记录所有替换区间（避免循环内替换导致的索引偏移）
                 snapshot = anonymized
-                matches = list(re.finditer(pattern, snapshot, flags))
+                # ★ 占位符不透明（红队复核整改）：本阶段运行在"已含占位符"的文本上。
+                #   若直接在全文匹配，规则可能命中占位符内部、或跨越占位符边界
+                #   （实测：ADDRESS 的 [^\s，。、；] 分支把 "[BANKCARD_0_ab12]订单号"
+                #   尾段当地址换掉，生成 "[BANKC[ADDRESS_0_xxxx]：…"，银行卡真实值
+                #   再也无法还原；200 次随机 nonce 复现 51 次）。
+                #   因此在**不含占位符的片段**上分别匹配，命中坐标回填为全文坐标。
+                matches = []  # (片段起始偏移, match)
+                for seg_start, seg_end in _iter_plain_segments(snapshot):
+                    for m in re.finditer(pattern, snapshot[seg_start:seg_end], flags):
+                        matches.append((seg_start, m))
                 spans = []  # (start, end, placeholder)，坐标全部基于 snapshot
-                for m in matches:
+                for seg_start, m in matches:
                     full = m.group(0)
-                    target, g_start, g_end = full, m.start(), m.end()
+                    target, g_start, g_end = full, seg_start + m.start(), seg_start + m.end()
                     if key in capture_keys:
                         # 取第一个真正参与匹配的捕获组（兼容同一模式多分支各自带组的情况）
                         for gi in range(1, (m.lastindex or 0) + 1):
                             if m.group(gi):
-                                target, g_start, g_end = m.group(gi), m.start(gi), m.end(gi)
+                                target = m.group(gi)
+                                g_start, g_end = seg_start + m.start(gi), seg_start + m.end(gi)
                                 break
                     # 程序化精验（含上下文精验：PHONE 位数 / BANKCARD Luhn /
                     # IDCARD15 地区码+触发词 / PLATE 负向词）
-                    if not self._validate_entity(key, target, context=snapshot, pos=m.start()):
+                    if not self._validate_entity(
+                            key, target, context=snapshot, pos=seg_start + m.start()):
                         continue
                     if target in value_to_placeholder:
                         placeholder = value_to_placeholder[target]

@@ -334,8 +334,10 @@ class AgentService:
         self._emit("attachments", [])
 
     def list_attachments(self) -> List[Dict[str, Any]]:
+        # report 仅供界面提示（截断到 300 字），绝不进入模型上下文 / 会话快照
         return [{"name": item.get("name", ""), "chars": item.get("chars", 0),
-                 "error": item.get("error"), "via": item.get("via", "内核解析")}
+                 "error": item.get("error"), "via": item.get("via", "内核解析"),
+                 "report": (item.get("report") or "")[:300]}
                 for item in self._attachments]
 
     def attachment_count(self) -> int:
@@ -962,9 +964,10 @@ class AgentService:
         worker.attachment_fulltext = self.sessions.get_attachment_fulltext(sid)
         worker.session_id = sid
 
-        # 权限等级通过环境变量下发给工具层（与旧界面一致）
+        # 权限等级与脚本执行开关通过环境变量下发给工具层（与旧界面一致）
         os.environ["PERMISSION_LEVEL"] = str(self.settings.get("permission", "完全控制 (读/写/列表)"))
         os.environ["SANDBOX_PATH"] = worker.sandbox_path
+        os.environ["ALLOW_SCRIPT_EXEC"] = "1" if self.settings.get("allow_script_exec", True) else "0"
 
         for topic in WORKER_EVENTS:
             worker.bus.subscribe(topic, self._make_forwarder(run_id, topic))

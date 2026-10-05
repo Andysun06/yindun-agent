@@ -270,6 +270,7 @@ html[data-frameless="1"] .win-ctrls { display: inline-flex; }
 .chip__ico { display: inline-flex; }
 .chip__ico svg { width: 11px; height: 11px; }
 .chip__size { color: var(--text-3); font-family: var(--font-mono); }
+.chip__flag { color: var(--warn-500, #b45309); font-size: 11px; line-height: 1; cursor: help; }
 .chip__x { cursor: pointer; color: var(--text-3); font-size: 12px; line-height: 1; }
 .chip__x:hover { color: var(--danger-500); }
 .chip--bad { color: var(--danger-500); }

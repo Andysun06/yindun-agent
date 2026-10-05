@@ -261,6 +261,26 @@ check("附件正文与敏感值未以明文出现在会话文件",
 raw_att = (TMP / "svc2_sess.json").read_text(encoding="utf-8")
 check("附件正文与手机号均未明文落盘", FAKE_PHONE not in raw_att and "供应商服务合同" not in raw_att)
 
+# ★ 删除会话应立即清除附件快照（加密态一并消失，不留在任何磁盘文件里）
+svc2.delete_session(session_id)
+raw3 = (TMP / "svc2_sess.json").read_text(encoding="utf-8")
+check("删除会话后附件快照从磁盘消失（含密文键）",
+      (session_id not in raw3) and ("attachment_fulltext_enc" not in raw3), raw3[:160])
+
+# ★ 全目录落盘扫描（评审意见：附件不得存在明文落盘路径）——附件正文/敏感值不得出现在
+#   测试产生的任何落盘文件中（原始素材文件本身除外：那是用户自己的输入文件，不是应用产物）。
+stray = []
+for p in TMP.rglob("*"):
+    if not p.is_file() or p == attachment_path:
+        continue
+    try:
+        blob = p.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        continue
+    if ("13812345678" in blob) or ("供应商服务合同" in blob):
+        stray.append(str(p.relative_to(TMP)))
+check("测试产生的所有落盘文件均无附件明文残留（全目录扫描）", not stray, str(stray))
+
 print("\n" + "=" * 78)
 print("【5】会话管理：重命名 / 删除 / 持久化")
 print("=" * 78)

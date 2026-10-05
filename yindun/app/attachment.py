@@ -95,19 +95,32 @@ def inject_question_anchors(text: str) -> str:
 # 附件解析
 # ──────────────────────────────────────────────
 def parse_attachment(path: str) -> Dict[str, Any]:
-    """解析单个附件为纯文本。返回 {name, path, text, chars, error}。"""
+    """解析单个附件为纯文本。返回 {name, path, text, chars, report, error}。
+
+    ★ 报告与正文分离（红队复核整改）：解析附带的「隐私风险报告」里含**部分掩码**片段
+    （如 138****5678 / 1101**********1234）——若混在正文里，这些片段不再是完整实体、
+    脱敏引擎匹配不到，会直接进入模型上下文，与"模型全程只见占位符"的承诺冲突。
+    因此报告单独存放在 `report` 字段（供界面/审计按需展示），`text` 只保留文档正文，
+    送入模型与快照前统一走脱敏网关。
+    """
     file_path = Path(path)
     result: Dict[str, Any] = {
-        "name": file_path.name, "path": str(file_path), "text": "", "chars": 0, "error": None,
+        "name": file_path.name, "path": str(file_path), "text": "",
+        "chars": 0, "report": "", "error": None,
     }
     if not file_path.is_file():
         result["error"] = "文件不存在"
         return result
     try:
         from yindun.utils.document_parser import extract_file_text_with_report
-        # scan_privacy=True：解析后顺带做一次隐私扫描（位置化风险报告，不影响正文）
-        text = extract_file_text_with_report(str(file_path), scan_privacy=True)
-        result["text"] = text or ""
+        combined = extract_file_text_with_report(str(file_path), scan_privacy=True) or ""
+        marker = "【隐私风险报告】"
+        if marker in combined:
+            body, _, report = combined.partition(marker)
+            result["text"] = body.rstrip()
+            result["report"] = marker + report
+        else:
+            result["text"] = combined
         result["chars"] = len(result["text"])
         if not result["text"].strip():
             result["error"] = "未能提取到文本（可能是纯图片/加密文档）"

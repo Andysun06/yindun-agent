@@ -462,9 +462,14 @@
       const chip = document.createElement("span");
       chip.className = "chip" + (item.error ? " chip--bad" : "");
       const size = item.chars ? `${(item.chars / 1000).toFixed(1)}k 字` : (item.error || "空");
-      // 解析来源要显示出来：插件解析的附件与内核解析的走同一条脱敏管线，但用户有权知道是谁解析的
-      const via = item.via ? ` title="解析来源：${esc(item.via)}"` : "";
-      chip.innerHTML = `<span class="chip__ico"${via}>` + CLIP_ICON + `</span><span>${esc(item.name)}</span>` +
+      // 解析来源与隐私风险报告要能看见：插件解析的附件与内核解析走同一条脱敏管线，
+      // 用户有权知道是谁解析的；报告里的部分掩码片段只在此处展示，不进模型上下文
+      const tips = [];
+      if (item.via) tips.push(`解析来源：${item.via}`);
+      if (item.report) tips.push(`隐私风险报告（仅本地提示，不进模型）：\n${item.report}`);
+      const title = tips.length ? ` title="${esc(tips.join("\n\n"))}"` : "";
+      const flag = item.report ? `<span class="chip__flag" title="含敏感信息（已脱敏）">⚠</span>` : "";
+      chip.innerHTML = `<span class="chip__ico"${title}>` + CLIP_ICON + `</span><span>${esc(item.name)}</span>` + flag +
         `<span class="chip__size">${esc(size)}</span><span class="chip__x" title="移除">×</span>`;
       chip.querySelector(".chip__x").onclick = async () => {
         await call("clear_attachments");
@@ -1196,6 +1201,7 @@
     $("ollama-host").value = s.ollama_host || "http://127.0.0.1:11434";
 
     $("sw-privacy").checked = !!s.privacy;
+    $("sw-script-exec").checked = s.allow_script_exec !== false;
     $("sw-topmost").checked = !!s.topmost;
     $("sw-frameless").checked = !!s.frameless;
     $("rng-depth").value = s.thinking_depth ?? 3;
@@ -1440,6 +1446,7 @@
     });
 
     $("sw-privacy").onchange = (e) => persist({ privacy: e.target.checked });
+    $("sw-script-exec").onchange = (e) => persist({ allow_script_exec: e.target.checked });
     $("sw-topmost").onchange = (e) => persist({ topmost: e.target.checked });
     $("sw-frameless").onchange = (e) => {
       persist({ frameless: e.target.checked });

@@ -412,7 +412,7 @@ class JsApi:
         if not isinstance(patch, dict):
             return False
         allowed = {"model", "ollama_host", "privacy", "dark_mode", "topmost",
-                   "thinking_depth", "permission", "think_mode"}
+                   "thinking_depth", "permission", "think_mode", "allow_script_exec"}
         for key, value in patch.items():
             if key in allowed:
                 self._svc.settings.set(key, value)

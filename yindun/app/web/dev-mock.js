@@ -34,10 +34,12 @@
 
   const noop = () => Promise.resolve(true);
   const attachments = [
-    { name: "供应商服务合同_示例.pdf", chars: 18422, error: null, via: "内核解析" },
+    { name: "供应商服务合同_示例.pdf", chars: 18422, error: null, via: "内核解析",
+      report: "【隐私风险报告】\n第 2 行  手机号：138****5678（已脱敏后仅供核对）" },
     { name: "往来邮件_示例.eml", chars: 812, error: null,
       via: "插件解析（扩展附件解析（邮件 / 网页））：按邮件格式解析（eml）：含正文，附件本身未展开" },
-    { name: "员工薪酬表_示例.csv", chars: 1260, error: null, via: "内核解析" },
+    { name: "员工薪酬表_示例.csv", chars: 1260, error: null, via: "内核解析",
+      report: "【隐私风险报告】\n第 3 行  银行卡：6222**********8887" },
   ];
   const audit = {
     chain_ok: true,
@@ -183,9 +185,9 @@
 
   const api = {
     bootstrap: () => Promise.resolve({
-      version: "V3.4.4",
+      version: "V3.4.5",
       settings: {
-        model: "qwen3.5:4b", ollama_host: "http://127.0.0.1:11434", privacy: true,
+        model: "qwen3.5:4b", ollama_host: "http://127.0.0.1:11434", privacy: true, allow_script_exec: true,
         dark_mode: location.hash.indexOf("light") < 0, topmost: true,
         thinking_depth: 4, permission: "完全控制 (读/写/列表)", think_mode: "深度思考", frameless: true, sandbox: "E:\yindun-agent",
         ollama_models_cache: ["qwen2.5:7b-instruct", "nomic-embed-text:latest"],

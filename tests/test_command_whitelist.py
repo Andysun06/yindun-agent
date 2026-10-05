@@ -104,6 +104,7 @@ import yindun.core.file_tools as _ft  # noqa: E402
 
 _saved_sandbox = _ft.SANDBOX
 _saved_perm = os.environ.get("PERMISSION_LEVEL")
+_saved_allow = os.environ.get("ALLOW_SCRIPT_EXEC")
 root_tmp = Path(tempfile.mkdtemp(prefix="yindun_cmd_adv_"))
 sandbox_dir = root_tmp / "sandbox"
 outside_dir = root_tmp / "outside"
@@ -164,12 +165,48 @@ try:
     print(f"  [{'✅' if ok_prev_edge else '❌'}] 预览的边界形态正确（不存在→说明；非解释器命令→空）")
     if not ok_prev_edge:
         failures.append(f"预览边界失败: missing={pv_missing!r} plain={pv_plain!r}")
+    # E 组：严格模式（评审意见整改）——ALLOW_SCRIPT_EXEC=0 时解释器整体禁用，只读命令保留
+    os.environ["ALLOW_SCRIPT_EXEC"] = "0"
+    out = _call("python leak.py")
+    strict_blocked = ("拦截" in out) and ("严格模式" in out)
+    print(f"  [{'✅ 已拦截' if strict_blocked else '❌ 未拦截'}] 严格模式：解释器执行被禁用（python）")
+    if not strict_blocked:
+        failures.append(f"严格模式未拦截 python: {out[:160]}")
+    out = _call("echo strict-mode-ok")
+    strict_git_ok = out.startswith("✅")
+    print(f"  [{'✅ 仍放行' if strict_git_ok else '❌ 被误拦'}] 严格模式下只读命令仍可用（echo）")
+    if not strict_git_ok:
+        failures.append(f"严格模式误拦只读命令: {out[:160]}")
+    os.environ["ALLOW_SCRIPT_EXEC"] = "1"
+    out = _call("python leak.py")
+    normal_ok = out.startswith("✅")
+    print(f"  [{'✅' if normal_ok else '❌'}] 关闭严格模式后脚本恢复可执行（开关有效）")
+    if not normal_ok:
+        failures.append(f"严格模式开关恢复失败: {out[:160]}")
+
+    # F 组：进程容器（Job Object，评审意见"强化执行隔离"的 OS 级部分）
+    from yindun.core.file_tools import _run_contained
+    rc_c, out_c, err_c, to_c = _run_contained(["echo", "job-ok"], str(sandbox_dir), None, 10)
+    ok_job = (rc_c == 0) and ("job-ok" in out_c) and (not to_c)
+    print(f"  [{'✅' if ok_job else '❌'}] 容器内命令正常执行（Job Object 绑定不影响功能）")
+    if not ok_job:
+        failures.append(f"容器执行失败: rc={rc_c} out={out_c[:80]!r} err={err_c[:80]!r}")
+    rc_t, _, _, to_t = _run_contained(["python", "-c", "import time; time.sleep(20)"],
+                                      str(sandbox_dir), None, 1)
+    ok_kill = to_t is True
+    print(f"  [{'✅' if ok_kill else '❌'}] 超时即终止整棵进程树（不再等待/留孤儿进程）")
+    if not ok_kill:
+        failures.append(f"容器超时终止失败: rc={rc_t} timed_out={to_t}")
 finally:
     _ft.SANDBOX = _saved_sandbox
     if _saved_perm is None:
         os.environ.pop("PERMISSION_LEVEL", None)
     else:
         os.environ["PERMISSION_LEVEL"] = _saved_perm
+    if _saved_allow is None:
+        os.environ.pop("ALLOW_SCRIPT_EXEC", None)
+    else:
+        os.environ["ALLOW_SCRIPT_EXEC"] = _saved_allow
 
 print("\n" + "=" * 78)
 if failures:
@@ -178,5 +215,5 @@ if failures:
         print("   ·", f)
     sys.exit(1)
 print(f"✅ 回归通过：{len(MUST_BLOCK)} 项高危入口 + {len(ADVERSARIAL_BLOCK)} 项对抗用例全部拦截，"
-      f"{len(MUST_ALLOW)} 项只读用法正常放行，脚本归属/环境收敛验证通过")
+      f"{len(MUST_ALLOW)} 项只读用法正常放行；脚本归属/环境收敛/严格模式/进程容器全部符合预期")
 sys.exit(0)

@@ -1,9 +1,9 @@
 @echo off
-title Yindun V3.4.4
+title Yindun V3.4.5
 cd /d "%~dp0"
 
 echo ===================================================
-echo   Yindun V3.4.4 - Launch
+echo   Yindun V3.4.5 - Launch
 echo ===================================================
 echo.
 

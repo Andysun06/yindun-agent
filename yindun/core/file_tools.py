@@ -404,6 +404,103 @@ def modify_local_file(filename: str, old_content: str = "", new_content: str = "
         return f"❌ 修改失败：{str(e)}"
 
 
+def _run_contained(parts, cwd, env, timeout):
+    """在 Windows Job Object（进程容器）里执行命令，返回 (rc, stdout, stderr, timed_out)。
+
+    容器语义（评审意见"强化执行隔离"的 OS 级部分）：
+      · KILL_ON_JOB_CLOSE：容器句柄关闭时，**整棵进程树**随之终止——
+        命令结束后不留任何孤儿/驻留进程（脚本再 spawn 的后代也一并收回）；
+      · ACTIVE_PROCESS = 64：限制活跃进程数，阻断 fork 炸弹式进程扇出；
+      · 超时不再只杀直接子进程，而是 TerminateJobObject 终止整棵树。
+    任何一步失败（非 Windows / API 失败 / 句柄获取失败）都**回退普通 subprocess.run**——
+    容器是纵深防御，不是功能依赖。
+    """
+    if os.name != "nt":
+        r = subprocess.run(parts, shell=False, cwd=cwd, capture_output=True,
+                           text=True, timeout=timeout, env=env)
+        return r.returncode, r.stdout or "", r.stderr or "", False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+        k32.SetInformationJobObject.restype = wintypes.BOOL
+        k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                ctypes.c_void_p, wintypes.DWORD]
+        k32.AssignProcessToJobObject.restype = wintypes.BOOL
+        k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        k32.TerminateJobObject.restype = wintypes.BOOL
+        k32.TerminateJobObject.argtypes = [wintypes.HANDLE, ctypes.c_uint]
+        k32.CloseHandle.restype = wintypes.BOOL
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+        class _BasicLimit(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                        ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", wintypes.DWORD),
+                        ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t),
+                        ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_size_t),
+                        ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class _IOCounters(ctypes.Structure):
+            _fields_ = [(n, ctypes.c_uint64) for n in
+                        ("ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                         "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+        class _ExtendedLimit(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", _BasicLimit),
+                        ("IoInfo", _IOCounters),
+                        ("ProcessMemoryLimit", ctypes.c_size_t),
+                        ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
+        _JOB_KILL_ON_CLOSE, _JOB_ACTIVE_PROCESS, _EXT_INFO = 0x2000, 0x8, 9
+
+        job = k32.CreateJobObjectW(None, None)
+        if not job:
+            raise OSError("CreateJobObject 失败")
+        info = _ExtendedLimit()
+        info.BasicLimitInformation.LimitFlags = _JOB_KILL_ON_CLOSE | _JOB_ACTIVE_PROCESS
+        info.BasicLimitInformation.ActiveProcessLimit = 64
+        if not k32.SetInformationJobObject(job, _EXT_INFO, ctypes.byref(info), ctypes.sizeof(info)):
+            k32.CloseHandle(job)
+            raise OSError("SetInformationJobObject 失败")
+
+        proc = subprocess.Popen(parts, shell=False, cwd=cwd, env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            k32.AssignProcessToJobObject(job, wintypes.HANDLE(int(proc._handle)))
+        except Exception:
+            pass    # 绑定失败不阻断：最多少一层容器
+        try:
+            out, err = proc.communicate(timeout=timeout)
+            return proc.returncode, out or "", err or "", False
+        except subprocess.TimeoutExpired:
+            try:
+                k32.TerminateJobObject(job, 1)      # 终止整棵进程树（不只直接子进程）
+            except Exception:
+                proc.kill()
+            try:
+                out, err = proc.communicate(timeout=5)
+            except Exception:
+                out, err = "", ""
+            return -1, out or "", err or "", True
+        finally:
+            try:
+                k32.CloseHandle(job)
+            except Exception:
+                pass
+    except Exception as exc:
+        print(f"[file_tools] 进程容器不可用，回退普通执行：{type(exc).__name__}: {exc}")
+        r = subprocess.run(parts, shell=False, cwd=cwd, capture_output=True,
+                           text=True, timeout=timeout, env=env)
+        return r.returncode, r.stdout or "", r.stderr or "", False
+
+
 @tool(args_schema=RunCommandInput)
 def run_local_command(command: str, target_directory: str = "当前沙箱目录") -> str:
     """
@@ -414,10 +511,11 @@ def run_local_command(command: str, target_directory: str = "当前沙箱目录"
     pip/git 只允许只读子命令（禁止 install/clone 等会触发代码执行的子命令）。
 
     ★ 命令执行的边界（如实声明，见技术报告"性质边界"）：
-      这是**策略层**控制（入口形态收窄 + 人工审批 + 全量审计），**不是 OS 级沙箱**——
-      被放行的 .py 脚本仍以当前用户权限运行、可触达沙箱外资源。
-      我们做到的是"不给图灵完备的内联入口、脚本必须在沙箱内、执行前人工看清脚本内容"，
-      不宣称"严格沙箱"。需要更强制隔离时请配合系统级方案（受限账户/虚拟机）。
+      这是**策略层**控制（入口形态收窄 + 脚本沙箱归属校验 + 环境收敛 + 人工审批 + 全量审计）
+      叠加**进程容器**（Windows Job Object：命令结束/超时即回收整棵进程树、限制活跃进程数），
+      **不是完整的 OS 级文件/网络沙箱**——被放行的 .py 脚本仍以当前用户权限运行、可触达沙箱外资源。
+      另提供**严格模式**（设置页关闭「允许执行本地脚本」）：此时解释器执行被整体禁用，
+      只剩只读命令，不存在任意代码执行路径。需要更强隔离时请配合系统级方案（受限账户/虚拟机）。
     """
     perm = os.environ.get("PERMISSION_LEVEL", "完全控制 (读/写/列表)")
     if "彻底审计" in perm or "安全只读" in perm:
@@ -469,6 +567,13 @@ def run_local_command(command: str, target_directory: str = "当前沙箱目录"
     args_rest = parts[1:]
 
     if cmd_name in ("python", "python3"):
+        # ★ 严格模式（可选，设置页开关）：关闭后禁用解释器执行——答复"允许 Python 等
+        #   通用解释器即非严格沙箱"的评审意见：严格模式下 run_local_command 只剩
+        #   只读命令（git 只读 / echo），不存在任意代码执行路径。
+        allow_interp = os.environ.get("ALLOW_SCRIPT_EXEC", "1").strip().lower() not in ("0", "false", "no", "off")
+        if not allow_interp:
+            return ("❌ 安全拦截：严格模式已禁用解释器执行（可在设置页开启「允许执行本地脚本」）。"
+                    "当前仅允许只读命令（git 只读子命令 / echo）。")
         # 只允许直接执行沙箱内的 .py 脚本文件
         script = next((a for a in args_rest if not a.startswith("-")), None)
         if script is None:
@@ -531,24 +636,17 @@ def run_local_command(command: str, target_directory: str = "当前沙箱目录"
     child_env = {k: v for k, v in os.environ.items() if k.upper() in _PASSTHROUGH}
 
     try:
-        result = subprocess.run(
-            parts,
-            shell=False,
-            cwd=base_dir,
-            capture_output=True,
-            text=True,
-            timeout=60,
-            env=child_env,
-        )
-        output = (result.stdout or "")[:3000]
-        error = (result.stderr or "")[:3000]
-        out_trim = "（已截断）" if result.stdout and len(result.stdout) > 3000 else ""
-        err_trim = "（已截断）" if result.stderr and len(result.stderr) > 3000 else ""
-        
-        if result.returncode == 0:
+        rc, stdout, stderr, timed_out = _run_contained(parts, base_dir, child_env, 60)
+        if timed_out:
+            return "❌ 命令执行超时（超过60秒），进程树已终止。"
+        output = (stdout or "")[:3000]
+        error = (stderr or "")[:3000]
+        out_trim = "（已截断）" if stdout and len(stdout) > 3000 else ""
+        err_trim = "（已截断）" if stderr and len(stderr) > 3000 else ""
+        if rc == 0:
             return f"✅ 命令执行成功！\n\n输出：\n{output}{out_trim}"
         else:
-            return f"❌ 命令执行失败（退出码 {result.returncode}）！\n\n标准输出：\n{output}{out_trim}\n\n错误输出：\n{error}{err_trim}"
+            return f"❌ 命令执行失败（退出码 {rc}）！\n\n标准输出：\n{output}{out_trim}\n\n错误输出：\n{error}{err_trim}"
     except subprocess.TimeoutExpired:
         return f"❌ 命令执行超时（超过60秒），已终止。"
     except Exception as e:

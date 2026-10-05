@@ -28,6 +28,8 @@ DEFAULTS: Dict[str, Any] = {
     "topmost": True,
     "thinking_depth": 3,
     "permission": "完全控制 (读/写/列表)",
+    # 是否允许执行本地脚本（解释器）：关闭 = 严格模式，禁用 python/python3，仅保留只读命令
+    "allow_script_exec": True,
     "think_mode": "快速回答",
     "custom_models": {},
     "ollama_models_cache": [],

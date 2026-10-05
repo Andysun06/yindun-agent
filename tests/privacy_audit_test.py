@@ -371,6 +371,37 @@ if os.path.exists(cs):
     except Exception as e:
         print(f"  解析失败：{e}")
 
+# ── 第四部分：占位符不透明性回归（红队复核整改）──
+# 缺陷：anonymize 的后续规则运行在"已含占位符"的文本上，可能命中占位符内部
+# 或跨越占位符边界（如 ADDRESS 分支把 "[BANKCARD_0_ab12]订单号" 尾段当地址），
+# 生成 "[BANKC[ADDRESS_0_xxxx]" 这类交叉替换 → 真实值再也无法还原。
+# 断言语义：脱敏→还原必须逐字往返；脱敏文本不得出现截断的占位符残片。
+print("\n" + "=" * 78)
+print("【占位符不透明性回归】（交叉替换 → 真实值不可还原）")
+print("=" * 78)
+_ROUNDTRIP_CASES = [
+    ("卡号+换行+订单号", "员工信息台账\n手机：138-1234-5678\n身份证：110101199001011234\n"
+                        "邮箱：zhang.wei@example.com\n银行卡：6222888888888887\n"
+                        "订单号：1234567890123456\n版本：v3.14.159"),
+    ("卡号紧邻地址词", "银行卡：6222888888888887北京市海淀区中关村大街1号"),
+    ("多实体密集", "联系人李伟，手机13812345678，卡号6222888888888887，邮箱 li@corp.cn"),
+]
+placeholder_fail = 0
+_loop_engine = PrivacyEngine()
+for _name, _text in _ROUNDTRIP_CASES:
+    for _ in range(60):        # nonce 随机：多次采样覆盖交叉替换的偶然路径
+        _masked, _mapping = _loop_engine.anonymize(_text)
+        _restored = _loop_engine.deanonymize(_masked, _mapping)
+        if _restored != _text:
+            placeholder_fail += 1
+            print(f"  ❌ {_name}：还原与原文不一致\n     脱敏: {_masked!r}\n     还原: {_restored!r}")
+            break
+        if re.search(r"\[[A-Z][A-Z0-9_]*_\d{1,4}_[a-z0-9]{0,3}\[", _masked):
+            placeholder_fail += 1
+            print(f"  ❌ {_name}：脱敏文本出现截断占位符残片：{_masked!r}")
+            break
+print(f"  往返逐字一致：{'✅ 全部通过' if placeholder_fail == 0 else f'❌ {placeholder_fail} 例失败'}")
+
 print("\n" + "=" * 78)
 print("审计结束")
 print("=" * 78)
@@ -384,11 +415,15 @@ print("【隐私回归检查结论】")
 print(f"  · 泄露数: {leak_count}（阈值 {LEAK_THRESHOLD}）")
 print(f"  · 负样本误伤数: {neg_false_pos}")
 print(f"  · 落盘明文发现: {'有' if disk_findings else '无'}")
+print(f"  · 占位符往返一致: {'是' if placeholder_fail == 0 else '否'}")
 print("=" * 78)
 
 exit_code = 0
 if leak_count > LEAK_THRESHOLD:
     print("❌ 命中规则泄露数超阈值")
+    exit_code = 1
+if placeholder_fail:
+    print("❌ 占位符不透明性回归失败（交叉替换 → 真实值不可还原）")
     exit_code = 1
 if neg_false_pos > 0:
     print("❌ 负样本存在误伤")

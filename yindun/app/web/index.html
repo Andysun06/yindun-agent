@@ -232,6 +232,14 @@
         <div class="field__hint">写盘 / 删除 / 执行命令始终需人工审批</div>
       </div>
 
+      <div class="switch">
+        <div>
+          <div class="field__label">允许执行本地脚本</div>
+          <div class="field__hint">关闭 = 严格模式：禁用 Python 等解释器，仅保留只读命令（git 只读 / echo）</div>
+        </div>
+        <label class="switch"><input type="checkbox" id="sw-script-exec"><span class="switch__track"></span></label>
+      </div>
+
       <div class="set-sec"><span>窗口</span></div>
 
       <div class="switch">
