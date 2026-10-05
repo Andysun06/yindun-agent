@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Qwen2.5 → Qwen3（→ Qwen3.5）各参数量性能折线对比</title>
+<style>
+  :root { --ink:#1c2530; --sub:#5a6472; --line:#d7dde6; --bg:#f7f9fc; --card:#fff; --blue:#2f6fed; --gray:#8a909c; --green:#187f4a; --amber:#b7791f; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:28px 30px 60px; background:var(--bg); color:var(--ink);
+         font:14px/1.65 "Microsoft YaHei","PingFang SC",system-ui,sans-serif; }
+  h1 { font-size:22px; margin:0 0 6px; }
+  h2 { font-size:16px; margin:34px 0 10px; }
+  .meta { color:var(--sub); font-size:12.5px; margin-bottom:22px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(430px,1fr)); gap:18px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px 18px 10px; }
+  .card h3 { margin:0 0 2px; font-size:15px; }
+  .card .sub { color:var(--sub); font-size:12px; margin-bottom:8px; }
+  .legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--sub); margin-top:4px; }
+  .legend i { display:inline-block; width:18px; height:0; border-top:3px solid; vertical-align:middle; margin-right:5px; }
+  .note { background:#fff8e8; border:1px solid #ead9ac; border-radius:10px; padding:12px 16px; font-size:13px; }
+  .take { background:#eef7f1; border:1px solid #bcd9c6; border-radius:10px; padding:14px 18px; }
+  .take li { margin:4px 0; }
+  table { border-collapse:collapse; font-size:12.5px; width:100%; }
+  th,td { border:1px solid var(--line); padding:5px 8px; text-align:right; }
+  th:first-child, td:first-child { text-align:left; }
+  .band { fill:#2f6fed; opacity:.06; }
+  .bandtxt { fill:var(--blue); font-size:11px; opacity:.85; }
+  svg text { font-family:inherit; }
+</style>
+</head>
+<body>
+<h1>Qwen2.5 → Qwen3（→ Qwen3.5）各参数量能力对比</h1>
+<div class="meta">
+  数据来源：Qwen3 技术报告（arXiv:2505.09388）后训练评测表；横轴 = 参数量（B，对数刻度）。
+  MMLU-Pro 为基座模型对比（该报告未发布 Instruct 版全尺寸数字）。
+  <b>Qwen3.5 各尺寸官方基准截至 2026-10 未公开检索到</b>，故不出数据点，仅以蓝色竖带标注其尺寸区间
+  （Ollama 官方标注：tools ✅ / thinking / vision / 256K 上下文；中文 201 语言；397B 级 C-Eval 93.0）。
+</div>
+
+<div class="grid" id="grid"></div>
+
+<h2>给隐盾演示环境的结论</h2>
+<div class="take">
+  <ul>
+    <li><b>同尺寸全面代差</b>：Qwen3 每一条线在每个参数量上都高于 Qwen2.5 对应点；<b>4B 即追平/反超 Qwen2.5-7B</b>
+        ——BFCL 工具调用：Qwen3-4B（不思考）57.6 &gt; Qwen2.5-7B 55.8，（思考）65.9 ≈ Qwen2.5-32B 62.8；
+        IFEval 指令遵循：Qwen3-4B 81.2 ≈ Qwen2.5-14B 81.0。</li>
+    <li><b>对隐盾最关键的两条</b>：BFCL 决定 ReAct+工具调用链的稳定性，IFEval 决定"占位符/格式不被破坏"。
+        小模型这两项 Qwen3 提升最大（0.6B 的 IFEval 59.2 已超 Qwen2.5-1.5B 的 42.5）。</li>
+    <li><b>思考模式是免费的性能档</b>：同一权重开思考普遍 +3~15 分（蓝色虚线），代价是响应慢——
+        演示抢时间用不思考档，复杂审计/工作流用思考档（项目 thinking_depth 若透传 think 参数可一键切换）。</li>
+    <li><b>选型建议</b>：演示机首选 <code>qwen3.5:4b</code>（3.3–4GB，新一代 + tools + 256K，官方逐尺寸分未公布，按代际规律预期 ≥ Qwen3-4B）；
+        保守可验证选择 <code>qwen3:4b</code>（2.5GB，数字见上图）；性能充裕 <code>qwen3.5:9b</code> / <code>qwen3:8b</code>。
+        现装的 <code>qwen2.5:7b-instruct</code> 体积更大、工具调用与指令遵循均落在 Qwen3-4B 之下。</li>
+  </ul>
+</div>
+
+<h2>原始数字（后训练模型）</h2>
+<table>
+<tr><th>指标</th><th>模型</th><th>0.6/0.5B</th><th>1.5/1.7B</th><th>3/4B</th><th>7/8B</th><th>14B</th><th>32B</th><th>72B</th></tr>
+<tr><td rowspan="3">C-Eval（中文）</td><td>Qwen2.5-Instruct</td><td>—</td><td>53.3</td><td>68.2</td><td>76.2</td><td>78.0</td><td>80.6</td><td>84.7</td></tr>
+<tr><td>Qwen3（不思考）</td><td>42.6</td><td>61.0</td><td>72.2</td><td>77.9</td><td>81.0</td><td>83.3</td><td>—</td></tr>
+<tr><td>Qwen3（思考）</td><td>50.4</td><td>68.1</td><td>77.5</td><td>83.4</td><td>86.2</td><td>87.3</td><td>—</td></tr>
+<tr><td rowspan="3">BFCL v3（工具调用）</td><td>Qwen2.5-Instruct</td><td>—</td><td>47.8</td><td>50.4</td><td>55.8</td><td>58.7</td><td>62.8</td><td>63.4</td></tr>
+<tr><td>Qwen3（不思考）</td><td>44.1</td><td>52.2</td><td>57.6</td><td>60.2</td><td>61.5</td><td>63.0</td><td>—</td></tr>
+<tr><td>Qwen3（思考）</td><td>46.4</td><td>56.6</td><td>65.9</td><td>68.1</td><td>70.4</td><td>70.3</td><td>—</td></tr>
+<tr><td rowspan="3">IFEval（指令遵循）</td><td>Qwen2.5-Instruct</td><td>—</td><td>42.5</td><td>58.2</td><td>71.2</td><td>81.0</td><td>79.5</td><td>84.1</td></tr>
+<tr><td>Qwen3（不思考）</td><td>54.5</td><td>68.2</td><td>81.2</td><td>83.0</td><td>84.8</td><td>83.2</td><td>—</td></tr>
+<tr><td>Qwen3（思考）</td><td>59.2</td><td>72.5</td><td>81.9</td><td>85.0</td><td>85.4</td><td>85.0</td><td>—</td></tr>
+<tr><td rowspan="2">MMLU-Pro（基座）</td><td>Qwen2.5-Base</td><td>15.7</td><td>28.5</td><td>34.6<span style="color:var(--sub)">(3B)</span></td><td>45.0<span style="color:var(--sub)">(7B)</span></td><td>51.2</td><td>55.1</td><td>—</td></tr>
+<tr><td>Qwen3-Base</td><td>24.7</td><td>36.8</td><td>50.6</td><td>56.7</td><td>61.0</td><td>65.5</td><td>—</td></tr>
+</table>
+
+<script>
+const PANELS = [
+  { title: "C-Eval（中文知识）", sub: "越高越好 · 后训练模型", ymin: 35, ymax: 90,
+    series: [
+      { name: "Qwen2.5-Instruct", color: "#8a909c", pts: [[1.5,53.3],[3,68.2],[7,76.2],[14,78.0],[32,80.6],[72,84.7]] },
+      { name: "Qwen3 不思考", color: "#2f6fed", pts: [[0.6,42.6],[1.7,61.0],[4,72.2],[8,77.9],[14,81.0],[32,83.3]] },
+      { name: "Qwen3 思考", color: "#2f6fed", dash: true, pts: [[0.6,50.4],[1.7,68.1],[4,77.5],[8,83.4],[14,86.2],[32,87.3]] },
+    ] },
+  { title: "BFCL v3（工具调用）", sub: "对隐盾 ReAct 最关键 · 后训练模型", ymin: 40, ymax: 75,
+    series: [
+      { name: "Qwen2.5-Instruct", color: "#8a909c", pts: [[1.5,47.8],[3,50.4],[7,55.8],[14,58.7],[32,62.8],[72,63.4]] },
+      { name: "Qwen3 不思考", color: "#2f6fed", pts: [[0.6,44.1],[1.7,52.2],[4,57.6],[8,60.2],[14,61.5],[32,63.0]] },
+      { name: "Qwen3 思考", color: "#2f6fed", dash: true, pts: [[0.6,46.4],[1.7,56.6],[4,65.9],[8,68.1],[14,70.4],[32,70.3]] },
+    ] },
+  { title: "IFEval（指令遵循）", sub: "决定占位符/格式不被破坏 · 后训练模型", ymin: 35, ymax: 90,
+    series: [
+      { name: "Qwen2.5-Instruct", color: "#8a909c", pts: [[1.5,42.5],[3,58.2],[7,71.2],[14,81.0],[32,79.5],[72,84.1]] },
+      { name: "Qwen3 不思考", color: "#2f6fed", pts: [[0.6,54.5],[1.7,68.2],[4,81.2],[8,83.0],[14,84.8],[32,83.2]] },
+      { name: "Qwen3 思考", color: "#2f6fed", dash: true, pts: [[0.6,59.2],[1.7,72.5],[4,81.9],[8,85.0],[14,85.4],[32,85.0]] },
+    ] },
+  { title: "MMLU-Pro（通用知识）", sub: "基座模型口径（报告未发布 Instruct 全尺寸）", ymin: 12, ymax: 70,
+    series: [
+      { name: "Qwen2.5-Base", color: "#8a909c", pts: [[0.5,15.7],[1.5,28.5],[3,34.6],[7,45.0],[14,51.2],[32,55.1]] },
+      { name: "Qwen3-Base", color: "#2f6fed", pts: [[0.6,24.7],[1.7,36.8],[4,50.6],[8,56.7],[14,61.0],[32,65.5]] },
+    ] },
+];
+const XMIN = 0.4, XMAX = 90, X_TICKS = [0.5, 1, 2, 4, 8, 16, 32, 64];
+const W = 430, H = 250, PAD = { l: 44, r: 14, t: 12, b: 30 };
+const lX = (v) => PAD.l + (Math.log10(v) - Math.log10(XMIN)) / (Math.log10(XMAX) - Math.log10(XMIN)) * (W - PAD.l - PAD.r);
+const lY = (v, ymin, ymax) => H - PAD.b - (v - ymin) / (ymax - ymin) * (H - PAD.t - PAD.b);
+
+function render(p) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('width', '100%');
+  const add = (t, a, txt) => { const e = document.createElementNS(ns, t);
+    for (const k in a) e.setAttribute(k, a[k]); if (txt != null) e.textContent = txt; svg.appendChild(e); return e; };
+  // y 轴网格 + 刻度
+  const step = Math.ceil((p.ymax - p.ymin) / 5 / 5) * 5;
+  for (let v = Math.ceil(p.ymin / step) * step; v <= p.ymax; v += step) {
+    const y = lY(v, p.ymin, p.ymax);
+    add('line', { x1: PAD.l, x2: W - PAD.r, y1: y, y2: y, stroke: '#e8edf3' });
+    add('text', { x: PAD.l - 6, y: y + 4, 'text-anchor': 'end', 'font-size': 11, fill: '#5a6472' }, v);
+  }
+  // x 轴刻度
+  for (const v of X_TICKS) {
+    const x = lX(v);
+    add('text', { x, y: H - PAD.b + 16, 'text-anchor': 'middle', 'font-size': 11, fill: '#5a6472' },
+        v >= 1 ? v + 'B' : v);
+  }
+  add('text', { x: W - PAD.r, y: H - 4, 'text-anchor': 'end', 'font-size': 10.5, fill: '#8a909c' }, '参数量（对数轴）');
+  // Qwen3.5 尺寸区间竖带（不出数据点：官方逐尺寸分数未公开）
+  const bx1 = lX(1.6), bx2 = lX(12);
+  add('rect', { class: 'band', x: bx1, y: PAD.t, width: bx2 - bx1, height: H - PAD.t - PAD.b });
+  add('text', { class: 'bandtxt', x: (bx1 + bx2) / 2, y: PAD.t + 11, 'text-anchor': 'middle' }, 'Qwen3.5 尺寸区间');
+  add('text', { class: 'bandtxt', x: (bx1 + bx2) / 2, y: PAD.t + 24, 'text-anchor': 'middle', 'font-size': 10 }, '官方分数未公开');
+  // 数据线
+  for (const s of p.series) {
+    const d = s.pts.map(([x, y], i) => (i ? 'L' : 'M') + lX(x).toFixed(1) + ' ' + lY(y, p.ymin, p.ymax).toFixed(1)).join(' ');
+    const a = { d, fill: 'none', stroke: s.color, 'stroke-width': 2.4 };
+    if (s.dash) a['stroke-dasharray'] = '6 5';
+    add('path', a);
+    for (const [x, y] of s.pts)
+      add('circle', { cx: lX(x), cy: lY(y, p.ymin, p.ymax), r: 3, fill: s.color });
+  }
+  return svg;
+}
+
+const grid = document.getElementById('grid');
+for (const p of PANELS) {
+  const card = document.createElement('div'); card.className = 'card';
+  const h = document.createElement('h3'); h.textContent = p.title; card.appendChild(h);
+  const s = document.createElement('div'); s.className = 'sub'; s.textContent = p.sub; card.appendChild(s);
+  card.appendChild(render(p));
+  const lg = document.createElement('div'); lg.className = 'legend';
+  for (const se of p.series) {
+    const i = document.createElement('i');
+    i.style.borderTopStyle = se.dash ? 'dashed' : 'solid';
+    i.style.borderColor = se.color;
+    lg.appendChild(i);
+    lg.appendChild(document.createTextNode(se.name));
+  }
+  card.appendChild(lg);
+  grid.appendChild(card);
+}
+</script>
+<div class="note" style="margin-top:22px">
+  诚实性说明：Qwen3.5 系列（0.8B/2B/4B/9B/27B…）已确认支持 tools/thinking/vision、256K 上下文、中文 201 语言
+  （Ollama 官方目录标注），但其<b>逐尺寸基准分数</b>在本次可访问的公开渠道（官方博客/HF/ModelScope/arXiv）均未检索到，
+  因此折线图中不虚构数据点，仅以竖带标注尺寸区间。"Qwen3.5 4B ≥ Qwen3 4B"是基于代际规律的推断，非实测。
+  建议拉取 <code>ollama pull qwen3.5:4b</code> 后用你们自己的真实任务（合同审查工作流 / 脱敏占位符问答 / 工具调用链）做一轮现场对比，
+  隐盾的审计与看板可直接量化演示效果。
+</div>
+</body>
+</html>
