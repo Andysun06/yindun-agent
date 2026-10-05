@@ -127,6 +127,23 @@ class AgentService:
     # ── 算力 ─────────────────────────────────────
     def prepare_llm(self) -> Dict[str, Any]:
         """构建算力（可能耗时，调用方应放后台线程）。"""
+        # ★ 首启兜底（真实使用中发现）：settings 默认模型名是 "qwen2.5:7b"，
+        #   但本机实际拉的可能是 "qwen2.5:7b-instruct"——ChatOllama 构建时不校验模型名，
+        #   直到发消息才 404，用户看到的是莫名其妙的失败。
+        #   现在构建前把模型名对齐到本机实际存在的对话模型，并如实告知用户改用了哪个。
+        try:
+            configured = str(self.settings.get("model") or "")
+            custom = self.settings.get("custom_models") or {}
+            if configured and configured not in custom:
+                from yindun.app.llm_factory import detect_chat_models
+                available = detect_chat_models()
+                if available and configured not in available:
+                    fallback = available[0]
+                    self.settings.set("model", fallback)
+                    self.settings.save()
+                    self._emit("status", f"模型 {configured} 本机未安装，已改用 {fallback}")
+        except Exception as exc:
+            print(f"[AgentService] 模型名对齐失败（按原配置继续）：{exc}")
         self._llm, self._tools_map, models, err = build_llm(self.settings.data, build_tools())
         self._llm_error = err
         if models:
