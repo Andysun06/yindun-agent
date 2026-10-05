@@ -743,12 +743,30 @@
       const cfgBtns = cfgFiles.map((f) =>
         `<button class="btn btn--ghost" data-cfg-open="${esc(f.name)}" data-cfg-plugin="${esc(p.id)}">编辑${esc(f.label || f.name)}</button>`
       ).join("");
+      // 运行状态：回答"启用之后它到底有没有在工作"——只有真正被调用过才算数
+      const rt = p.runtime || {};
+      let runText, runCls;
+      if (!p.enabled) {
+        runText = "未启用"; runCls = "is-idle";
+      } else if (!rt.calls) {
+        runText = "等待触发（出现相关场景时自动运行）"; runCls = "is-idle";
+      } else {
+        const t = rt.ts ? new Date(rt.ts * 1000).toLocaleTimeString("zh-CN", { hour12: false }) : "—";
+        const st = rt.status === "ok" ? "正常"
+          : rt.status === "empty" ? "本次无内容"
+          : rt.status === "timeout" ? "超时被跳过"
+          : rt.status === "error" ? "出错" : "—";
+        runText = `已触发 ${rt.calls} 次 · 最近 ${t} · ${st}` +
+          (rt.status === "error" && rt.error ? `：${esc(rt.error)}` : "");
+        runCls = (rt.status === "error" || rt.status === "timeout") ? "is-bad" : "is-ok";
+      }
       return `<div class="plugin-item">
         <div class="plugin-item__head">
           <span class="plugin-item__name">${esc(p.name)}<span class="plugin-item__ver">v${esc(p.version)}</span></span>
           <label class="switch"><input type="checkbox" data-plugin="${esc(p.id)}" ${p.enabled ? "checked" : ""} ${disabled ? "disabled" : ""}><span class="switch__track"></span></label>
         </div>
-        <div class="plugin-item__desc">${esc(p.description || "")}</div>
+        <div class="plugin-item__runtime ${runCls}" title="只统计实际被调用的次数；未触发的插件不代表失效，而是还没遇到对应场景">运行状态：${runText}</div>
+        <div class="plugin-item__desc" title="${esc(p.description || "")}">${esc(p.description || "")}</div>
         <div class="plugin-item__meta">${badges}</div>
         ${capList ? `<div class="plugin-caps">${capList}</div>` : ""}
         ${(p.missing && p.missing.length) ? `<div class="plugin-item__desc">${p.missing.map(esc).join("<br>")}</div>` : ""}
@@ -1157,22 +1175,19 @@
   /* ── 设置抽屉 ─────────────────────────────────────── */
   function fillSettings() {
     const s = state.settings || {};
-    const sel = $("sel-model");
+    // 模型：可下拉选本机已装模型，也可直接手输（内网/远程 Ollama 的模型本机探测不到）
     const models = (state.llm.models && state.llm.models.length) ? state.llm.models : (s.ollama_models_cache || []);
-    sel.innerHTML = "";
+    const dl = $("model-options");
+    dl.innerHTML = "";
     for (const m of models) {
       const opt = document.createElement("option");
-      opt.value = m; opt.textContent = m;
-      if (m === s.model) opt.selected = true;
-      sel.appendChild(opt);
+      opt.value = m;
+      dl.appendChild(opt);
     }
-    if (s.model && !models.includes(s.model)) {
-      const opt = document.createElement("option");
-      opt.value = s.model; opt.textContent = s.model; opt.selected = true;
-      sel.appendChild(opt);
-    }
-    if (!models.length) $("model-hint").textContent = "未检测到本地模型：请先安装 Ollama 并拉取模型（ollama pull qwen2.5:7b）";
-    else $("model-hint").textContent = `已检测到 ${models.length} 个本地模型`;
+    $("model-input").value = s.model || "";
+    if (!models.length) $("model-hint").textContent = "未检测到本地模型：请先安装 Ollama 并拉取模型（ollama pull qwen3.5:4b）";
+    else $("model-hint").textContent = `已检测到 ${models.length} 个本地模型；内网模型可直接输入`;
+    $("ollama-host").value = s.ollama_host || "http://127.0.0.1:11434";
 
     $("sw-privacy").checked = !!s.privacy;
     $("sw-topmost").checked = !!s.topmost;
@@ -1295,6 +1310,13 @@
     call("audit_snapshot", 1).then((snap) => { if (snap) { state.audit = snap; renderPosture(null); } });
     if (state.currentId) await openSession(state.currentId); else renderMessages();
     onEvent("llm_status", state.llm);
+    // ★ 首屏右栏默认停在"设置"页，但该页的加载器只在"点击标签页"时触发——
+    //   不主动跑一次的话，插件列表 / 知识库状态 / 自定义模型要等用户"切走再切回"才出现，
+    //   表现为"设置页是空的、插件（如 laya 风险分级）找不到"（用户实测踩到）。
+    //   这里只跑加载器，不动右栏折叠状态（不覆盖用户"手动收起"的偏好）。
+    const initialPane = document.querySelector(".pane.is-active");
+    const initialName = initialPane ? initialPane.id.replace("pane-", "") : "";
+    if (PANE_LOADERS[initialName]) PANE_LOADERS[initialName]();
   }
 
   /* ── 事件绑定 ─────────────────────────────────────── */
@@ -1411,7 +1433,6 @@
       };
     });
 
-    $("sel-model").onchange = (e) => persist({ model: e.target.value });
     $("sw-privacy").onchange = (e) => persist({ privacy: e.target.checked });
     $("sw-topmost").onchange = (e) => persist({ topmost: e.target.checked });
     $("sw-frameless").onchange = (e) => {
@@ -1419,6 +1440,16 @@
       toast("无边框悬浮模式将在重启后生效");
     };
     $("sel-permission").onchange = (e) => persist({ permission: e.target.value });
+    // 模型名：手输/下拉同一个框；Ollama 地址：失焦保存（保存后端会立即重建算力）
+    $("model-input").onchange = (e) => {
+      const v = String(e.target.value || "").trim();
+      if (v && v !== state.settings.model) persist({ model: v });
+    };
+    $("ollama-host").onchange = (e) => {
+      const v = String(e.target.value || "").trim() || "http://127.0.0.1:11434";
+      e.target.value = v;
+      if (v !== state.settings.ollama_host) persist({ ollama_host: v });
+    };
     $("rng-depth").oninput = (e) => { $("depth-value").textContent = e.target.value; };
     $("rng-depth").onchange = (e) => persist({ thinking_depth: Number(e.target.value) });
 

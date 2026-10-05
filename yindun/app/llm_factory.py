@@ -94,7 +94,7 @@ def build_llm(settings: Dict[str, Any], tools: List[Any]) -> Tuple[Any, Dict[str
       · bound_llm 为 None 时 error 说明原因（界面据此提示）
       · tools_map 为 {tool_name: tool}，供 Worker 执行工具时查找
     """
-    model_name = settings.get("model") or "qwen2.5:7b"
+    model_name = settings.get("model") or "qwen3.5:4b"
     custom_models = settings.get("custom_models", {}) or {}
     ollama_host = settings.get("ollama_host") or DEFAULT_OLLAMA_HOST
     models = detect_ollama_models()

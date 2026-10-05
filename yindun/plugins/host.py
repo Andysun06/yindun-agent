@@ -105,6 +105,25 @@ _AUTO_WORDS = ("auto", "auto_execute", "automatic", "自动")
 
 
 # ── 载荷净化：插件返回值 → 内核可消费的干净结构 ──
+# ── 运行状态记录：回答"这个插件启用后到底有没有在工作" ──
+def _note_runtime(record: PluginRecord, status: str, ms: int, hook: str, error: str = "") -> None:
+    """记录插件最近一次被调用（仅统计真正被征集的调用，未启用/未匹配不算）。
+
+    status：ok（返回了被采纳的结果）/ empty（运行了但本次无内容）/ error / timeout。
+    界面据此显示"已触发 N 次 · 最近 … · 上次结果"，而不是只给一个开关让人猜。
+    """
+    rt = record.runtime
+    rt["calls"] = int(rt.get("calls", 0)) + 1
+    rt["ts"] = time.time()
+    rt["ms"] = int(ms)
+    rt["status"] = status
+    rt["hook"] = hook
+    if error:
+        rt["error"] = str(error)[:200]
+    else:
+        rt.pop("error", None)
+
+
 def _norm_recognizer(value: Any, record: "PluginRecord", context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """净化"补充识别"返回值：只接受落在正文坐标内的短区间，类型强制加 PLUGIN_ 前缀。"""
     text = context.get("text") or ""
@@ -290,6 +309,7 @@ class PluginRecord:
     error: Optional[str] = None      # manifest 校验失败的原因
     missing: List[str] = field(default_factory=list)   # 未满足的依赖（人类可读）
     enabled: bool = False
+    runtime: Dict[str, Any] = field(default_factory=dict)  # 最近一次被调用的运行状态（界面用）
     _module: Any = None
 
     # ── 展示用 ────────────────────────────────
@@ -328,6 +348,7 @@ class PluginRecord:
             "format_labels": dict(self.format_labels),
             "config_files": [dict(item) for item in self.config_files],
             "provides": list(self.provides),
+            "runtime": dict(self.runtime),
             "capabilities": self.capabilities(),
         }
 
@@ -767,16 +788,22 @@ class PluginHost:
             thread.start()
             thread.join(timeout=timeout)
             if thread.is_alive():
+                _note_runtime(record, "timeout", int(timeout * 1000), hook,
+                              f"超时（>{timeout:.1f}s）")
                 print(f"[PluginHost] 插件 {record.plugin_id} 的 {hook} 超时（>{timeout:.1f}s），已跳过")
                 continue
             if outcome.get("error"):
+                _note_runtime(record, "error", int((time.monotonic() - started) * 1000), hook,
+                              outcome["error"])
                 print(f"[PluginHost] 插件 {record.plugin_id} 的 {hook} 失败：{outcome['error']}")
                 continue
             value = outcome.get("value")
             if spec.normalize is not None:
                 value = spec.normalize(value, record, context)
             if not isinstance(value, dict):
+                _note_runtime(record, "empty", int((time.monotonic() - started) * 1000), hook)
                 continue
+            _note_runtime(record, "ok", int((time.monotonic() - started) * 1000), hook)
             value.setdefault("source", record.name)
             value["plugin_id"] = record.plugin_id
             value["kind"] = spec.kind

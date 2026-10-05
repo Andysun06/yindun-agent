@@ -61,7 +61,9 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["PySide6", "shiboken6", "tkinter", "torch", "tensorflow", "IPython", "jupyter"],
+    excludes=["PySide6", "shiboken6", "tkinter", "torch", "tensorflow",
+              "transformers", "tokenizers", "safetensors", "hf_xet",
+              "sentence_transformers", "accelerate", "IPython", "jupyter"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

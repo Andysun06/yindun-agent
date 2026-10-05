@@ -56,6 +56,11 @@ print("=" * 78)
 print("【1】发现与契约（不装 laya 也必须可用）")
 print("=" * 78)
 host, enabled = new_host()
+# 本机装没装 laya 不能影响这些断言的走向：先把后端钉死在正则；
+# laya 路径在第【5】节用注入的假模块单独测（测试不依赖开发机环境）。
+seed = TMP / "data" / "laya_risk"
+seed.mkdir(parents=True, exist_ok=True)
+(seed / "backend.txt").write_text("regex\n", encoding="utf-8")
 plugins = {p["id"]: p for p in host.list_plugins()}
 item = plugins.get("laya_risk")
 check("内置插件 laya_risk 被发现", item is not None, str(list(plugins)))
@@ -77,7 +82,7 @@ check("未装 laya 也能启用（正则回退就是设计行为）", res.get("o
 advs = host.call_hook("advisory_for_approval", dict(CTX_DELETE))
 check("启用后出分级提示（高危）", len(advs) == 1 and advs[0]["level"] == "warn"
       and "高危" in advs[0]["text"], str(advs))
-check("提示标明来源是正则规则（没装 laya 绝不冒充模型）",
+check("提示标明来源是正则规则（后端钉在正则时不冒充模型）",
       bool(advs) and "正则规则" in advs[0]["text"], str(advs))
 check("宿主补齐了 plugin_id 与 kind",
       bool(advs) and advs[0]["plugin_id"] == "laya_risk" and advs[0]["kind"] == "advisory",
@@ -128,12 +133,20 @@ print("【4.5】backend.txt：regex 强制只用正则；laya 只用模型（不
 print("=" * 78)
 host.write_config_file("laya_risk", "backend.txt", "regex\n")
 adv_b = host.call_hook("advisory_for_approval", dict(CTX_READ))
-check("backend=regex：本机没装 laya 也照样给正则分级",
+check("backend=regex：强制正则分级（与本机是否装 laya 无关）",
       len(adv_b) == 1 and "正则规则" in adv_b[0]["text"], str(adv_b))
+# 显式模拟"laya 不可用"：sys.modules 置 None 会让 import laya 抛 ImportError——
+# 本机真装了 laya 时，测试也必须能验证"模型不可用就绝不偷偷拿正则冒充"
+_saved_laya = sys.modules.get("laya", "MISSING")
+sys.modules["laya"] = None
 host.write_config_file("laya_risk", "backend.txt", "laya\n")
 adv_c = host.call_hook("advisory_for_approval", dict(CTX_READ))
 check("backend=laya 且模型不可用：不提示（绝不偷偷拿正则冒充模型）",
       adv_c == [], str(adv_c))
+if _saved_laya == "MISSING":
+    sys.modules.pop("laya", None)
+else:
+    sys.modules["laya"] = _saved_laya
 host.write_config_file("laya_risk", "backend.txt", "auto\n")
 
 # ── 5) laya 路径（注入假模块，验证接入后的行为） ──
@@ -145,7 +158,11 @@ spec = importlib.util.spec_from_file_location(
 plugin = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(plugin)
 plugin.PLUGIN_DATA_DIR = str(TMP / "direct")   # 独立数据目录，与宿主副本互不干扰
-plugin.advisory_for_approval(dict(CTX_DELETE))  # 先生成默认规则文件
+# 先生成默认规则文件：用 regex 钉住，避免这一次真的去加载 laya（本机可能已安装）
+(TMP / "direct").mkdir(parents=True, exist_ok=True)
+(TMP / "direct" / "backend.txt").write_text("regex\n", encoding="utf-8")
+plugin.advisory_for_approval(dict(CTX_DELETE))
+(TMP / "direct" / "backend.txt").write_text("auto\n", encoding="utf-8")
 
 fake = types.ModuleType("laya")
 answers = {"p": 0.85}

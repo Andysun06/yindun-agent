@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import threading
 import time
@@ -41,7 +42,7 @@ DEFAULT_WORDS = """# 自定义敏感词表 · 每行一条
 """
 
 _lock = threading.Lock()
-_cache = {"stamp": None, "rules": []}
+_cache = {"hash": None, "rules": []}
 
 
 def _words_path() -> Path:
@@ -66,17 +67,11 @@ def _load_rules():
       实际却一条都没脱敏，对安全产品这是最糟的失败方式。
     ★ 失败结果绝不进缓存：缓存只存"成功读到的内容"，避免一次瞬时读取失败
       把后续所有调用都钉死在"无规则"上（Windows 上文件被短暂占用就会触发）。
+    ★ 缓存按**内容哈希**失效，而不是文件 mtime：Windows 文件时间戳粒度约 15.6ms，
+    同一时间片内的两次写入会拿到相同 mtime——改了词表却仍在用旧词表（漏脱敏，安全相关）。
     """
     path = _words_path()
     _ensure_file(path)
-    try:
-        stamp = path.stat().st_mtime_ns
-    except Exception as exc:
-        print(f"[custom_dict] 词表不可用（{path}）：{type(exc).__name__}: {exc}")
-        return []
-    with _lock:
-        if _cache["stamp"] == stamp:
-            return _cache["rules"]
     text = ""
     for attempt in (1, 2):                     # 文件可能被其它进程短暂占用，重试一次
         try:
@@ -88,6 +83,10 @@ def _load_rules():
                       f" —— 本次不做自定义脱敏")
                 return []
             time.sleep(0.05)
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    with _lock:
+        if _cache["hash"] == digest:
+            return _cache["rules"]
     rules = []
     skipped = 0
     for line in text.splitlines():
@@ -112,7 +111,7 @@ def _load_rules():
     if skipped:
         print(f"[custom_dict] 词表有 {skipped} 条规则被跳过（正则非法 / 超长），其余规则照常生效")
     with _lock:
-        _cache["stamp"], _cache["rules"] = stamp, rules
+        _cache["hash"], _cache["rules"] = digest, rules
     return rules
 
 

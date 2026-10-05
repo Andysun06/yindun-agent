@@ -187,7 +187,9 @@ print("=" * 78)
 make_plugin("need_pkg", {
     "id": "need_pkg", "name": "需要第三方包", "version": "1.0.0",
     "hooks": ["advisory_for_approval"],
-    "requires": {"python": ["torch>=2.0"]},
+    # 用一个必然不存在的包名：早先用 torch 做样例，本机装上 torch（laya 依赖）后
+    # "缺少依赖"的前提就消失了——测试的前提不该依赖开发机装了什么。
+    "requires": {"python": ["yd-no-such-pkg-xyz>=1.0"]},
 }, "def advisory_for_approval(ctx):\n    return None\n")
 make_plugin("need_model", {
     "id": "need_model", "name": "需要本地模型", "version": "1.0.0",
@@ -200,7 +202,7 @@ host3 = PluginHost(enabled_lookup=lambda pid: False, enabled_setter=lambda pid, 
                    model_lister=lambda: ["qwen2.5:7b-instruct"])
 listed3 = {p["id"]: p for p in host3.list_plugins()}
 check("缺少 Python 包被判为依赖未满足",
-      any("torch" in m for m in listed3["need_pkg"]["missing"]), str(listed3["need_pkg"]["missing"]))
+      any("yd-no-such-pkg-xyz" in m for m in listed3["need_pkg"]["missing"]), str(listed3["need_pkg"]["missing"]))
 check("缺少本地模型被判为依赖未满足",
       any("laya-decide" in m for m in listed3["need_model"]["missing"]), str(listed3["need_model"]["missing"]))
 check("依赖未满足时拒绝启用", host3.set_enabled("need_pkg", True).get("ok") is False)
@@ -268,6 +270,15 @@ host4.set_enabled("missing_fn", True)
 res5 = host4.call_hook("advisory_for_approval", {"tool": "读文件"})
 check("钩子函数缺失时不会被当成正常返回（也不会污染其它插件的结果）",
       len(res5) == 1 and all(r.get("plugin_id") != "missing_fn" for r in res5), str(res5))
+
+# 运行状态可见化：界面要能回答"启用后到底有没有在工作"
+pub4 = {p["id"]: p for p in host4.list_plugins()}
+rt_missing = pub4.get("missing_fn", {}).get("runtime", {})
+check("调用失败会记进运行状态（界面能看到出错，而不是只显示'已启用'）",
+      rt_missing.get("status") == "error" and rt_missing.get("calls", 0) >= 1, str(rt_missing))
+check("未触发过的插件没有运行记录（界面显示'等待触发'）",
+      not pub4.get("no_field", {}).get("runtime"), str(pub4.get("no_field", {})))
+host4.set_enabled("missing_fn", False)
 
 # ── 5) 载荷净化 ────────────────────────────────────
 print("\n" + "=" * 78)

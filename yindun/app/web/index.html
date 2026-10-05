@@ -167,33 +167,40 @@
         <div class="panel__body">
 
           <section class="pane is-active" id="pane-settings">
-      <div class="field">
-        <label class="field__label" for="sel-model">算力底座（模型）</label>
-        <select id="sel-model"></select>
-        <div class="field__hint" id="model-hint">来自本机 Ollama 已下载模型</div>
+    <div class="set-sec"><span>算力</span></div>
+
+    <div class="field">
+      <label class="field__label" for="model-input">对话模型</label>
+      <input type="text" id="model-input" list="model-options" placeholder="选择或输入模型名" spellcheck="false" autocomplete="off">
+      <datalist id="model-options"></datalist>
+      <div class="field__hint" id="model-hint">来自本机 Ollama 已下载模型</div>
+    </div>
+
+    <div class="field">
+      <label class="field__label" for="ollama-host">Ollama 服务地址</label>
+      <input type="text" id="ollama-host" placeholder="http://127.0.0.1:11434" spellcheck="false" autocomplete="off">
+      <div class="field__hint">默认本机；接入公司内网 Ollama 时改内网地址（保存后立即重建算力）</div>
+    </div>
+
+    <div class="field">
+      <div class="field__label">外部算力（OpenAI 兼容）</div>
+      <div class="field__hint">出网前已本机脱敏；密钥加密存本机、不回显</div>
+      <div class="cm-list" id="cm-list"></div>
+      <div class="cm-form">
+        <input type="text" id="cm-name" placeholder="显示名称（如 云端GLM）">
+        <input type="text" id="cm-model" placeholder="模型 ID（如 glm-4-flash）">
+        <input type="text" id="cm-url" placeholder="接口地址（https://…/v1 或内网 http://…/v1）">
+        <input type="text" id="cm-key" placeholder="API Key（仅本地加密保存）">
+        <button class="btn btn--primary" id="btn-cm-add" type="button">添加外部模型</button>
       </div>
+    </div>
 
-      <div class="divider"></div>
-
-      <div class="field">
-        <div class="field__label">外部算力（OpenAI 兼容）</div>
-        <div class="field__hint">接入云端模型时，出网内容已在本机脱敏；密钥加密后存本机，不回显。</div>
-        <div class="cm-list" id="cm-list"></div>
-        <div class="cm-form">
-          <input type="text" id="cm-name" placeholder="显示名称（如 云端GLM）">
-          <input type="text" id="cm-model" placeholder="模型 ID（如 glm-4-flash）">
-          <input type="text" id="cm-url" placeholder="接口地址（https://…/v1）">
-          <input type="text" id="cm-key" placeholder="API Key（仅本地加密保存）">
-          <button class="btn btn--primary" id="btn-cm-add" type="button">添加外部模型</button>
-        </div>
-      </div>
-
-      <div class="divider"></div>
+      <div class="set-sec"><span>隐私与权限</span></div>
 
       <div class="switch">
         <div>
           <div class="field__label">隐私隔离网关</div>
-          <div class="field__hint">开启后：敏感实体在内存中被占位符替换，模型只见占位符</div>
+          <div class="field__hint">敏感实体替换为占位符后才交给模型</div>
         </div>
         <label class="switch"><input type="checkbox" id="sw-privacy"><span class="switch__track"></span></label>
       </div>
@@ -201,7 +208,7 @@
       <div class="field">
         <label class="field__label" for="rng-depth">深度思考强度：<span id="depth-value">3</span></label>
         <input class="range" type="range" id="rng-depth" min="1" max="10" step="1">
-        <div class="field__hint">影响最大推理轮次与最低思考轮数（思考模式生效）</div>
+        <div class="field__hint">1–10；越高推理轮次越多（思考模式生效）</div>
       </div>
 
       <div class="field">
@@ -211,8 +218,10 @@
           <option value="安全只读 (仅读/列表)">安全只读（仅读 / 列表）</option>
           <option value="彻底审计 (仅对话)">彻底审计（仅对话）</option>
         </select>
-        <div class="field__hint">高危操作（写盘 / 删除 / 执行命令）始终触发人工审批</div>
+        <div class="field__hint">写盘 / 删除 / 执行命令始终需人工审批</div>
       </div>
+
+      <div class="set-sec"><span>窗口</span></div>
 
       <div class="switch">
         <div>
@@ -225,12 +234,12 @@
       <div class="switch">
         <div>
           <div class="field__label">无边框悬浮模式</div>
-          <div class="field__hint">隐藏系统边框，拖动顶栏移动窗口（重启后生效；拖动异常可关闭此项回退）</div>
+          <div class="field__hint">无系统边框、拖顶栏移动；拖动异常可关闭回退（重启生效）</div>
         </div>
         <label class="switch"><input type="checkbox" id="sw-frameless"><span class="switch__track"></span></label>
       </div>
 
-      <div class="divider"></div>
+      <div class="set-sec"><span>知识库</span></div>
 
       <div class="field">
         <div class="field__label">本地知识库（脱敏 RAG）</div>
@@ -240,14 +249,13 @@
           <button class="btn" id="btn-kb-refresh" type="button">刷新</button>
         </div>
         <div class="kb-list" id="kb-list"></div>
-        <div class="field__hint">入库即逐块脱敏：向量库中只存占位符，真实隐私不落盘</div>
+        <div class="field__hint">入库即逐块脱敏：向量库只存占位符</div>
       </div>
 
-      <div class="divider"></div>
+      <div class="set-sec"><span>插件</span></div>
 
       <div class="field">
-        <div class="field__label">插件（能力扩展）</div>
-        <div class="field__hint">插件只能"做加法"：多识别一类敏感实体、多解析一种格式、多一种导出格式、多一个工作流模板。内核的脱敏网关 / 审批放行 / 审计链 / 沙箱文件工具不开放给插件。插件是本地代码，隐盾不会联网下载插件；启停与配置改动都会写入审计。</div>
+        <div class="field__hint" title="插件是本地代码，隐盾不会联网下载插件；启停与配置改动都写入审计。内核的脱敏网关 / 审批放行 / 审计链 / 沙箱文件工具不开放给插件。开发契约见 docs/插件开发.md">只做加法：补充识别 / 解析 / 模板 / 导出；脱敏、审批、审计不开放。</div>
         <div class="plugin-list" id="plugin-list"></div>
         <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-2)">
           <button class="btn" id="btn-plugin-check" type="button">插件自检</button>
@@ -255,8 +263,7 @@
         <div class="field__hint" id="plugin-sync">—</div>
       </div>
 
-      <div class="divider"></div>
-      <div class="field__hint" id="settings-note">设置修改后立即生效；配置与会话均在本机加密保存。</div>
+      <div class="field__hint" id="settings-note">改动立即生效；配置与会话在本机加密保存。</div>
           </section>
 
           <section class="pane" id="pane-audit">

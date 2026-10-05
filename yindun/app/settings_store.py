@@ -21,7 +21,8 @@ CONFIG_FILE = APP_ROOT / "global_config.json"
 
 # 默认配置（与旧版字段名保持一致）
 DEFAULTS: Dict[str, Any] = {
-    "model": "qwen2.5:7b",
+    "model": "qwen3.5:4b",
+    "ollama_host": "http://127.0.0.1:11434",
     "privacy": True,
     "dark_mode": False,
     "topmost": True,

@@ -321,9 +321,15 @@ html[data-frameless="1"] .win-ctrls { display: inline-flex; }
 
 .field { display: flex; flex-direction: column; gap: var(--sp-3); }
 .field__label { font-size: var(--fs-sm); color: var(--text-1); font-weight: 600; }
-.field__hint { font-size: var(--fs-meta); color: var(--text-3); line-height: 1.6; }
+/* 提示文字用 text-2（而非 text-3）：设置页要"看得清"，低对比只留给装饰性元信息 */
+.field__hint { font-size: var(--fs-meta); color: var(--text-2); line-height: 1.65; }
 select, input[type="text"] { width: 100%; padding: 7px var(--sp-4); border-radius: var(--r-ctrl); background: var(--bg-canvas); border: 1px solid var(--border-2); outline: none; font-size: var(--fs-sm); }
 select:focus, input[type="text"]:focus { border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--accent-50); }
+
+/* 设置页分节头（替代裸 divider）：给长表单一个可扫读的骨架 */
+.set-sec { display: flex; align-items: center; gap: var(--sp-4); margin: var(--sp-2) 0 0; }
+.set-sec > span { font-size: var(--fs-sm); font-weight: 700; color: var(--text-2); letter-spacing: .3px; flex: none; }
+.set-sec::after { content: ""; flex: 1; height: 1px; background: var(--border-2); }
 
 .switch { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-5); }
 .switch__track { width: 36px; height: 20px; border-radius: 999px; background: var(--border-2); position: relative; transition: background var(--dur) var(--ease); flex: none; }
@@ -380,7 +386,17 @@ html[data-theme="dark"] .chain-badge--ok { color: var(--accent-300); background:
 .plugin-item__head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-4); }
 .plugin-item__name { font-size: var(--fs-sm); font-weight: 600; display: inline-flex; align-items: center; gap: var(--sp-3); }
 .plugin-item__ver { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-3); }
-.plugin-item__desc { font-size: var(--fs-meta); color: var(--text-3); line-height: 1.65; }
+/* 插件描述：卡片里收成两行，完整内容放 title 悬浮——"字太多"先从这里治 */
+.plugin-item__desc { font-size: var(--fs-meta); color: var(--text-2); line-height: 1.6;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+/* 运行状态：插件"启用了但有没有真在工作"的直接证据 */
+.plugin-item__runtime { font-size: var(--fs-meta); font-weight: 600; padding: 4px var(--sp-3);
+  border-radius: var(--r-chip); border: 1px solid var(--border-2); background: var(--bg-subtle); }
+.plugin-item__runtime.is-idle { color: var(--text-2); }
+.plugin-item__runtime.is-ok { color: var(--accent-700); border-color: var(--accent-300); background: var(--accent-50); }
+.plugin-item__runtime.is-bad { color: var(--danger-500); border-color: var(--danger-500); background: var(--danger-50); }
+html[data-theme="dark"] .plugin-item__runtime.is-ok { background: rgba(22, 161, 99, .12); }
+html[data-theme="dark"] .plugin-item__runtime.is-bad { background: rgba(196, 54, 47, .14); }
 .plugin-item__meta { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
 .plugin-badge { font-size: var(--fs-meta); padding: 0 5px; border-radius: var(--r-chip); border: 1px solid var(--border-2); color: var(--text-3); font-family: var(--font-mono); }
 .plugin-badge--warn { color: var(--warn-500); border-color: var(--warn-500); }

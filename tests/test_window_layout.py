@@ -14,6 +14,7 @@
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -166,6 +167,25 @@ holder["window"] = BlindWindow(0, 0, 800, 600)
 check("取不到几何时 window_bounds 明确失败（前端放弃拖拽，不乱动窗口）",
       api.window_bounds().get("ok") is False)
 holder["window"] = win2
+
+# ── 内网/远程 Ollama：地址可配置，且不做本机模型名对齐（不覆盖用户配置）──
+prev_model = svc.settings.get("model")
+prev_host = svc.settings.get("ollama_host") or "http://127.0.0.1:11434"
+check("save_settings 允许保存 ollama_host（旧白名单会静默丢弃它）",
+      api.save_settings({"ollama_host": "http://10.0.0.8:11434"}) is True
+      and svc.settings.get("ollama_host") == "http://10.0.0.8:11434",
+      str(svc.settings.get("ollama_host")))
+time.sleep(0.3)   # 让 save_settings 触发的后台重建跑完，避免与下面的断言交错
+svc.settings.set("ollama_host", "http://10.0.0.8:11434")
+svc.settings.set("model", "intranet-model-xyz")
+svc.prepare_llm()
+check("非本机地址时跳过模型名对齐（内网模型名必须原样生效）",
+      svc.settings.get("model") == "intranet-model-xyz", str(svc.settings.get("model")))
+svc.settings.set("ollama_host", prev_host)
+svc.settings.set("model", prev_model)
+svc.prepare_llm()
+check("本机地址时把设置同步到 OLLAMA_HOST（知识库/状态探测等组件统一跟随）",
+      os.environ.get("OLLAMA_HOST") == prev_host, str(os.environ.get("OLLAMA_HOST")))
 
 # 窗口最小尺寸必须按折叠态给（运行期改 min_size 不生效，见 window_layout 注释）
 webview_src = (ROOT / "yindun" / "app" / "webview_app.py").read_text(encoding="utf-8")

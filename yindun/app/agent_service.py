@@ -127,14 +127,32 @@ class AgentService:
     # ── 算力 ─────────────────────────────────────
     def prepare_llm(self) -> Dict[str, Any]:
         """构建算力（可能耗时，调用方应放后台线程）。"""
-        # ★ 首启兜底（真实使用中发现）：settings 默认模型名是 "qwen2.5:7b"，
-        #   但本机实际拉的可能是 "qwen2.5:7b-instruct"——ChatOllama 构建时不校验模型名，
-        #   直到发消息才 404，用户看到的是莫名其妙的失败。
-        #   现在构建前把模型名对齐到本机实际存在的对话模型，并如实告知用户改用了哪个。
+        # ★ 本地回环与内网地址都绕过系统代理（Clash/V2Ray 会劫持 127.0.0.1 与内网段的请求，
+        #   导致 langchain-ollama 调本地/内网 Ollama 时 502）。内网地址从设置里取。
+        host_cfg = str(self.settings.get("ollama_host") or "http://127.0.0.1:11434")
+        # 统一出口：知识库 / 工作流 / 状态探测等读取 OLLAMA_HOST 的组件都跟随设置（含内网地址）
+        os.environ["OLLAMA_HOST"] = host_cfg
+        try:
+            from urllib.parse import urlparse
+            h = (urlparse(host_cfg).hostname or "").strip()
+            if h:
+                parts = [p.strip() for p in os.environ.get("NO_PROXY", "").split(",") if p.strip()]
+                if h not in parts:
+                    parts.append(h)
+                    os.environ["NO_PROXY"] = ",".join(parts)
+                    os.environ["no_proxy"] = os.environ["NO_PROXY"]
+        except Exception:
+            pass
+        # ★ 首启兜底（真实使用中发现）：settings 默认模型名可能与本机实际拉取的不一致
+        #   （如 "qwen2.5:7b" vs "qwen2.5:7b-instruct"），ChatOllama 构建时不校验模型名，
+        #   直到发消息才 404。这里把模型名对齐到本机实际存在的对话模型并如实告知。
+        #   ★ 内网/远程 Ollama 例外：本机探测不到内网模型，"对齐"会把用户填的内网模型名
+        #   覆盖成本机模型——非本地地址一律跳过兜底，信任用户配置。
+        is_local_host = ("127.0.0.1" in host_cfg) or ("localhost" in host_cfg) or ("[::1]" in host_cfg)
         try:
             configured = str(self.settings.get("model") or "")
             custom = self.settings.get("custom_models") or {}
-            if configured and configured not in custom:
+            if configured and configured not in custom and is_local_host:
                 from yindun.app.llm_factory import detect_chat_models
                 available = detect_chat_models()
                 if available and configured not in available:
@@ -550,7 +568,7 @@ class AgentService:
         # 若当前正在用这个模型，回退到本地模型，避免指向已删除的配置
         if self.settings.get("model") == name:
             from yindun.app.llm_factory import get_first_available_model
-            fallback = get_first_available_model() or "qwen2.5:7b"
+            fallback = get_first_available_model() or "qwen3.5:4b"
             self.settings.set("model", fallback)
             self._llm = None
         self.settings.save()

@@ -397,12 +397,16 @@ class JsApi:
     def save_settings(self, patch: Dict[str, Any]) -> bool:
         if not isinstance(patch, dict):
             return False
-        allowed = {"model", "privacy", "dark_mode", "topmost",
+        allowed = {"model", "ollama_host", "privacy", "dark_mode", "topmost",
                    "thinking_depth", "permission", "think_mode"}
         for key, value in patch.items():
             if key in allowed:
                 self._svc.settings.set(key, value)
         self._svc.settings.save()
+        # 换模型 / 换 Ollama 地址（含内网）→ 后台重建算力，不用重启；
+        # worker 在每轮开始时取 self._llm 的新引用，重建不会打断在跑的轮次。
+        if any(k in patch for k in ("model", "ollama_host")):
+            threading.Thread(target=self._svc.prepare_llm, daemon=True).start()
         # 窗口置顶等需要即时作用于窗口本身
         window = self._window.get("window")
         if window is not None and "topmost" in patch:

@@ -885,7 +885,7 @@ def _load_workflow_llm_config():
             cfg = json.load(_f)
     except Exception:
         pass
-    model = cfg.get("model") or "qwen2.5:7b"
+    model = cfg.get("model") or "qwen3.5:4b"
     host = cfg.get("ollama_host") or _os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434"
     return model, host
 

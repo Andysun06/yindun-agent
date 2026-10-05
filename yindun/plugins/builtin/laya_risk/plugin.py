@@ -24,6 +24,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
@@ -91,7 +92,7 @@ _MAX_RULES = 500
 _MAX_PATTERN_CHARS = 160
 
 _lock = threading.Lock()
-_cache: Dict[str, Any] = {"stamp": None, "rules": None}
+_cache: Dict[str, Any] = {"hash": None, "rules": None}
 
 
 def _data_dir() -> Path:
@@ -176,27 +177,34 @@ def _parse_rules(text: str) -> Tuple[List[Tuple[int, Any, str]], int]:
 
 
 def _load_rules() -> List[Tuple[int, Any, str]]:
-    """读取规则文件并编译。★失败绝不静默、失败结果绝不进缓存（同 custom_dict 的教训）。"""
+    """读取规则文件并编译。★失败绝不静默、失败结果绝不进缓存（同 custom_dict 的教训）。
+
+    ★缓存按**内容哈希**失效，而不是文件 mtime：Windows 文件时间戳粒度约 15.6ms，
+    同一时间片内的两次写入会拿到相同的 mtime——"清空规则/改规则"后仍拿旧规则分级
+    （实测踩到：连续两次写规则文件，第二次不生效）。规则文件很小（宿主上限 256KB），
+    每次读取+哈希的成本可以忽略。
+    """
     path = _rules_path()
     _ensure_file(path)
-    try:
-        stamp = path.stat().st_mtime_ns
-    except Exception as exc:
-        print(f"[laya_risk] 规则文件不可用（{path}）：{type(exc).__name__}: {exc}")
-        return []
+    text = None
+    for attempt in (1, 2):                 # 文件可能被其它进程短暂占用，重试一次
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            break
+        except Exception as exc:
+            if attempt == 2:
+                print(f"[laya_risk] 规则读取失败（{path}）：{type(exc).__name__}: {exc} —— 本次无规则可用")
+                return []
+            time.sleep(0.05)
+    digest = hashlib.sha256((text or "").encode("utf-8")).hexdigest()
     with _lock:
-        if _cache["stamp"] == stamp and _cache["rules"] is not None:
+        if _cache["hash"] == digest and _cache["rules"] is not None:
             return _cache["rules"]
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except Exception as exc:
-        print(f"[laya_risk] 规则读取失败（{path}）：{type(exc).__name__}: {exc} —— 本次无规则可用")
-        return []
-    rules, skipped = _parse_rules(text)
+    rules, skipped = _parse_rules(text or "")
     if skipped:
         print(f"[laya_risk] 规则有 {skipped} 条被跳过（级别非法 / 正则非法 / 超长），其余规则照常生效")
     with _lock:
-        _cache["stamp"], _cache["rules"] = stamp, rules
+        _cache["hash"], _cache["rules"] = digest, rules
     return rules
 
 

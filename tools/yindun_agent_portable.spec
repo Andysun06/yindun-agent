@@ -83,7 +83,14 @@ a = Analysis(
     runtime_hooks=[],
     # ★ 默认界面是 Web（pywebview + WebView2），Qt 只在显式 `--qt` 时才需要；
     #   这里整体排除 PySide6，便携包因此明显瘦身（旧 Qt 界面请在源码环境运行 `python run.py --qt`）。
+    # ★ 另排除"可选重依赖"：本机若因接入 laya（`pip install laya`）装上了 transformers/torch 等，
+    #   PyInstaller 的 hook 会把它们收进包（实测体积 133MB → 220MB），而隐盾运行时并不 import 它们；
+    #   exe 也不加载 laya（环境隔离），排除后体积回到 ~130MB。
+    #   scipy 同理：它经 numpy.f2py（numpy>=2.0 未被 hook 排除）被带入，+65MB；全仓与全部依赖均无
+    #   scipy 引用（chromadb/onnxruntime/pymupdf 均零引用），排除不影响功能。
     excludes=["PySide6", "shiboken6", "tkinter", "torch", "tensorflow",
+              "transformers", "tokenizers", "safetensors", "hf_xet",
+              "sentence_transformers", "accelerate", "scipy",
               "IPython", "jupyter", "matplotlib", "pytest"],
     noarchive=False,
 )
