@@ -18,8 +18,9 @@
 
 数据边界：模型推理与规则匹配全在本机，数据不出本机；
 唯一联网点是 laya 首次使用时从 Hugging Face 下载权重（涉密环境可预先离线导入
-~/.cache/huggingface/ 的模型目录）。首次推理可能因下载而超时——本次会落到
-正则规则，权重就绪后的下一次审批就能用上模型。
+~/.cache/huggingface/ 的模型目录）。首次推理可能因下载而很慢——插件内部只等
+25 秒（远小于宿主 60s 硬超时），到点主动落正则规则给提示，下载继续在后台进行，
+权重就绪后的下一次审批自动用上模型。
 """
 from __future__ import annotations
 
@@ -216,6 +217,9 @@ def _build_haystack(context: Dict[str, Any]) -> str:
 
 
 # ── laya 路径 ──
+_LAYA_WAIT = 25.0   # 模型推理的内部等待上限：必须显著小于宿主钩子超时，
+                    # 否则首次下载权重会把整次 advisory 拖成超时、弹窗反而一条提示都没有
+
 def _load_router() -> Any:
     """尝试加载一次 laya；没装/失败则永久回退正则（不反复重试重依赖导入）。"""
     global _ROUTER, _ROUTER_FAILED
@@ -236,12 +240,27 @@ def _load_router() -> Any:
 def _grade_with_laya(router: Any, haystack: str, context: Dict[str, Any]) -> Optional[Dict[str, str]]:
     request = str(context.get("user_request") or "")[:300]
     state = f"用户请求：{request or '（本轮没有可对照的用户原话）'}\n待执行操作：{haystack}"
-    try:
-        result = router.predict(state, _QUESTIONS)
-        p = float(result["answers"]["risk"]["noul"])
-    except Exception as exc:
-        print(f"[laya_risk] laya 推理失败，本次改用正则规则：{type(exc).__name__}: {exc}")
+    box: Dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            result = router.predict(state, _QUESTIONS)
+            box["p"] = float(result["answers"]["risk"]["noul"])
+        except Exception as exc:
+            box["err"] = f"{type(exc).__name__}: {exc}"
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    worker.join(_LAYA_WAIT)
+    if worker.is_alive():
+        # 典型场景：首次使用正在下载权重。让它在后台继续，本次主动落正则——
+        # 弹窗仍有提示，且绝不出现"宿主超时、整条 advisory 消失"。
+        print(f"[laya_risk] laya 推理 {_LAYA_WAIT:.0f}s 未完成（首次可能正在下载权重），本次用正则规则分级")
         return None
+    if "err" in box:
+        print(f"[laya_risk] laya 推理失败，本次改用正则规则：{box['err']}")
+        return None
+    p = box["p"]
     level = "高危" if p >= _HIGH else ("中危" if p >= _MID else "低危")
     return {"level": _LABEL[level],
             "text": f"风险分级（laya 模型）：{level} · 破坏性/越权概率 {p:.2f}"}

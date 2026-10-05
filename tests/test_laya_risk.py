@@ -15,6 +15,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import types
 from pathlib import Path
 
@@ -173,6 +174,18 @@ answers["p"] = -1.0
 out = plugin.advisory_for_approval(dict(CTX_DELETE))
 check("模型推理异常→回退正则（rm -rf 仍给高危，流程不断）",
       out and "正则规则" in out["text"] and out["level"] == "warn" and "高危" in out["text"], str(out))
+class SlowRouter:   # 模拟首次使用正在下载权重的慢推理
+    def predict(self, state, questions):
+        time.sleep(2)
+        return {"answers": {"risk": {"noul": 0.99}}}
+plugin._LAYA_WAIT = 0.5          # 测试内把内部等待压短
+plugin._ROUTER = SlowRouter()
+t0 = time.monotonic()
+out = plugin.advisory_for_approval(dict(CTX_READ))
+elapsed = time.monotonic() - t0
+check("推理超时（模拟下载权重）→主动回退正则，弹窗仍有提示、不拖到宿主超时",
+      out and "正则规则" in out["text"] and elapsed < 1.5, f"{elapsed:.2f}s {out}")
+plugin._LAYA_WAIT = 25.0
 out2 = plugin.advisory_for_approval({"tool": "", "path": "", "args": {}})
 check("空上下文安静返回 None", out2 is None, str(out2))
 
