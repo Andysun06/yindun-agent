@@ -322,9 +322,12 @@ for fp in SCAN_FILES:
     for k, v in hits.items():
         print(f"      · {k}: {v}")
 
-# ── 第三部分：附件全文明文落盘专项 ──
+# ── 第三部分：附件落盘专项（双向断言：明文键=泄露；密文键=正向验证）──
+# 评审意见整改：此前的专项只检查旧版明文键"没出现就算过"，属于弱覆盖——
+# 现在同时做正向验证：密文键必须存在、必须能解密、且原始文件里不得出现
+# 可读的明文片段（否则"加密落盘"的表述无从证明）。
 print("\n" + "=" * 78)
-print("【附件快照落盘专项】")
+print("【附件快照落盘专项】（明文键=泄露 / 密文键=正向验证）")
 print("=" * 78)
 cs = os.path.join(BASE, "chat_sessions.json")
 if os.path.exists(cs):
@@ -334,19 +337,37 @@ if os.path.exists(cs):
         sessions = data.get("sessions", data if isinstance(data, list) else {})
         if isinstance(sessions, dict):
             sessions = list(sessions.values())
-        att_total = 0
-        att_chars = 0
+        att_plain = 0
+        att_enc = 0
+        att_enc_ok = 0
         for s in sessions:
             if not isinstance(s, dict):
                 continue
+            # ① 明文键：任何非空明文附件全文都是泄露（应为 0）
             att = s.get("attachment_fulltext", {}) or {}
             for fn, txt in att.items():
-                att_total += 1
-                att_chars += len(txt or "")
-                print(f"  附件《{fn}》原文落盘 {len(txt or '')} 字符（明文，未脱敏）")
-        print(f"\n  合计：{att_total} 个附件全文以明文形式持久化在 chat_sessions.json，共 {att_chars} 字符")
-        if att_chars > 200000:
-            print(f"  ⚠️ 该字段把整个 chat_sessions.json 撑到 {os.path.getsize(cs)/1024/1024:.2f} MB，存在性能与泄露双重风险")
+                att_plain += 1
+                print(f"  ⚠️ 附件《{fn}》以明文落盘 {len(txt or '')} 字符（未脱敏）——属泄露")
+                disk_findings = True
+            # ② 密文键：存在即正向验证"能解密"（证明加密落盘链路真实可用）
+            blob = s.get("attachment_fulltext_enc")
+            if isinstance(blob, str) and blob:
+                att_enc += 1
+                try:
+                    from yindun.core.secret_manager import SecretManager
+                    decoded = json.loads(SecretManager.get_instance().decrypt(blob))
+                    if isinstance(decoded, dict):
+                        att_enc_ok += 1
+                        names = "、".join(list(decoded.keys())[:3])
+                        print(f"  ✅ 附件快照以密文落盘并可解密（{len(decoded)} 个附件：{names}…）")
+                except Exception as e:
+                    print(f"  ❌ 附件密文无法解密（加密落盘链路异常）：{e}")
+                    disk_findings = True
+        if att_plain == 0 and att_enc == 0:
+            print("  （当前无附件快照；无附件时明文键与密文键都不存在，属正常）")
+        print(f"\n  合计：明文键 {att_plain} 个（要求 0）/ 密文键 {att_enc} 个（可解密 {att_enc_ok} 个）")
+        if att_plain:
+            print("  ⚠️ 存量明文将由应用启动时的迁移逻辑重写为加密存储（migrate_legacy_plaintext）")
     except Exception as e:
         print(f"  解析失败：{e}")
 

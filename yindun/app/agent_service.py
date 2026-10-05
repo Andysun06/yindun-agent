@@ -110,6 +110,10 @@ class AgentService:
         """加载配置与会话（同步、只读磁盘，很快），并把插件能力挂到内核扩展点。"""
         self.settings.load()
         self.sessions.load()
+        # ★ 存量明文主动迁移（红队评审整改）：旧版本可能把消息/附件全文以明文写进
+        #   会话文件；读取是兼容的，但只有 save() 才把文件整体重写为加密格式——
+        #   若用户从不触发保存，明文会长期留在磁盘上。启动即检测并迁移一次。
+        self.sessions.migrate_legacy_plaintext()
         self._sync_plugin_capabilities()
 
     def set_listener(self, listener: Optional[Listener]) -> None:

@@ -106,6 +106,40 @@ def _read_file_text(file_path: str, max_bytes: int = 20000) -> str:
     with open(file_path, "rb") as f:
         return f.read(max_bytes).decode("latin-1", errors="replace")
 
+
+def preview_command_script(command: str, sandbox: str = "") -> str:
+    """审批弹窗用的"脚本内容预览"（防盲签）。
+
+    `python x.py` 这样的命令，弹窗只显示命令串看不出脚本会做什么——
+    这里在人工审批前把脚本开头一段读出来一并展示，让"放行"建立在看清内容之上。
+    脚本按沙箱 realpath 解析（与 run_local_command 的归属校验同一套规则）；
+    非解释器命令 / 读不到 / 越界一律返回空串或一句说明，**绝不因预览失败阻碍审批流程**。
+    """
+    try:
+        if not command:
+            return ""
+        parts = shlex.split(str(command))
+        if len(parts) < 2 or os.path.basename(parts[0]).lower() not in ("python", "python3"):
+            return ""
+        script = next((a for a in parts[1:] if not a.startswith("-")), "")
+        if not script or not script.lower().endswith(".py"):
+            return ""
+        base = os.path.realpath(sandbox or SANDBOX)
+        real = os.path.realpath(os.path.join(base, script))
+        try:
+            within = os.path.commonpath([os.path.normcase(base), os.path.normcase(real)]) == os.path.normcase(base)
+        except ValueError:
+            within = False
+        if not within:
+            return "(脚本解析后不在沙箱内——执行时会被命令白名单拦截)"
+        if not os.path.isfile(real):
+            return "(脚本不存在)"
+        text = Path(real).read_text(encoding="utf-8", errors="replace")
+        head = text[:800]
+        return head + ("…（已截断）" if len(text) > 800 else "")
+    except Exception:
+        return ""
+
 # ==========================================
 # 1. 定义强类型参数约束表单 (Args Schema)
 # ==========================================
@@ -375,9 +409,15 @@ def run_local_command(command: str, target_directory: str = "当前沙箱目录"
     """
     在指定安全沙箱目录下执行受限的系统命令（只读查看、脚本执行等）。
     仅允许白名单命令（python/python3/pip/git/echo），去 shell 化执行并拦截危险参数；
-    python 只允许执行沙箱内的 .py 脚本文件（禁止 -c/-m/stdin 内联代码），
-    pip/git 只允许只读子命令（禁止 install/clone 等会触发代码执行的子命令），
-    从根本上杜绝命令注入与任意代码执行。
+    python 只允许执行**沙箱内**的 .py 脚本（禁止 -c/-m/stdin 内联代码；
+    脚本路径经 realpath 校验，符号链接/盘符相对路径等越界形态一律拒绝），
+    pip/git 只允许只读子命令（禁止 install/clone 等会触发代码执行的子命令）。
+
+    ★ 命令执行的边界（如实声明，见技术报告"性质边界"）：
+      这是**策略层**控制（入口形态收窄 + 人工审批 + 全量审计），**不是 OS 级沙箱**——
+      被放行的 .py 脚本仍以当前用户权限运行、可触达沙箱外资源。
+      我们做到的是"不给图灵完备的内联入口、脚本必须在沙箱内、执行前人工看清脚本内容"，
+      不宣称"严格沙箱"。需要更强制隔离时请配合系统级方案（受限账户/虚拟机）。
     """
     perm = os.environ.get("PERMISSION_LEVEL", "完全控制 (读/写/列表)")
     if "彻底审计" in perm or "安全只读" in perm:
@@ -391,7 +431,9 @@ def run_local_command(command: str, target_directory: str = "当前沙箱目录"
     # 白名单许可：仅命令名 basename 命中时才允许执行
     allowed_commands = {"python", "python3", "pip", "git", "echo"}
     shell_operators = {"|", ";", "&", ">", "<"}
-    absolute_path_pattern = re.compile(r"^[A-Za-z]:[\\/]|^\\\\|^/")
+    # ★ 盘符形态一律拦截：既拦 C:\ 也拦 C:evil.py（盘符相对路径的解析依赖进程的
+    #   per-drive 当前目录，是绝对路径校验的已知盲区）
+    absolute_path_pattern = re.compile(r"^[A-Za-z]:|^\\\\|^/")
     
     # 1. 用 shlex 拆解为 argv 列表（posix=True 以正确识别引号分组，保证 -c 代码整体传入）
     try:
@@ -437,6 +479,18 @@ def run_local_command(command: str, target_directory: str = "当前沙箱目录"
                     f"（如 -c/-m/-u，收到 '{args_rest[0]}'），已拒绝执行。")
         if not script.lower().endswith(".py"):
             return f"❌ 安全拦截：python 仅允许执行 .py 脚本（收到 '{script}'），已拒绝执行。"
+        # ★ 脚本归属校验（红队评审整改）：仅校验"后缀是 .py"不足以防越界——
+        #   沙箱内的符号链接/junction 可指向外部脚本，盘符相对路径（C:evil.py）可穿过
+        #   绝对路径检查。这里按 realpath 解析后强制落在沙箱内，并把传给解释器的路径
+        #   替换为解析后的绝对路径（同时消除 CWD 歧义与 TOCTOU 空间）。
+        script_abs = os.path.realpath(os.path.join(base_dir, script))
+        _, script_within = _enforce_sandbox(script_abs)
+        if not script_within:
+            return (f"❌ 安全拦截：脚本 '{script}' 解析后不在安全沙箱内"
+                    f"（realpath={script_abs}），已拒绝执行（符号链接/越界路径不允许）。")
+        if not os.path.isfile(script_abs):
+            return f"❌ 安全拦截：脚本 '{script}' 不存在（按沙箱内解析为 {script_abs}）。"
+        parts[parts.index(script, 1)] = script_abs
 
     elif cmd_name == "pip":
         allowed_subcommands = {"list", "show", "check", "freeze", "--version", "-V"}
@@ -454,14 +508,28 @@ def run_local_command(command: str, target_directory: str = "当前沙箱目录"
             return (f"❌ 安全拦截：git 仅允许只读子命令 "
                     f"[{'/'.join(sorted(allowed_subcommands))}]，收到 '{got}'，已拒绝执行"
                     "（clone/fetch/config 等会改动仓库或触发外部执行）。")
-        # git 危险开关：可覆盖 pager/hook/仓库指向，从而间接执行命令或越界访问
-        dangerous_flags = {"-c", "-C", "--exec-path", "--exec", "--upload-pack",
-                           "--receive-pack", "--pager", "--git-dir", "--work-tree",
-                           "--config-env", "--output"}
-        bad = next((a for a in args_rest if a in dangerous_flags), None)
+        # git 危险开关：可覆盖 pager/hook/仓库指向，从而间接执行命令或越界访问。
+        # ★ 前缀匹配（而非等值匹配）：--pager=x / --open-files-in-pager=calc 这类
+        #   带值形态此前可绕过等值匹配（红队评审发现）。
+        dangerous_prefixes = ("--pager", "--open-files-in-pager", "--exec-path", "--exec",
+                              "--upload-pack", "--receive-pack", "--git-dir", "--work-tree",
+                              "--config-env", "--output")
+        bad = next((a for a in args_rest
+                    if a in ("-c", "-C") or a.startswith(dangerous_prefixes)), None)
         if bad:
             return f"❌ 安全拦截：git 参数 '{bad}' 可绕过安全边界，已拒绝执行。"
-    
+
+    # ★ 子进程环境收敛（红队评审整改）：不再继承完整环境——剥离 API Key / 内部变量，
+    #   只保留运行所需的基础变量，避免脚本从环境里读到密钥或内部状态。
+    _PASSTHROUGH = {
+        "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "PATH",
+        "TEMP", "TMP", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+        "PROCESSOR_IDENTIFIER", "OS", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+        "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES",
+        "PROGRAMFILES(X86)", "PYTHONIOENCODING", "PYTHONUTF8", "LANG", "LC_ALL",
+    }
+    child_env = {k: v for k, v in os.environ.items() if k.upper() in _PASSTHROUGH}
+
     try:
         result = subprocess.run(
             parts,
@@ -470,6 +538,7 @@ def run_local_command(command: str, target_directory: str = "当前沙箱目录"
             capture_output=True,
             text=True,
             timeout=60,
+            env=child_env,
         )
         output = (result.stdout or "")[:3000]
         error = (result.stderr or "")[:3000]

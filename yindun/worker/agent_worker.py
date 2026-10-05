@@ -233,7 +233,19 @@ class Worker:
         返回 True=批准；False=驳回/取消/超时（默认 timeout 300s）。
         """
         self._approved.clear()
-        self.need_confirm.emit({"name": name, "args": args, "path": path})
+        payload = {"name": name, "args": args, "path": path}
+        # 防盲签（红队评审整改）：`python x.py` 这类命令，弹窗只显示命令串看不出脚本做什么——
+        # 审批前把脚本开头一段读出来一并展示（读不到就不加该字段，绝不影响审批流程）。
+        try:
+            if isinstance(args, dict):
+                from yindun.core.file_tools import preview_command_script
+                preview = preview_command_script(str(args.get("command") or ""),
+                                                 getattr(self, "sandbox_path", "") or "")
+                if preview:
+                    payload["script_preview"] = preview
+        except Exception:
+            pass
+        self.need_confirm.emit(payload)
         deadline = time.monotonic() + timeout
         approved = None
         while approved is None:

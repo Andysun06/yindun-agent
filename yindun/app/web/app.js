@@ -438,9 +438,13 @@
     renderAdvisories([]);   // 建议是异步补发的（本地模型判断可能慢），先清空
     $("approval-tool").textContent = payload.name || "—";
     $("approval-path").textContent = payload.path || "—";
-    const text = formatPayload(payload.args);
+    let text = formatPayload(payload.args);
+    // 防盲签：解释器命令展示脚本内容预览（后端在审批前读好；无此字段则不显示）
+    if (payload.script_preview) {
+      text += `\n\n【脚本内容预览（执行前请核对）】\n${payload.script_preview}`;
+    }
     const wrap = $("approval-payload-wrap");
-    if (text) { $("approval-payload").textContent = text.slice(0, 1200); wrap.style.display = ""; }
+    if (text) { $("approval-payload").textContent = text.slice(0, 2400); wrap.style.display = ""; }
     else wrap.style.display = "none";
     $("approval-root").classList.add("is-open");
     setStatus("等待人工合规审批…");

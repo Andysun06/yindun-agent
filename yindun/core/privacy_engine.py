@@ -350,6 +350,21 @@ class PrivacyEngine:
     # 车牌号：前文含这些词时判为产品编号而非车牌（负向判定）
     _PLATE_BLOCK_WORDS = ("型号", "编号", "订单", "SKU", "sku", "批号")
 
+    # 零宽/不可见格式化字符（对抗性绕过常用：插在号码中间切断正则）
+    _INVISIBLE_RE = re.compile("[\u200b\u200c\u200d\u2060\ufeff\u00ad]")
+
+    @staticmethod
+    def _normalize_invisible(text: str) -> str:
+        """把零宽/不可见字符替换为**等长**空格（1 字符→1 字符，坐标不变）。
+
+        覆盖：U+200B 零宽空格 / U+200C ZWNJ / U+200D ZWJ / U+2060 word joiner /
+        U+FEFF BOM / U+00AD soft hyphen。等长替换保证后续所有基于坐标的
+        匹配、替换、还原逻辑无需调整。
+        """
+        if not text:
+            return text
+        return PrivacyEngine._INVISIBLE_RE.sub(" ", text)
+
     @staticmethod
     def _normalize_digits(text: str) -> str:
         """统一数字字符：全角数字→半角，其余非数字字符（分隔符等）剔除。"""
@@ -573,6 +588,12 @@ class PrivacyEngine:
         if not text:
             self._last_stats = {}
             return text, {}
+
+        # ★ 不可见字符归一（对抗性绕过修复）：零宽空格/零宽连接符等格式化字符
+        #   会切断号码类正则——"138<U+200B>1234<U+200B>5678" 此前可绕过手机号识别。
+        #   这里做**等长**替换（1 个不可见字符 → 1 个普通空格）：既让正则的
+        #   分隔符分支得以命中，又不改变字符串长度，后续所有基于坐标的处理不受影响。
+        text = PrivacyEngine._normalize_invisible(text)
 
         mapping = {}
         counts = {}

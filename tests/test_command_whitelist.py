@@ -53,6 +53,15 @@ MUST_ALLOW = [
     ("git 只读日志", "git log --oneline -n 3"),
 ]
 
+# ── C 组：对抗性用例（红队/评审意见整改的回归锁定）──
+#   · 盘符相对路径：C:evil.py 的解析依赖 per-drive CWD，曾可穿过绝对路径校验
+#   · git 危险开关带值形态：--pager=calc / --open-files-in-pager=calc 曾可绕过等值匹配
+ADVERSARIAL_BLOCK = [
+    ("python 盘符相对路径", "python C:evil.py"),
+    ("git pager 带值形态", "git grep --open-files-in-pager=calc x"),
+    ("git 仓库指向带值形态", "git --work-tree=../other status"),
+]
+
 
 def _call(cmd: str) -> str:
     return run_local_command.invoke({"command": cmd, "target_directory": "当前沙箱目录"})
@@ -78,11 +87,96 @@ for name, cmd in MUST_ALLOW:
     if not allowed:
         failures.append(f"误拦: {name} ({cmd}) -> {out[:120]}")
 
+print("\n" + "-" * 78)
+for name, cmd in ADVERSARIAL_BLOCK:
+    out = _call(cmd).strip()
+    blocked = ("拦截" in out) or ("拒绝" in out)
+    print(f"  [{'✅ 已拦截' if blocked else '❌ 未拦截'}] {name}: {cmd}")
+    if not blocked:
+        failures.append(f"未拦截: {name} ({cmd}) -> {out[:120]}")
+
+# ── D 组：脚本归属 / 符号链接逃逸 / 环境收敛（真实沙箱行为验证）──
+print("\n" + "-" * 78)
+print("【D 组】脚本必须在沙箱内（realpath 校验）/ 子进程环境收敛")
+import tempfile  # noqa: E402
+from pathlib import Path  # noqa: E402
+import yindun.core.file_tools as _ft  # noqa: E402
+
+_saved_sandbox = _ft.SANDBOX
+_saved_perm = os.environ.get("PERMISSION_LEVEL")
+root_tmp = Path(tempfile.mkdtemp(prefix="yindun_cmd_adv_"))
+sandbox_dir = root_tmp / "sandbox"
+outside_dir = root_tmp / "outside"
+sandbox_dir.mkdir(parents=True, exist_ok=True)
+outside_dir.mkdir(parents=True, exist_ok=True)
+# 落点受控：全部在测试自己创建的临时目录内（tempfile.mkdtemp 返回值拼出的路径）
+outside_script = outside_dir / "evil.py"
+outside_script.write_text("print('outside')\n", encoding="utf-8")
+# 沙箱内正常脚本：验证环境里读不到内部变量（PERMISSION_LEVEL / SANDBOX_PATH 应被剥离）
+leak_script = sandbox_dir / "leak.py"
+leak_script.write_text(
+    "import os\n"
+    "print('PERM=' + str(os.environ.get('PERMISSION_LEVEL')))\n"
+    "print('BOX=' + str(os.environ.get('SANDBOX_PATH')))\n",
+    encoding="utf-8")
+
+_ft.SANDBOX = str(sandbox_dir)
+os.environ["PERMISSION_LEVEL"] = "完全控制 (读/写/列表)"
+try:
+    # D1 沙箱内脚本正常执行（realpath 替换后仍可运行），且环境已收敛
+    out = _call("python leak.py")
+    ok_run = out.startswith("✅")
+    env_clean = ("PERM=None" in out) and ("BOX=None" in out)
+    print(f"  [{'✅' if ok_run and env_clean else '❌'}] 沙箱内脚本可执行且环境收敛"
+          f"（PERMISSION_LEVEL/SANDBOX_PATH 已剥离）")
+    if not (ok_run and env_clean):
+        failures.append(f"环境收敛失败: {out[:160]}")
+
+    # D2 符号链接逃逸：沙箱内 link.py -> 沙箱外 evil.py，必须拦截
+    link = sandbox_dir / "link.py"
+    try:
+        os.symlink(str(outside_script), str(link))
+        out = _call("python link.py")
+        blocked = ("拦截" in out) or ("拒绝" in out)
+        print(f"  [{'✅ 已拦截' if blocked else '❌ 未拦截'}] 符号链接逃逸（link.py -> 沙箱外）")
+        if not blocked:
+            failures.append(f"符号链接逃逸未拦截: {out[:160]}")
+    except OSError:
+        print("  [ℹ️] 符号链接创建被系统拒绝（无创建权限）——跳过该用例，其余照常")
+
+    # D3 不存在的脚本：拒绝且给出生箱内解析路径
+    out = _call("python nothere.py")
+    blocked = ("拦截" in out) or ("拒绝" in out)
+    print(f"  [{'✅ 已拦截' if blocked else '❌ 未拦截'}] 不存在的脚本被拒绝")
+    if not blocked:
+        failures.append(f"不存在脚本未拦截: {out[:160]}")
+
+    # D4 脚本内容预览（防盲签）：审批弹窗应能读到脚本内容，而不是只显示命令串
+    from yindun.core.file_tools import preview_command_script
+    pv = preview_command_script("python leak.py", str(sandbox_dir))
+    ok_prev = ("import os" in pv) and ("PERM=" in pv)
+    print(f"  [{'✅' if ok_prev else '❌'}] 脚本内容预览可用（审批前可见脚本正文，防盲签）")
+    if not ok_prev:
+        failures.append(f"脚本预览失败: {pv[:120]}")
+    pv_missing = preview_command_script("python nothere.py", str(sandbox_dir))
+    pv_plain = preview_command_script("echo hi", str(sandbox_dir))
+    ok_prev_edge = (pv_missing == "(脚本不存在)") and (pv_plain == "")
+    print(f"  [{'✅' if ok_prev_edge else '❌'}] 预览的边界形态正确（不存在→说明；非解释器命令→空）")
+    if not ok_prev_edge:
+        failures.append(f"预览边界失败: missing={pv_missing!r} plain={pv_plain!r}")
+finally:
+    _ft.SANDBOX = _saved_sandbox
+    if _saved_perm is None:
+        os.environ.pop("PERMISSION_LEVEL", None)
+    else:
+        os.environ["PERMISSION_LEVEL"] = _saved_perm
+
 print("\n" + "=" * 78)
 if failures:
     print(f"❌ 回归失败：{len(failures)} 项")
     for f in failures:
         print("   ·", f)
     sys.exit(1)
-print(f"✅ 回归通过：{len(MUST_BLOCK)} 项高危入口全部拦截，{len(MUST_ALLOW)} 项只读用法正常放行")
+print(f"✅ 回归通过：{len(MUST_BLOCK)} 项高危入口 + {len(ADVERSARIAL_BLOCK)} 项对抗用例全部拦截，"
+      f"{len(MUST_ALLOW)} 项只读用法正常放行，脚本归属/环境收敛验证通过")
 sys.exit(0)

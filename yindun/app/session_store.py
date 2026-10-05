@@ -42,6 +42,14 @@ class SessionStore:
         self._lock = threading.RLock()
         self._sessions: Dict[str, Dict[str, Any]] = {}
         self._current_id: Optional[str] = None
+        # 旧版明文残留标记：load() 时检测（明文 content / attachment_fulltext），
+        # 由服务层在启动时主动迁移为加密存储（评审意见整改：不留存量明文）。
+        self._legacy_plaintext = False
+
+    def has_legacy_plaintext(self) -> bool:
+        """上次 load() 是否读到了旧版明文残留（供启动时主动迁移）。"""
+        with self._lock:
+            return bool(self._legacy_plaintext)
 
     # ── 查询 ─────────────────────────────────────
     @property
@@ -147,6 +155,7 @@ class SessionStore:
         """加载并解密；任何解密失败都留痕（不静默吞掉，也不回退明文）。"""
         with self._lock:
             self._sessions, self._current_id = {}, None
+            self._legacy_plaintext = False
             if not self._path.exists():
                 return
             try:
@@ -164,6 +173,11 @@ class SessionStore:
                 sid, title = item.get("id"), item.get("title")
                 if not sid or not isinstance(title, str):
                     continue
+                # ★ 存量明文检测（评审意见整改）：旧版本可能把 消息正文/附件全文
+                #   以明文写进会话文件；这里只做检测与标记，迁移由服务层启动时触发
+                #   （save() 会把整个文件重写为加密格式，明文键随之消失）。
+                if self._has_plaintext_remnant(item):
+                    self._legacy_plaintext = True
                 self._sessions[sid] = {
                     "id": sid,
                     "title": title,
@@ -175,6 +189,42 @@ class SessionStore:
                 }
             sid = payload.get("current_session_id")
             self._current_id = sid if sid in self._sessions else None
+
+    @staticmethod
+    def _has_plaintext_remnant(item: Dict[str, Any]) -> bool:
+        """该会话记录是否含旧版明文残留（明文消息正文 / 明文附件全文键）。
+
+        只认"非空"：空字符串/空字典不构成泄露面，也不值得触发一次迁移写盘。
+        """
+        for msg in item.get("messages") or []:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if isinstance(content, str) and content.strip():
+                return True
+        att = item.get("attachment_fulltext")
+        if isinstance(att, dict) and att:
+            return True
+        return False
+
+    def migrate_legacy_plaintext(self) -> bool:
+        """把存量明文残留迁移为加密存储（重写整个文件）。
+
+        save() 的序列化路径只写密文字段（payload_enc / attachment_fulltext_enc），
+        旧明文键不会被带出，因此一次 save() 即完成迁移。
+        返回是否检测到并完成了迁移；失败时留审计（不静默）。
+        """
+        with self._lock:
+            if not self._legacy_plaintext:
+                return False
+            ok = self.save()
+        if ok:
+            print("[SessionStore] 检测到历史会话中的明文残留，已迁移为加密存储")
+            self._audit("历史会话明文残留已迁移为加密存储", {"path": str(self._path)})
+            return True
+        print("[SessionStore] 历史明文迁移失败（保持原文件不动）")
+        self._audit("历史会话明文残留迁移失败", {"path": str(self._path)}, "SECURITY")
+        return False
 
     def save(self) -> bool:
         """加密落盘。返回是否成功（失败时调用方应提示，不许静默）。"""

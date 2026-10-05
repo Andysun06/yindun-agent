@@ -128,6 +128,18 @@ check("兼容旧格式（明文 + content_enc）",
       [m.get("content") for m in legacy_msgs] == ["老版明文消息", "老版加密消息"],
       str(legacy_msgs))
 
+# ★ 存量明文主动迁移（评审意见整改）：load 检测 → migrate 重写为加密 → 磁盘不再有明文
+check("旧版明文残留被检测到", legacy.has_legacy_plaintext() is True)
+migrated = legacy.migrate_legacy_plaintext()
+raw_after = legacy_path.read_text(encoding="utf-8")
+check("迁移执行成功且磁盘上明文消息消失",
+      migrated is True and "老版明文消息" not in raw_after, raw_after[:200])
+check("迁移后重新加载不再标称明文残留",
+      (legacy.load() or True) and legacy.has_legacy_plaintext() is False)
+check("迁移后旧内容仍可读（解密兼容）",
+      [m.get("content") for m in legacy.get_messages("legacy1")] == ["老版明文消息", "老版加密消息"],
+      str(legacy.get_messages("legacy1")))
+
 print("\n" + "=" * 78)
 print("【3】AgentService（假模型，无需 Ollama）")
 print("=" * 78)
@@ -159,6 +171,11 @@ deadline = time.time() + 60
 while time.time() < deadline:
     if not service.busy and any(ev == "finished" for ev, _ in events):
         break
+    time.sleep(0.05)
+# 空闲态 state 事件可能在 finished 之后极短时间才送达（负载高时更明显）——
+# 再给最多 2 秒的宽限，消除这条门禁的时序抖动（两次误报均由此而来）
+grace = time.time() + 2.0
+while time.time() < grace and [ev for ev, _ in events].count("state") < 2:
     time.sleep(0.05)
 
 kinds = [ev for ev, _ in events]
@@ -230,6 +247,16 @@ check("落库的用户消息是展示文本（不是附件正文）",
 check("附件快照已写入会话（供跨轮 read_attachment_chunk 检索）",
       "供应商合同_示例.txt" in svc2.sessions.get_attachment_fulltext(session_id),
       str(list(svc2.sessions.get_attachment_fulltext(session_id).keys())))
+
+# ★ 附件落盘正向断言（评审意见整改：此前只查"没有旧明文键"，未正向验证密文）
+raw2 = (TMP / "svc2_sess.json").read_text(encoding="utf-8")
+check("附件快照以密文字段落盘（正向：attachment_fulltext_enc 存在）",
+      '"attachment_fulltext_enc"' in raw2, raw2[:200])
+check("不存在明文 attachment_fulltext 键",
+      '"attachment_fulltext":' not in raw2)
+check("附件正文与敏感值未以明文出现在会话文件",
+      ("张伟" not in raw2) and ("13812345678" not in raw2) and ("供应商服务合同" not in raw2),
+      "命中即说明落盘泄露面未关严")
 
 raw_att = (TMP / "svc2_sess.json").read_text(encoding="utf-8")
 check("附件正文与手机号均未明文落盘", FAKE_PHONE not in raw_att and "供应商服务合同" not in raw_att)
