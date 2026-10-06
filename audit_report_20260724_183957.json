@@ -1,0 +1,166 @@
+{
+  "generated_at": "2026-07-24T18:40:16.616649",
+  "chain_valid": true,
+  "stats": {
+    "total_entries": 11,
+    "by_type": {
+      "session_start": 6,
+      "llm_input": 3,
+      "llm_output": 2
+    },
+    "by_severity": {
+      "info": 11
+    },
+    "by_session": {
+      "92683bc883f44c7db2205fb73c030cd9": 3,
+      "8771e61126ba41a8bcb266bcd32914fc": 2,
+      "0ed93fe1b8774fedb9e39798e333ed2e": 1,
+      "2020c60eec514b45a5f5daea8b1051f4": 5
+    },
+    "chain_valid": true
+  },
+  "entries": [
+    {
+      "timestamp": "2026-07-24T18:32:45.954046",
+      "event_type": "session_start",
+      "severity": "info",
+      "message": "会话开始: 92683bc883f44c7db2205fb73c030cd9",
+      "details": {
+        "session_id": "92683bc883f44c7db2205fb73c030cd9"
+      },
+      "session_id": "92683bc883f44c7db2205fb73c030cd9",
+      "previous_hash": "",
+      "entry_hash": "3d1250e8453058454951e347e5526d0615b66dea399186bc17d976be0e31ae25"
+    },
+    {
+      "timestamp": "2026-07-24T18:33:35.135484",
+      "event_type": "llm_input",
+      "severity": "info",
+      "message": "LLM输入",
+      "details": {
+        "content_length": 691,
+        "has_privacy": false,
+        "preview": "[离线附件环境上下文：requirements.txt]\n# 一键安装所有依赖：pip install -r requirements.txt\n# 单独安装 OCR 依赖（扫描件 PDF 识别必需）：pip install rapidocr-onnxruntime Pillow\nPySide6>=6.5.0\nlangchain-ollama>=0.1.0\nlangchain-openai>=0.1"
+      },
+      "session_id": "92683bc883f44c7db2205fb73c030cd9",
+      "previous_hash": "3d1250e8453058454951e347e5526d0615b66dea399186bc17d976be0e31ae25",
+      "entry_hash": "82e139af5b271525ca181c18f6f210b1a1d2c018e5056bc9b10724ae3320df82"
+    },
+    {
+      "timestamp": "2026-07-24T18:37:00.537951",
+      "event_type": "session_start",
+      "severity": "info",
+      "message": "会话开始: 8771e61126ba41a8bcb266bcd32914fc",
+      "details": {
+        "session_id": "8771e61126ba41a8bcb266bcd32914fc"
+      },
+      "session_id": "8771e61126ba41a8bcb266bcd32914fc",
+      "previous_hash": "82e139af5b271525ca181c18f6f210b1a1d2c018e5056bc9b10724ae3320df82",
+      "entry_hash": "685b91ecf89468551ef5d363e5e1ec622bd2d66fb8451d4f29a308734341cd33"
+    },
+    {
+      "timestamp": "2026-07-24T18:37:16.339354",
+      "event_type": "session_start",
+      "severity": "info",
+      "message": "会话开始: 0ed93fe1b8774fedb9e39798e333ed2e",
+      "details": {
+        "session_id": "0ed93fe1b8774fedb9e39798e333ed2e"
+      },
+      "session_id": "0ed93fe1b8774fedb9e39798e333ed2e",
+      "previous_hash": "685b91ecf89468551ef5d363e5e1ec622bd2d66fb8451d4f29a308734341cd33",
+      "entry_hash": "8cde6ecf0d59fa9070be1653e0bcb0c4a1750b5c6156126631689b54b4e3e576"
+    },
+    {
+      "timestamp": "2026-07-24T18:37:18.791119",
+      "event_type": "session_start",
+      "severity": "info",
+      "message": "会话开始: 8771e61126ba41a8bcb266bcd32914fc",
+      "details": {
+        "session_id": "8771e61126ba41a8bcb266bcd32914fc"
+      },
+      "session_id": "8771e61126ba41a8bcb266bcd32914fc",
+      "previous_hash": "8cde6ecf0d59fa9070be1653e0bcb0c4a1750b5c6156126631689b54b4e3e576",
+      "entry_hash": "91a811fe19ce71357c612204ccf88500e08391a666ca876dd508f483f69ddf71"
+    },
+    {
+      "timestamp": "2026-07-24T18:37:28.425922",
+      "event_type": "session_start",
+      "severity": "info",
+      "message": "会话开始: 92683bc883f44c7db2205fb73c030cd9",
+      "details": {
+        "session_id": "92683bc883f44c7db2205fb73c030cd9"
+      },
+      "session_id": "92683bc883f44c7db2205fb73c030cd9",
+      "previous_hash": "91a811fe19ce71357c612204ccf88500e08391a666ca876dd508f483f69ddf71",
+      "entry_hash": "81c2aa09f7190cb17162fb0262ccf9381107f30f0ed93002094d2aaac0b99dc6"
+    },
+    {
+      "timestamp": "2026-07-24T18:37:35.960578",
+      "event_type": "session_start",
+      "severity": "info",
+      "message": "会话开始: 2020c60eec514b45a5f5daea8b1051f4",
+      "details": {
+        "session_id": "2020c60eec514b45a5f5daea8b1051f4"
+      },
+      "session_id": "2020c60eec514b45a5f5daea8b1051f4",
+      "previous_hash": "81c2aa09f7190cb17162fb0262ccf9381107f30f0ed93002094d2aaac0b99dc6",
+      "entry_hash": "0e324e089d6dd7ecbd8431e8c37c0eb4f0083e0fa895a810cf9c7f1329ab515a"
+    },
+    {
+      "timestamp": "2026-07-24T18:38:15.217870",
+      "event_type": "llm_input",
+      "severity": "info",
+      "message": "LLM输入",
+      "details": {
+        "content_length": 689,
+        "has_privacy": false,
+        "preview": "[离线附件环境上下文：requirements.txt]\n# 一键安装所有依赖：pip install -r requirements.txt\n# 单独安装 OCR 依赖（扫描件 PDF 识别必需）：pip install rapidocr-onnxruntime Pillow\nPySide6>=6.5.0\nlangchain-ollama>=0.1.0\nlangchain-openai>=0.1"
+      },
+      "session_id": "2020c60eec514b45a5f5daea8b1051f4",
+      "previous_hash": "0e324e089d6dd7ecbd8431e8c37c0eb4f0083e0fa895a810cf9c7f1329ab515a",
+      "entry_hash": "deac1a5c0e4587526abf3427d947d9c0b5366e4da103fc634f81d201ff785d84"
+    },
+    {
+      "timestamp": "2026-07-24T18:38:28.878494",
+      "event_type": "llm_input",
+      "severity": "info",
+      "message": "LLM输入(含隐私脱敏)",
+      "details": {
+        "content_length": 689,
+        "has_privacy": true,
+        "preview": "[离线附件环境上下文：requirements.txt]\n# 一键安装所有依赖：pip install -r requirements.txt\n# 单独安装 OCR 依赖（扫描件 PDF 识别必需）：pip install rapidocr-onnxruntime Pillow\nPySide6>=6.5.0\nlangchain-ollama>=0.1.0\nlangchain-openai>=0.1"
+      },
+      "session_id": "2020c60eec514b45a5f5daea8b1051f4",
+      "previous_hash": "deac1a5c0e4587526abf3427d947d9c0b5366e4da103fc634f81d201ff785d84",
+      "entry_hash": "9eaf901ca9a280dfba0f9d9b770b56c8ce1a4baf23bce9b8a91f1d9e1fbe67fa"
+    },
+    {
+      "timestamp": "2026-07-24T18:38:28.879064",
+      "event_type": "llm_output",
+      "severity": "info",
+      "message": "LLM输出",
+      "details": {
+        "content_length": 654,
+        "token_count": 0,
+        "preview": "根据 `requirements.txt` 文件的内容，列出的主要依赖库及其大致功能如下：\n\n1. **PySide6** - 用于开发跨平台的 GUI 应用程序。\n2. **langchain-ollama, langchain-openai, langchain-core** - 这些包与 LangChain 相关，可能用于构建或集成聊天机器人、语言模型等。具体用途取决于它们如何被整合到项目中"
+      },
+      "session_id": "2020c60eec514b45a5f5daea8b1051f4",
+      "previous_hash": "9eaf901ca9a280dfba0f9d9b770b56c8ce1a4baf23bce9b8a91f1d9e1fbe67fa",
+      "entry_hash": "3fd21a0a72ec6aa58b8b2d5045d0abd02d5b255a3632ffc37b9d3520bdeca5c3"
+    },
+    {
+      "timestamp": "2026-07-24T18:38:28.879579",
+      "event_type": "llm_output",
+      "severity": "info",
+      "message": "LLM输出",
+      "details": {
+        "content_length": 654,
+        "token_count": 0,
+        "preview": "根据 `requirements.txt` 文件的内容，列出的主要依赖库及其大致功能如下：\n\n1. **PySide6** - 用于开发跨平台的 GUI 应用程序。\n2. **langchain-ollama, langchain-openai, langchain-core** - 这些包与 LangChain 相关，可能用于构建或集成聊天机器人、语言模型等。具体用途取决于它们如何被整合到项目中"
+      },
+      "session_id": "2020c60eec514b45a5f5daea8b1051f4",
+      "previous_hash": "3fd21a0a72ec6aa58b8b2d5045d0abd02d5b255a3632ffc37b9d3520bdeca5c3",
+      "entry_hash": "eb6d59814c22a3a933c5fcedbe33053f186c1f68577e7d2dd58e38c4b02f3c92"
+    }
+  ]
+}
