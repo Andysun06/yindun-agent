@@ -342,6 +342,8 @@ html[data-frameless="1"] .win-ctrls { display: inline-flex; }
 .model-select__pop { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 4px);
   background: var(--bg-canvas); border: 1px solid var(--border-2); border-radius: var(--r-ctrl);
   box-shadow: var(--shadow-pop); padding: var(--sp-2); display: flex; flex-direction: column; gap: var(--sp-2); }
+/* 显式 display 会盖掉 UA 的 [hidden]{display:none}，必须自己补一条，否则浮层弹出后收不回 */
+.model-select__pop[hidden] { display: none; }
 .model-select__list { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
 .model-opt { display: flex; align-items: center; gap: var(--sp-3); width: 100%; padding: 6px var(--sp-3);
   border-radius: var(--r-chip); font-family: var(--font-mono); font-size: var(--fs-sm);
