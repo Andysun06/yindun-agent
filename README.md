@@ -20,12 +20,11 @@
 |---|---|
 | 📦 **免安装单文件 exe**（双击即用，无需安装与脚本） | [Release](https://github.com/Andysun06/yindun-agent/releases) → `Yindun-Portable-v3.4.5.exe`（GitHub 资产名不支持中文，会净化成下划线，故用英文名；本地构建产物名为 `隐盾安全智能体_V3.4.5_便携版.exe`，`python tools/build_portable.py`） |
 | 🎬 **项目演示视频**（1080p，3分28秒） | [Release v3.3.0](https://github.com/Andysun06/yindun-agent/releases/tag/v3.3.0) → `Yindun-Demo-v3.3.0.mp4` |
-| 📄 **技术报告**（含隐私算法形式化 / 威胁模型 / 攻击实验） | [docs/隐盾安全智能体_技术报告.pdf](docs/隐盾安全智能体_技术报告.pdf) |
-| 📽 **汇报 PPT**（20 页） | [docs/隐盾安全智能体_项目汇报.pptx](docs/隐盾安全智能体_项目汇报.pptx) |
-| 📖 **使用说明**（安装/配置算力/功能演示） | [docs/使用说明.md](docs/使用说明.md) · [docs/使用说明.pdf](docs/使用说明.pdf) |
+| 📄 **技术报告**（含隐私算法形式化 / 威胁模型 / 攻击实验 · V3.4.5） | [docs/隐盾安全智能体_技术报告.pdf](docs/隐盾安全智能体_技术报告.pdf) |
+| 📽 **汇报 PPT**（20 页 · V3.4.5） | [docs/隐盾安全智能体_项目汇报.pptx](docs/隐盾安全智能体_项目汇报.pptx) |
+| 📖 **使用说明**（安装/配置算力/功能演示 · V3.4.5） | [docs/使用说明.md](docs/使用说明.md) · [docs/使用说明.pdf](docs/使用说明.pdf) |
 | 🧩 **插件开发指南**（钩子契约 / 安全边界 / 最小示例） | [docs/插件开发.md](docs/插件开发.md) |
 | 🧪 **隐私攻防评测**（黑盒/白盒/劫持/注入，可复现） | [tests/privacy_eval.py](tests/privacy_eval.py)（`python tests/privacy_eval.py` 一键复现） |
-| 🧠 **开发记忆**（对内：架构/决策/路线图/协作规范） | [开发记忆.md](开发记忆.md) · [AGENTS.md](AGENTS.md) |
 
 > 核心一句话：**让大模型"看不见"敏感数据，却依然能完成办公任务**——数据进模型前在内存中替换为加密占位符，模型全程只见占位符，回答返回时自动还原；配合文件沙箱、命令白名单、熔断审批与 HMAC 哈希链审计，构成"输入—推理—执行—落盘—审计"全链路纵深防御。
 
@@ -213,7 +212,6 @@ python run.py
 2. 至少下载一个模型（推荐 `qwen3.5:4b` 或其他支持 Tool Calling 的模型，如 `qwen3:4b` / `qwen2.5:7b-instruct`）
 3. 启动隐盾后，设置面板会自动检测可用模型
 
-> 开发协作、架构决策、改进路线与文档同步规范，见 [开发记忆.md](开发记忆.md)。
 
 ---
 

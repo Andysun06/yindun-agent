@@ -155,7 +155,7 @@ para(tf, "面向涉密办公场景的本地化隐私防护桌面智能体", size
 rect(s, M, 6.15, 6.2, 0.02, fill="2E6B50")
 tf = box(s, M, 6.35, 11, 0.6)
 para(tf, [("Yindun Security Agent", {"bold": True, "color": "FFFFFF"}),
-          ("    ·    V3.4    ·    LangChain · pywebview/WebView2 · 本地/云端双算力    ·    2026", {"color": "8FD3B4"})],
+          ("    ·    V3.4.5    ·    LangChain · pywebview/WebView2 · 本地/云端双算力    ·    2026", {"color": "8FD3B4"})],
      size=13, first=True)
 
 # ══════════════════ 2 · 背景痛点 ══════════════════
@@ -406,8 +406,8 @@ kicker(s, "核心创新 · 二")
 title(s, "物理副作用的四层纵深防御")
 defs = [("路径沙箱", "realpath+commonpath 越界校验\n文件名 basename 化，杜绝 ../ 穿越"),
         ("权限分级", "完全控制 / 安全只读 / 彻底审计\n只读与审计模式断开写盘"),
-        ("命令白名单", "仅 python/pip/git/echo\nshlex + shell=False + 子命令级校验（封堵内联代码/安装入口）"),
-        ("熔断审批", "高危操作挂起后台线程\n强制人工二次确认，超时自动驳回")]
+        ("命令白名单", "仅 python/pip/git/echo；Job Object 进程容器\n子命令级校验 + 严格模式可禁用解释器"),
+        ("熔断审批", "高危操作挂起后台线程\n弹窗展示待执行内容与脚本预览\n人工二次确认，超时自动驳回")]
 bx, bw = M, (W-2*M-1.2)/4
 for i, (hd, d) in enumerate(defs):
     x = M + i*(bw+0.4)
@@ -627,13 +627,13 @@ kicker(s, "质量与交付")
 title(s, "全量回归通过 · 免安装单文件 exe 就绪")
 # 左：测试套件
 tf = box(s, M, 1.72, 6.2, 0.55)
-para(tf, "18 个测试套件 · 全部通过（含攻防评测 9 项实验）", size=14.5, color=PRIM, bold=True, first=True)
-suites = [("隐私引擎", "实体/脱敏/还原/nonce/strict"),
-          ("审计黑匣子", "哈希链/防篡改/一致性 14/14"),
-          ("记忆管理", "摘要/跨轮还原/序列化 6/6"),
-          ("工作流 + 知识库", "执行/审批链/导出；入库检索零明文"),
-          ("白名单（新增）", "16 项高危入口全拦截"),
-          ("取消 + 回归（新增）", "取消 0.33s 返回；泄露 0 / 误伤 0")]
+para(tf, "20 个测试套件 · 全部通过（含攻防评测 9 项实验）", size=14.5, color=PRIM, bold=True, first=True)
+suites = [("隐私引擎 + 回归", "27 类实体；泄露 0 / 误伤 0 / 落盘扫描"),
+          ("对抗集 + 真实文档", "14 项格式变体；8 种真实格式全链路"),
+          ("审计黑匣子", "哈希链 + 链锚点 19/19"),
+          ("命令白名单", "高危入口全拦截 + 进程容器 + 严格模式"),
+          ("插件 + 记忆 + 工作流", "宿主契约 / 能力端到端 / 执行与导出"),
+          ("laya 插件 + 窗口", "模型与正则双后端；8 向拖拽锚定")]
 yy = 2.30
 for name, d in suites:
     rect(s, M, yy, 6.0, 0.66, fill=CARD, shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.1); 
@@ -665,7 +665,7 @@ para(tf, "总结与展望", size=14, color="8FD3B4", bold=True, first=True)
 tf = box(s, M, 1.4, W-2*M, 1.0)
 para(tf, "一套让大模型安全处理涉密办公数据的端到端方案", size=30, color="FFFFFF", bold=True, first=True)
 # 回顾指标
-recap = [("1.6万", "行 Python"), ("27", "类实体脱敏"), ("4", "层纵深防御"), ("20+", "项安全修复"), ("18", "套件回归通过")]
+recap = [("1.6万", "行 Python"), ("27", "类实体脱敏"), ("4", "层纵深防御"), ("20+", "项安全修复"), ("20", "套件回归通过")]
 bx, bw = M, (W-2*M-0.4*4)/5
 for i, (n, lab) in enumerate(recap):
     x = M + i*(bw+0.4)
