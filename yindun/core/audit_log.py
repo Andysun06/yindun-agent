@@ -106,6 +106,7 @@ class AuditEventType(Enum):
     SESSION_END = "session_end"
     WORKFLOW_STEP_EXECUTED = "workflow_step_executed"
     CHAIN_RESTART = "chain_restart"   # 审计链重启标记（密钥轮换后重开新链）
+    CONTROL_REPORT = "control_report"  # 控制面上报/取策略：本机留痕"什么离开了这台机器"（V3.5.0）
 
 
 class AuditSeverity(Enum):

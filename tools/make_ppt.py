@@ -155,7 +155,7 @@ para(tf, "面向涉密办公场景的本地化隐私防护桌面智能体", size
 rect(s, M, 6.15, 6.2, 0.02, fill="2E6B50")
 tf = box(s, M, 6.35, 11, 0.6)
 para(tf, [("Yindun Security Agent", {"bold": True, "color": "FFFFFF"}),
-          ("    ·    V3.4.6    ·    LangChain · pywebview/WebView2 · 本地/云端双算力    ·    2026", {"color": "8FD3B4"})],
+          ("    ·    V3.5.0    ·    LangChain · pywebview/WebView2 · 本地/云端双算力    ·    2026", {"color": "8FD3B4"})],
      size=13, first=True)
 
 # ══════════════════ 2 · 背景痛点 ══════════════════
@@ -625,13 +625,51 @@ para(tf, [("诚实披露：", {"bold": True, "color": ACC}), ("实测发现 7B �
      size=11.5, first=True, line=1.1)
 pagenum(s, 12)
 
+# ══════════════════ 企业部署形态 · 控制面（V3.5.0）══════════════════
+s = slide()
+kicker(s, "企业部署形态")
+title(s, "控制面：把集中管理加上去，不减一条既有性质")
+tf = box(s, M, 1.74, W-2*M, 0.4)
+para(tf, "yindun/control/ · 零新增依赖（SQLite + 标准库）· core/ 仅新增一个审计事件类型 · 端点上报默认关闭",
+     size=12, color=MUTED, first=True)
+bounds = [
+    ("控制面拿不到明文", "看到的内容＝端点本地审计落盘的内容；敏感路径已掩码为占位符，映射密钥由端点 DPAPI 托管"),
+    ("策略只能收紧", "敏感路径取并集 / 审批下限取更严 / 允许模型与插件取交集 / 严格模式取或；降级键整包拒绝"),
+    ("链头外部锚定", "逐次留痕（条数·链头·legacy 前缀）：截断/改写/缺口/断链等六种删改手法可检出"),
+    ("默认关闭 · 本机留痕", "绝不静默上报；每次上报成功或失败都写本地审计（control_report），用户可查"),
+]
+yy = 2.26
+for name, d in bounds:
+    rect(s, M, yy, 6.15, 0.86, fill=CARD, shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.1)
+    tf = box(s, M+0.3, yy+0.10, 5.6, 0.32)
+    para(tf, name, size=14.5, color=TEXT, bold=True, first=True)
+    tf = box(s, M+0.3, yy+0.42, 5.6, 0.40)
+    para(tf, d, size=11, color=MUTED, first=True, line=1.05)
+    yy += 0.96
+card = rect(s, 7.15, 1.85, 5.45, 4.65, fill=PRIM_D, shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.05)
+shadow(card)
+tf = box(s, 7.4, 2.15, 4.95, 1.0, anchor=MSO_ANCHOR.MIDDLE)
+para(tf, "0 条放行通路", size=40, color="FFFFFF", bold=True, align=PP_ALIGN.CENTER, first=True)
+tf = box(s, 7.4, 3.18, 4.95, 0.5)
+para(tf, "控制面被攻破，也只能让端点管得更严", size=14, color="8FD3B4", bold=True, align=PP_ALIGN.CENTER, first=True)
+rect(s, 7.6, 3.78, 4.55, 0.02, fill="2E6B50")
+tf = box(s, 7.4, 3.95, 4.95, 2.4)
+for i, t in enumerate([
+        "脱敏豁免 · 审批放行 · 白名单放行 · 审计开关：无任何下发通路",
+        "端点侧再做一次单调合并兜底，签名只解决来源与完整性",
+        "控制台五页：态势总览 / 事件台账 / 端点资产 / 策略下发 / 模型用量",
+        "不代理模型流量、不做整机监控；原型边界如实声明（无 TLS / 无 RBAC）"]):
+    para(tf, [("▪  ", {"color": "F0B45C", "bold": True}), (t, {"color": "EAF5EF"})],
+         size=11.5, first=(i == 0), space_after=8, line=1.05)
+pagenum(s)
+
 # ══════════════════ 13 · 测试质量 & 产品化 ══════════════════
 s = slide()
 kicker(s, "质量与交付")
 title(s, "全量回归通过 · 免安装单文件 exe 就绪")
 # 左：测试套件
 tf = box(s, M, 1.72, 6.2, 0.55)
-para(tf, "21 个测试/评测套件 · 全部通过（含攻防评测 9 项实验 + 留出集覆盖率评测）", size=14.5, color=PRIM, bold=True, first=True)
+para(tf, "22 个测试/评测套件 · 全部通过（含攻防评测 9 项实验 + 留出集评测 + 控制面七组）", size=14.5, color=PRIM, bold=True, first=True)
 suites = [("隐私引擎 + 回归", "27 类实体；泄露 0 / 误伤 0 / 落盘扫描"),
           ("对抗集 + 真实文档", "14 项格式变体；8 种真实格式全链路"),
           ("审计黑匣子", "哈希链 + 链锚点 19/19"),

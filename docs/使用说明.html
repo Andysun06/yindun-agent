@@ -21,7 +21,7 @@ tr:nth-child(even) td{background:#fafcfa;} hr{border:none;border-top:1px solid v
 strong{color:#0a5c3b;} @page{size:A4;margin:16mm 12mm;} h2{page-break-after:avoid;} table,pre,blockquote{page-break-inside:avoid;}
 </style></head><body><div class="page"><h1>隐盾安全智能体 · 使用说明</h1>
 <blockquote>
-<p>面向涉密办公场景的本地化隐私防护桌面智能体 · V3.4.6
+<p>面向涉密办公场景的本地化隐私防护桌面智能体 · V3.5.0
 Yindun Security Agent — 让本地 AI 更安全、更智能、更可控</p>
 </blockquote>
 <hr />
@@ -54,7 +54,7 @@ Yindun Security Agent — 让本地 AI 更安全、更智能、更可控</p>
 </blockquote>
 <h3>方式 A：免安装单文件 exe（推荐，双击即用）</h3>
 <ol>
-<li>拿到 <code>Yindun-Portable-v3.4.6.exe</code>（约 130MB，单文件；从 GitHub Release 下载时为此名——资产名不支持中文；本地自行构建时产物名为 <code>隐盾安全智能体_V3.4.6_便携版.exe</code>）；</li>
+<li>拿到 <code>Yindun-Portable-v3.5.0.exe</code>（约 130MB，单文件；从 GitHub Release 下载时为此名——资产名不支持中文；本地自行构建时产物名为 <code>隐盾安全智能体_V3.5.0_便携版.exe</code>）；</li>
 <li><strong>双击直接运行</strong>——无需安装、无需任何脚本、不需要管理员权限；</li>
 <li>首次启动约需 10~20 秒（单文件会先解压到临时目录，属正常现象），之后正常速度。</li>
 </ol>
@@ -191,6 +191,44 @@ API Key 按网关要求填（不需要就留空）。</p>
 <p>想自己写插件？见 <a href="插件开发.md">插件开发.md</a>：钩子契约、安全边界与最小示例都在里面。</p>
 </blockquote>
 <hr />
+<h3>4.6 控制面（企业侧集中管理，运维用）</h3>
+<p>给 IT/安全管理员用，普通使用者不需要碰。<strong>默认关闭</strong>——集中管理是显式选用的能力，程序绝不静默上报。</p>
+<p><strong>在管理机上启动控制面：</strong></p>
+<pre><code class="language-bash">python -m yindun.control.server --port 8787      # 默认只监听 127.0.0.1
+</code></pre>
+<p>启动后终端会打印监听地址与数据目录；<strong>管理令牌</strong>在 <code>control_data/admin_token.txt</code>（数据库里只存哈希）。
+浏览器打开 <code>http://127.0.0.1:8787/</code>，粘贴令牌即可进入集中控制台（令牌只留在当前标签页，关闭即清除）。</p>
+<p>控制台五页：<strong>态势总览</strong>（在管端点 / 事件总量 / 高危事件 / 链告警 + 链锚定状态 + 告警流）、
+<strong>事件台账</strong>（按端点/类型/级别/关键词检索）、<strong>端点资产</strong>（版本、链长、模型、插件、严格模式、生效策略）、
+<strong>策略下发</strong>（只提供"收紧"语义的四类输入）、<strong>模型用量</strong>（调用计数与交互体量，不含内容）。
+支持明暗双主题、10 秒自动刷新、<code>/</code> 聚焦搜索、<code>1</code>~<code>5</code> 切页、<code>R</code> 刷新。</p>
+<p><strong>在员工机器上接入（端点侧）：</strong></p>
+<ol>
+<li>在控制台所在机器上登记端点（需要管理令牌），拿到<strong>端点令牌</strong>与<strong>策略签名密钥</strong>：</li>
+</ol>
+<p><code>bash
+   curl -X POST http://&lt;控制面&gt;:8787/api/v1/enroll \
+     -H "Authorization: Bearer &lt;管理令牌&gt;" -H "Content-Type: application/json" \
+     -d '{"name":"财务部-27号机","endpoint_id":"ep-fin-27"}'</code></p>
+<ol start="2">
+<li>把返回的两个值写入端点配置并启用（<code>ControlReporter.configure(url, endpoint_id, token, policy_key)</code>；
+   令牌会加密落盘）。此后每次上报成功或失败都会写入<strong>本地审计</strong>（事件类型 <code>control_report</code>），
+   使用者可在审计面板看到"什么离开了这台机器"。</li>
+</ol>
+<p><strong>三条边界（选它之前请先读）：</strong></p>
+<ul>
+<li><strong>控制面拿不到明文</strong>：它收到的内容 = 端点本地审计落盘的内容（敏感路径已掩码为占位符）；
+  映射密钥由端点 DPAPI 托管，控制面即便拿到映射表也解不开；模型提示词与回答从不经过控制面。</li>
+<li><strong>策略只能收紧，不能放行</strong>：可下发项只有 敏感路径（并集）/ 审批下限（取更严）/
+  允许的模型与插件（交集）/ 强制严格模式；<code>anonymize</code>、<code>bypass</code>、<code>auto_approve</code>、<code>whitelist</code>、
+  <code>disable_audit</code> 这类键会被<strong>整包拒绝</strong>——端点被攻破最多让端点管得更严，放行不了任何操作。</li>
+<li><strong>不是系统级 DLP</strong>：只覆盖隐盾自己经手的文件与命令事件，不监控整机行为；也不代理模型流量。</li>
+</ul>
+<blockquote>
+<p>现状声明：这是<strong>演示级原型</strong>——默认只监听回环、单一管理令牌、无多租户与 TLS、无速率限制，
+端点侧也还没有定时上报调度器。要对内网正式提供服务，请先补上 TLS 反向代理与来源限制。</p>
+</blockquote>
+<hr />
 <h2>五、安全机制说明</h2>
 <table>
 <thead>
@@ -229,6 +267,10 @@ API Key 按网关要求填（不需要就留空）。</p>
 <hr />
 <h2>六、数据与隐私</h2>
 <ul>
+<li><strong>控制面（可选，默认关闭）</strong>：<code>control_data/</code>（控制面自己的数据：SQLite 库、管理令牌明文文件）。
+  端点的上报配置在 <code>config/control.json</code>，其中令牌与策略签名密钥<strong>加密落盘</strong>。
+  ⚠ 启用前请确认数据边界：控制面看到的内容<strong>等于端点本地审计落盘的内容</strong>（敏感路径已掩码），
+  映射密钥始终留在端点（DPAPI 绑定），控制面<strong>无法还原明文</strong>；模型提示词与回答<strong>不经过控制面</strong>。</li>
 <li><strong>配置</strong>：程序目录下 <code>global_config.json</code>（模型、权限、界面等；免安装版即 exe 同目录）。</li>
 <li><strong>会话</strong>：<code>chat_sessions.json</code>，内容加密存储；附件全文同样以密文段存储，<strong>删除会话即连同其附件快照一并清除</strong>（启动时也会把历史遗留的明文会话主动重写为加密存储）。</li>
 <li><strong>审计</strong>：<code>audit_logs/</code>，哈希链防篡改，仅存脱敏预览。</li>
@@ -254,7 +296,7 @@ API Key 按网关要求填（不需要就留空）。</p>
 <hr />
 <h2>八、版本与声明</h2>
 <ul>
-<li>当前版本：<strong>V3.4.6</strong>（技术栈 Python · LangChain · pywebview/WebView2 · Chroma · Ollama；Qt 已移除）</li>
+<li>当前版本：<strong>V3.5.0</strong>（技术栈 Python · LangChain · pywebview/WebView2 · Chroma · Ollama；Qt 已移除）</li>
 <li>插件体系：内核不可插件化（脱敏 / 审批 / 审计 / 沙箱），能力可插件化（识别 / 解析 / 模板 / 导出），
   插件只能"做加法"；详见 <a href="插件开发.md">插件开发.md</a>。</li>
 <li>本文档中出现的个人信息（张伟 / 13812345678 等）均为虚构测试样例，不涉及任何真实个人数据。</li>

@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>隐盾控制台 · 企业侧集中管理</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ── 鉴权面板（未持有令牌时唯一可见的界面）── -->
+<div class="auth" id="auth" hidden>
+  <form class="auth__box" id="auth-form" autocomplete="off">
+    <div class="auth__brand">
+      <svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5.5c0 4.3-2.9 7.9-7 9-4.1-1.1-7-4.7-7-9V6l7-3z"/><path d="M9.2 12.2l2 2 3.6-4"/></svg>
+      <div>
+        <h1>隐盾控制台</h1>
+        <p>企业侧集中管理 · 演示级原型</p>
+      </div>
+    </div>
+    <label class="field">
+      <span class="field__label">控制面地址</span>
+      <input class="input" id="auth-url" type="text" placeholder="http://127.0.0.1:8787" spellcheck="false">
+    </label>
+    <label class="field">
+      <span class="field__label">管理令牌</span>
+      <input class="input" id="auth-token" type="password" placeholder="control_data/admin_token.txt" spellcheck="false">
+    </label>
+    <p class="auth__err" id="auth-err" hidden></p>
+    <button class="btn btn--primary btn--block" type="submit">进入控制台</button>
+    <p class="auth__note">令牌只保存在本标签页（关闭即清除），不写入浏览器持久存储。</p>
+  </form>
+</div>
+
+<!-- ── 主界面 ── -->
+<div class="shell" id="shell" hidden>
+
+  <aside class="rail">
+    <div class="rail__brand">
+      <svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5.5c0 4.3-2.9 7.9-7 9-4.1-1.1-7-4.7-7-9V6l7-3z"/><path d="M9.2 12.2l2 2 3.6-4"/></svg>
+      <div class="rail__title"><b>隐盾控制台</b><span>V3.5.0</span></div>
+    </div>
+
+    <nav class="nav" id="nav">
+      <button class="nav__item is-active" data-page="overview">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h6V4H4v9zm0 7h6v-4H4v4zm10 0h6v-9h-6v9zm0-16v4h6V4h-6z"/></svg>
+        <span>态势总览</span><kbd>1</kbd>
+      </button>
+      <button class="nav__item" data-page="events">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 12h16M4 19h10"/></svg>
+        <span>事件台账</span><kbd>2</kbd>
+      </button>
+      <button class="nav__item" data-page="endpoints">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v10H4zM8 19h8M12 15v4"/></svg>
+        <span>端点资产</span><kbd>3</kbd>
+      </button>
+      <button class="nav__item" data-page="policy">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5.5c0 4.3-2.9 7.9-7 9-4.1-1.1-7-4.7-7-9V6l7-3z"/></svg>
+        <span>策略下发</span><kbd>4</kbd>
+      </button>
+      <button class="nav__item" data-page="usage">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19V9m5 10V5m5 14v-7m5 7V8"/></svg>
+        <span>模型用量</span><kbd>5</kbd>
+      </button>
+    </nav>
+
+    <div class="rail__foot">
+      <div class="boundary">
+        <b>数据边界</b>
+        <p>控制面看到的内容<b>等于端点本地审计落盘的内容</b>，不多一个字：敏感路径在落盘前已掩码，这里只见到占位符。</p>
+        <p>模型提示词与回答<b>不经过控制面</b>；映射密钥由端点 DPAPI 保管，此处<b>无法还原明文</b>。</p>
+        <p>策略<b>只能收紧</b>：脱敏豁免与审批放行没有任何下发通路。</p>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar__title">
+        <h2 id="page-title">态势总览</h2>
+        <p id="page-sub">端点上报的掩码事件与链状态</p>
+      </div>
+      <div class="topbar__tools">
+        <span class="status" id="status"><i></i><em>未连接</em></span>
+        <button class="btn btn--ghost" id="btn-refresh" title="刷新 (R)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 11-2.3-5.7M20 4v5h-5"/></svg>刷新
+        </button>
+        <label class="switch" title="每 10 秒自动刷新">
+          <input type="checkbox" id="auto-refresh" checked><span></span><em>自动</em>
+        </label>
+        <button class="btn btn--ghost btn--icon" id="btn-theme" title="明暗切换">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v2m0 14v2M4.2 4.2l1.4 1.4m12.8 12.8l1.4 1.4M3 12h2m14 0h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/><circle cx="12" cy="12" r="4"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="content" id="content">
+      <!-- 页面由 app.js 渲染 -->
+    </div>
+
+    <footer class="foot">
+      <span id="foot-stamp">—</span>
+      <span class="dot"></span>
+      <span>控制面只做汇总与收紧，不代理模型流量、不做整机监控</span>
+    </footer>
+  </main>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

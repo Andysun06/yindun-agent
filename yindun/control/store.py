@@ -1,0 +1,471 @@
+# -*- coding: utf-8 -*-
+"""隐盾控制面 · 存储层（SQLite，Python 标准库，零额外依赖）。
+
+存储原则：
+- **只存掩码态内容**：入库的 message/details 已是端点上报道来的掩码文本；
+  本层不做"解密"也不可能做（没有、也不该有端点的映射密钥）。
+- **令牌只存哈希**：管理令牌与端点令牌均以 SHA-256 存储，明文仅在生成/登记时下发一次。
+- **策略包原样留档**：每次下发都新增一条（scope + version + 包体 + 时间），便于事后追责
+  "谁在什么时候要求端点变得更严"（历史不可被覆盖）。
+- 连接按需创建并加锁：控制面是低并发工具，正确性优先于吞吐。
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import secrets
+import sqlite3
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from . import policy as policy_mod
+from .models import EndpointReport, is_high_severity
+from .verify import ChainSnapshot, VerifyResult, snapshot_verdict
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS endpoints (
+  endpoint_id   TEXT PRIMARY KEY,
+  name          TEXT NOT NULL,
+  token_hash    TEXT NOT NULL,
+  created_at    TEXT NOT NULL,
+  last_seen_at  TEXT,
+  version       TEXT DEFAULT '',
+  platform      TEXT DEFAULT '',
+  strict_mode   INTEGER DEFAULT 0,
+  policy_version INTEGER DEFAULT 0,
+  total_count   INTEGER DEFAULT 0,
+  head_hash     TEXT DEFAULT '',
+  legacy_prefix INTEGER DEFAULT 0,
+  first_seen_at TEXT DEFAULT '',
+  last_report_at TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS events (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  endpoint_id   TEXT NOT NULL,
+  seq           INTEGER DEFAULT 0,
+  ts            TEXT NOT NULL,
+  event_type    TEXT NOT NULL,
+  severity      TEXT NOT NULL,
+  message       TEXT DEFAULT '',
+  details_json  TEXT DEFAULT '{}',
+  entry_hash    TEXT DEFAULT '',
+  previous_hash TEXT DEFAULT '',
+  received_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_events_ep_seq ON events(endpoint_id, seq);
+CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+CREATE INDEX IF NOT EXISTS idx_events_sev ON events(severity);
+CREATE TABLE IF NOT EXISTS alerts (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  endpoint_id   TEXT NOT NULL,
+  code          TEXT NOT NULL,
+  detail        TEXT NOT NULL,
+  severity      TEXT NOT NULL,
+  created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at);
+CREATE TABLE IF NOT EXISTS policies (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope         TEXT NOT NULL,
+  version       INTEGER NOT NULL,
+  bundle_json   TEXT NOT NULL,
+  updated_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_policies_scope ON policies(scope, version);
+CREATE TABLE IF NOT EXISTS usage (
+  endpoint_id   TEXT NOT NULL,
+  model         TEXT NOT NULL,
+  scope         TEXT NOT NULL,
+  calls         INTEGER DEFAULT 0,
+  chars         INTEGER DEFAULT 0,
+  updated_at    TEXT NOT NULL,
+  PRIMARY KEY (endpoint_id, model)
+);
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+"""
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def default_data_dir() -> Path:
+    try:
+        from yindun import APP_ROOT          # 与打包形态一致：exe 旁目录
+        return Path(APP_ROOT) / "control_data"
+    except Exception:
+        return Path(__file__).resolve().parents[2] / "control_data"
+
+
+class ControlStore:
+    """控制面存储。写操作跨线程串行化；连接按线程各自持有。
+
+    ★ 踩坑记录（V3.5.0 实机冒烟发现）：最初用"单连接 + 写锁 + 读不加锁"，
+      在串行 curl 下一切正常，但控制台仪表盘会**并行**发 4 个请求（Promise.all），
+      多线程同时用一个 sqlite3 连接就读出 `sqlite3.InterfaceError: bad parameter or
+      other API misuse`（表现为"登录后立刻被判 401"，因为 overview 抛异常）。
+      现改为**线程局部连接**（每线程一条，`check_same_thread=False` 不再需要）+
+      WAL 日志模式 + busy_timeout，写操作仍用锁串行化，避免 database is locked。
+    """
+
+    def __init__(self, path: Optional[Path] = None):
+        self.dir = Path(path).parent if path else default_data_dir()
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.path = Path(path) if path else self.dir / "control.db"
+        self._lock = threading.Lock()          # 只锁写，读走各自连接并发
+        self._local = threading.local()
+        with self._lock:
+            conn = self._conn
+            conn.executescript(SCHEMA)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.commit()
+
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        """当前线程的连接（惰性创建）。等价于"每线程一条连接"，无需跨线程共享。"""
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(str(self.path))
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout=5000")
+            self._local.conn = conn
+        return conn
+
+    # ── 令牌 ──────────────────────────────────────────────
+    def _get_setting(self, key: str) -> Optional[str]:
+        row = self._conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def _set_setting(self, key: str, value: str) -> None:
+        self._conn.execute("INSERT INTO settings(key,value) VALUES(?,?) "
+                           "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+        self._conn.commit()
+
+    def ensure_admin_token(self) -> str:
+        """首次运行时生成管理令牌，明文写入 control_data/admin_token.txt 并返回。
+
+        只在下发时给一次明文（数据库里只有哈希）——这是"不落明文凭据"的常规做法；
+        取回现场演示用的令牌请看该文件（它本身位于不入库的运行时目录）。
+        """
+        with self._lock:
+            existing_hash = self._get_setting("admin_token_hash")
+            if existing_hash:
+                token_file = self.dir / "admin_token.txt"
+                if token_file.exists():
+                    return token_file.read_text(encoding="utf-8").strip()
+                return ""      # 已存在但明文文件被删：只能重置
+            token = secrets.token_urlsafe(24)
+            self._set_setting("admin_token_hash", _sha256(token))
+            (self.dir / "admin_token.txt").write_text(
+                "# 隐盾控制面管理令牌（请妥善保管；数据库内只存哈希）\n" + token + "\n",
+                encoding="utf-8")
+            return token
+
+    def reset_admin_token(self) -> str:
+        with self._lock:
+            token = secrets.token_urlsafe(24)
+            self._set_setting("admin_token_hash", _sha256(token))
+            (self.dir / "admin_token.txt").write_text(
+                "# 隐盾控制面管理令牌（请妥善保管；数据库内只存哈希）\n" + token + "\n",
+                encoding="utf-8")
+            return token
+
+    def verify_admin(self, token: str) -> bool:
+        stored = self._get_setting("admin_token_hash")
+        return bool(stored) and secrets.compare_digest(stored, _sha256(token or ""))
+
+    def policy_signing_key(self) -> str:
+        """服务端级策略签名密钥（端点登记时下发同一把，用于验签策略包）。"""
+        with self._lock:
+            key = self._get_setting("policy_key")
+            if key:
+                return key
+            key = secrets.token_urlsafe(32)
+            self._set_setting("policy_key", key)
+            return key
+
+    def enroll(self, name: str, endpoint_id: str) -> Tuple[str, str]:
+        """登记一个端点 → 返回 (端点令牌明文, 策略签名密钥)。令牌只此一次下发。"""
+        token = secrets.token_urlsafe(24)
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO endpoints(endpoint_id,name,token_hash,created_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(endpoint_id) DO UPDATE SET token_hash=excluded.token_hash, name=excluded.name",
+                (endpoint_id, name[:64], _sha256(token), _now()))
+            self._conn.commit()
+        return token, self.policy_signing_key()
+
+    def verify_endpoint(self, endpoint_id: str, token: str) -> bool:
+        row = self._conn.execute("SELECT token_hash FROM endpoints WHERE endpoint_id=?",
+                                 (endpoint_id,)).fetchone()
+        return bool(row) and secrets.compare_digest(row["token_hash"], _sha256(token or ""))
+
+    def has_endpoint(self, endpoint_id: str) -> bool:
+        return self._conn.execute("SELECT 1 FROM endpoints WHERE endpoint_id=?",
+                                  (endpoint_id,)).fetchone() is not None
+
+    # ── 上报落库 ──────────────────────────────────────────
+    def apply_report(self, report: EndpointReport, result: VerifyResult) -> Dict[str, int]:
+        snap = result.new_snapshot or ChainSnapshot()
+        with self._lock:
+            if not self.has_endpoint(report.endpoint_id):
+                # 未登记就上报：拒绝（调用方已拦），这里兜底不落数据
+                return {"events": 0, "alerts": 0}
+            for index, event in enumerate(report.events):
+                # 序号是"该条在本地审计链里的第几条"，必须逐条递增——
+                # 曾误用批首序号填充全部条目，界面上整批都显示同一个序号。
+                self._conn.execute(
+                    "INSERT INTO events(endpoint_id,seq,ts,event_type,severity,message,"
+                    "details_json,entry_hash,previous_hash,received_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (report.endpoint_id, result.accepted_from_seq + index, event.ts, event.event_type,
+                     event.severity, event.message, json.dumps(event.details, ensure_ascii=False),
+                     event.entry_hash, event.previous_hash, _now()))
+            alert_count = 0
+            for alert in result.alerts:
+                self._conn.execute(
+                    "INSERT INTO alerts(endpoint_id,code,detail,severity,created_at) VALUES(?,?,?,?,?)",
+                    (report.endpoint_id, alert.code, alert.detail, alert.severity, _now()))
+                alert_count += 1
+            caps = report.capabilities
+            self._conn.execute(
+                "UPDATE endpoints SET last_seen_at=?, version=?, platform=?, strict_mode=?, "
+                "policy_version=?, total_count=?, head_hash=?, legacy_prefix=?, "
+                "first_seen_at=CASE WHEN first_seen_at='' THEN ? ELSE first_seen_at END, "
+                "last_report_at=? WHERE endpoint_id=?",
+                (_now(), report.version, report.platform or caps.platform, int(caps.strict_mode),
+                 caps.policy_version, snap.total_count, snap.head_hash, snap.legacy_prefix,
+                 snap.first_seen_at, report.reported_at, report.endpoint_id))
+            for row in report.usage:
+                self._conn.execute(
+                    "INSERT INTO usage(endpoint_id,model,scope,calls,chars,updated_at) "
+                    "VALUES(?,?,?,?,?,?) ON CONFLICT(endpoint_id,model) DO UPDATE SET "
+                    "calls=excluded.calls, chars=excluded.chars, scope=excluded.scope, "
+                    "updated_at=excluded.updated_at",
+                    (report.endpoint_id, row.model, row.scope, row.calls, row.chars, _now()))
+            # 能力清单（模型/插件）也留档，供资产视角
+            self._set_setting(f"caps:{report.endpoint_id}", json.dumps(
+                {"models": caps.models, "external_models": caps.external_models,
+                 "plugins": caps.plugins, "updated_at": _now()}, ensure_ascii=False))
+            self._conn.commit()
+        return {"events": len(report.events), "alerts": alert_count}
+
+    def snapshot_of(self, endpoint_id: str) -> Optional[ChainSnapshot]:
+        row = self._conn.execute(
+            "SELECT total_count,head_hash,legacy_prefix,first_seen_at,last_report_at "
+            "FROM endpoints WHERE endpoint_id=?", (endpoint_id,)).fetchone()
+        if row is None:
+            return None
+        return ChainSnapshot(row["total_count"], row["head_hash"], row["legacy_prefix"],
+                             row["first_seen_at"] or "", row["last_report_at"] or "")
+
+    def capabilities_of(self, endpoint_id: str) -> Dict[str, Any]:
+        raw = self._get_setting(f"caps:{endpoint_id}")
+        if not raw:
+            return {"models": [], "external_models": [], "plugins": [], "updated_at": ""}
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {"models": [], "external_models": [], "plugins": [], "updated_at": ""}
+
+    # ── 查询（界面用）────────────────────────────────────
+    def overview(self) -> Dict[str, Any]:
+        total_eps = self._conn.execute("SELECT COUNT(*) c FROM endpoints").fetchone()["c"]
+        events = self._conn.execute("SELECT COUNT(*) c FROM events").fetchone()["c"]
+        high = self._conn.execute(
+            "SELECT COUNT(*) c FROM events WHERE severity IN ('critical','security')"
+        ).fetchone()["c"]
+        alerts = self._conn.execute(
+            "SELECT COUNT(*) c FROM alerts WHERE severity<>'低' AND code NOT IN ('FIRST_REPORT','HIGH_EVENT')"
+        ).fetchone()["c"]
+        eps = self.list_endpoints()
+        chain_bad = sum(1 for e in eps if e["chain_verdict"] in ("未上报", "链异常"))
+        return {"endpoints": total_eps, "events": events, "high_events": high,
+                "chain_alerts": alerts, "chain_bad": chain_bad,
+                "generated_at": _now()}
+
+    def list_endpoints(self) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM endpoints ORDER BY COALESCE(last_seen_at,'') DESC").fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            ep = row["endpoint_id"]
+            bad = self._conn.execute(
+                "SELECT COUNT(*) c FROM alerts WHERE endpoint_id=? AND severity<>'低' "
+                "AND code NOT IN ('FIRST_REPORT','HIGH_EVENT')", (ep,)).fetchone()["c"]
+            caps = self.capabilities_of(ep)
+            snap = ChainSnapshot(row["total_count"], row["head_hash"], row["legacy_prefix"])
+            verdict = snapshot_verdict(snap)
+            if bad:
+                verdict = "链异常"
+            out.append({
+                "endpoint_id": ep, "name": row["name"], "version": row["version"],
+                "platform": row["platform"], "last_seen_at": row["last_seen_at"] or "",
+                "strict_mode": bool(row["strict_mode"]), "policy_version": row["policy_version"],
+                "total_count": row["total_count"], "head_hash": row["head_hash"],
+                "chain_verdict": verdict, "chain_alerts": bad,
+                "first_seen_at": row["first_seen_at"] or "",
+                "models": caps.get("models", []),
+                "external_models": caps.get("external_models", []),
+                "plugins": caps.get("plugins", []),
+                "caps_updated_at": caps.get("updated_at", ""),
+                "policy": policy_mod.describe(self.policy_for(ep) or {}),
+            })
+        return out
+
+    def list_events(self, endpoint_id: str = "", event_type: str = "", severity: str = "",
+                    keyword: str = "", limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+        where, params = ["1=1"], []
+        if endpoint_id:
+            where.append("endpoint_id=?"); params.append(endpoint_id)
+        if event_type:
+            where.append("event_type=?"); params.append(event_type)
+        if severity:
+            where.append("severity=?"); params.append(severity)
+        if keyword:
+            where.append("(message LIKE ? OR details_json LIKE ?)")
+            params.extend([f"%{keyword}%", f"%{keyword}%"])
+        sql = ("SELECT * FROM events WHERE " + " AND ".join(where) +
+               " ORDER BY id DESC LIMIT ? OFFSET ?")
+        params.extend([max(1, min(int(limit), 500)), max(0, int(offset))])
+        rows = self._conn.execute(sql, params).fetchall()
+        out = []
+        for row in rows:
+            try:
+                details = json.loads(row["details_json"] or "{}")
+            except Exception:
+                details = {}
+            out.append({"id": row["id"], "endpoint_id": row["endpoint_id"], "seq": row["seq"],
+                        "ts": row["ts"], "event_type": row["event_type"],
+                        "severity": row["severity"], "message": row["message"],
+                        "details": details, "entry_hash": row["entry_hash"],
+                        "received_at": row["received_at"]})
+        return out
+
+    def count_events(self, endpoint_id: str = "", event_type: str = "", severity: str = "",
+                     keyword: str = "") -> int:
+        where, params = ["1=1"], []
+        if endpoint_id:
+            where.append("endpoint_id=?"); params.append(endpoint_id)
+        if event_type:
+            where.append("event_type=?"); params.append(event_type)
+        if severity:
+            where.append("severity=?"); params.append(severity)
+        if keyword:
+            where.append("(message LIKE ? OR details_json LIKE ?)")
+            params.extend([f"%{keyword}%", f"%{keyword}%"])
+        return self._conn.execute("SELECT COUNT(*) c FROM events WHERE " + " AND ".join(where),
+                                  params).fetchone()["c"]
+
+    def event_types(self) -> List[str]:
+        return [r["event_type"] for r in self._conn.execute(
+            "SELECT DISTINCT event_type FROM events ORDER BY event_type").fetchall()]
+
+    def list_alerts(self, endpoint_id: str = "", limit: int = 50,
+                    exclude_codes: Tuple[str, ...] = ("FIRST_REPORT", "HIGH_EVENT")) -> List[Dict[str, Any]]:
+        sql = "SELECT * FROM alerts WHERE 1=1"
+        params: List[Any] = []
+        if endpoint_id:
+            sql += " AND endpoint_id=?"; params.append(endpoint_id)
+        if exclude_codes:
+            sql += " AND code NOT IN (%s)" % ",".join("?" * len(exclude_codes))
+            params.extend(exclude_codes)
+        sql += " ORDER BY id DESC LIMIT ?"; params.append(max(1, min(int(limit), 200)))
+        return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
+
+    def usage_summary(self) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT model, scope, SUM(calls) calls, SUM(chars) chars, COUNT(DISTINCT endpoint_id) eps "
+            "FROM usage GROUP BY model, scope ORDER BY calls DESC").fetchall()
+        return [{"model": r["model"], "scope": r["scope"], "calls": r["calls"],
+                 "chars": r["chars"], "endpoints": r["eps"]} for r in rows]
+
+    # ── 策略 ─────────────────────────────────────────────
+    def set_policy(self, scope: str, bundle: Dict[str, Any]) -> Dict[str, Any]:
+        """写入一条策略（scope='global' 或端点 id）。自动签名并递增版本。"""
+        key = self.policy_signing_key()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT MAX(version) v FROM policies WHERE scope=?", (scope,)).fetchone()
+            version = int(row["v"] or 0) + 1
+            body = {k: v for k, v in bundle.items() if k not in ("sig", "version", "issued_at")}
+            body["version"] = version
+            body["issued_at"] = _now()
+            policy_mod.validate_keys(body)
+            body["sig"] = policy_mod.sign(body, key)
+            self._conn.execute(
+                "INSERT INTO policies(scope,version,bundle_json,updated_at) VALUES(?,?,?,?)",
+                (scope, version, json.dumps(body, ensure_ascii=False), _now()))
+            self._conn.commit()
+        return body
+
+    def latest_policy(self, scope: str) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            "SELECT bundle_json FROM policies WHERE scope=? ORDER BY version DESC LIMIT 1",
+            (scope,)).fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row["bundle_json"])
+        except Exception:
+            return None
+
+    def policy_for(self, endpoint_id: str) -> Dict[str, Any]:
+        """端点实际会收到的包：全局策略与端点专属策略**按时间顺序累积合并**。
+
+        语义：每次下发都是**增量收紧**（控制台表单"留空＝本条不下发"），因此端点生效的
+        策略是"历史上每一次下发依次叠加"的结果，而不是"最后一版覆盖前面所有版"。
+        合并本身同样只收紧，所以返回的包依旧是"只收紧"的。
+
+        输出只包含**真正有约束的键**（不输出 null 占位）——否则端点侧的键类型校验会
+        把服务端自己签的包判为非法（真踩过：`approval_floor: null` 不在合法枚举里）。
+        """
+        merged = policy_mod.empty_local()
+        for scope in ("global", endpoint_id):
+            rows = self._conn.execute(
+                "SELECT bundle_json FROM policies WHERE scope=? ORDER BY version ASC",
+                (scope,)).fetchall()
+            for row in rows:
+                try:
+                    bundle = json.loads(row["bundle_json"])
+                except Exception:
+                    continue
+                merged = policy_mod.merge_tighten(merged, bundle)
+
+        out: Dict[str, Any] = {"version": int(merged.get("policy_version", 0) or 0),
+                               "issued_at": _now()}
+        if merged.get("sensitive_paths"):
+            out["sensitive_paths"] = merged["sensitive_paths"]
+        if merged.get("approval_floor"):
+            out["approval_floor"] = merged["approval_floor"]
+        if merged.get("allowed_models") is not None:
+            out["allowed_models"] = merged["allowed_models"]
+        if merged.get("allowed_plugins") is not None:
+            out["allowed_plugins"] = merged["allowed_plugins"]
+        if merged.get("require_strict_mode"):
+            out["require_strict_mode"] = True
+        out["sig"] = policy_mod.sign(out, self.policy_signing_key())
+        return out
+
+    def policy_history(self, scope: str = "", limit: int = 30) -> List[Dict[str, Any]]:
+        sql = "SELECT scope,version,updated_at FROM policies"
+        params: List[Any] = []
+        if scope:
+            sql += " WHERE scope=?"; params.append(scope)
+        sql += " ORDER BY id DESC LIMIT ?"; params.append(max(1, min(int(limit), 100)))
+        return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
+
+    def close(self) -> None:
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
