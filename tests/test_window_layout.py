@@ -298,8 +298,9 @@ check("界面不再声称「置顶需重启」",
       "置顶（立即生效）" in html and "重启生效）" not in html.split("btn-pin")[1][:80])
 check("切换后按实际结果提示（含失败时的诚实降级）",
       "已置顶显示（立即生效）" in js and "置顶切换失败" in js)
-check("设置面板的置顶开关同样即时生效",
-      "立即生效）</div>" in html and "save_settings" in webview_src
+check("设置面板的置顶开关同样即时生效（V3.5.0 设置改版：断言随行式布局对齐，意图不变）",
+      'id="sw-topmost"' in html and "立即生效" in html.split('id="sw-topmost"')[0][-400:]
+      and "save_settings" in webview_src
       and "topmost" in webview_src.split("def save_settings")[1][:600])
 
 print("\n" + "=" * 78)

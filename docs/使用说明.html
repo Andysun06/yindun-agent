@@ -71,50 +71,68 @@ python run.py
 </blockquote>
 <hr />
 <h2>三、首次使用：配置一个"算力底座"</h2>
-<p>隐盾需要接入一个大模型作为算力底座，<strong>两种方式二选一</strong>（约 2 分钟）。
-启动后看界面左上角状态灯：绿色圆点 + 模型名即已就绪；未就绪时点左下角齿轮图标进设置。</p>
-<h3>方式 A：本地离线模型（推荐，数据全程不出网）</h3>
+<p>隐盾需要接入一个大模型作为算力底座。<strong>设置按"数据边界"分成三档</strong>——本机 / 局域网 / 公网，
+你随时能看出"这个模型会把数据带到哪里去"：</p>
+<table>
+<thead>
+<tr>
+<th>档位</th>
+<th>数据边界</th>
+<th>典型形态</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>本机模型</strong></td>
+<td>数据不出这台电脑</td>
+<td>本机跑的 Ollama（127.0.0.1:11434）</td>
+</tr>
+<tr>
+<td><strong>局域网模型</strong></td>
+<td>数据出这台电脑，但不出企业内网</td>
+<td>公司内网的推理服务 / Ollama（10.x / 192.168.x）</td>
+</tr>
+<tr>
+<td><strong>公网模型</strong></td>
+<td>数据出企业内网；送出前内容已在本机脱敏</td>
+<td>云端 OpenAI 兼容接口（https://…/v1）</td>
+</tr>
+</tbody>
+</table>
+<p>入口：点左下角<strong>齿轮</strong>图标 → 顶栏「<strong>模型接入</strong>」页（左边是三档供应商列表，右边是选中项的配置表单）。</p>
+<h3>方式 A：本机模型（推荐，数据全程不出机器）</h3>
 <ol>
 <li>下载安装 Ollama：<a href="https://ollama.com/download">https://ollama.com/download</a>（安装后服务自动运行）；</li>
-<li>打开命令行执行，拉取一个支持工具调用的模型：
+<li>命令行拉取一个支持工具调用的模型，需要知识库再拉向量模型：
    <code>bash
-   ollama pull qwen3.5:4b</code>
-   如需使用知识库检索，再拉取向量模型：
-   <code>bash
+   ollama pull qwen3.5:4b
    ollama pull nomic-embed-text</code></li>
-<li>启动隐盾，在设置页"算力底座 → 模型选择"中选中检测到的本地模型。</li>
+<li>回到「模型接入 → 本机模型」，点「重新检测」——检测到的模型会列出来，<strong>点一下就切换</strong>。</li>
 </ol>
-<h3>方式 B：云端模型（无需下载大文件）</h3>
+<h3>方式 B：局域网模型（公司内网的推理服务）</h3>
 <ol>
-<li>点左下角齿轮图标 → 「外部算力（OpenAI 兼容）」→ 填名称 / 模型 ID / 接口地址 / API Key → 添加；</li>
-<li>填入任一 OpenAI 兼容 API 的参数（示例：智谱开放平台）：
-   - <code>base_url</code>：<code>https://open.bigmodel.cn/api/paas/v4</code>
-   - <code>api_key</code>：你自己的密钥
-   - <code>model_id</code>：<code>glm-4-flash</code></li>
-<li>保存后在模型框选择该模型。</li>
+<li>「模型接入 → 局域网模型」→ 点「＋ 添加局域网模型」；</li>
+<li>填 <strong>显示名称 / 模型 ID / 接口地址</strong>（如 <code>http://10.0.0.8:8000/v1</code>），内网通常不需要 Key；</li>
+<li>点「<strong>测试连接</strong>」——通了会显示该端点提供的模型名，并可自动补进"模型 ID"；再点「保存」。<blockquote>
+<p>探测是你在这页<strong>显式发起</strong>的动作：地址只取自输入框、不跟随重定向、4 秒超时、只读模型列表。</p>
+</blockquote>
+</li>
+</ol>
+<h3>方式 C：公网模型（云端 API）</h3>
+<ol>
+<li>「模型接入 → 公网模型」→「＋ 添加公网模型」；</li>
+<li>填名称 / 模型 ID / 接口地址 / API Key，先「测试连接」再「保存」。
+   示例（智谱开放平台）：<code>https://open.bigmodel.cn/api/paas/v4</code> + <code>glm-4-flash</code>；</li>
+<li>保存后在输入框下方的<strong>模型胶囊</strong>里选择它。</li>
 </ol>
 <blockquote>
-<p><strong>隐私提示</strong>：开启"隐私隔离网关"（默认开启）时，发往云端的内容已自动替换为占位符，
-真实敏感数据不出本地。</p>
+<p><strong>隐私提示</strong>：开启"隐私隔离网关"（默认开启）时，发往公网的内容已在本机替换为占位符，
+真实敏感数据不出机器；密钥加密存本机、界面不回显。</p>
 </blockquote>
-<h3>方式 C：内网 / 公司内部大模型</h3>
-<p>按你们内网部署的形态二选一：</p>
-<p><strong>C1. 内网有 Ollama 服务</strong>（服务器上跑着 <code>ollama serve</code>、模型在服务器上）：</p>
-<ol>
-<li>设置页 → 「Ollama 服务地址」改为内网地址（如 <code>http://10.0.0.8:11434</code>），
-   保存后立即在后台重建算力，<strong>无需重启</strong>；</li>
-<li>「对话模型」直接<strong>手输</strong>服务器上的模型名（如 <code>qwen3.5:4b</code>）——内网模型本机探测不到，
-   手输即可生效，且不会被"本机模型名对齐"覆盖；</li>
-<li>知识库、状态检测等组件统一跟随该地址。</li>
-</ol>
-<p><strong>C2. 内网是 OpenAI 兼容网关</strong>（vLLM / One-API / 公司自建推理服务等）：
-按方式 B 填「外部算力」，接口地址填内网网关（如 <code>http://10.0.0.8:8000/v1</code>），
-API Key 按网关要求填（不需要就留空）。</p>
-<blockquote>
-<p>隐私提示：C1/C2 发出的内容同样先经本机脱敏（只出占位符）；内网若本身可信，
-是否开启隐私网关可由你按合规要求决定——开关在设置页「隐私与权限」。</p>
-</blockquote>
-<hr />
+<h3>切换模型</h3>
+<p>输入框<strong>下方那一行</strong>就是会话级设置（参考主流 agent 的输入区布局）：
+<code>＋ 挂载文档 · 模型胶囊 · 思考强度 · 发送</code>。点模型胶囊会按三档分组列出可用模型；
+换模型立即生效，正在跑的轮次不受影响。</p>
 <h2>四、核心功能使用</h2>
 <h3>4.1 对话与隐私脱敏</h3>
 <p>直接在底部输入框下达指令即可。含敏感信息的内容会先脱敏再交给模型，回答后自动还原。</p>

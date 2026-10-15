@@ -135,19 +135,163 @@
         <form class="composer" id="composer" autocomplete="off">
           <div class="chips" id="chips"></div>
           <div class="composer__box">
-            <button class="icon-btn icon-btn--ghost" id="btn-attach" type="button" title="挂载文档（PDF / Word / Excel / TXT / MD / CSV）">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21.4 11.1l-8.5 8.5a5 5 0 01-7.1-7.1l8.6-8.5a3.3 3.3 0 014.7 4.7l-8.6 8.5a1.7 1.7 0 01-2.4-2.4l7.9-7.8"/>
-              </svg>
-            </button>
             <textarea id="input" rows="1" placeholder="输入指令…（Enter 发送，Shift+Enter 换行）"></textarea>
-            <button class="icon-btn" id="btn-send" type="submit" title="发送">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 8 6 8-16-8z"/></svg>
-            </button>
+            <!-- 控件行（贴输入框下方一行，参考 ZCode：左＝输入相关，右＝模型/思考/发送） -->
+            <div class="composer__row">
+              <button class="pill pill--icon" id="btn-attach" type="button" title="挂载文档（PDF / Word / Excel / TXT / MD / CSV）">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+              </button>
+              <span class="composer__spacer"></span>
+              <!-- 模型胶囊：三档分组下拉（本机 / 局域网 / 公网） -->
+              <div class="model-select" id="model-select">
+                <button type="button" id="model-trigger" class="pill pill--model" aria-haspopup="listbox" aria-expanded="false" title="切换模型（按数据边界分三档）">
+                  <span class="tier-dot" id="model-tier-dot"></span>
+                  <span class="model-select__value" id="model-value"></span>
+                  <svg class="model-select__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+                </button>
+                <div class="model-select__pop" id="model-pop" hidden>
+                  <input type="text" id="model-search" placeholder="搜索模型…" autocomplete="off" spellcheck="false">
+                  <div class="model-select__list" id="model-list" role="listbox" aria-labelledby="model-label"></div>
+                  <div class="model-select__foot" id="model-hint">—</div>
+                </div>
+              </div>
+              <label class="pill pill--select" title="深度思考强度（1–10，越高推理轮次越多）">
+                <span class="pill__label">思考</span>
+                <select id="sel-depth" aria-label="深度思考强度"></select>
+              </label>
+              <button class="pill pill--send" id="btn-send" type="submit" title="发送（Enter）">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 8 6 8-16-8z"/></svg>
+              </button>
+            </div>
           </div>
           <div class="composer__hint" id="composer-hint">文本在本机脱敏后才送模型；真实值只在你的屏幕上还原</div>
         </form>
       </div>
+
+      <!-- ══ 设置视图（独立视图：左设置导航 + 右内容；参考主流 agent 设置页范式）══ -->
+      <section class="setview" id="settings-view" hidden>
+        <aside class="setnav">
+          <button class="setnav__back" id="set-back" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+            返回对话
+          </button>
+          <div class="setnav__group"><span>算力</span>
+            <button class="setnav__item is-active" data-set="model" type="button">模型接入</button>
+          </div>
+          <div class="setnav__group"><span>安全</span>
+            <button class="setnav__item" data-set="safety" type="button">隐私与权限</button>
+            <button class="setnav__item" data-set="kb" type="button">本地知识库</button>
+            <button class="setnav__item" data-set="plugin" type="button">插件</button>
+          </div>
+          <div class="setnav__group"><span>界面</span>
+            <button class="setnav__item" data-set="appearance" type="button">窗口与外观</button>
+          </div>
+          <div class="setnav__foot" id="settings-note">改动立即生效；配置与会话在本机加密保存。</div>
+        </aside>
+
+        <div class="setmain">
+          <header class="setmain__head">
+            <div>
+              <h2 id="set-title">模型接入</h2>
+              <p id="set-sub">按数据边界分三档：本机 / 局域网 / 公网</p>
+            </div>
+            <div class="setmain__actions" id="set-actions"></div>
+          </header>
+          <div class="setmain__body">
+
+            <!-- ── 模型接入：供应商列表（左） + 详情（右）── -->
+            <div class="setpage is-active" data-set="model">
+              <div class="prov">
+                <div class="prov__list" id="prov-list"></div>
+                <div class="prov__detail" id="prov-detail"></div>
+              </div>
+            </div>
+
+            <!-- ── 隐私与权限 ── -->
+            <div class="setpage" data-set="safety">
+              <div class="setcard">
+                <div class="setrow">
+                  <div class="setrow__text"><b>隐私隔离网关</b>
+                    <span>敏感实体在本机替换为占位符后才交给模型；关掉它等于让模型直接读原文</span></div>
+                  <div class="setrow__ctrl"><label class="switch"><input type="checkbox" id="sw-privacy"><span class="switch__track"></span></label></div>
+                </div>
+                <div class="setrow">
+                  <div class="setrow__text"><b>权限等级</b>
+                    <span>写盘 / 删除 / 执行命令始终需要人工审批，与等级无关</span></div>
+                  <div class="setrow__ctrl">
+                    <select id="sel-permission">
+                      <option value="完全控制 (读/写/列表)">完全控制（读 / 写 / 列表）</option>
+                      <option value="安全只读 (仅读/列表)">安全只读（仅读 / 列表）</option>
+                      <option value="彻底审计 (仅对话)">彻底审计（仅对话）</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="setrow">
+                  <div class="setrow__text"><b>允许执行本地脚本</b>
+                    <span>关闭即「严格模式」：只保留只读命令，Python 等解释器一律禁用</span></div>
+                  <div class="setrow__ctrl"><label class="switch"><input type="checkbox" id="sw-script-exec"><span class="switch__track"></span></label></div>
+                </div>
+                <div class="setrow">
+                  <div class="setrow__text"><b>深度思考强度</b>
+                    <span>已移到输入框下方的「思考」胶囊，对话时随手调（1–10）</span></div>
+                  <div class="setrow__ctrl"><span class="setrow__ro">见输入区</span></div>
+                </div>
+              </div>
+              <p class="setfoot">判定权（脱敏 / 放行 / 审批 / 审计写入）永远在内核，不对外开放——插件与控制面都只能"管得更严"。</p>
+            </div>
+
+            <!-- ── 本地知识库 ── -->
+            <div class="setpage" data-set="kb">
+              <div class="setcard">
+                <div class="setrow setrow--stack">
+                  <div class="setrow__text"><b>知识库状态</b><span id="kb-status">正在检测…</span></div>
+                  <div class="setrow__ctrl">
+                    <button class="btn" id="btn-kb-add" type="button">＋ 添加文档</button>
+                    <button class="btn" id="btn-kb-refresh" type="button">刷新</button>
+                  </div>
+                </div>
+                <div class="setrow setrow--stack">
+                  <div class="kb-list" id="kb-list"></div>
+                </div>
+              </div>
+              <p class="setfoot">入库即脱敏：文档先整篇脱敏再切块，向量库只存占位符，元数据不写本机路径。</p>
+            </div>
+
+            <!-- ── 插件 ── -->
+            <div class="setpage" data-set="plugin">
+              <div class="setcard">
+                <div class="setrow setrow--stack">
+                  <div class="plugin-list" id="plugin-list"></div>
+                </div>
+                <div class="setrow">
+                  <div class="setrow__text"><b>插件自检</b><span id="plugin-sync">—</span></div>
+                  <div class="setrow__ctrl"><button class="btn" id="btn-plugin-check" type="button">运行自检</button></div>
+                </div>
+              </div>
+              <p class="setfoot">插件只能做加法：补充识别、扩展解析、工作流模板、导出格式；脱敏豁免 / 白名单 / 审批放行 / 审计写入永不开放。</p>
+            </div>
+
+            <!-- ── 窗口与外观 ── -->
+            <div class="setpage" data-set="appearance">
+              <div class="setcard">
+                <div class="setrow">
+                  <div class="setrow__text"><b>无边框悬浮模式</b><span>沉浸式浮窗（顶栏可拖动）；关闭则使用系统边框</span></div>
+                  <div class="setrow__ctrl"><label class="switch"><input type="checkbox" id="sw-frameless"><span class="switch__track"></span></label></div>
+                </div>
+                <div class="setrow">
+                  <div class="setrow__text"><b>窗口置顶</b><span>始终浮在其它窗口之上（立即生效）</span></div>
+                  <div class="setrow__ctrl"><label class="switch"><input type="checkbox" id="sw-topmost"><span class="switch__track"></span></label></div>
+                </div>
+                <div class="setrow">
+                  <div class="setrow__text"><b>明暗主题</b><span>跟随当前界面主题</span></div>
+                  <div class="setrow__ctrl"><button class="btn" id="btn-theme-2" type="button">切换明暗</button></div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </section>
     </main>
     <div class="col-resizer" data-resize="right" role="separator" aria-orientation="vertical"
          tabindex="0" title="拖动调整面板宽度（双击复位，方向键微调）"></div>
@@ -155,7 +299,6 @@
     <aside class="side side--right" id="panel">
       <div class="panel__inner">
         <div class="panel__tabs">
-          <button class="ptab is-active" data-pane="settings">设置</button>
           <button class="ptab" data-pane="audit">审计</button>
           <button class="ptab" data-pane="workflow">工作流</button>
           <span class="panel__spacer"></span>
@@ -166,124 +309,6 @@
         </div>
         <div class="panel__body">
 
-          <section class="pane is-active" id="pane-settings">
-    <div class="set-sec"><span>算力</span></div>
-
-    <div class="field">
-      <!-- 模型选择：自绘下拉（原生 datalist 弹层不随主题、内网手输无回显）。
-           触发器显示当前模型；浮层 = 搜索过滤 + 模型列表 + 手输（回车提交非匹配名，内网模型入口）；
-           键盘 ↑↓/Enter/Esc 可达；点浮层外关闭。选择即保存（后台重建算力）。 -->
-      <span class="field__label" id="model-label">对话模型</span>
-      <div class="model-select" id="model-select">
-        <button type="button" id="model-trigger" class="model-select__trigger" aria-haspopup="listbox" aria-expanded="false">
-          <span class="model-select__value" id="model-value"></span>
-          <svg class="model-select__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
-        </button>
-        <div class="model-select__pop" id="model-pop" hidden>
-          <input type="text" id="model-search" placeholder="搜索或直接输入（内网模型可手输）" autocomplete="off" spellcheck="false">
-          <div class="model-select__list" id="model-list" role="listbox" aria-labelledby="model-label"></div>
-          <div class="model-select__foot" id="model-hint">—</div>
-        </div>
-      </div>
-    </div>
-
-    <div class="field">
-      <label class="field__label" for="ollama-host">Ollama 服务地址</label>
-      <input type="text" id="ollama-host" placeholder="http://127.0.0.1:11434" spellcheck="false" autocomplete="off">
-      <div class="field__hint">默认本机；接入公司内网 Ollama 时改内网地址（保存后立即重建算力）</div>
-    </div>
-
-    <div class="field">
-      <div class="field__label">外部算力（OpenAI 兼容）</div>
-      <div class="field__hint">出网前已本机脱敏；密钥加密存本机、不回显</div>
-      <div class="cm-list" id="cm-list"></div>
-      <div class="cm-form">
-        <input type="text" id="cm-name" placeholder="显示名称（如 云端GLM）">
-        <input type="text" id="cm-model" placeholder="模型 ID（如 glm-4-flash）">
-        <input type="text" id="cm-url" placeholder="接口地址（https://…/v1 或内网 http://…/v1）">
-        <input type="text" id="cm-key" placeholder="API Key（仅本地加密保存）">
-        <button class="btn btn--primary" id="btn-cm-add" type="button">添加外部模型</button>
-      </div>
-    </div>
-
-      <div class="set-sec"><span>隐私与权限</span></div>
-
-      <div class="switch">
-        <div>
-          <div class="field__label">隐私隔离网关</div>
-          <div class="field__hint">敏感实体替换为占位符后才交给模型</div>
-        </div>
-        <label class="switch"><input type="checkbox" id="sw-privacy"><span class="switch__track"></span></label>
-      </div>
-
-      <div class="field">
-        <label class="field__label" for="rng-depth">深度思考强度：<span id="depth-value">3</span></label>
-        <input class="range" type="range" id="rng-depth" min="1" max="10" step="1">
-        <div class="field__hint">1–10；越高推理轮次越多（思考模式生效）</div>
-      </div>
-
-      <div class="field">
-        <label class="field__label" for="sel-permission">权限等级</label>
-        <select id="sel-permission">
-          <option value="完全控制 (读/写/列表)">完全控制（读 / 写 / 列表）</option>
-          <option value="安全只读 (仅读/列表)">安全只读（仅读 / 列表）</option>
-          <option value="彻底审计 (仅对话)">彻底审计（仅对话）</option>
-        </select>
-        <div class="field__hint">写盘 / 删除 / 执行命令始终需人工审批</div>
-      </div>
-
-      <div class="switch">
-        <div>
-          <div class="field__label">允许执行本地脚本</div>
-          <div class="field__hint">关闭 = 严格模式：禁用 Python 等解释器，仅保留只读命令（git 只读 / echo）</div>
-        </div>
-        <label class="switch"><input type="checkbox" id="sw-script-exec"><span class="switch__track"></span></label>
-      </div>
-
-      <div class="set-sec"><span>窗口</span></div>
-
-      <div class="switch">
-        <div>
-          <div class="field__label">窗口始终置顶</div>
-          <div class="field__hint">悬浮于其他窗口之上（立即生效）</div>
-        </div>
-        <label class="switch"><input type="checkbox" id="sw-topmost"><span class="switch__track"></span></label>
-      </div>
-
-      <div class="switch">
-        <div>
-          <div class="field__label">无边框悬浮模式</div>
-          <div class="field__hint">无系统边框、拖顶栏移动；拖动异常可关闭回退（重启生效）</div>
-        </div>
-        <label class="switch"><input type="checkbox" id="sw-frameless"><span class="switch__track"></span></label>
-      </div>
-
-      <div class="set-sec"><span>知识库</span></div>
-
-      <div class="field">
-        <div class="field__label">本地知识库（脱敏 RAG）</div>
-        <div class="field__hint" id="kb-status">正在检测…</div>
-        <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-2)">
-          <button class="btn" id="btn-kb-add" type="button">＋ 添加文档</button>
-          <button class="btn" id="btn-kb-refresh" type="button">刷新</button>
-        </div>
-        <div class="kb-list" id="kb-list"></div>
-        <div class="field__hint">入库即逐块脱敏：向量库只存占位符</div>
-      </div>
-
-      <div class="set-sec"><span>插件</span></div>
-
-      <div class="field">
-        <div class="field__hint" title="插件是本地代码，隐盾不会联网下载插件；启停与配置改动都写入审计。内核的脱敏网关 / 审批放行 / 审计链 / 沙箱文件工具不开放给插件。开发契约见 docs/插件开发.md">只做加法：补充识别 / 解析 / 模板 / 导出；脱敏、审批、审计不开放。</div>
-        <div class="plugin-list" id="plugin-list"></div>
-        <div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-2)">
-          <button class="btn" id="btn-plugin-check" type="button">插件自检</button>
-        </div>
-        <div class="field__hint" id="plugin-sync">—</div>
-      </div>
-
-      <div class="field__hint" id="settings-note">改动立即生效；配置与会话在本机加密保存。</div>
-          </section>
 
           <section class="pane" id="pane-audit">
       <div class="stat-grid" id="audit-stats"></div>

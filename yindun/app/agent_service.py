@@ -24,7 +24,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 from yindun import APP_ROOT
 from yindun.app.attachment import build_attachment_context, parse_attachment
-from yindun.app.llm_factory import build_llm, detect_chat_models, detect_ollama_models
+from yindun.app.llm_factory import (TIER_LABEL, build_llm, detect_chat_models,
+                                    detect_ollama_models, infer_tier, model_catalog,
+                                    probe_endpoint, tier_of)
 from yindun.app.session_store import SessionStore
 from yindun.app.settings_store import SettingsStore
 from yindun.core.file_tools import (
@@ -545,7 +547,7 @@ class AgentService:
                          f"{step.get('tool_name', '')}{'（演示）' if step.get('demo') else ''} | {summary} |")
         return "\n".join(lines)
 
-    # ── 自定义模型（OpenAI 兼容云端算力）─────────────
+    # ── 自定义模型（OpenAI 兼容：局域网 / 公网算力）──
     def custom_models(self) -> List[Dict[str, Any]]:
         """列出已配置的外部模型（api_key 只说是否已配置，不回传明文）。"""
         models = self.settings.get("custom_models") or {}
@@ -557,13 +559,39 @@ class AgentService:
                 "name": name,
                 "model_id": info.get("model_id", ""),
                 "base_url": info.get("base_url", ""),
+                "tier": tier_of(name, info),
                 "has_key": bool(info.get("api_key")),
                 "key_invalid": bool(info.get("key_invalid")),
             })
         return out
 
-    def add_custom_model(self, name: str, model_id: str, base_url: str, api_key: str) -> Dict[str, Any]:
-        """新增/覆盖一个外部模型配置。api_key 由设置层加密落盘（api_key_enc）。"""
+    def model_catalog(self) -> Dict[str, Any]:
+        """本机 / 局域网 / 公网三档算力清单（供设置页分区与模型下拉分组）。"""
+        return model_catalog(self.settings.data)
+
+    def probe_model_endpoint(self, base_url: str, api_key: str = "") -> Dict[str, Any]:
+        """探测端点是否可用并列出模型（用户在设置页显式发起；地址只来自输入框）。"""
+        result = probe_endpoint(base_url, api_key)
+        try:
+            from yindun.core.audit_log import AuditEventType, AuditLog, AuditSeverity
+            AuditLog().add_entry(
+                AuditEventType.ACCESS_CONTROL,
+                AuditSeverity.INFO if result.get("ok") else AuditSeverity.WARNING,
+                f"算力连通性探测：{'成功' if result.get('ok') else '失败'}",
+                {"endpoint": str(base_url)[:160], "ok": bool(result.get("ok")),
+                 "found": int(result.get("count") or 0)},
+            )
+        except Exception:
+            pass
+        return result
+
+    def add_custom_model(self, name: str, model_id: str, base_url: str, api_key: str,
+                         tier: str = "") -> Dict[str, Any]:
+        """新增/覆盖一个外部模型配置。api_key 由设置层加密落盘（api_key_enc）。
+
+        tier 为空时按地址自动分档（`llm_factory.infer_tier`）；界面会显示推断结果，
+        用户也可在对应档位卡片里显式指定。
+        """
         name = (name or "").strip()
         model_id = (model_id or "").strip()
         base_url = (base_url or "").strip()
@@ -571,21 +599,26 @@ class AgentService:
             return {"ok": False, "error": "名称、模型 ID、接口地址都不能为空"}
         if not base_url.lower().startswith(("http://", "https://")):
             return {"ok": False, "error": "接口地址需以 http:// 或 https:// 开头"}
+        tier = str(tier or "").strip().lower()
+        if tier not in ("local", "lan", "wan"):
+            tier = infer_tier(base_url)
         models = dict(self.settings.get("custom_models") or {})
-        models[name] = {"model_id": model_id, "base_url": base_url, "api_key": (api_key or "").strip()}
+        models[name] = {"model_id": model_id, "base_url": base_url,
+                        "api_key": (api_key or "").strip(), "tier": tier}
         self.settings.set("custom_models", models)
         self.settings.save()
         try:
             from yindun.core.audit_log import AuditEventType, AuditLog, AuditSeverity
             AuditLog().add_entry(
                 AuditEventType.ACCESS_CONTROL, AuditSeverity.WARNING,
-                f"新增外部算力配置：{name}",
+                f"新增外部算力配置：{name}（{TIER_LABEL.get(tier, tier)}）",
                 {"name": name, "model_id": model_id, "base_url": base_url,
-                 "has_key": bool(api_key)},
+                 "tier": tier, "has_key": bool(api_key)},
             )
         except Exception:
             pass
-        return {"ok": True, "models": self.custom_models()}
+        return {"ok": True, "models": self.custom_models(), "tier": tier,
+                "tier_label": TIER_LABEL.get(tier, tier)}
 
     def remove_custom_model(self, name: str) -> Dict[str, Any]:
         models = dict(self.settings.get("custom_models") or {})

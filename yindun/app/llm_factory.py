@@ -16,9 +16,14 @@
 """
 from __future__ import annotations
 
+import json
 import os
+import re
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
 
@@ -85,6 +90,172 @@ def get_first_available_model() -> Optional[str]:
     """首个可用的对话模型；若本地只有 embedding 模型则返回 None（界面应提示用户拉取对话模型）。"""
     chat_models = detect_chat_models()
     return chat_models[0] if chat_models else None
+
+
+# ══════════════════════════════════════════════════════════════════
+#  模型接入分档：本机 / 局域网 / 公网
+#  ------------------------------------------------------------------
+#  分档不是分类癖好，而是**数据边界的说明书**：装在同一台机器上的模型，
+#  敏感数据一步都不出机器；企业内网的模型，数据出机器但不出口；公网模型的
+#  内容在送出前必须已经过本机脱敏。界面按这三档分区展示，用户一眼能看出
+#  "这个模型会把数据带到哪里去"。
+# ══════════════════════════════════════════════════════════════════
+
+TIERS = ("local", "lan", "wan")
+TIER_LABEL = {"local": "本机模型", "lan": "局域网模型", "wan": "公网模型"}
+TIER_BOUNDARY = {
+    "local": "数据不出这台电脑",
+    "lan": "数据出这台电脑，但不出企业内网",
+    "wan": "数据出企业内网；送出前内容已在本机脱敏",
+}
+TIER_HINT = {
+    "local": "例如本机跑的 Ollama（127.0.0.1:11434）",
+    "lan": "例如公司内网的推理服务或 Ollama（http://10.x / http://192.168.x）",
+    "wan": "例如云端 OpenAI 兼容接口（https://…/v1）",
+}
+
+_PRIVATE_HOST_PATTERNS = (
+    re.compile(r"^10\."),
+    re.compile(r"^192\.168\."),
+    re.compile(r"^172\.(1[6-9]|2\d|3[01])\."),
+    re.compile(r"^169\.254\."),          # 链路本地
+    re.compile(r"^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\."),   # CGNAT（含 Tailscale 等组网）
+)
+_PRIVATE_SUFFIXES = (".local", ".lan", ".internal", ".corp", ".home")
+
+
+def infer_tier(base_url: str) -> str:
+    """按地址推断分档（用于兼容早期没有 tier 字段的配置）。
+
+    这是"尽力而为"的推断：拿不准的一律归公网（**保守方向**——把内网误标成公网
+    只会让人多点一次确认，把公网误标成本机则会让人误以为数据没出门）。
+    """
+    text = (base_url or "").strip()
+    if not text:
+        return "wan"
+    try:
+        host = (urlparse(text).hostname or "").lower()
+    except Exception:
+        return "wan"
+    if not host:
+        return "wan"
+    if host in ("127.0.0.1", "localhost", "::1", "[::1]"):
+        return "local"
+    if any(p.match(host) for p in _PRIVATE_HOST_PATTERNS):
+        return "lan"
+    if host.endswith(_PRIVATE_SUFFIXES) or "." not in host:      # 内网主机名 / 裸主机名
+        return "lan"
+    return "wan"
+
+
+def tier_of(name: str, info: Dict[str, Any]) -> str:
+    """取某条自定义模型的档位（显式字段优先，缺失则按地址推断）。"""
+    tier = str((info or {}).get("tier") or "").strip().lower()
+    if tier in TIERS:
+        return tier
+    return infer_tier((info or {}).get("base_url", ""))
+
+
+def model_catalog(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """把"当前可用的算力"整理成**三档分组**，供界面分区展示与下拉分组。
+
+    返回::
+
+        {"current": "模型名",
+         "tiers": {"local": [...], "lan": [...], "wan": [...]},
+         "ollama_host": "http://127.0.0.1:11434",
+         "local_detected": ["qwen2.5:7b", ...]}
+
+    每项: {name, model_id, tier, source, base_url, kind, note}
+    本机档 = 本机 Ollama 探测结果（+ 显式配成 local 的条目）；局域网/公网档 = custom_models。
+    """
+    custom = settings.get("custom_models") or {}
+    current = str(settings.get("model") or "")
+    tiers: Dict[str, List[Dict[str, Any]]] = {"local": [], "lan": [], "wan": []}
+    seen: set = set()
+
+    # ① 本机 Ollama：直接探测 manifests，零网络
+    detected = detect_chat_models()
+    for name in detected:
+        tiers["local"].append({"name": name, "model_id": name, "tier": "local",
+                               "source": "ollama", "base_url": settings.get("ollama_host")
+                               or DEFAULT_OLLAMA_HOST, "kind": "ollama",
+                               "note": "本机 Ollama 已安装"})
+        seen.add(name)
+
+    # ② 自定义条目：按档位归位（同名以自定义配置为准，故先加自定义再加探测结果）
+    for name, info in custom.items():
+        if not isinstance(info, dict):
+            continue
+        tier = tier_of(name, info)
+        entry = {"name": str(name), "model_id": str(info.get("model_id") or name), "tier": tier,
+                 "source": "custom", "base_url": str(info.get("base_url") or ""),
+                 "kind": "openai", "has_key": bool(info.get("api_key")),
+                 "key_invalid": bool(info.get("key_invalid")), "note": ""}
+        tiers[tier] = [e for e in tiers[tier] if e["name"] != name]     # 覆盖同名
+        tiers[tier].append(entry)
+        seen.add(str(name))
+
+    return {"current": current, "tiers": tiers, "ollama_host": settings.get("ollama_host")
+            or DEFAULT_OLLAMA_HOST, "local_detected": detected,
+            "tier_labels": TIER_LABEL, "tier_boundary": TIER_BOUNDARY, "tier_hint": TIER_HINT}
+
+
+# ── 连通性探测（用户在设置页显式发起）──────────────────────────
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """禁止跟随重定向：探测目标必须就是用户填的那个地址。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):   # noqa: D102
+        raise urllib.error.HTTPError(req.full_url, code, "探测不跟随重定向", headers, fp)
+
+
+def probe_endpoint(base_url: str, api_key: str = "", timeout: float = 4.0) -> Dict[str, Any]:
+    """探测一个 OpenAI 兼容端点是否可用，并列出它提供的模型。
+
+    ★ 安全边界（与"零裸 HTTP"的取舍说明）：本函数**只接受来自设置页输入框的地址**，
+      不接受任何来自文档/工具结果的内容；只允许 http/https，禁止跟随重定向，4 秒超时，
+      且只读 `GET {base}/models`（失败再试 Ollama 原生 `GET {base}/api/tags`）。
+      它是"用户主动发起的配置动作"，不是可被内容诱导的请求路径——设置页会明确写这一点。
+    """
+    url = (base_url or "").strip().rstrip("/")
+    if not url:
+        return {"ok": False, "error": "请先填写接口地址"}
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return {"ok": False, "error": "地址需以 http:// 或 https:// 开头"}
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = "Bearer " + api_key
+
+    for path, style in (("/models", "openai"), ("/api/tags", "ollama")):
+        if "/v1" in url and path == "/api/tags":
+            continue                      # 已是 /v1 形式，不再试 Ollama 原生路径
+        try:
+            request = urllib.request.Request(url + path, headers=headers)
+            with opener.open(request, timeout=timeout) as response:
+                payload = json.loads(response.read(2_000_000).decode("utf-8", "ignore") or "{}")
+        except urllib.error.HTTPError as exc:
+            if exc.code in (404, 405):
+                continue                  # 换另一种端点风格再试
+            if exc.code in (401, 403):
+                return {"ok": False, "error": f"认证失败（HTTP {exc.code}）：密钥可能不正确"}
+            return {"ok": False, "error": f"HTTP {exc.code}：{exc.reason}"}
+        except Exception as exc:          # 超时 / DNS / 拒绝连接 / 证书
+            return {"ok": False, "error": f"连不上：{type(exc).__name__} {exc}"}
+
+        models: List[str] = []
+        if isinstance(payload, dict):
+            data = payload.get("data")            # OpenAI: {"data":[{"id":...}]}
+            if isinstance(data, list):
+                models = [str(d.get("id")) for d in data if isinstance(d, dict) and d.get("id")]
+            elif style == "ollama" and isinstance(payload.get("models"), list):
+                models = [str(m.get("name")) for m in payload["models"]
+                          if isinstance(m, dict) and m.get("name")]
+        return {"ok": True, "style": style, "models": models[:200], "count": len(models),
+                "endpoint": url, "note": "已连通" + (f"，发现 {len(models)} 个模型" if models else "")}
+    return {"ok": False, "error": "端点没有响应 /models 或 /api/tags（请确认是 OpenAI 兼容或 Ollama 服务）"}
 
 
 def build_llm(settings: Dict[str, Any], tools: List[Any]) -> Tuple[Any, Dict[str, Any], List[str], Optional[str]]:

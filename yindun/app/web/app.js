@@ -14,6 +14,7 @@
     streamBubble: null, startedAt: 0,
     attachments: [], audit: null,
     pane: "settings", auditFormats: [], wfFormats: [],
+    catalog: null,           // 三档算力清单（本机 / 局域网 / 公网）
   };
 
   /* ── 工具 ─────────────────────────────────────────── */
@@ -583,26 +584,206 @@
 
   async function refreshKb() { renderKb(await call("kb_status")); }
 
-  /* ── 外部算力（自定义模型）────────────────────── */
-  function renderCustomModels(list) {
-    const box = $("cm-list");
-    const models = Array.isArray(list) ? list : [];
-    if (!models.length) { box.innerHTML = `<div class="cm-item__meta">尚未配置外部模型（本地模型无需配置）</div>`; return; }
-    box.innerHTML = models.map((m) => `
-      <div class="cm-item">
-        <span>
-          <span class="cm-item__name">${esc(m.name)}</span>
-          <span class="cm-item__meta">${esc(m.model_id)} · ${m.has_key ? (m.key_invalid ? "密钥失效" : "密钥已配置") : "无密钥"}</span>
-        </span>
-        <span class="chip__x" data-cm="${esc(m.name)}" title="移除">×</span>
-      </div>`).join("");
-    box.querySelectorAll("[data-cm]").forEach((el) => {
+  /* ══ 算力接入：本机 / 局域网 / 公网 三档卡片 ══════════════════
+     分档不是分类癖好，而是**数据边界的说明书**：
+       本机 = 数据不出这台电脑；局域网 = 出机器但不出企业；公网 = 出企业，内容已本机脱敏。
+     每张卡自带「边界说明 + 现有条目 + 添加表单」，用户不必在字段之间猜关系。 */
+  const TIER_META = {
+    local: { label: "本机模型", boundary: "数据不出这台电脑", cls: "tier--local",
+             hint: "本机运行的 Ollama（默认 127.0.0.1:11434）" },
+    lan: { label: "局域网模型", boundary: "数据出这台电脑，但不出企业内网", cls: "tier--lan",
+           hint: "公司内网的推理服务 / Ollama，填内网地址（10.x / 192.168.x / 内网主机名）" },
+    wan: { label: "公网模型", boundary: "数据出企业内网；送出前内容已在本机脱敏", cls: "tier--wan",
+           hint: "云端 OpenAI 兼容接口（https://…/v1）；密钥加密存本机、不回显" },
+  };
+
+  /** 渲染「模型接入」页：左侧按三档列供应商，右侧是选中项的详情表单。
+   *  范式参考主流 agent：左边管"有哪几个入口"，右边管"这一个怎么配"。 */
+  function renderProv(cat) {
+    const box = $("prov-list"), detail = $("prov-detail");
+    if (!box || !cat || !cat.tiers) return;
+    state.catalog = cat;
+    const cur = (state.settings && state.settings.model) || cat.current || "";
+    const sel = state.prov || (state.prov = { tier: "local", name: "" });
+    const items = (t) => cat.tiers[t] || [];
+
+    box.innerHTML = ["local", "lan", "wan"].map((tier) => {
+      const meta = TIER_META[tier];
+      const rows = items(tier).map((m) => {
+        const active = sel.tier === tier && (tier === "local" || sel.name === m.name);
+        const meta = tier === "local" ? "本机已安装" : (m.base_url || "");
+        return `<button class="prov__item${active ? " is-active" : ""}" type="button"
+          data-t="${tier}" data-n="${esc(m.name)}">
+          <span class="prov__name">${esc(m.name)}${m.name === cur ? `<i class="prov__cur">使用中</i>` : ""}</span>
+          <span class="prov__meta">${esc(meta)}</span>
+        </button>`;
+      }).join("");
+      // 本机档没有"添加"：本机模型由 Ollama 安装决定，探测得到，不是手工添加的对象
+      const add = tier === "local" ? "" :
+        `<button class="prov__add" type="button" data-addt="${tier}">＋ 添加${meta.label}</button>`;
+      return `<div class="prov__group">
+        <div class="prov__gtitle"><span class="tier-dot tier-dot--${tier}"></span>
+          <b>${meta.label}</b><em>${meta.boundary}</em></div>
+        ${rows}
+        ${add}
+      </div>`;
+    }).join("");
+
+    // ── 右侧详情 ──
+    if (sel.tier === "local") {
+      const models = items("local");
+      detail.innerHTML = `
+        <h3 class="prov__title">本机 Ollama<span class="prov__badge">数据不出这台电脑</span></h3>
+        <p class="prov__desc">本机安装的 Ollama 服务。把地址改成别的机器，数据就会出这台电脑——
+          那种情况请改用「局域网模型」显式配置。</p>
+        <div class="setcard">
+          <div class="setrow">
+            <div class="setrow__text"><b>服务地址</b><span>默认 http://127.0.0.1:11434</span></div>
+            <div class="setrow__ctrl"><input type="text" id="ollama-host" spellcheck="false"
+              autocomplete="off" placeholder="http://127.0.0.1:11434"></div>
+          </div>
+          <div class="setrow">
+            <div class="setrow__text"><b>连通性</b><span id="probe-local">点右侧按钮发一次探测（地址只取自本页输入框）</span></div>
+            <div class="setrow__ctrl">
+              <button class="btn" type="button" data-probe="local">测试连接</button>
+              <button class="btn" type="button" data-rescan="1">重新检测</button>
+            </div>
+          </div>
+        </div>
+        <h4 class="prov__subtitle">已检测到的模型<span class="muted">（点一下即切换）</span></h4>
+        <div class="prov__models">${models.length ? models.map((m) => `
+          <button class="prov__chip${m.name === cur ? " is-cur" : ""}" type="button" data-pick="${esc(m.name)}">
+            ${esc(m.name)}${m.name === cur ? " ✓" : ""}</button>`).join("")
+          : `<span class="muted">没检测到模型——装好 Ollama 后点「重新检测」</span>`}</div>`;
+    } else {
+      const list = items(sel.tier);
+      const found = sel.name ? list.find((m) => m.name === sel.name) : null;
+      const m = found || { name: "", model_id: "", base_url: "", tier: sel.tier, has_key: false };
+      detail.innerHTML = `
+        <h3 class="prov__title">${found ? esc(m.name) : "添加" + TIER_META[sel.tier].label}
+          <span class="prov__badge">${TIER_META[sel.tier].boundary}</span></h3>
+        <p class="prov__desc">${TIER_META[sel.tier].hint}；出网内容在本机脱敏之后才发送，密钥加密存本机、不回显。</p>
+        <div class="setcard">
+          <div class="setrow"><div class="setrow__text"><b>显示名称</b><span>聊天时下拉里显示的名字</span></div>
+            <div class="setrow__ctrl"><input type="text" id="p-name" value="${esc(m.name)}"
+              placeholder="如 ${sel.tier === "lan" ? "公司内网Qwen" : "云端GLM"}"></div></div>
+          <div class="setrow"><div class="setrow__text"><b>模型 ID</b><span>服务端认的模型名（探测通过后可自动填）</span></div>
+            <div class="setrow__ctrl"><input type="text" id="p-model" value="${esc(m.model_id || "")}"
+              placeholder="${sel.tier === "lan" ? "qwen2.5:14b" : "glm-4-flash"}"></div></div>
+          <div class="setrow"><div class="setrow__text"><b>接口地址</b><span>OpenAI 兼容端点</span></div>
+            <div class="setrow__ctrl"><input type="text" id="p-url" value="${esc(m.base_url || "")}"
+              placeholder="${sel.tier === "lan" ? "http://10.0.0.8:8000/v1" : "https://…/v1"}"></div></div>
+          <div class="setrow"><div class="setrow__text"><b>API Key</b><span>${sel.tier === "lan" ? "内网通常可留空" : "只在本机加密保存"}</span></div>
+            <div class="setrow__ctrl"><input type="text" id="p-key" value=""
+              placeholder="${m.has_key ? "已配置（留空则不改动）" : "未配置"}"></div></div>
+          <div class="setrow"><div class="setrow__text"><b>连通性</b><span id="probe-detail">尚未测试</span></div>
+            <div class="setrow__ctrl">
+              <button class="btn" type="button" data-probe="detail">测试连接</button>
+              <button class="btn btn--primary" type="button" data-save="1">保存</button>
+              ${found ? `<button class="btn" type="button" data-remove="${esc(m.name)}">删除</button>` : ""}
+            </div></div>
+        </div>`;
+    }
+    bindProvEvents(cat);
+    paintModelTrigger();
+  }
+
+  function bindProvEvents(cat) {
+    const box = $("prov-list"), detail = $("prov-detail");
+    if (!box || !detail) return;
+    box.querySelectorAll("[data-t]").forEach((el) => {
+      el.onclick = () => { state.prov = { tier: el.dataset.t, name: el.dataset.n }; renderProv(cat); };
+    });
+    box.querySelectorAll("[data-addt]").forEach((el) => {
+      el.onclick = () => { state.prov = { tier: el.dataset.addt, name: "" }; renderProv(cat); };
+    });
+    detail.querySelectorAll("[data-pick]").forEach((el) => {
+      el.onclick = () => persist({ model: el.dataset.pick });
+    });
+    const host = $("ollama-host");
+    if (host) {
+      host.value = (state.settings && state.settings.ollama_host) || "http://127.0.0.1:11434";
+      host.onchange = (e) => {
+        const v = String(e.target.value || "").trim() || "http://127.0.0.1:11434";
+        e.target.value = v;
+        persist({ ollama_host: v });
+      };
+    }
+    detail.querySelectorAll("[data-rescan]").forEach((el) => {
       el.onclick = async () => {
-        const res = await call("remove_custom_model", el.dataset.cm);
-        if (res && res.ok) { toast("已移除"); renderCustomModels(res.models); fillSettings(); }
-        else toast("移除失败：" + ((res && res.error) || "未知原因"));
+        if ($("probe-local")) $("probe-local").textContent = "检测中…";
+        renderProv(await call("model_catalog"));
       };
     });
+    detail.querySelectorAll("[data-probe]").forEach((el) => {
+      el.onclick = async () => {
+        const isLocal = el.dataset.probe === "local";
+        const url = isLocal ? ($("ollama-host").value || "").trim() : ($("p-url").value || "").trim();
+        const key = isLocal ? "" : ($("p-key").value || "").trim();
+        const note = isLocal ? $("probe-local") : $("probe-detail");
+        note.textContent = "正在测试连接…"; note.className = "";
+        const res = await call("probe_model_endpoint", url, key);
+        if (res && res.ok) {
+          note.textContent = "✅ " + (res.note || "已连通")
+            + (res.models && res.models.length ? "：" + res.models.slice(0, 3).join("、") : "");
+          note.className = "is-ok";
+          if (!isLocal) {
+            const mid = $("p-model");
+            if (mid && !mid.value.trim() && res.models && res.models.length) mid.value = res.models[0];
+          }
+        } else {
+          note.textContent = "❌ " + ((res && res.error) || "连不上");
+          note.className = "is-bad";
+        }
+      };
+    });
+    detail.querySelectorAll("[data-save]").forEach((el) => {
+      el.onclick = async () => {
+        const tier = state.prov.tier;
+        const val = (id) => (($(id) && $(id).value) || "").trim();
+        const name = val("p-name"), modelId = val("p-model"), url = val("p-url"), key = val("p-key");
+        const note = $("probe-detail");
+        if (!name || !modelId || !url) {
+          note.textContent = "显示名称、模型 ID、接口地址都要填"; note.className = "is-bad"; return;
+        }
+        const res = await call("add_custom_model", name, modelId, url, key, tier);
+        if (res && res.ok) {
+          toast(`已保存到「${res.tier_label || tier}」`);
+          state.prov = { tier, name };
+          renderProv(await call("model_catalog"));
+          fillSettings();
+        } else {
+          note.textContent = "保存失败：" + ((res && res.error) || "未知原因"); note.className = "is-bad";
+        }
+      };
+    });
+    detail.querySelectorAll("[data-remove]").forEach((el) => {
+      el.onclick = async () => {
+        const res = await call("remove_custom_model", el.dataset.remove);
+        if (res && res.ok) {
+          toast("已删除");
+          state.prov = { tier: state.prov.tier, name: "" };
+          renderProv(await call("model_catalog"));
+          fillSettings();
+        } else toast("删除失败：" + ((res && res.error) || "未知原因"));
+      };
+    });
+  }
+  function paintModelTrigger() {
+    const val = $("model-value"), dot = $("model-tier-dot");
+    if (!val) return;
+    const cur = (state.settings && state.settings.model) || "";
+    val.textContent = cur || "未选择模型";
+    if (!dot) return;
+    let tier = "";
+    const cat = state.catalog;
+    if (cat && cat.tiers) {
+      for (const t of ["local", "lan", "wan"]) {
+        if ((cat.tiers[t] || []).some((m) => m.name === cur)) { tier = t; break; }
+      }
+    }
+    dot.className = "tier-dot" + (tier ? ` tier-dot--${tier}` : "");
+    dot.title = tier ? `${TIER_META[tier].label} · ${TIER_META[tier].boundary}` : "未在清单中（可能已手动指定）";
   }
 
   /* ── 安全工具 ─────────────────────────────────── */
@@ -880,7 +1061,7 @@
       if (info) state.llm = info;
       fillSettings(); bindWindowControls(); refreshKb(); refreshPlugins();
       refreshSyncState(); refreshExportFormats();
-      renderCustomModels(await call("custom_models"));
+      renderProv(await call("model_catalog"));
     },
     audit: async () => { renderAudit(await call("audit_snapshot", 300)); },
     workflow: async () => { await refreshWorkflow(); },
@@ -909,6 +1090,12 @@
   function applyLayout() {
     const app = document.querySelector(".app");
     if (!app) return;
+    // 设置视图接管整区：列宽在这里统一收口（行内样式优先级高于 CSS 类，
+    // 所以任何窗口 resize 都不能把它覆盖回三栏，否则设置页又被挤成窄条）。
+    if (app.classList.contains("is-settings-open")) {
+      app.style.gridTemplateColumns = "minmax(0, 1fr)";
+      return;
+    }
     const leftW = collapsed("left") ? 0 : layoutState.left;
     const rightW = collapsed("right") ? 0 : layoutState.right;
     app.style.gridTemplateColumns = `${leftW}px minmax(0, 1fr) ${rightW}px`;
@@ -1096,6 +1283,49 @@
     if (loader) await loader();
   }
 
+  /* ── 设置视图（独立视图：左设置导航 + 右内容）────────────
+     为什么独立成视图而不放右侧窄面板：设置项是"左标题说明 / 右控件"的行式布局，
+     300~600px 的窄栏放不下，只能挤成竖排表单——那正是上一版难看的根因。 */
+  const SET_META = {
+    model: ["模型接入", "按数据边界分三档：本机 / 局域网 / 公网"],
+    safety: ["隐私与权限", "脱敏网关、权限等级与执行严格模式"],
+    kb: ["本地知识库", "入库即脱敏的本地检索（脱敏 RAG）"],
+    plugin: ["插件", "能力扩展：只增不减，判定权仍在内核"],
+    appearance: ["窗口与外观", "悬浮窗行为与明暗主题"],
+  };
+  async function openSettings(page) {
+    const view = $("settings-view");
+    if (!view) return;
+    view.hidden = false;
+    const sheet = document.querySelector(".sheet");
+    if (sheet) sheet.hidden = true;
+    // 接管整区：收起会话栏与右侧面板（设置是"独立视图"，不是窄栏里的抽屉）。
+    // 列宽必须由 JS 写行内样式——本项目的列宽单一出口就是行内 grid-template-columns，
+    // 行内优先级高于 CSS 类，所以不能只在样式表里改。
+    const app = document.querySelector(".app");
+    app.classList.add("is-settings-open");
+    applyLayout();                      // 列宽走单一出口
+    if (page) setSettingsPage(page);
+    if (!state.catalog) renderProv(await call("model_catalog"));
+  }
+  function closeSettings() {
+    const view = $("settings-view");
+    if (view) view.hidden = true;
+    const sheet = document.querySelector(".sheet");
+    if (sheet) sheet.hidden = false;
+    document.querySelector(".app").classList.remove("is-settings-open");
+    applyLayout();                      // 列宽回到用户的折叠/拖拽状态（单一出口）
+  }
+  function setSettingsPage(page) {
+    const meta = SET_META[page] || SET_META.model;
+    $("set-title").textContent = meta[0];
+    $("set-sub").textContent = meta[1];
+    document.querySelectorAll(".setnav__item").forEach((b) =>
+      b.classList.toggle("is-active", b.dataset.set === page));
+    document.querySelectorAll(".setpage").forEach((p) =>
+      p.classList.toggle("is-active", p.dataset.set === page));
+  }
+
   /** 面板顶部动作区：按当前页显示导出入口（格式来自内核 + 已启用插件） */
   async function renderPanelActions(name) {
     const box = $("panel-actions");
@@ -1196,21 +1426,19 @@
   /* ── 设置抽屉 ─────────────────────────────────────── */
   function fillSettings() {
     const s = state.settings || {};
-    // 模型：自绘下拉（触发器+浮层），列表来自本机探测 / 缓存；
-    // 搜索框同时承担"过滤"与"手输"——内网/远程 Ollama 的模型本机探测不到，直接输入即可。
+    // 三档算力清单由 renderProv() 渲染；这里只同步与模型相关的少量状态。
     const models = (state.llm.models && state.llm.models.length) ? state.llm.models : (s.ollama_models_cache || []);
     state.modelOptions = models;
-    $("model-value").textContent = s.model || "未选择";
-    if (!models.length) $("model-hint").textContent = "未检测到本地模型：请先安装 Ollama 并拉取模型（ollama pull qwen3.5:4b）";
-    else $("model-hint").textContent = `已检测到 ${models.length} 个本地模型；内网模型可直接输入`;
-    $("ollama-host").value = s.ollama_host || "http://127.0.0.1:11434";
+    paintModelTrigger();
+    if (!models.length) $("model-hint").textContent = "未检测到本机模型：装好 Ollama 后点上面的「重新检测」";
+    else $("model-hint").textContent = `共 ${models.length} 个可用模型 · 按数据边界分三档`;
 
     $("sw-privacy").checked = !!s.privacy;
     $("sw-script-exec").checked = s.allow_script_exec !== false;
     $("sw-topmost").checked = !!s.topmost;
     $("sw-frameless").checked = !!s.frameless;
-    $("rng-depth").value = s.thinking_depth ?? 3;
-    $("depth-value").textContent = s.thinking_depth ?? 3;
+    const depth = s.thinking_depth ?? 3;
+    if ($("sel-depth")) $("sel-depth").value = String(depth);
     $("sel-permission").value = s.permission || "完全控制 (读/写/列表)";
 
     document.documentElement.dataset.theme = s.dark_mode ? "dark" : "light";
@@ -1412,23 +1640,21 @@
       toast(res && res.ok ? `已导出（${res.renderer || "内核"}）：${res.path}`
                           : `导出失败：${(res && res.error) || "未知原因"}`);
     };
-    $("btn-cm-add").onclick = async () => {
-      const payload = [$("cm-name").value.trim(), $("cm-model").value.trim(),
-                       $("cm-url").value.trim(), $("cm-key").value.trim()];
-      if (!payload[0] || !payload[1] || !payload[2]) { toast("名称、模型 ID、接口地址都要填"); return; }
-      const res = await call("add_custom_model", ...payload);
-      if (res && res.ok) {
-        toast("已添加外部模型（密钥已加密保存）");
-        ["cm-name", "cm-model", "cm-url", "cm-key"].forEach((id) => { $(id).value = ""; });
-        renderCustomModels(res.models); fillSettings();
-      } else toast("添加失败：" + ((res && res.error) || "未知原因"));
-    };
+    // 模型接入页由 renderProv() 渲染并自带事件绑定（见文件上半部分）
     $("btn-health").onclick = () => runTool("health");
     $("btn-behavior").onclick = () => runTool("behavior");
     $("btn-audit").onclick = () => openPane("audit");
     $("audit-filter").oninput = paintAuditList;
     $("btn-plugin-check").onclick = runPluginCheck;
-    $("btn-settings").onclick = () => openPane("settings");
+    $("btn-settings").onclick = () => openSettings();
+    // 设置视图：返回 + 左导航切页 + 外观页里的主题开关
+    const setBack = $("set-back");
+    if (setBack) setBack.onclick = () => closeSettings();
+    document.querySelectorAll(".setnav__item").forEach((b) => {
+      b.onclick = () => setSettingsPage(b.dataset.set);
+    });
+    const themeBtn2 = $("btn-theme-2");
+    if (themeBtn2) themeBtn2.onclick = () => persist({ dark_mode: document.documentElement.dataset.theme !== "dark" });
     $("btn-toggle-right").onclick = () => { autoCollapsedRight = false; setRightCollapsed(!rightCollapsed()); };
     $("btn-panel-collapse").onclick = () => { autoCollapsedRight = false; setRightCollapsed(true); };
     $("btn-sidebar").onclick = () => {
@@ -1470,14 +1696,50 @@
     };
     const renderModelList = (kw) => {
       const q = String(kw || "").trim().toLowerCase();
-      const opts = (state.modelOptions || []).filter((m) => !q || m.toLowerCase().includes(q));
-      const manual = q && !opts.some((m) => m.toLowerCase() === q);
-      const cur = state.settings.model || "";
-      let html = "";
-      if (manual) html += `<button type="button" class="model-opt model-opt--manual" role="option" data-model="${esc(q)}">使用「${esc(q)}」</button>`;
-      html += opts.map((m) => `<button type="button" class="model-opt${m === cur ? " is-cur" : ""}" role="option" aria-selected="${m === cur}" data-model="${esc(m)}">${esc(m)}${m === cur ? " ✓" : ""}</button>`).join("");
-      mList.innerHTML = html || `<div class="model-opt model-opt--empty">没有匹配的模型</div>`;
-      mHl = manual ? 0 : (opts.length ? 0 : -1);
+      const cur = (state.settings && state.settings.model) || "";
+      const cat = state.catalog || { tiers: { local: [], lan: [], wan: [] } };
+      let html = "", shown = 0, firstPickable = -1;
+
+      // 按三档分组渲染；每组带标题与边界说明，用户一眼看出"这个模型会把数据带到哪"
+      ["local", "lan", "wan"].forEach((tier) => {
+        const meta = TIER_META[tier];
+        const items = (cat.tiers[tier] || []).filter((m) => !q || m.name.toLowerCase().includes(q));
+        if (!items.length) return;
+        html += `<div class="model-group"><span class="tier-dot tier-dot--${tier}"></span>
+          <b>${esc(meta.label)}</b><span class="model-group__boundary">${esc(meta.boundary)}</span></div>`;
+        html += items.map((m) => {
+          if (firstPickable < 0) firstPickable = shown;
+          shown += 1;
+          const extra = m.source === "ollama" ? "本机已安装"
+            : (m.model_id && m.model_id !== m.name ? m.model_id : (m.base_url || ""));
+          return `<button type="button" class="model-opt${m.name === cur ? " is-cur" : ""}" role="option"
+            aria-selected="${m.name === cur}" data-model="${esc(m.name)}">
+            <span class="model-opt__name">${esc(m.name)}</span>
+            <span class="model-opt__meta">${esc(String(extra).slice(0, 42))}</span>
+            ${m.name === cur ? `<span class="model-opt__tick">✓</span>` : ""}
+          </button>`;
+        }).join("");
+      });
+
+      // 不在清单里的当前模型（例如清单尚未刷新）也要能看到
+      if (cur && !["local", "lan", "wan"].some((t) => (cat.tiers[t] || []).some((m) => m.name === cur))) {
+        html += `<div class="model-group"><b>其他</b><span class="model-group__boundary">不在当前清单中</span></div>
+          <button type="button" class="model-opt is-cur" role="option" aria-selected="true" data-model="${esc(cur)}">
+            <span class="model-opt__name">${esc(cur)}</span><span class="model-opt__tick">✓</span></button>`;
+        if (firstPickable < 0) firstPickable = 0;
+        shown += 1;
+      }
+
+      // 搜索无结果时，允许直接使用输入的名称（模型名可以手填）
+      if (q && !shown) {
+        html = `<button type="button" class="model-opt model-opt--manual" role="option" data-model="${esc(q)}"
+          >直接使用「${esc(q)}」</button>`;
+        firstPickable = 0;
+      }
+      html += `<div class="model-select__actions">
+        <button type="button" class="model-opt model-opt--act" data-open-settings="1">＋ 接入局域网 / 公网模型</button></div>`;
+      mList.innerHTML = html || `<div class="model-opt model-opt--empty">没有可用模型</div>`;
+      mHl = firstPickable;
       [...mList.querySelectorAll(".model-opt")].forEach((el, i) => el.classList.toggle("is-hl", i === mHl));
     };
     const openModelPop = () => {
@@ -1504,7 +1766,14 @@
         closeModelPop();
       }
     };
-    mList.onclick = (e) => {
+    mList.onclick = async (e) => {
+      if (e.target.closest("[data-open-settings]")) {
+        closeModelPop();
+        state.prov = { tier: "lan", name: "" };      // 直接落到「添加局域网模型」
+        openSettings("model");
+        renderProv(await call("model_catalog"));
+        return;
+      }
       const btn = e.target.closest("[data-model]");
       if (!btn) return;
       persist({ model: btn.dataset.model });
@@ -1513,13 +1782,15 @@
     document.addEventListener("click", (e) => {
       if (!mSel.contains(e.target)) closeModelPop();
     });
-    $("ollama-host").onchange = (e) => {
-      const v = String(e.target.value || "").trim() || "http://127.0.0.1:11434";
-      e.target.value = v;
-      if (v !== state.settings.ollama_host) persist({ ollama_host: v });
-    };
-    $("rng-depth").oninput = (e) => { $("depth-value").textContent = e.target.value; };
-    $("rng-depth").onchange = (e) => persist({ thinking_depth: Number(e.target.value) });
+    // Ollama 地址的绑定在 renderProv() 里（该输入框随详情面板一起渲染/重建）
+    // 思考强度：输入区胶囊（原设置页滑杆已移除，语义不变：1–10，越高推理轮次越多）
+    const depthSel = $("sel-depth");
+    if (depthSel) {
+      depthSel.innerHTML = Array.from({ length: 10 }, (_, i) => i + 1)
+        .map((n) => `<option value="${n}">${n}</option>`).join("");
+      depthSel.value = String((state.settings && state.settings.thinking_depth) ?? 3);
+      depthSel.onchange = (e) => persist({ thinking_depth: Number(e.target.value) });
+    }
 
     restoreLayout();
     window.addEventListener("resize", onViewportResize);

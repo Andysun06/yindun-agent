@@ -206,7 +206,42 @@
     list_attachments: () => Promise.resolve(attachments),
     clear_attachments: () => Promise.resolve(true),
     kb_status: () => Promise.resolve(kb),
-    custom_models: () => Promise.resolve([]),
+    custom_models: () => Promise.resolve([
+      { name: "公司内网Qwen", model_id: "qwen2.5:14b", base_url: "http://10.0.0.8:8000/v1",
+        tier: "lan", has_key: false, key_invalid: false },
+      { name: "云端GLM", model_id: "glm-4-flash", base_url: "https://open.bigmodel.cn/api/paas/v4",
+        tier: "wan", has_key: true, key_invalid: false },
+    ]),
+    model_catalog: () => Promise.resolve({
+      current: "qwen2.5:7b-instruct",
+      ollama_host: "http://127.0.0.1:11434",
+      local_detected: ["qwen2.5:7b-instruct", "qwen3.5:4b"],
+      tier_labels: { local: "本机模型", lan: "局域网模型", wan: "公网模型" },
+      tier_boundary: {
+        local: "数据不出这台电脑",
+        lan: "数据出这台电脑，但不出企业内网",
+        wan: "数据出企业内网；送出前内容已在本机脱敏",
+      },
+      tiers: {
+        local: [
+          { name: "qwen2.5:7b-instruct", model_id: "qwen2.5:7b-instruct", tier: "local",
+            source: "ollama", base_url: "http://127.0.0.1:11434", kind: "ollama", note: "本机 Ollama 已安装" },
+          { name: "qwen3.5:4b", model_id: "qwen3.5:4b", tier: "local",
+            source: "ollama", base_url: "http://127.0.0.1:11434", kind: "ollama", note: "本机 Ollama 已安装" },
+        ],
+        lan: [
+          { name: "公司内网Qwen", model_id: "qwen2.5:14b", tier: "lan", source: "custom",
+            base_url: "http://10.0.0.8:8000/v1", kind: "openai", has_key: false, key_invalid: false, note: "" },
+        ],
+        wan: [
+          { name: "云端GLM", model_id: "glm-4-flash", tier: "wan", source: "custom",
+            base_url: "https://open.bigmodel.cn/api/paas/v4", kind: "openai", has_key: true, key_invalid: false, note: "" },
+        ],
+      },
+    }),
+    probe_model_endpoint: () => Promise.resolve(
+      { ok: true, style: "openai", models: ["qwen2.5:14b", "qwen2.5:32b"], count: 2,
+        endpoint: "http://10.0.0.8:8000/v1", note: "已连通，发现 2 个模型" }),
     kb_pick_and_add: () => Promise.resolve({ ok: true, status: kb }),
     kb_add_paths: () => Promise.resolve({ ok: true, status: kb }),
     kb_remove: () => Promise.resolve({ ok: true, status: kb }),

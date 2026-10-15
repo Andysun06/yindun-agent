@@ -339,12 +339,21 @@ class JsApi:
             print(f"[WebView] 边缘改尺寸失败：{type(exc).__name__}: {exc}")
             return False
 
-    # ── 自定义模型（OpenAI 兼容）───────────────────
+    # ── 自定义模型（OpenAI 兼容：局域网 / 公网）─────
     def custom_models(self):
         return self._svc.custom_models()
 
-    def add_custom_model(self, name: str, model_id: str, base_url: str, api_key: str):
-        return self._svc.add_custom_model(name, model_id, base_url, api_key)
+    def model_catalog(self):
+        """本机 / 局域网 / 公网三档算力清单（设置页分区 + 模型下拉分组）。"""
+        return self._svc.model_catalog()
+
+    def probe_model_endpoint(self, base_url, api_key=""):
+        """连通性探测（用户点「测试连接」才发起；地址来自输入框）。"""
+        return self._svc.probe_model_endpoint(base_url, api_key)
+
+    def add_custom_model(self, name: str, model_id: str, base_url: str, api_key: str,
+                         tier: str = ""):
+        return self._svc.add_custom_model(name, model_id, base_url, api_key, tier)
 
     def remove_custom_model(self, name: str):
         return self._svc.remove_custom_model(name)
