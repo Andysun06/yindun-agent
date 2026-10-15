@@ -513,6 +513,168 @@ for t in writers:
     t.join()
 check("4 线程并发写上报无异常（写锁串行化生效）", not write_errors, str(write_errors[:3]))
 
+
+# ══════════════════════════════════════════════════════════════════
+section("【H】闭环实测：控制面下发 → 端点本地真的生效（真实 HTTP + 真实策略引擎）")
+# ══════════════════════════════════════════════════════════════════
+# 这一组回答的是"控制端和本地 agent 到底连没连上、策略到底生不生效"：
+# 起真实 HTTP 控制面 → 生成配对码 → 本地 agent 用码接入 → 上报 → 下发策略 →
+# **断言本地策略引擎的判定真的变了**（这是"生效"的唯一证据，配置里存着不算）。
+import threading                                                      # noqa: E402
+import urllib.error                                                  # noqa: E402
+import urllib.request                                                 # noqa: E402
+
+from yindun.app.agent_service import AgentService                     # noqa: E402
+from yindun.app.session_store import SessionStore                     # noqa: E402
+from yindun.app.settings_store import SettingsStore                   # noqa: E402
+from yindun.control.server import serve as serve_control              # noqa: E402
+from yindun.core.policy_manager import PolicyManager                  # noqa: E402
+
+E2E = TMP / "e2e"
+E2E.mkdir(parents=True, exist_ok=True)
+# ★ 必须先建策略引擎（单例）：配置目录只能在首次实例化时钉住，
+#   否则测试会写进本机真实 config/policy.json。
+pm = PolicyManager(config_dir=str(E2E / "policy"))
+pm.clear_control_rules()
+
+e2e_store = ControlStore(E2E / "control.db")
+httpd = serve_control("127.0.0.1", 8799, e2e_store, verbose=False)
+threading.Thread(target=httpd.serve_forever, daemon=True).start()
+BASE = "http://127.0.0.1:8799"
+e2e_admin = e2e_store.ensure_admin_token()
+
+
+def http_json(method: str, path: str, body=None, token: str = ""):
+    req = urllib.request.Request(
+        BASE + path, method=method,
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None,
+        headers={"Content-Type": "application/json; charset=utf-8",
+                 "Authorization": "Bearer " + token})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        resp = opener.open(req, timeout=10)
+    except urllib.error.HTTPError as exc:      # 4xx/5xx 也是"结果"，交回给断言判断
+        raw = exc.read()
+        try:
+            return exc.code, json.loads(raw.decode("utf-8")), dict(exc.headers)
+        except Exception:
+            return exc.code, raw, dict(exc.headers)
+    with resp:
+        raw = resp.read()
+        for ctype in ("application/json", "text/csv"):
+            if resp.headers.get("Content-Type", "").startswith(ctype):
+                return resp.status, (json.loads(raw.decode("utf-8")) if ctype == "application/json"
+                                     else raw.decode("utf-8-sig")), dict(resp.headers)
+        return resp.status, raw, dict(resp.headers)
+
+
+# ① 沙箱内的对象：只读白名单 + 沙箱内 → 未下发策略时"自动放行"
+from yindun.core.policy_manager import SANDBOX_ROOT                    # noqa: E402
+normal_file = str(Path(SANDBOX_ROOT) / "docs" / "readme_probe.txt")
+sensitive_file = str(Path(SANDBOX_ROOT) / "合同" / "甲方合同.txt")
+check("前置：沙箱内只读操作未下发策略时自动放行（对照基线）",
+      pm.check("read_local_file", normal_file) == "approve", pm.check("read_local_file", normal_file))
+
+# ② 控制台生成配对码（企业常规路径：IT 发码，员工机自助接入）
+st, code_info, _ = http_json("POST", "/api/v1/pair-code", {"ttl_minutes": 30, "note": "E2E"}, e2e_admin)
+check("管理端能生成配对码", st == 200 and len(code_info.get("code", "")) == 6, str(code_info))
+
+# ③ 本地 agent 用配对码接入（不持有管理令牌）
+svc = AgentService(settings=SettingsStore(path=E2E / "cfg.json"),
+                   sessions=SessionStore(path=E2E / "sess.json"),
+                   plugin_data_root=E2E / "plugins")
+svc.control_config_path = E2E / "control.json"        # 不碰本机真实配置
+svc._control_audit = audit                            # 复用本套件前面的假审计（不写本机审计目录）
+paired = svc.control_pair(BASE, code_info["code"], "E2E 财务机")
+check("用配对码接入成功（无需管理令牌）", paired.get("ok"), str(paired))
+check("接入后默认**不启用**上报（绝不静默上报）", svc.control_status()["enabled"] is False)
+
+st, again, _ = http_json("POST", "/api/v1/enroll",
+                         {"code": code_info["code"], "name": "重放", "endpoint_id": "ep-replay"})
+check("配对码一次性：重放被拒", st == 403, f"{st} {again}")
+
+# ④ 启用上报 → 同步（上报 + 取策略 + 落地）
+enabled = svc.control_set_enabled(True)
+check("启用上报并完成首次同步", enabled.get("ok") and enabled.get("sync", {}).get("report", {}).get("ok"),
+      str(enabled.get("sync", {}).get("report")))
+st, ov, _ = http_json("GET", "/api/v1/overview", None, e2e_admin)
+check("控制面已看到该端点与事件", ov["endpoints"] == 1 and ov["events"] > 0, str(ov))
+
+# ⑤ 下发"敏感路径"策略 → 断言**本地判定真的变了**
+st, pushed, _ = http_json("POST", "/api/v1/policy", {
+    "scope": "global",
+    "bundle": {"sensitive_paths": [str(Path(SANDBOX_ROOT) / "合同" / "*")],
+               "note": "E2E 合同目录收紧"}}, e2e_admin)
+check("下发敏感路径策略成功", st == 200 and pushed.get("version") == 1, str(pushed))
+sync2 = svc.control_sync()
+check("端点同步并应用策略", sync2.get("policy", {}).get("applied", {}).get("ok"), str(sync2.get("policy")))
+check("★ 生效证据①：合同目录的只读操作被收紧为需审批",
+      pm.check("read_local_file", sensitive_file) == "confirm",
+      pm.check("read_local_file", sensitive_file))
+check("★ 生效证据②：普通目录不受影响（是精准收紧，不是一刀切）",
+      pm.check("read_local_file", normal_file) == "approve",
+      pm.check("read_local_file", normal_file))
+rules_after_first = len(pm.get_control_rules())
+svc.control_sync()
+check("★ 幂等：重复同步不会累积重复规则",
+      len(pm.get_control_rules()) == rules_after_first, f"{rules_after_first} → {len(pm.get_control_rules())}")
+
+# ⑥ 下发"审批下限=confirm" → 连只读自动放行也被冻结
+http_json("POST", "/api/v1/policy", {"scope": "global", "bundle": {"approval_floor": "confirm"}}, e2e_admin)
+svc.control_sync()
+check("★ 生效证据③：审批下限生效——只读自动放行被冻结",
+      pm.check("read_local_file", normal_file) == "confirm", pm.check("read_local_file", normal_file))
+
+# ⑦ 应急熔断：审批下限=deny
+http_json("POST", "/api/v1/policy", {"scope": "global", "bundle": {"approval_floor": "deny"}}, e2e_admin)
+svc.control_sync()
+check("★ 生效证据④：熔断生效——一切操作直接拒绝",
+      pm.check("create_local_file", normal_file) == "deny" and pm.check("read_local_file", normal_file) == "deny")
+
+# ⑧ 远程强制严格模式
+http_json("POST", "/api/v1/policy", {"scope": "global", "bundle": {"require_strict_mode": True}}, e2e_admin)
+svc.control_sync()
+check("★ 生效证据⑤：远程要求严格模式 → 本地设置与运行环境都关掉解释器",
+      svc.settings.get("allow_script_exec") is False and os.environ.get("ALLOW_SCRIPT_EXEC") == "0",
+      f"{svc.settings.get('allow_script_exec')} / {os.environ.get('ALLOW_SCRIPT_EXEC')}")
+
+# ⑨ 控制面视角：在线状态与策略漂移
+st, eps2, _ = http_json("GET", "/api/v1/endpoints", None, e2e_admin)
+ep = eps2["endpoints"][0]
+check("控制面显示端点在线", ep["online"] is True, str(ep.get("online")))
+check("控制面显示策略已同步（漂移为零）", ep["drift"] == "已同步", str(ep["drift"]))
+check("端点上报了它自己看到的策略版本", ep["policy_have"] >= 1, str(ep["policy_have"]))
+
+# ⑩ 审计导出（合规留档）：内容与界面一致，且不含明文
+st, exported, headers = http_json("GET", "/api/v1/export?format=json", None, e2e_admin)
+check("JSON 导出成功且声明了数据边界",
+      st == 200 and isinstance(exported, dict) and "不含明文" in exported.get("data_boundary", ""), str(st))
+blob = json.dumps(exported, ensure_ascii=False)
+check("导出内容不含明文 PII（与界面所见一致）",
+      not any(x in blob for x in (RAW_PHONE, RAW_ID, RAW_EMAIL, RAW_PATH)))
+st, csv_text, headers2 = http_json("GET", "/api/v1/export?format=csv", None, e2e_admin)
+check("CSV 导出可用且带下载文件名（Excel 直接打开）",
+      st == 200 and "yindun-audit-" in headers2.get("Content-Disposition", "")
+      and "时间" in csv_text[:40], str(headers2.get("Content-Disposition")))
+
+# ⑪ 定时同步：能起、能停、不阻塞
+started = svc.control_start_auto(30)
+check("定时同步可启动（每 30 秒）", started.get("ok") and svc.control_status()["running"])
+check("定时同步可停止", svc.control_stop_auto().get("ok") and not svc.control_status()["running"])
+
+# ⑫ 断开与撤销：断开保留规则（不静默放松），显式撤销才移除
+svc.control_set_enabled(False)
+check("断开上报后本地规则仍在（不静默放松策略）",
+      len(pm.get_control_rules()) > 0 and pm.check("read_local_file", normal_file) == "deny")
+cleared = svc.control_clear_rules()
+check("显式撤销后规则清空、判定回到基线",
+      cleared.get("removed", 0) > 0 and pm.check("read_local_file", normal_file) == "approve",
+      str(cleared))
+
+httpd.shutdown()
+httpd.server_close()
+e2e_store.close()
+
 # 收尾
 store.close()
 print("\n" + "=" * 78)

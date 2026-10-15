@@ -16,7 +16,7 @@ import json
 import secrets
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -87,7 +87,18 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS pair_codes (
+  code        TEXT PRIMARY KEY,
+  note        TEXT DEFAULT '',
+  created_at  TEXT NOT NULL,
+  expires_at  TEXT NOT NULL,
+  used_at     TEXT DEFAULT '',
+  endpoint_id TEXT DEFAULT ''
+);
 """
+
+
+ONLINE_WINDOW_SEC = 15 * 60      # 超过 15 分钟未上报即视为失联
 
 
 def _now() -> str:
@@ -205,6 +216,50 @@ class ControlStore:
             self._conn.commit()
         return token, self.policy_signing_key()
 
+    # ── 配对码（IT 发码 → 员工机自助接入，无需把管理令牌发给员工）──
+    def create_pair_code(self, ttl_minutes: int = 30, note: str = "") -> Dict[str, Any]:
+        """生成一次性配对码。默认 30 分钟有效、用后作废。"""
+        code = secrets.token_hex(3).upper()          # 6 位十六进制，便于口头/截图传达
+        ttl = max(5, min(int(ttl_minutes or 30), 24 * 60))
+        created = datetime.now(timezone.utc).astimezone()
+        expires = created + timedelta(minutes=ttl)
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO pair_codes(code,note,created_at,expires_at) VALUES(?,?,?,?)",
+                (code, str(note)[:120], created.strftime("%Y-%m-%dT%H:%M:%S"),
+                 expires.strftime("%Y-%m-%dT%H:%M:%S")))
+            self._conn.commit()
+        return {"code": code, "expires_at": expires.strftime("%Y-%m-%dT%H:%M:%S"),
+                "ttl_minutes": ttl, "note": str(note)[:120]}
+
+    def consume_pair_code(self, code: str, endpoint_id: str) -> Tuple[bool, str]:
+        """核销配对码。返回 (是否可用, 原因)。一次性 + 有效期双重约束。"""
+        code = (code or "").strip().upper()
+        if not code:
+            return False, "缺少配对码"
+        row = self._conn.execute("SELECT * FROM pair_codes WHERE code=?", (code,)).fetchone()
+        if row is None:
+            return False, "配对码不存在"
+        if row["used_at"]:
+            return False, f"配对码已被使用（{row['used_at']}）"
+        if _now() > row["expires_at"]:
+            return False, f"配对码已过期（{row['expires_at']}）"
+        with self._lock:
+            self._conn.execute("UPDATE pair_codes SET used_at=?, endpoint_id=? WHERE code=?",
+                               (_now(), endpoint_id, code))
+            self._conn.commit()
+        return True, "ok"
+
+    def list_pair_codes(self, limit: int = 20) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM pair_codes ORDER BY created_at DESC LIMIT ?", (max(1, int(limit)),)).fetchall()
+        now = _now()
+        return [{"code": r["code"], "note": r["note"], "created_at": r["created_at"],
+                 "expires_at": r["expires_at"], "used_at": r["used_at"] or "",
+                 "endpoint_id": r["endpoint_id"] or "",
+                 "state": ("已使用" if r["used_at"] else ("已过期" if now > r["expires_at"] else "可用"))}
+                for r in rows]
+
     def verify_endpoint(self, endpoint_id: str, token: str) -> bool:
         row = self._conn.execute("SELECT token_hash FROM endpoints WHERE endpoint_id=?",
                                  (endpoint_id,)).fetchone()
@@ -307,6 +362,19 @@ class ControlStore:
             verdict = snapshot_verdict(snap)
             if bad:
                 verdict = "链异常"
+            # 在线/失联：企业运维最需要的"这台机器还活着吗"（阈值 15 分钟）
+            last_report = row["last_report_at"] or ""
+            online = False
+            if last_report:
+                try:
+                    online = (datetime.now(timezone.utc).astimezone()
+                              - datetime.fromisoformat(last_report)).total_seconds() <= ONLINE_WINDOW_SEC
+                except Exception:
+                    online = False
+            # 策略漂移：控制面当前版本 vs 端点自己报的已应用版本
+            want = int(self.policy_for(ep).get("version", 0) or 0)
+            have = int(row["policy_version"] or 0)
+            drift = "已同步" if have >= want else f"待同步 v{have}→v{want}"
             out.append({
                 "endpoint_id": ep, "name": row["name"], "version": row["version"],
                 "platform": row["platform"], "last_seen_at": row["last_seen_at"] or "",
@@ -314,6 +382,8 @@ class ControlStore:
                 "total_count": row["total_count"], "head_hash": row["head_hash"],
                 "chain_verdict": verdict, "chain_alerts": bad,
                 "first_seen_at": row["first_seen_at"] or "",
+                "online": online, "last_report_at": last_report,
+                "policy_want": want, "policy_have": have, "drift": drift,
                 "models": caps.get("models", []),
                 "external_models": caps.get("external_models", []),
                 "plugins": caps.get("plugins", []),

@@ -17,6 +17,15 @@
 
   const messages = [
     { role: "user", content: "帮我看看 assets 目录里的供应商合同，把乙方联系人和付款条款整理出来。" },
+    // 过程轨迹（预览用）：思考耗时 / 工具动作 / 关键判定——真实运行时由后端 trace 事件产生
+    { role: "trace", trace: { seq: 1, kind: "thinking", name: "思考", detail: "3 条上下文", status: "ok", ms: 2400 } },
+    { role: "trace", trace: { seq: 2, kind: "tool", name: "读取本地文件", detail: "assets/供应商服务合同_示例.md", status: "ok", ms: 120 } },
+    { role: "trace", trace: { seq: 3, kind: "judge", name: "隐私隔离网关",
+        detail: "识别到 5 类敏感实体（PHONE×2、IDCARD×1、BANKCARD×1、EMAIL×1、NAME×2），已替换为占位符", status: "ok", ms: 0 } },
+    { role: "trace", trace: { seq: 4, kind: "judge", name: "laya 风险分级",
+        detail: "该操作涉及读取客户资料，风险等级：中 —— 建议人工确认后再落盘", status: "ok", ms: 810 } },
+    { role: "trace", trace: { seq: 5, kind: "tool", name: "创建本地文件", detail: "合同要点_20261003.md", status: "running", ms: 0 } },
+    { role: "trace", trace: { seq: 6, kind: "tool", name: "创建本地文件", detail: "写入前经人工审批放行", status: "ok", ms: 1580 } },
     {
       role: "assistant",
       content:
@@ -239,6 +248,22 @@
         ],
       },
     }),
+    control_status: () => Promise.resolve({
+      configured: true, enabled: true, url: "http://10.0.0.9:8787", endpoint_id: "ep-e2e-01",
+      last_sent_count: 32, last_report_at: "2026-10-16T10:12:33", last_error: "",
+      applied_policy_version: 4, auto_interval: 300, running: false,
+      effect: ["2 条敏感路径：命中即需人工审批", "审批下限：所有操作都要人工确认（含只读操作，冻结自动放行）",
+               "严格模式：禁用解释器，只保留只读命令"],
+      control_rules: [
+        { path_pattern: "E:/yindun-agent/合同/*", policy: "confirm", from_control_version: 4, source: "control" },
+        { path_pattern: "*", policy: "confirm", from_control_version: 4, source: "control" },
+      ],
+    }),
+    control_pair: () => Promise.resolve({ ok: true, endpoint_id: "ep-e2e-01", note: "登记成功" }),
+    control_set_enabled: () => Promise.resolve({ ok: true, enabled: true }),
+    control_sync: () => Promise.resolve({ ok: true, report: { events: 4 }, policy: { applied: { policy_version: 4 } } }),
+    control_clear_rules: () => Promise.resolve({ ok: true, removed: 2 }),
+    control_auto: () => Promise.resolve({ ok: true, interval: 300 }),
     probe_model_endpoint: () => Promise.resolve(
       { ok: true, style: "openai", models: ["qwen2.5:14b", "qwen2.5:32b"], count: 2,
         endpoint: "http://10.0.0.8:8000/v1", note: "已连通，发现 2 个模型" }),

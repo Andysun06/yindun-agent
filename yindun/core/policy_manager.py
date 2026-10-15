@@ -300,6 +300,77 @@ class PolicyManager:
     def get_classification_rules(self) -> List[dict]:
         return list(self._classification_rules)
 
+    # ── 控制面下发规则（V3.5.0）─────────────────────────
+    #  由企业控制面下发、经端点验签与"只收紧"合并后写入。三条设计约束：
+    #   ① **可辨认**：每条规则带 source="control" 与服务端版本号，设置页能列出
+    #      "哪些规则来自控制面"，不允许出现"来路不明的规则"；
+    #   ② **幂等**：set_control_rules() 整体替换自己这一类规则，重复下发不会累积重复项；
+    #   ③ **只收紧**：本层只接受 confirm / deny 与敏感路径（方向由 control/policy.py 的
+    #      单调合并保证），内核不接受控制面把规则变得更松。
+    CONTROL_SOURCE = "control"
+
+    def get_control_rules(self) -> List[dict]:
+        return [dict(r) for r in self._approval_rules
+                if r.get("source") == self.CONTROL_SOURCE]
+
+    def set_control_rules(self, rules: Optional[List[dict]] = None,
+                          sensitive_paths: Optional[List[str]] = None,
+                          policy_version: int = 0) -> int:
+        """整体替换控制面规则（幂等）。返回写入的规则条数。
+
+        rules 里每条的 policy 只允许 confirm / deny；出现别的值一律按 confirm 处理并忽略，
+        因为"把规则放松"不在控制面的权限范围内。sensitive_paths 会各自生成一条
+        "匹配即按 floor（默认 confirm）"的规则，插在**最前面**（审批规则是首条命中优先）。
+        """
+        if not hasattr(self, "_approval_rules"):
+            self._load_or_init()
+        self._approval_rules = [r for r in self._approval_rules
+                                if r.get("source") != self.CONTROL_SOURCE]
+        injected: List[dict] = []
+
+        def _mk(pattern: str, policy: str) -> dict:
+            return {"path_pattern": pattern, "operations": "*",
+                    "policy": policy if policy in ("confirm", "deny") else "confirm",
+                    "source": self.CONTROL_SOURCE, "from_control_version": int(policy_version or 0)}
+
+        for pattern in (sensitive_paths or []):
+            if isinstance(pattern, str) and pattern.strip():
+                injected.append(_mk(pattern.strip(), "confirm"))
+        for rule in (rules or []):
+            if isinstance(rule, dict) and str(rule.get("path_pattern") or "").strip():
+                injected.append(_mk(str(rule["path_pattern"]).strip(), str(rule.get("policy") or "confirm")))
+
+        # 兜底规则（"审批下限"）：放在队尾，只有前面的规则都没命中时才生效
+        floor_rule = None
+        for rule in (rules or []):
+            if isinstance(rule, dict) and rule.get("path_pattern") == "*" and rule.get("_floor"):
+                floor_rule = _mk("*", str(rule.get("policy") or "confirm"))
+        if floor_rule is None:
+            for rule in (rules or []):
+                if isinstance(rule, dict) and rule.get("_floor"):
+                    floor_rule = _mk("*", str(rule.get("policy") or "confirm"))
+
+        self._approval_rules = injected + self._approval_rules
+        if floor_rule is not None:
+            self._approval_rules.append(floor_rule)
+        if sensitive_paths is not None:
+            self._custom_sensitive_paths = [p for p in self._custom_sensitive_paths
+                                            if p not in set(sensitive_paths)]
+        self.save()
+        return len(injected) + (1 if floor_rule else 0)
+
+    def clear_control_rules(self) -> int:
+        """移除全部控制面规则（断开控制面或运维显式撤销时调用）。返回移除条数。"""
+        if not hasattr(self, "_approval_rules"):
+            self._load_or_init()
+        before = len(self._approval_rules)
+        self._approval_rules = [r for r in self._approval_rules
+                                if r.get("source") != self.CONTROL_SOURCE]
+        removed = before - len(self._approval_rules)
+        if removed:
+            self.save()
+        return removed
+
     # ── 工具函数 ────────────────────────────
 
     @staticmethod

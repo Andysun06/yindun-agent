@@ -175,8 +175,11 @@ def merge_tighten(local: Dict[str, Any], remote: Dict[str, Any]) -> Dict[str, An
     out["require_strict_mode"] = bool(out.get("require_strict_mode")) or bool(
         remote.get("require_strict_mode"))
 
-    # 版本只增（用于端点判断"是否收到过更新的策略"）
+    # 版本只增（用于端点判断"是否收到过更新的策略"）。
+    # 同时写 version：合并结果会被存进端点配置并随上报回传（"我应用了哪一版"），
+    # 界面据此算策略漂移；只写 policy_version 会让漂移永远显示成 v0。
     out["policy_version"] = max(int(out.get("policy_version", 0)), int(remote.get("version", 0)))
+    out["version"] = out["policy_version"]
     return out
 
 

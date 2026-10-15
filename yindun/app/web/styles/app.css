@@ -286,6 +286,43 @@ html[data-frameless="1"] .win-ctrls { display: inline-flex; }
 .chip__x:hover { color: var(--danger-500); }
 .chip--bad { color: var(--danger-500); }
 
+/* ── 过程轨迹时间线（思考 / 工具 / 关键判定）────────────────
+   定位：看得见但不是主角——低对比、等宽元信息、一行一件事；
+   关键判定（隐私网关、laya 风险）给左侧色条与徽标，扫一眼注意得到，又不打断正文阅读。 */
+.entry__trace, .trace-block { display: flex; flex-direction: column; gap: 2px; margin: 0 0 var(--sp-4); }
+.row--trace { padding: var(--sp-2) 0; }
+.trace { display: flex; align-items: baseline; gap: var(--sp-3); padding: 3px 0; font-size: var(--fs-sm); }
+.trace__ico { flex: none; width: 14px; text-align: center; color: var(--text-3); font-size: 11px; }
+.trace__name { flex: none; color: var(--text-2); }
+.trace__detail { flex: 1; min-width: 0; color: var(--text-3); font-family: var(--font-mono);
+  font-size: var(--fs-meta); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trace__state { flex: none; color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-meta); }
+.trace--thinking .trace__ico { color: var(--accent-500); }
+.trace--thinking .trace__name { color: var(--text-3); }
+.trace--tool .trace__ico { color: var(--text-2); }
+.trace.is-running .trace__state { color: var(--accent-600); }
+.trace.is-fail { color: var(--danger-500); }
+.trace.is-fail .trace__name, .trace.is-fail .trace__state { color: var(--danger-500); }
+/* 关键判定：整行浅色底 + 左侧色条，醒目但不刺眼 */
+.trace--judge { padding: 5px var(--sp-3) 5px var(--sp-4); border-left: 2px solid var(--accent-500);
+  background: var(--accent-50); border-radius: 0 var(--r-chip) var(--r-chip) 0; }
+.trace--judge .trace__ico { color: var(--accent-600); }
+.trace--judge .trace__name { color: var(--accent-700); font-weight: 600; }
+.trace--judge .trace__detail { color: var(--text-2); font-family: var(--font-sans); font-size: var(--fs-sm); }
+
+/* ── 企业控制面页 ───────────────────────────── */
+.ctrl-form { display: flex; gap: var(--sp-3); flex-wrap: wrap; }
+.ctrl-form input { flex: 1; min-width: 200px; padding: 7px 10px; background: var(--bg-input);
+  border: 1px solid var(--border-2); border-radius: var(--r-ctrl); font-size: var(--fs-sm); outline: none; }
+.ctrl-form input:focus { border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--accent-50); }
+.ctrl-rules { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px;
+  font-size: var(--fs-sm); }
+.ctrl-rules li { padding-left: var(--sp-4); border-left: 2px solid var(--accent-500); color: var(--text-2); }
+.ctrl-rules li.muted { border-left-color: var(--border-2); color: var(--text-3); font-size: var(--fs-meta);
+  font-family: var(--font-mono); }
+
+
+
 .composer__box {
   display: block;
   padding: var(--sp-4) var(--sp-4) var(--sp-3);

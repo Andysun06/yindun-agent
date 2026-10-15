@@ -30,7 +30,7 @@
 | 🧩 **插件开发指南**（钩子契约 / 安全边界 / 最小示例） | [docs/插件开发.md](docs/插件开发.md) |
 | 🧪 **隐私攻防评测**（黑盒/白盒/劫持/注入，可复现） | [tests/privacy_eval.py](tests/privacy_eval.py)（`python tests/privacy_eval.py` 一键复现） |
 | 🎯 **留出集覆盖率评测**（随机化语料 / 冻结规则一次性运行 / 含评测日志） | [tests/privacy_holdout_eval.py](tests/privacy_holdout_eval.py)（`python tests/privacy_holdout_eval.py` 一键复现） |
-| 🏢 **控制面**（企业侧集中管理：外部锚定 + 只收紧策略 + 集中控制台） | [yindun/control/](yindun/control/)（`python -m yindun.control.server --port 8787`，浏览器打开 `http://127.0.0.1:8787/`；管理令牌见 `control_data/admin_token.txt`） |
+| 🏢 **控制面**（企业侧集中管理：外部锚定 + 只收紧策略 + 配对码纳管 + 集中控制台） | [yindun/control/](yindun/control/)（`python -m yindun.control.server --port 8787`，浏览器打开 `http://127.0.0.1:8787/`；管理令牌见 `control_data/admin_token.txt`） |
 
 > 核心一句话：**让大模型"看不见"敏感数据，却依然能完成办公任务**——数据进模型前在内存中替换为加密占位符，模型全程只见占位符，回答返回时自动还原；配合文件沙箱、命令白名单、熔断审批与 HMAC 哈希链审计，构成"输入—推理—执行—落盘—审计"全链路纵深防御。
 

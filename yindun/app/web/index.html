@@ -183,6 +183,9 @@
             <button class="setnav__item" data-set="kb" type="button">本地知识库</button>
             <button class="setnav__item" data-set="plugin" type="button">插件</button>
           </div>
+          <div class="setnav__group"><span>企业</span>
+            <button class="setnav__item" data-set="control" type="button">企业控制面</button>
+          </div>
           <div class="setnav__group"><span>界面</span>
             <button class="setnav__item" data-set="appearance" type="button">窗口与外观</button>
           </div>
@@ -269,6 +272,51 @@
                 </div>
               </div>
               <p class="setfoot">插件只能做加法：补充识别、扩展解析、工作流模板、导出格式；脱敏豁免 / 白名单 / 审批放行 / 审计写入永不开放。</p>
+            </div>
+
+            <!-- ── 企业控制面（V3.5.0）── -->
+            <div class="setpage" data-set="control">
+              <div class="setcard" id="ctrl-status-card">
+                <div class="setrow">
+                  <div class="setrow__text"><b>接入状态</b><span id="ctrl-state">未接入</span></div>
+                  <div class="setrow__ctrl">
+                    <button class="btn" id="btn-ctrl-sync" type="button">立即同步</button>
+                    <label class="switch"><input type="checkbox" id="sw-ctrl-report"><span class="switch__track"></span></label>
+                  </div>
+                </div>
+                <div class="setrow">
+                  <div class="setrow__text"><b>定时同步</b><span>每 5 分钟自动上报一次并取回最新策略（关掉也不影响本地使用）</span></div>
+                  <div class="setrow__ctrl"><label class="switch"><input type="checkbox" id="sw-ctrl-auto"><span class="switch__track"></span></label></div>
+                </div>
+              </div>
+
+              <div class="setcard" style="margin-top:12px">
+                <div class="setrow setrow--stack">
+                  <div class="setrow__text"><b>用配对码接入</b>
+                    <span>向 IT 索取 6 位配对码（一次性、有有效期）。接入后本机只上传<b>掩码事件与元数据</b>：
+                      密钥与明文从不离开本机，模型提示词与回答也不经过控制面。</span></div>
+                  <div class="ctrl-form">
+                    <input type="text" id="ctrl-url" placeholder="控制面地址，如 http://10.0.0.9:8787">
+                    <input type="text" id="ctrl-code" placeholder="配对码（6 位，如 A1B2C3）">
+                    <button class="btn btn--primary" id="btn-ctrl-pair" type="button">接入</button>
+                  </div>
+                  <div class="tier__note" id="ctrl-note"></div>
+                </div>
+              </div>
+
+              <h4 class="prov__subtitle">控制面在这台机器上已生效的策略<span class="muted">（只收紧，不放松）</span></h4>
+              <div class="setcard">
+                <div class="setrow setrow--stack">
+                  <ul class="ctrl-rules" id="ctrl-rules"><li class="muted">尚未应用任何控制面策略</li></ul>
+                </div>
+                <div class="setrow">
+                  <div class="setrow__text"><b>撤销控制面策略</b>
+                    <span>移除控制面下发的本地规则（断开上报不会自动移除，避免"悄悄放松")</span></div>
+                  <div class="setrow__ctrl"><button class="btn" id="btn-ctrl-clear" type="button">撤销</button></div>
+                </div>
+              </div>
+              <p class="setfoot">控制面能做的只有"收紧"：下发敏感路径、提高审批下限、强制严格模式、限制可用模型与插件。
+                它<b>不能</b>下发脱敏豁免、审批放行或白名单放行——那类判定权永远留在本机内核。</p>
             </div>
 
             <!-- ── 窗口与外观 ── -->

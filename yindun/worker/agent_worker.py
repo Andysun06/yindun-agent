@@ -31,6 +31,7 @@ from yindun.core.policy_manager import PolicyManager
 # 推理引擎对外发布的事件主题（界面只需订阅这些）
 WORKER_EVENTS = (
     "status",               # str：过程状态文本（状态栏）
+    "trace",                # dict：结构化过程轨迹（思考/工具/关键判定），界面渲染成时间线
     "intermediate_result",  # str：中间结果（渐进展示）
     "finished",             # str：最终回答
     "error",                # str：错误信息（已翻译为友好文案）
@@ -279,6 +280,7 @@ class Worker:
             raise KeyboardInterrupt("用户取消")
 
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        _t0 = time.time()
         try:
             future = executor.submit(self.llm.invoke, messages)
             while not future.done():
@@ -289,9 +291,29 @@ class Worker:
                     raise KeyboardInterrupt("用户取消")
                 # 等待一小段时间再检查（避免频繁轮询）
                 threading.Event().wait(check_interval)
-            return future.result()
+            _result = future.result()
+            # 思考耗时：主流 agent 会把这段显性化，用户据此判断"它在认真想还是在卡住"
+            self._trace("thinking", "思考", f"{len(messages)} 条上下文", "ok",
+                        ms=int((time.time() - _t0) * 1000))
+            return _result
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
+
+    def _trace(self, kind: str, name: str, detail: str = "", status: str = "",
+               ms: int = 0) -> None:
+        """发一条结构化过程轨迹（best-effort：界面没订阅也不影响推理）。
+
+        kind: thinking 思考 / tool 工具 / judge 关键判定（隐私网关、laya 风险等）
+        界面据此渲染成时间线；落库由服务层负责，刷新后仍在。
+        """
+        try:
+            tid = int(getattr(self, "_trace_seq", 0)) + 1
+            self._trace_seq = tid
+            self.bus.emit("trace", {"id": tid, "kind": kind, "name": str(name)[:80],
+                                    "detail": str(detail)[:200], "status": status,
+                                    "ms": int(ms or 0)})
+        except Exception:
+            pass          # 轨迹是"看得见"的附加能力，绝不因为它打断推理
 
     # ──────────────────────────────────────────
     # 主入口：根据模式执行不同逻辑
@@ -323,6 +345,11 @@ class Worker:
                     _stats = engine.get_last_stats()
                     if _stats:
                         _audit.log_privacy_batch(_stats, "detected")
+                        # 关键判定显性化：用户看得见"网关认出了什么、替换了什么"
+                        _summary = "、".join(f"{k}×{v}" for k, v in list(_stats.items())[:6])
+                        self._trace("judge", "隐私隔离网关",
+                                    f"识别到 {len(_stats)} 类敏感实体（{_summary}），已替换为占位符",
+                                    "ok")
                     _audit.log_llm_input(self.user_input, has_privacy=True,
                                          preview=ai_input[:200])
                 else:
@@ -890,9 +917,12 @@ class Worker:
                 )
 
                 AuditLog().log_tool_call(tool_name, tool_args, target_path)
+                _tool_tid = int(getattr(self, "_trace_seq", 0)) + 1
+                self._trace("tool", tool_display_name, str(target_path or ""), "running")
 
                 try:
                     self.tool_call_count += 1
+                    _t_tool = time.time()
 
                     tool_result = self._execute_tool(tool_name, tool_args)
                     has_executed_tool = True  # 标记已执行过工具
@@ -902,12 +932,16 @@ class Worker:
                     tool_result, _ = self._anonymize_tool_output(tool_result, tool_name)
 
                     AuditLog().log_tool_result(tool_name, True, str(tool_result)[:500])
+                    self._trace("tool", tool_display_name, "执行完成", "ok",
+                                ms=int((time.time() - _t_tool) * 1000))
 
                 except Exception as e:
                     tool_result = f"[工具执行错误] {type(e).__name__}: {e}"
                     round_had_failure = True
                     all_success = False
                     AuditLog().log_tool_result(tool_name, False, str(e))
+                    self._trace("tool", tool_display_name, f"{type(e).__name__}: {e}", "fail",
+                                ms=int((time.time() - _t_tool) * 1000))
 
                 # 4. 将工具执行结果追加到消息列表
                 tool_msg = ToolMessage(content=str(tool_result), tool_call_id=tool_call_id)

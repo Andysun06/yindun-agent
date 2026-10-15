@@ -27,7 +27,7 @@ from yindun.core.secret_manager import SecretManager
 SESSIONS_FILE = APP_ROOT / "chat_sessions.json"
 
 # 允许持久化的角色（tool 必须保留，否则工具调用链断裂）
-KNOWN_ROLES = {"user", "assistant", "system", "tool"}
+KNOWN_ROLES = {"user", "assistant", "system", "tool", "trace"}
 
 
 def _now() -> str:

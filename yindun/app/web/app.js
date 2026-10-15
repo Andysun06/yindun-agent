@@ -253,6 +253,71 @@
   }
 
   /** 用户输入 = 指令票：左轨加粗 + 小标签 */
+  /** 过程轨迹时间线：把"它在想什么、做了什么、凭什么这么判"显性化。
+   *  行型三态：思考（耗时）/ 工具（名称+目标+结果）/ 关键判定（隐私网关、laya 风险等）。
+   *  设计取舍：轨迹是"看得见但不是主角"——低对比度、等宽元信息、只占一行；
+   *  关键判定给一条左侧色条与徽标，扫一眼能注意到，又不会打断正文阅读。 */
+  const TRACE_ICON = { thinking: "◍", tool: "▸", judge: "◆", info: "·" };
+  const TRACE_STATE = { running: "进行中", ok: "已完成", fail: "失败" };
+
+  function traceRowEl(item) {
+    const kind = String(item.kind || "info");
+    const row = document.createElement("div");
+    row.className = `trace trace--${kind}`;
+    if (item.status) row.classList.add("is-" + String(item.status));
+    row.dataset.kind = kind;
+    row.dataset.name = String(item.name || "");
+    if (item.seq) row.dataset.seq = String(item.seq);
+    const ms = Number(item.ms || 0);
+    const time = ms > 0 ? `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} 秒` : "";
+    const state = TRACE_STATE[item.status] || "";
+    row.innerHTML =
+      `<span class="trace__ico">${TRACE_ICON[kind] || "·"}</span>` +
+      `<span class="trace__name">${esc(item.name || "")}</span>` +
+      (item.detail ? `<span class="trace__detail">${esc(item.detail)}</span>` : "") +
+      ((state || time) ? `<span class="trace__state">${esc([state, time].filter(Boolean).join(" · "))}</span>` : "");
+    return row;
+  }
+
+  /** 实时追加：优先就地更新"进行中"的同一动作，避免"调用中/完成"刷成两行 */
+  function appendTrace(item) {
+    if (!item) return;
+    const box = ensureTraceBox(state.streamBubble);
+    if (!box) return;
+    if (item.status && item.status !== "running") {
+      const pending = [...box.querySelectorAll(`.trace[data-kind="${item.kind}"][data-name="${String(item.name || "").replace(/"/g, "")}"].is-running`)].pop();
+      if (pending) {
+        const fresh = traceRowEl(item);
+        fresh.dataset.seq = pending.dataset.seq || "";
+        pending.replaceWith(fresh);
+        scrollToEnd();
+        return;
+      }
+    }
+    box.appendChild(traceRowEl(item));
+    scrollToEnd();
+  }
+
+  function ensureTraceBox(entry) {
+    if (!entry) return null;
+    const body = entry.querySelector(".entry__body");
+    if (!body) return null;
+    let box = entry.querySelector(".entry__trace");
+    if (!box) {
+      box = document.createElement("div");
+      box.className = "entry__trace";
+      (body.parentElement || entry).insertBefore(box, body);
+    }
+    return box;
+  }
+
+  /** 载入历史时把连续轨迹归入同一块（刷新/切会话后仍看得见过程） */
+  function traceBlockEl() {
+    const row = document.createElement("div");
+    row.className = "row row--trace";
+    row.innerHTML = `<div class="trace-block"></div>`;
+    return row;
+  }
   function slipEl(html) {
     const row = document.createElement("div");
     row.className = "row row--user";
@@ -264,8 +329,14 @@
     const chat = $("chat");
     chat.innerHTML = "";
     if (!state.messages.length) { chat.innerHTML = emptyState(); bindStarters(); return; }
-    let index = 0;
+    let index = 0, traceBlock = null;
     for (const m of state.messages) {
+      if (m.role === "trace" && m.trace) {
+        if (!traceBlock) { traceBlock = traceBlockEl(); chat.appendChild(traceBlock); }
+        traceBlock.querySelector(".trace-block").appendChild(traceRowEl(m.trace));
+        continue;
+      }
+      traceBlock = null;                     // 非轨迹消息打断分组
       if (m.role === "user") { chat.appendChild(slipEl(md(m.content || ""))); }
       else if (m.role === "assistant" && m.content) {
         index += 1;
@@ -1288,6 +1359,7 @@
      300~600px 的窄栏放不下，只能挤成竖排表单——那正是上一版难看的根因。 */
   const SET_META = {
     model: ["模型接入", "按数据边界分三档：本机 / 局域网 / 公网"],
+    control: ["企业控制面", "接入公司控制面：只上传掩码事件，只接受收紧策略"],
     safety: ["隐私与权限", "脱敏网关、权限等级与执行严格模式"],
     kb: ["本地知识库", "入库即脱敏的本地检索（脱敏 RAG）"],
     plugin: ["插件", "能力扩展：只增不减，判定权仍在内核"],
@@ -1317,6 +1389,7 @@
     applyLayout();                      // 列宽回到用户的折叠/拖拽状态（单一出口）
   }
   function setSettingsPage(page) {
+    if (page === "control") renderControlPage();
     const meta = SET_META[page] || SET_META.model;
     $("set-title").textContent = meta[0];
     $("set-sub").textContent = meta[1];
@@ -1423,6 +1496,36 @@
     });
   }
 
+  /* ── 企业控制面页（V3.5.0）─────────────────────────
+     设计口径：接入是"显式"的（配对码 + 开关），状态是"如实"的（连不上就说连不上），
+     已生效策略是"可见"的（列出控制面下发的规则，可一键撤销）。 */
+  async function renderControlPage() {
+    const st = await call("control_status");
+    if (!st) return;
+    const state = {
+      text: st.configured
+        ? `${st.enabled ? "上报中" : "已接入（未上报）"} · ${st.endpoint_id} · ${st.url}`
+          + (st.last_report_at ? ` · 最后上报 ${st.last_report_at.slice(11, 19)}` : "")
+          + (st.last_error ? ` · 最近错误：${st.last_error}` : "")
+        : "未接入：向 IT 索取配对码后在下方接入",
+      cls: st.last_error ? "is-bad" : (st.configured ? "is-ok" : ""),
+    };
+    const box = $("ctrl-state");
+    if (box) { box.textContent = state.text; box.className = state.cls; }
+    if ($("sw-ctrl-report")) $("sw-ctrl-report").checked = !!st.enabled;
+    if ($("sw-ctrl-auto")) $("sw-ctrl-auto").checked = !!st.running;
+    const rules = $("ctrl-rules");
+    if (rules) {
+      const list = st.control_rules || [];
+      const effect = st.effect || [];
+      rules.innerHTML = (list.length || effect.length)
+        ? (effect.map((e) => `<li>${esc(e)}</li>`).join("")
+           + list.slice(0, 6).map((r) => `<li class="muted">规则：${esc(r.path_pattern || "*")} → ${
+             r.policy === "deny" ? "直接拒绝" : "需人工审批"}（来自控制面 v${esc(String(r.from_control_version || 0))}）</li>`).join(""))
+        : `<li class="muted">尚未应用任何控制面策略</li>`;
+    }
+  }
+
   /* ── 设置抽屉 ─────────────────────────────────────── */
   function fillSettings() {
     const s = state.settings || {};
@@ -1480,6 +1583,10 @@
         setStatus(""); break;
       case "need_confirm": showApproval(payload || {}); break;
       case "attachments": state.attachments = Array.isArray(payload) ? payload : []; renderChips(); break;
+      case "trace":
+        // 结构化过程轨迹：思考耗时 / 工具动作 / 关键判定（隐私网关、laya 风险等）
+        if (state.busy) appendTrace(payload || {});
+        break;
       case "advisories": renderAdvisories(payload); break;
       case "workflow": {
         if (payload && payload.phase === "start") {
@@ -1653,6 +1760,43 @@
     document.querySelectorAll(".setnav__item").forEach((b) => {
       b.onclick = () => setSettingsPage(b.dataset.set);
     });
+    // 企业控制面页的交互
+    const ctrlNote = (msg, cls) => { const n = $("ctrl-note"); if (n) { n.textContent = msg; n.className = "tier__note " + (cls || ""); } };
+    if ($("btn-ctrl-pair")) $("btn-ctrl-pair").onclick = async () => {
+      const url = ($("ctrl-url").value || "").trim();
+      const code = ($("ctrl-code").value || "").trim().toUpperCase();
+      if (!url || !code) return ctrlNote("控制面地址与配对码都要填", "is-bad");
+      ctrlNote("正在接入…");
+      const res = await call("control_pair", url, code, "");
+      if (res && res.ok) { ctrlNote("接入成功：" + res.note, "is-ok"); $("ctrl-code").value = ""; renderControlPage(); }
+      else ctrlNote("接入失败：" + ((res && res.error) || "未知原因"), "is-bad");
+    };
+    if ($("sw-ctrl-report")) $("sw-ctrl-report").onchange = async (e) => {
+      const res = await call("control_set_enabled", e.target.checked);
+      if (!res || !res.ok) { toast("切换失败：" + ((res && res.error) || "")); e.target.checked = !e.target.checked; return; }
+      toast(e.target.checked ? "已启用上报（掩码事件与元数据）" : "已停用上报");
+      renderControlPage();
+    };
+    if ($("sw-ctrl-auto")) $("sw-ctrl-auto").onchange = async (e) => {
+      const res = await call("control_auto", e.target.checked, 300);
+      if (!res || !res.ok) { toast("切换失败：" + ((res && res.error) || "")); e.target.checked = !e.target.checked; return; }
+      toast(e.target.checked ? "已开启定时同步（每 5 分钟）" : "已停止定时同步");
+      renderControlPage();
+    };
+    if ($("btn-ctrl-sync")) $("btn-ctrl-sync").onclick = async () => {
+      ctrlNote("同步中…");
+      const res = await call("control_sync");
+      if (res && res.ok) {
+        const rep = (res.report || {}), pol = (res.policy || {});
+        ctrlNote(`同步完成：上报 ${rep.events || 0} 条，策略 v${(pol.applied || {}).policy_version || 0}`, "is-ok");
+      } else ctrlNote("同步失败：" + ((res && res.error) || (res && res.report && res.report.error) || "未知原因"), "is-bad");
+      renderControlPage();
+    };
+    if ($("btn-ctrl-clear")) $("btn-ctrl-clear").onclick = async () => {
+      const res = await call("control_clear_rules");
+      toast(res && res.ok ? `已撤销 ${res.removed} 条控制面规则` : "撤销失败");
+      renderControlPage();
+    };
     const themeBtn2 = $("btn-theme-2");
     if (themeBtn2) themeBtn2.onclick = () => persist({ dark_mode: document.documentElement.dataset.theme !== "dark" });
     $("btn-toggle-right").onclick = () => { autoCollapsedRight = false; setRightCollapsed(!rightCollapsed()); };

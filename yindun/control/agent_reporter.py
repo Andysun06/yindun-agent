@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import platform
+import secrets
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -123,6 +124,74 @@ class ControlReporter:
         cfg = dict(self._config)
         cfg.update({"url": url.rstrip("/"), "endpoint_id": endpoint_id,
                     "token": token, "policy_key": policy_key, "enabled": enabled})
+        self.save_config(cfg)
+
+    # ── 配对码登记（企业真实流程：IT 发码 → 员工机自助接入）──────
+    def enroll_with_code(self, url: str, code: str, name: str, endpoint_id: str) -> Dict[str, Any]:
+        """用一次性配对码在控制面登记本机，返回登记结果（并**不**自动启用上报）。
+
+        · 配对码由管理端在控制台生成、有有效期、用后作废——员工不需要拿到管理令牌；
+        · 登记成功后令牌与策略签名密钥**加密落盘**（复用 SecretManager）；
+        · 是否启用上报由调用方（设置页的开关）决定，绝不静默开启。
+        """
+        endpoint_id = (endpoint_id or "").strip() or f"ep-{secrets.token_hex(4)}"
+        body = {"code": (code or "").strip(), "name": (name or "").strip() or "未命名端点",
+                "endpoint_id": endpoint_id}
+        import json as _json
+        request = urllib.request.Request(
+            url.rstrip("/") + "/api/v1/enroll", method="POST",
+            data=_json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json; charset=utf-8",
+                     "User-Agent": "YindunAgent/" + self._version()})
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(request, timeout=TIMEOUT) as response:
+                data = _json.loads(response.read().decode("utf-8") or "{}")
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = _json.loads(exc.read().decode("utf-8")).get("error", "")
+            except Exception:
+                detail = ""
+            return {"ok": False, "error": f"HTTP {exc.code}：{detail or '登记被拒'}"}
+        except Exception as exc:
+            return {"ok": False, "error": f"连不上控制面：{type(exc).__name__} {exc}"}
+
+        if not data.get("token"):
+            return {"ok": False, "error": "控制面未返回令牌"}
+        cfg = dict(self._config)
+        cfg.update({"url": url.rstrip("/"), "endpoint_id": data.get("endpoint_id", endpoint_id),
+                    "token": data["token"], "policy_key": data.get("policy_key", ""),
+                    "enabled": False})            # 登记≠启用：开关由用户在设置页显式打开
+        self.save_config(cfg)
+        self._trace(True, f"已用配对码登记为 {cfg['endpoint_id']}（尚未启用上报）")
+        return {"ok": True, "endpoint_id": cfg["endpoint_id"],
+                "note": "登记成功；在设置页打开「上报到控制面」后开始同步"}
+
+    def disable(self) -> None:
+        """停用上报（保留配置与已下发的策略规则，便于显式撤销）。"""
+        cfg = dict(self._config)
+        cfg["enabled"] = False
+        self.save_config(cfg)
+
+    def status(self) -> Dict[str, Any]:
+        """本机控制面接入状态（给设置页显示，不泄露令牌）。"""
+        applied = self._config.get("applied_policy") or {}
+        return {
+            "configured": bool(self._config.get("url") and self._config.get("endpoint_id")),
+            "enabled": bool(self._config.get("enabled")),
+            "url": self._config.get("url", ""),
+            "endpoint_id": self._config.get("endpoint_id", ""),
+            "last_sent_count": int(self._config.get("last_sent_count", 0) or 0),
+            "last_report_at": self._config.get("last_report_at", ""),
+            "last_error": self._config.get("last_error", ""),
+            "applied_policy_version": int(applied.get("version", 0) or 0),
+            "applied_policy": applied,
+        }
+
+    def _remember(self, **fields: Any) -> None:
+        cfg = dict(self._config)
+        cfg.update(fields)
         self.save_config(cfg)
 
     # ── 采集 ──────────────────────────────────────────────
@@ -286,18 +355,20 @@ class ControlReporter:
             except Exception:
                 detail = ""
             self._trace(False, f"HTTP {exc.code} {detail}")
+            self._remember(last_error=f"HTTP {exc.code}：{detail or '控制面拒绝'}")
             return ReportResult(ok=False, error=f"HTTP {exc.code}：{detail or '控制面拒绝'}")
         except Exception as exc:
             self._trace(False, f"{type(exc).__name__}: {exc}")
+            self._remember(last_error=f"{type(exc).__name__}: {exc}")
             return ReportResult(ok=False, error=f"{type(exc).__name__}: {exc}")
 
         result.ok = bool(resp.get("ok"))
         result.alerts = list(resp.get("alerts") or [])
         result.policy_version = int(resp.get("policy_version") or 0)
         if payload["events"]:
-            cfg = dict(self._config)
-            cfg["last_sent_count"] = int(resp.get("next_seq", 0)) - 1
-            self.save_config(cfg)
+            self._remember(last_sent_count=int(resp.get("next_seq", 0)) - 1,
+                           last_report_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+                           last_error="")
         self._trace(True, f"上报 {len(payload['events'])} 条；控制面回告 {len(result.alerts)} 项")
         return result
 

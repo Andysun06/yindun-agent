@@ -19,6 +19,7 @@ import argparse
 import json
 import sys
 import threading
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -77,6 +78,13 @@ class ControlServer:
               headers: Dict[str, str], body: bytes) -> Tuple[int, Any]:
         if method == "POST" and path == "/api/v1/enroll":
             return self.h_enroll(headers, body)
+        if method == "POST" and path == "/api/v1/pair-code":
+            return self.h_pair_code(headers, body)
+        if method == "GET" and path == "/api/v1/pair-codes":
+            self.require_admin(headers)
+            return 200, {"codes": self.store.list_pair_codes()}
+        if method == "GET" and path == "/api/v1/export":
+            return self.h_export(headers, query)
         if method == "POST" and path == "/api/v1/report":
             return self.h_report(headers, body)
         if method == "GET" and path == "/api/v1/policy":
@@ -107,7 +115,12 @@ class ControlServer:
 
     # ── 处理函数 ──────────────────────────────────────────
     def h_enroll(self, headers: Dict[str, str], body: bytes) -> Tuple[int, Any]:
-        self.require_admin(headers)
+        """登记端点。两种方式：
+
+        · **配对码**（企业常规路径）：IT 在控制台生成一次性配对码，员工机用码自助接入——
+          无需把管理令牌发给员工，码有有效期且用后作废；
+        · **管理令牌**（脚本/批量）：保留给运维脚本使用。
+        """
         data = _json_body(body)
         name = str(data.get("name", "")).strip() or "未命名端点"
         endpoint_id = str(data.get("endpoint_id", "")).strip()
@@ -115,9 +128,66 @@ class ControlServer:
             raise ApiError(400, "缺少 endpoint_id")
         if len(endpoint_id) > 64 or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:-" for c in endpoint_id):
             raise ApiError(400, "endpoint_id 只允许字母数字与 _ . : -（≤64 字符）")
+
+        code = str(data.get("code", "")).strip()
+        if code:
+            ok, reason = self.store.consume_pair_code(code, endpoint_id)
+            if not ok:
+                raise ApiError(403, f"配对码不可用：{reason}")
+        else:
+            self.require_admin(headers)          # 无配对码时必须持管理令牌
         token, policy_key = self.store.enroll(name, endpoint_id)
         return 200, {"endpoint_id": endpoint_id, "token": token, "policy_key": policy_key,
                      "note": "令牌与策略签名密钥只在此处下发一次，请写入端点配置"}
+
+    def h_pair_code(self, headers: Dict[str, str], body: bytes) -> Tuple[int, Any]:
+        """生成一次性配对码（管理端）。员工机凭码接入，不必持有管理令牌。"""
+        self.require_admin(headers)
+        data = _json_body(body) if body else {}
+        return 200, self.store.create_pair_code(
+            ttl_minutes=int(data.get("ttl_minutes") or 30),
+            note=str(data.get("note") or ""))
+
+    def h_export(self, headers: Dict[str, str], query: Dict[str, list]) -> Tuple[int, Any]:
+        """导出审计（合规检查/等保留档用）。导出的是**掩码后的事件**，与界面所见完全一致。"""
+        self.require_admin(headers)
+        fmt = ((query.get("format") or ["json"])[0] or "json").lower()
+        endpoint_id = (query.get("endpoint_id") or [""])[0]
+        try:
+            limit = int((query.get("limit") or ["2000"])[0] or 2000)
+        except ValueError:
+            limit = 2000
+        events = self.store.list_events(endpoint_id=endpoint_id, limit=limit)
+        alerts = self.store.list_alerts(endpoint_id=endpoint_id, limit=200, exclude_codes=())
+        eps = self.store.list_endpoints()
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if fmt == "csv":
+            import csv as _csv
+            import io as _io
+            buf = _io.StringIO()
+            writer = _csv.writer(buf)
+            writer.writerow(["时间", "端点", "类型", "级别", "消息（掩码态）", "序号", "链哈希"])
+            for ev in events:
+                writer.writerow([ev.get("ts", ""), ev.get("endpoint_id", ""), ev.get("event_type", ""),
+                                 ev.get("severity", ""), ev.get("message", ""), ev.get("seq", ""),
+                                 (ev.get("entry_hash") or "")[:16]])
+            if endpoint_id:                       # 导出单个端点时可带策略漂移快照
+                for ep in eps:
+                    if ep["endpoint_id"] == endpoint_id:
+                        writer.writerow([])
+                        writer.writerow(["策略漂移", ep["drift"], "在线", "是" if ep["online"] else "否"])
+            data = buf.getvalue().encode("utf-8-sig")     # BOM：Excel 打开不乱码
+            ctype = "text/csv; charset=utf-8"
+            filename = f"yindun-audit-{stamp}.csv"
+        else:
+            data = json.dumps({"exported_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                               "data_boundary": "导出内容为端点掩码后的审计事件，不含明文 PII",
+                               "endpoints": eps, "events": events, "alerts": alerts},
+                              ensure_ascii=False, indent=2).encode("utf-8")
+            ctype = "application/json; charset=utf-8"
+            filename = f"yindun-audit-{stamp}.json"
+        self._last_download = (ctype, filename)
+        return 200, data
 
     def h_report(self, headers: Dict[str, str], body: bytes) -> Tuple[int, Any]:
         data = _json_body(body)
@@ -299,6 +369,20 @@ def make_handler(app: ControlServer, verbose: bool = True):
                 body = self._read_body() if method == "POST" else b""
                 status, payload = app.route(method, path, parse_qs(parsed.query),
                                             self._headers(), body)
+                download = getattr(app, "_last_download", None)
+                if download and path == "/api/v1/export" and status == 200:
+                    app._last_download = None
+                    ctype, filename = download
+                    if isinstance(payload, bytes):
+                        self.send_response(status)
+                        self.send_header("Content-Type", ctype)
+                        self.send_header("Content-Length", str(len(payload)))
+                        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                        self.send_header("X-Content-Type-Options", "nosniff")
+                        self.send_header("Cache-Control", "no-store")
+                        self.end_headers()
+                        self.wfile.write(payload)
+                        return
                 return self._send(status, payload)
             except ApiError as exc:
                 return self._send(exc.status, {"error": exc.message})

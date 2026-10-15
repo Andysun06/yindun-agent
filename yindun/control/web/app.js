@@ -118,6 +118,26 @@ function start() {
     b.onclick = () => go(b.dataset.page);
   });
   $("btn-refresh").onclick = () => render(true);
+  if ($("btn-pair-code")) $("btn-pair-code").onclick = async () => {
+    try {
+      const res = await api("/api/v1/pair-code", { method: "POST", body: { ttl_minutes: 30, note: "控制台生成" } });
+      toast(`配对码 ${res.code}（${res.ttl_minutes} 分钟内有效、用后作废）——发给员工机，在「设置 → 企业控制面」里输入`, 9000);
+    } catch (e) { toast("生成失败：" + e.message); }
+  };
+  if ($("btn-export")) $("btn-export").onclick = async () => {
+    // 带鉴权 fetch 后再触发下载：令牌不进 URL（不进历史与日志）
+    try {
+      const res = await fetch(state.base + "/api/v1/export?format=csv",
+        { headers: { Authorization: "Bearer " + state.token } });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const blob = await res.blob();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = (res.headers.get("Content-Disposition") || "").match(/filename="?([^";]+)"?/)?.[1] || "yindun-audit.csv";
+      document.body.appendChild(a); a.click(); a.remove();
+      toast("已导出掩码审计（CSV，Excel 可直接打开）");
+    } catch (e) { toast("导出失败：" + e.message); }
+  };
   $("btn-theme").onclick = toggleTheme;
   $("auto-refresh").onchange = (e) => { e.target.checked ? startTimer() : stopTimer(); };
   applyTheme(localStorage.getItem("yd.theme") || "light");
@@ -203,7 +223,11 @@ async function renderOverview(box) {
           <th>首次锚定</th><th>最后上报</th></tr></thead>
         <tbody>${rows.map((r) => `<tr>
           <td>${esc(r.name)}<div class="ep__id">${esc(r.endpoint_id)}</div></td>
-          <td>${chainBadge(r.chain_verdict)}${r.chain_alerts ? ` <span class="chip">${r.chain_alerts} 告警</span>` : ""}</td>
+          <td>
+            <span class="badge badge--${r.online ? "ok" : "idle"}">${r.online ? "在线" : "失联"}</span>
+            ${chainBadge(r.chain_verdict)}${r.chain_alerts ? ` <span class="chip">${r.chain_alerts} 告警</span>` : ""}
+            ${r.drift && r.drift !== "已同步" ? ` <span class="chip" title="控制面已下发新策略，端点尚未取走">${esc(r.drift)}</span>` : ""}
+          </td>
           <td class="num">${num(r.total_count)}</td>
           <td class="mid" title="${esc(r.head_hash)}">${esc(shortHash(r.head_hash))}</td>
           <td class="mid">${esc(fmtTime(r.first_seen_at))}</td>
@@ -488,6 +512,7 @@ const MOCK_DATA = {
   endpoints: { endpoints: [
     { endpoint_id: "ep-fin-27", name: "财务部-27号机", version: "3.4.6", platform: "Windows-11",
       last_seen_at: "2026-10-16T09:11:30", strict_mode: false, policy_version: 3, total_count: 216,
+      online: true, last_report_at: "2026-10-16T09:11:30", policy_want: 3, policy_have: 3, drift: "已同步",
       head_hash: "9f2c7a41d5e83b06c1a94f27de8b3051", chain_verdict: "已锚定", chain_alerts: 0,
       first_seen_at: "2026-10-14T08:02:11", models: ["qwen2.5:7b", "qwen3.5:4b", "gpt-4o"],
       external_models: ["gpt-4o"], plugins: [{ id: "custom_dict", version: "1.0.0", enabled: true }],
@@ -499,6 +524,7 @@ const MOCK_DATA = {
       external_models: [], plugins: [], policy: { 严格模式: "强制开启（禁用解释器）" } },
     { endpoint_id: "ep-rd-11", name: "研发部-11号机", version: "3.4.5", platform: "Windows-10",
       last_seen_at: "2026-10-16T08:58:41", strict_mode: false, policy_version: 2, total_count: 70,
+      online: false, last_report_at: "2026-10-16T08:58:41", policy_want: 3, policy_have: 2, drift: "待同步 v2→v3",
       head_hash: "7d5c1e93b0af268d4c31e8795a0b6f24", chain_verdict: "链异常", chain_alerts: 2,
       first_seen_at: "2026-10-15T10:30:00", models: ["qwen2.5:7b"], external_models: [], plugins: [],
       policy: {} }] },
@@ -522,6 +548,7 @@ const MOCK_DATA = {
       message: "合同审查 · 步骤 2 完成", seq: 214, id: 414 },
     { ts: "2026-10-16T08:58:41", endpoint_id: "ep-rd-11", event_type: "control_report", severity: "warning",
       message: "控制面上报异常：HTTP 401 端点令牌无效", seq: 70, id: 413 }] },
+  "pair-code": { code: "A1B2C3", ttl_minutes: 30, expires_at: "2026-10-16T10:30:00" },
   policy: { history: [
     { scope: "global", version: 3, updated_at: "2026-10-15T17:22:00" },
     { scope: "ep-hr-04", version: 5, updated_at: "2026-10-15T19:40:00" },

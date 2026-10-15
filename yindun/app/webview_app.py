@@ -358,6 +358,30 @@ class JsApi:
     def remove_custom_model(self, name: str):
         return self._svc.remove_custom_model(name)
 
+    # ── 企业控制面（V3.5.0）──────────────────────
+    def control_status(self):
+        return self._svc.control_status()
+
+    def control_pair(self, url, code, name=""):
+        """用配对码接入控制面（IT 发码 → 员工机自助接入；默认不启用上报）。"""
+        return self._svc.control_pair(url, code, name)
+
+    def control_set_enabled(self, enabled: bool):
+        """打开/关闭上报（开启时立即同步一次，失败如实返回）。"""
+        return self._svc.control_set_enabled(bool(enabled))
+
+    def control_sync(self):
+        """立即同步：先取策略并生效，再上报（带上刚应用的策略版本）。"""
+        return self._svc.control_sync()
+
+    def control_clear_rules(self):
+        """撤销控制面下发的本地规则（显式动作，写审计）。"""
+        return self._svc.control_clear_rules()
+
+    def control_auto(self, enabled: bool, interval_seconds: int = 300):
+        return (self._svc.control_start_auto(int(interval_seconds)) if enabled
+                else self._svc.control_stop_auto())
+
     # ── 安全工具 ─────────────────────────────────
     def health_scan(self, root_path: str = ""):
         return self._svc.health_scan(root_path)

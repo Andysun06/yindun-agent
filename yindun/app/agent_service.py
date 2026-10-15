@@ -635,6 +635,181 @@ class AgentService:
         self.settings.save()
         return {"ok": True, "models": self.custom_models()}
 
+    # ══ 企业控制面接入（V3.5.0）════════════════════════════
+    #  数据边界（写在这里，改代码前先读）：
+    #   · 上报的是**掩码审计事件 + 链头 + 元数据**；密钥与明文从不离开本机；
+    #   · 下发的策略**只收紧**（验签 → 单调合并 → 落到内核策略引擎），放行类策略无通路；
+    #   · **默认关闭**：集中管理必须由用户在设置页显式打开，绝不静默上报。
+    def _control(self):
+        """控制面接入器（懒加载缓存）。"""
+        if getattr(self, "_control_reporter", None) is None:
+            from yindun.control.agent_reporter import ControlReporter
+            # 两个注入点（测试/运维用）：control_config_path 换配置文件落点，
+            # _control_audit 换审计源——测试必须能在不碰本机配置与真实审计目录的前提下跑闭环。
+            self._control_reporter = ControlReporter(
+                config_path=getattr(self, "control_config_path", None),
+                audit=getattr(self, "_control_audit", None) or None,
+                settings=self.settings.data)
+        return self._control_reporter
+
+    def control_status(self) -> Dict[str, Any]:
+        """本机控制面接入状态 + 已落地策略的摘要（不含令牌）。"""
+        from yindun.control.apply_policy import describe_local_effect
+        status = self._control().status()
+        applied = status.get("applied_policy") or {}
+        status["effect"] = describe_local_effect(applied) if applied else []
+        try:
+            from yindun.core.policy_manager import PolicyManager
+            status["control_rules"] = PolicyManager().get_control_rules()
+        except Exception:
+            status["control_rules"] = []
+        status["auto_interval"] = int(getattr(self, "_control_interval", 0) or 0)
+        status["running"] = bool(getattr(self, "_control_thread", None)
+                                 and self._control_thread.is_alive())
+        return status
+
+    def control_pair(self, url: str, code: str, name: str = "") -> Dict[str, Any]:
+        """用一次性配对码登记本机（不启用上报；开关由 control_set_enabled 控制）。"""
+        if not (url or "").strip():
+            return {"ok": False, "error": "请填控制面地址"}
+        if not (code or "").strip():
+            return {"ok": False, "error": "请填配对码（在控制台「生成配对码」获取）"}
+        import platform as _pf
+        host = (name or "").strip() or f"{_pf.node()}"
+        result = self._control().enroll_with_code(url.strip(), code.strip(), host, "")
+        return result
+
+    def control_set_enabled(self, enabled: bool) -> Dict[str, Any]:
+        """打开/关闭上报。开启时立即做一次同步，失败会如实报错（不假装已连上）。"""
+        reporter = self._control()
+        if not reporter.status().get("configured"):
+            return {"ok": False, "error": "尚未登记：请先用配对码接入控制面"}
+        if not enabled:
+            reporter.disable()
+            self.control_stop_auto()
+            return {"ok": True, "enabled": False, "note": "已停用上报（已下发的策略规则保留，可在下方显式撤销）"}
+        cfg = dict(reporter._config)          # noqa: SLF001 —— 同一模块内的受控访问
+        cfg["enabled"] = True
+        reporter.save_config(cfg)
+        sync = self.control_sync()
+        return {"ok": True, "enabled": True, "sync": sync}
+
+    def control_sync(self) -> Dict[str, Any]:
+        """同步一次：上报一批 → 取策略 → 验签 → 只收紧合并 → 落到本地生效。"""
+        reporter = self._control()
+        if not reporter.enabled:
+            return {"ok": False, "error": "上报未启用"}
+        # 先取策略并生效，再上报：这样本批上报携带的 policy_version 就是"我刚应用的版本"，
+        # 控制台的策略漂移显示一次同步即可收敛（否则永远慢一拍，看着像没生效）。
+        policy, reason = reporter.fetch_policy()
+        applied: Dict[str, Any] = {}
+        if policy:
+            applied = self._apply_control_policy(policy)
+        sent = reporter.send()
+        return {"ok": sent.ok and reason == "ok",
+                "report": {"ok": sent.ok, "events": sent.events, "error": sent.error,
+                           "alerts": [a.get("code") for a in (sent.alerts or [])]},
+                "policy": {"fetched": bool(policy), "reason": reason, "applied": applied}}
+
+    def _apply_control_policy(self, policy: Dict[str, Any]) -> Dict[str, Any]:
+        """把策略落到本地：内核规则 + 严格模式 + 插件允许集 + 模型允许集（全部只收紧）。"""
+        from yindun.control.apply_policy import apply_policy_to_kernel
+        from yindun.core.policy_manager import PolicyManager
+        summary = apply_policy_to_kernel(policy, PolicyManager())
+        effects: List[str] = []
+
+        # ① 严格模式（只开不关：控制面无权关掉端点自己开的严格模式）
+        if policy.get("require_strict_mode") and self.settings.get("allow_script_exec", True):
+            self.settings.set("allow_script_exec", False)
+            os.environ["ALLOW_SCRIPT_EXEC"] = "0"
+            effects.append("已强制开启严格模式（禁用解释器）")
+
+        # ② 插件允许集：停用不在列表内的插件（只减不增）
+        allowed_plugins = policy.get("allowed_plugins")
+        if allowed_plugins is not None:
+            allow = set(allowed_plugins)
+            enabled = dict(self.settings.get("plugins_enabled") or {})
+            for pid, on in list(enabled.items()):
+                if on and pid not in allow:
+                    try:
+                        self.set_plugin_enabled(pid, False)
+                        effects.append(f"已停用插件 {pid}（不在控制面允许集内）")
+                    except Exception as exc:
+                        effects.append(f"停用插件 {pid} 失败：{exc}")
+
+        # ③ 模型允许集：当前模型不在允许集内则回退到允许集里第一个可用的
+        allowed_models = policy.get("allowed_models")
+        if allowed_models is not None:
+            allow = [str(m) for m in allowed_models]
+            current = str(self.settings.get("model") or "")
+            if current and current not in allow:
+                fallback = next((m for m in allow if m), "")
+                if fallback:
+                    self.settings.set("model", fallback)
+                    self._llm = None
+                    effects.append(f"当前模型不在允许集内，已回退到 {fallback}")
+                else:
+                    effects.append("允许集为空：所有模型均被禁用（请改用本机或局域网模型）")
+        self.settings.save()
+        summary["effects"] = effects
+        try:
+            from yindun.core.audit_log import AuditEventType, AuditLog, AuditSeverity
+            AuditLog().add_entry(
+                AuditEventType.ACCESS_CONTROL, AuditSeverity.WARNING,
+                f"已应用控制面策略 v{summary.get('policy_version', 0)}"
+                + ("（" + "；".join(effects) + "）" if effects else ""),
+                {"policy_version": summary.get("policy_version"), "rules": summary.get("rules"),
+                 "sensitive_paths": len(summary.get("sensitive_paths") or []),
+                 "floor": summary.get("floor", ""), "effects": effects})
+        except Exception:
+            pass
+        return summary
+
+    def control_clear_rules(self) -> Dict[str, Any]:
+        """撤销控制面下发的全部本地规则（运维显式动作，会写审计）。"""
+        from yindun.core.policy_manager import PolicyManager
+        removed = PolicyManager().clear_control_rules()
+        try:
+            from yindun.core.audit_log import AuditEventType, AuditLog, AuditSeverity
+            AuditLog().add_entry(AuditEventType.ACCESS_CONTROL, AuditSeverity.WARNING,
+                                 f"已撤销控制面下发的 {removed} 条本地规则", {"removed": removed})
+        except Exception:
+            pass
+        return {"ok": True, "removed": removed}
+
+    def control_start_auto(self, interval_seconds: int = 300) -> Dict[str, Any]:
+        """开启定时同步（默认 5 分钟）：上报 + 取策略。失败只记状态，不打断推理。"""
+        reporter = self._control()
+        if not reporter.enabled:
+            return {"ok": False, "error": "请先启用上报"}
+        interval = max(30, int(interval_seconds or 300))
+        self.control_stop_auto()
+        self._control_interval = interval
+        stop_event = threading.Event()
+        self._control_stop = stop_event
+
+        def _loop():
+            while not stop_event.wait(interval):
+                try:
+                    self.control_sync()
+                except Exception as exc:          # 网络抖动不应打断本地使用
+                    print(f"[控制面] 定时同步失败（将继续重试）：{exc}")
+
+        self._control_thread = threading.Thread(target=_loop, name="control-sync", daemon=True)
+        self._control_thread.start()
+        return {"ok": True, "interval": interval, "note": f"已开启定时同步（每 {interval} 秒）"}
+
+    def control_stop_auto(self) -> Dict[str, Any]:
+        stop_event = getattr(self, "_control_stop", None)
+        if stop_event is not None:
+            stop_event.set()
+        self._control_stop = None
+        thread = getattr(self, "_control_thread", None)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1.0)
+        self._control_thread = None
+        self._control_interval = 0
+        return {"ok": True}
     # ── 安全工具（健康扫描 / 行为画像）───────────────
     def health_scan(self, root_path: str = "") -> Dict[str, Any]:
         """扫描目标目录的敏感数据分布（用于"隐私健康体检"）。"""
@@ -885,6 +1060,20 @@ class AgentService:
             return
         if advisories:
             self._emit("advisories", advisories)
+            # 建议（如 laya 风险分级）是"审批为什么这样判"的依据，必须在对话流里留痕：
+            # 弹窗关掉之后就再也看不到判断依据，对安全产品是说不清的。
+            for item in advisories:
+                if not isinstance(item, dict):
+                    continue
+                text = str(item.get("text") or item.get("summary") or "").strip()
+                if not text:
+                    continue
+                self._append_trace({
+                    "kind": "judge",
+                    "name": str(item.get("plugin") or item.get("name") or "插件建议")[:60],
+                    "detail": text[:200],
+                    "status": "ok", "ms": 0,
+                })
 
     # ── 知识库（脱敏 RAG）─────────────────────────
     def knowledge_base(self):
@@ -1034,12 +1223,39 @@ class AgentService:
         self._emit("state", self._state_payload(sid, worker))
         return True
 
+    def _append_trace(self, item: Dict[str, Any]) -> None:
+        """把一条过程轨迹追加到当前会话并推给界面。
+
+        为什么要落库：过程轨迹是"这个判断凭什么下"的证据，刷新/切会话后还得在。
+        失败只打印不抛——轨迹是"看得见"的附加能力，不能因为它打断推理。
+        """
+        if not isinstance(item, dict):
+            return
+        self._trace_seq = int(getattr(self, "_trace_seq", 0)) + 1
+        record = {"seq": self._trace_seq, "kind": str(item.get("kind") or "info")[:16],
+                  "name": str(item.get("name") or "")[:80],
+                  "detail": str(item.get("detail") or "")[:200],
+                  "status": str(item.get("status") or "")[:16],
+                  "ms": int(item.get("ms") or 0)}
+        try:
+            sid = self.current_session_id()
+            messages = self.sessions.get_messages(sid) or []
+            messages.append({"role": "trace", "trace": record})
+            self.sessions.set_messages(sid, messages)
+        except Exception as exc:
+            print(f"[AgentService] 轨迹落库失败（不影响推理）：{exc}")
+        self._emit("trace", record)
+
     def _make_forwarder(self, run_id: int, topic: str) -> Callable[[Any], None]:
         """把引擎事件转发给界面；已过期的轮次（被取消/替换）直接丢弃。"""
         def _forward(payload: Any) -> None:
             with self._lock:
                 if run_id != self._active_run:
                     return
+            if topic == "trace":
+                # 过程轨迹：先落库再推送（刷新后仍在），seq 由服务层统一分配
+                self._append_trace(payload if isinstance(payload, dict) else {})
+                return
             self._emit(topic, payload)
             # 审批弹窗出现后，后台征集插件建议（不阻塞弹窗与用户决策）
             if topic == "need_confirm" and isinstance(payload, dict):
