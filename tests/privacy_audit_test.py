@@ -299,6 +299,17 @@ for fp in SCAN_FILES:
             if key in ("BANKCARD", "IDCARD", "IDCARD15", "PHONE", "CREDIT_CODE") \
                     and _is_hash_embedded(content, m.start(), m.end()):
                 continue
+            # 0x 前缀的十六进制串（Windows 句柄 / 对象地址 / 指针）不是统一社会信用代码：
+            # 实测审计链里会出现 `0x000001D43167F4D0` 这类字符串，扫描正则会把它们误判成
+            # CREDIT_CODE（引擎反而不匹配——它的首两位字符集不含小写 x）。此处按"字面 0x 前缀"
+            # 精确排除，属于扫描器误报修正，不是放宽泄露判定。
+            if key == "CREDIT_CODE":
+                _pre = content[max(0, m.start() - 12):m.start()]
+                # ① 字面 0x 前缀（十六进制字面量）
+                # ② Python 对象 repr 里的地址：`<__main__.T object at 0x000001D4…>`
+                #    ——开发期用桩工具跑过真实 Worker，这类 repr 会进审计链；它显然是误报
+                if _pre[-2:].lower() == "0x" or "at 0x" in _pre or "object at" in _pre:
+                    continue
             # 手机号/银行卡精验，减少误报
             if key == "PHONE" and not PrivacyEngine._is_valid_phone(val):
                 continue

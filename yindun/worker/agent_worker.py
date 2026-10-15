@@ -18,7 +18,9 @@
 import os
 import re
 import threading
+import json
 import time
+from pathlib import Path
 import concurrent.futures
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
@@ -322,6 +324,10 @@ class Worker:
         try:
             # ★ 每轮对话开始时清空知识库映射表（上轮的已用后即焚）
             self._kb_mapping = {}
+            # ★ 工具调用短路缓存与"已深化"标记同样按轮次隔离：跨轮复用会把
+            #   "用户让我再读一次这个文件"也短路掉（文件可能已经变了）
+            self._tool_fp_cache = {}
+            self._deepen_used = False
             # ★ 恢复跨轮脱敏映射表（从会话数据恢复，保证历史占位符可还原）
             if self._box_mapping_restore:
                 self._box_mapping = dict(self._box_mapping_restore)
@@ -502,7 +508,10 @@ class Worker:
             if "深度" in self.think_mode:
                 max_rounds = self.think_depth * 2  # depth 3 → 6轮, depth 1 → 2轮, depth 10 → 20轮
             else:
-                max_rounds = 3
+                # 快速模式：轮次只在"模型主动要工具"时才消耗，所以给到 6 轮不会变慢，
+                # 却能避免"读两个文件 + 写一个文件"这类常见任务在第 3 轮被硬截断
+                # （截断后走"已达最大轮次"分支，答案质量明显下降，看起来就像坏了）。
+                max_rounds = 6
 
             final_reply = self._run_react_loop(
                 ai_input, box, memory, engine, max_rounds,
@@ -719,6 +728,11 @@ class Worker:
         round_start_idx = len(messages) - 1  # 从 HumanMessage 开始记录
         round_count = 0
         consecutive_failures = 0
+        # ★ 每次推理在这里重置"按轮次"的状态：重复调用短路缓存与深化标记。
+        #   放在循环入口而不是 run()，是为了无论从哪条路径进循环都保证隔离
+        #   （跨轮复用会把"用户让我再读一次这个文件"短路掉——文件可能已经变了）。
+        self._tool_fp_cache = {}
+        self._deepen_used = False
         last_tool_result = ""  # 初始化，防止循环结束时 NameError
 
         while round_count < max_rounds:
@@ -764,9 +778,17 @@ class Worker:
                     self.intermediate_result.emit(self._clean(content))
 
                 if has_executed_tool and round_count < min_rounds:
-                    # 未达到最低思考轮数，强制继续深入分析
-                    self.status.emit(f"[深化 {round_count}/{min_rounds}] 未达最低思考轮数，强制继续分析...")
-                    deepen_prompt = (
+                    # ★ 已有实质答案就别再逼它"继续深入"：多跑一轮既慢，实测还常把
+                    #   已经正确的答案改写坏（小模型在深化轮会丢细节）。每轮最多强制一次。
+                    _substantive_now = self._looks_substantive(
+                        content if isinstance(content, str) else "")
+                    if _substantive_now or getattr(self, "_deepen_used", False):
+                        self.status.emit("[完成] 已得到实质回答，跳过深化轮")
+                    else:
+                        # 未达到最低思考轮数，强制继续深入分析
+                        self._deepen_used = True
+                        self.status.emit(f"[深化 {round_count}/{min_rounds}] 未达最低思考轮数，强制继续分析...")
+                        deepen_prompt = (
                         "\n\n请基于以上工具执行结果，继续深入分析："
                         "1. 重点解读关键文件的具体实现逻辑\n"
                         "2. 总结项目的核心功能、技术亮点和潜在风险\n"
@@ -777,8 +799,11 @@ class Worker:
                     has_executed_tool = False  # 重置标记，允许下一轮继续强制
                     continue  # 不返回，继续下一轮推理
 
-                if has_executed_tool:
-                    # 达到最低轮数，追加总结轮次
+                if has_executed_tool and not self._looks_substantive(
+                        content if isinstance(content, str) else ""):
+                    # 达到最低轮数且答案还很薄，追加总结轮次。
+                    # ★ 若模型这一轮已经给出实质回答（够长 + 有结构），**不跑**这一次
+                    #   全量生成：省一次完整推理，也避免把已正确的答案改写坏。
                     self.status.emit("[总结] 工具执行完毕，正在生成最终总结...")
                     summary_prompt = "\n\n请基于以上工具执行结果，给用户提供一个详细的总结报告。"
                     messages.append(HumanMessage(content=summary_prompt,
@@ -924,6 +949,19 @@ class Worker:
                     self.tool_call_count += 1
                     _t_tool = time.time()
 
+                    # ★ 重复调用短路（仅只读工具）：同一工具同一参数再来一次，
+                    #   直接复用已有结果并明确提示"别再重复"——小模型最容易在这里打转，
+                    #   既浪费轮次又让用户看着像卡住了。
+                    _fp = self._call_fingerprint(tool_name, tool_args)
+                    if tool_name in self._READONLY_TOOLS and _fp in getattr(self, "_tool_fp_cache", {}):
+                        tool_result = (str(getattr(self, "_tool_fp_cache")[_fp])
+                                       + "\n[提示] 你刚刚已用完全相同的参数调用过这个工具，"
+                                         "结果不会变化；请直接基于上面的结果作答，不要重复调用。")
+                        self._trace("tool", tool_display_name, "重复调用已短路（复用上次结果）", "ok", ms=0)
+                        tool_msg = ToolMessage(content=str(tool_result), tool_call_id=tool_call_id)
+                        messages.append(tool_msg)
+                        continue
+
                     tool_result = self._execute_tool(tool_name, tool_args)
                     has_executed_tool = True  # 标记已执行过工具
                     last_tool_result = str(tool_result)[:2000]
@@ -931,16 +969,29 @@ class Worker:
                     # 统一脱敏工具返回内容（内部已处理：搜索知识库豁免、映射合并进跨轮表、审计）
                     tool_result, _ = self._anonymize_tool_output(tool_result, tool_name)
 
+                    # ★ 真值校验：写盘/删除类操作到文件系统核对一遍，把"声称成功"与事实对齐
+                    _verdict = self._verify_tool_outcome(tool_name, tool_args, str(tool_result))
+                    if _verdict:
+                        tool_result = str(tool_result) + "\n" + _verdict
+                        all_success = False
+                        self._trace("judge", "工具结果校验", _verdict[:120], "fail", ms=0)
+
+                    if tool_name in self._READONLY_TOOLS:
+                        if not hasattr(self, "_tool_fp_cache"):
+                            self._tool_fp_cache = {}
+                        self._tool_fp_cache[_fp] = str(tool_result)[:2000]
+
                     AuditLog().log_tool_result(tool_name, True, str(tool_result)[:500])
                     self._trace("tool", tool_display_name, "执行完成", "ok",
                                 ms=int((time.time() - _t_tool) * 1000))
 
                 except Exception as e:
-                    tool_result = f"[工具执行错误] {type(e).__name__}: {e}"
+                    # ★ 失败反馈"可行动化"：裸异常会让小模型原样重试，翻译成人话才有机会一轮纠正
+                    tool_result = self._humanize_tool_error(tool_name, e)
                     round_had_failure = True
                     all_success = False
                     AuditLog().log_tool_result(tool_name, False, str(e))
-                    self._trace("tool", tool_display_name, f"{type(e).__name__}: {e}", "fail",
+                    self._trace("tool", tool_display_name, str(e)[:80], "fail",
                                 ms=int((time.time() - _t_tool) * 1000))
 
                 # 4. 将工具执行结果追加到消息列表
@@ -1137,6 +1188,97 @@ class Worker:
         # approve 或已通过人工审批：正常执行工具
         self.status.emit(f"执行工具: {tool_display_name}")
         return self._execute_tool(tool_name, args)
+
+    # ──────────────────────────────────────────
+    # 模型利用率与工具链完善（V3.5.0）
+    #   目标：别让智能体"显得笨"。实测痛点来自四件事——
+    #   ① 工具报成功但盘上没东西（小模型据此编造"已完成"）；
+    #   ② 工具失败后模型只看到裸异常（FileNotFoundError…），下一轮只能重复撞墙；
+    #   ③ 同一工具同参数反复调用；④ 明明已经有答案还硬跑一次全量总结生成。
+    # ──────────────────────────────────────────
+    _READONLY_TOOLS = {"list_local_files", "read_local_file", "search_in_files",
+                       "analyze_project", "scan_privacy", "read_attachment_chunk",
+                       "search_knowledge_base", "list_attachments"}
+
+    def _call_fingerprint(self, tool_name: str, args: dict) -> str:
+        """同一工具同一参数的指纹（用于识别重复调用）。"""
+        try:
+            return tool_name + "|" + json.dumps(args or {}, sort_keys=True, ensure_ascii=False, default=str)
+        except Exception:
+            return tool_name + "|" + str(args)
+
+    def _humanize_tool_error(self, tool_name: str, exc: Exception) -> str:
+        """把裸异常翻译成"模型能照做"的反馈。
+
+        小模型看到 `FileNotFoundError: [Errno 2] No such file or directory` 只会再试同一次；
+        告诉它"路径不对，先用 list_local_files 确认"才有机会一轮纠正。
+        """
+        kind = type(exc).__name__
+        text = str(exc)
+        if isinstance(exc, PermissionError) or "沙箱" in text or "越界" in text or "拒绝" in text:
+            return (f"[工具执行失败] {tool_name}：目标路径不在允许的沙箱目录内，已被安全策略拒绝。"
+                    f"请改用沙箱根目录下的路径，或向用户确认文件位置；不要重复调用同一路径。")
+        if isinstance(exc, FileNotFoundError) or "No such file" in text:
+            return (f"[工具执行失败] {tool_name}：文件或目录不存在。"
+                    f"请先用 list_local_files 列出目录确认名称（注意扩展名与层级），再重试；不要凭猜测重复调用。")
+        if isinstance(exc, IsADirectoryError):
+            return (f"[工具执行失败] {tool_name}：这是一个目录而不是文件。"
+                    f"要查看目录内容请改用 list_local_files；要读文件请给出具体文件名。")
+        if isinstance(exc, UnicodeDecodeError):
+            return (f"[工具执行失败] {tool_name}：该文件不是纯文本（可能是 PDF/图片/二进制）。"
+                    f"请告知用户改用附件挂载（内核会解析），不要把它当文本反复读取。")
+        if "timed out" in text.lower() or "超时" in text:
+            return (f"[工具执行失败] {tool_name}：执行超时。请缩小范围（例如只读文件的前一段/只列一层目录）后重试。")
+        return (f"[工具执行失败] {tool_name}：{kind}: {text[:200]}。"
+                f"请换一种做法或告知用户失败原因，不要用完全相同的参数重复调用。")
+
+    def _verify_tool_outcome(self, tool_name: str, args: dict, result: str) -> str:
+        """工具结果的真值校验：写盘类操作到文件系统上核对一遍。
+
+        返回空串表示"无需追加"；否则返回要加在工具结果后的一段**事实修正**。
+        这是"杜绝小模型幻觉式假成功"的最后一道：它说写好了，我们就去看一眼到底有没有。
+        """
+        try:
+            target = str((args or {}).get("file_path") or (args or {}).get("target_path")
+                         or (args or {}).get("path") or "")
+            if not target:
+                return ""
+            path = Path(target)
+            if tool_name in ("create_local_file", "write_file", "export_file"):
+                if not path.exists():
+                    return ("[事实校验] 该工具声称写入成功，但文件系统上不存在 "
+                            + target + "。请勿据此声称「已完成」；"
+                            "请检查路径是否正确，或把失败如实告知用户。")
+                if path.is_file() and path.stat().st_size == 0:
+                    return ("[事实校验] 文件 " + target
+                            + " 已创建但内容为空，请确认是否真的写入了内容。")
+            elif tool_name == "delete_local_file":
+                if path.exists():
+                    return ("[事实校验] 该工具声称已删除，但 " + target
+                            + " 仍然存在；请如实告知用户删除未生效。")
+        except Exception:
+            return ""            # 校验本身失败时保持沉默，不影响主流程
+        return ""
+
+    @staticmethod
+    def _looks_substantive(text: str) -> bool:
+        """判断模型这一轮的文本是否已经是"能交付的回答"（而非"我这就去读"这类过渡语）。
+
+        依据：长度够 + 有多行或结构化标记。宁可偏向"是"——多跑一次总结生成既慢又容易
+        把已经正确的答案改写坏（实测小模型在总结轮会丢细节）。
+        """
+        body = (text or "").strip()
+        if not body:
+            return False
+        # 典型过渡语（"我这就去读""正在处理"）：短且只有承诺，没有结论 → 不算回答
+        promise = ("我这就", "马上", "正在", "稍等", "请稍候", "接下来我", "我先去", "让我先")
+        has_structure = (chr(10) in body) or any(
+            k in body for k in ("：", "、", "- ", "1.", "•", "|", "；"))
+        if len(body) < 40 and any(k in body for k in promise):
+            return False
+        if len(body) >= 90:
+            return True
+        return has_structure and len(body) >= 30
 
     def _execute_tool(self, tool_name: str, args: dict) -> str:
         """根据工具名调用对应的工具对象，返回工具执行结果"""

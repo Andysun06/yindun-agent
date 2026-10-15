@@ -335,9 +335,150 @@ raw_session = (TMP / "rs_sess.json").read_text(encoding="utf-8")
 check("落库内容仍是脱敏态（占位符形式，无明文手机号）",
       _phone not in raw_session and "[PHONE_" in raw_session)
 
-print("\n" + "=" * 78)
+# ══════════════════════════════════════════════════════════════════
+
+print(chr(10) + "=" * 78)
+print("【7】模型利用率与工具链：省掉多余生成 / 重复调用短路 / 失败可行动 / 真值校验")
+print("=" * 78)
+# 这一组锁住"别让智能体显得笨"的四条行为，都直接驱动 **Worker**（我改的就是这一层：
+# 服务层的 prepare_llm 会重建 tools_map，在服务层注入假工具测不到这些逻辑）。
+from langchain_core.messages import AIMessage as _AI                       # noqa: E402
+from yindun.worker.agent_worker import Worker as _Worker                  # noqa: E402
+
+LOOP_TMP = TMP / "loop"
+LOOP_TMP.mkdir(parents=True, exist_ok=True)
+PROBE_FILE = LOOP_TMP / "probe.txt"
+PROBE_FILE.write_text("甲方联系人：张伟\n金额：85 万元\n", encoding="utf-8")
+# ★ 脚本化模型给工具的路径必须落在**沙箱内**：沙箱外路径会触发人工审批，
+#   而测试里没有人去点确认，worker 会一直等（表现为整个套件卡住）。
+from yindun.core.policy_manager import SANDBOX_ROOT as _SBX               # noqa: E402
+SAFE_PATH = str(Path(_SBX) / "docs" / "readme_probe.txt")
+
+# ── 纯函数：答案成色 / 错误人话化 ──
+w = _Worker.__new__(_Worker)                      # 不跑 __init__，只验无状态方法
+check("答案成色：短过渡语不算实质回答", _Worker._looks_substantive("好的，我这就去读文件") is False)
+check("答案成色：带结构的成段回答算实质回答",
+      _Worker._looks_substantive("已按要求整理：\n1. 联系人 张伟\n2. 金额 85 万元\n3. 付款节点见合同第 3 条") is True)
+_act = _Worker._humanize_tool_error(w, "read_local_file", FileNotFoundError("no such file"))
+check("失败反馈可行动：文件不存在 → 引导先列目录", "list_local_files" in _act, _act[:60])
+_act2 = _Worker._humanize_tool_error(w, "create_local_file", PermissionError("越界"))
+check("失败反馈可行动：越界被拒 → 指出改用沙箱内路径", "沙箱" in _act2, _act2[:60])
+
+# ── 真值校验：工具说写了、盘上没有 → 必须戳破 ──
+missing = str(LOOP_TMP / "never_written.txt")
+_v = _Worker._verify_tool_outcome(w, "create_local_file", {"file_path": missing}, "已创建文件")
+check("真值校验：声称写入但文件不存在 → 追加事实修正", "事实校验" in _v and "不存在" in _v, _v[:70])
+_v2 = _Worker._verify_tool_outcome(w, "create_local_file", {"file_path": str(PROBE_FILE)}, "已创建文件")
+check("真值校验：文件确实存在时不打扰", _v2 == "", _v2)
+
+
+class ScriptedLLM:
+    """按脚本回答：前 N 轮请求同一个工具，之后给最终答复；记录 invoke 次数。"""
+
+    def __init__(self, tool_name, args, answer, tool_rounds=1):
+        self.tool_name, self.args, self.answer = tool_name, args, answer
+        self.tool_rounds, self.calls = tool_rounds, 0
+
+    def invoke(self, messages):
+        self.calls += 1
+        if self.calls <= self.tool_rounds:
+            return _AI(content="", tool_calls=[{"name": self.tool_name, "args": dict(self.args),
+                                                "id": f"call_{self.calls}"}])
+        return _AI(content=self.answer)
+
+    def bind_tools(self, tools):
+        return self
+
+
+def run_worker(llm, tools_map, user_input="读一下这个文件并总结"):
+    """直接驱动 Worker：不经过服务层，避免它重建 tools_map 把假工具换掉。"""
+    worker = _Worker()
+    worker.llm = llm
+    worker.tools_map = tools_map
+    worker.user_input = user_input
+    worker.think_mode = "快速回答"
+    worker.privacy_shield = False          # 关掉脱敏，断言不被占位符干扰
+    # 沙箱根必须与内核一致（PolicyManager.SANDBOX_ROOT）：设成别处会让路径落在沙箱外，
+    # 触发人工审批 → 测试无人确认 → 卡住（夹具坑，不是产品问题）。
+    worker.sandbox_path = str(_SBX)
+    worker.attachment_fulltext = {}
+    traces, finished = [], []
+    worker.bus.subscribe("trace", lambda p: traces.append(p))
+    worker.bus.subscribe("finished", lambda p: finished.append(p))
+    worker.run()
+    return traces, finished
+
+
+class _FakeTool:
+    """最小工具桩。★ 必须同时可调用：Worker 对非 BaseTool 的对象走"直接调用"分支
+    （），只实现 invoke 的桩会被当成普通对象返回 repr —— 于是"工具执行成功"
+    但桩函数根本没跑（这正是本组测试第一版假绿的原因）。"""
+
+    def __init__(self, name, fn):
+        self.name, self._fn = name, fn
+
+    def invoke(self, args):
+        return self._fn(args)
+
+    def __call__(self, args):
+        return self._fn(args)
+
+
+ANSWER = ("已读取并整理如下：\n1. 甲方联系人：张伟\n2. 合同金额：85 万元\n"
+          "3. 备注：真实值仅在本机输出层还原，模型全程只见占位符")
+
+# ── ① 省掉多余的全量生成 ──
+llm1 = ScriptedLLM("read_local_file", {"file_path": SAFE_PATH}, ANSWER, tool_rounds=1)
+tr1, fin1 = run_worker(llm1, {"read_local_file": _FakeTool("read_local_file",
+                                                           lambda a: "文件内容：甲方联系人：张伟")})
+check("脚本化模型跑通一轮并给出最终回答", bool(fin1) and "张伟" in str(fin1[-1]), str(fin1)[:70])
+check("★ 省掉多余生成：已有实质答案时不再追加总结轮（invoke 恰好 2 次）",
+      llm1.calls == 2, f"invoke={llm1.calls}（3 次＝多跑了总结轮）")
+check("过程轨迹里能看到这次工具调用",
+      any(t.get("kind") == "tool" and t.get("status") == "ok" for t in tr1),
+      str([t.get("kind") for t in tr1])[:70])
+
+# ── ② 重复调用短路（只读工具、同参数）──
+exec_count = {"n": 0}
+
+
+def _counting(args):
+    exec_count["n"] += 1
+    return "文件内容：甲方联系人：张伟"
+
+
+llm2 = ScriptedLLM("read_local_file", {"file_path": SAFE_PATH}, ANSWER, tool_rounds=2)
+tr2, fin2 = run_worker(llm2, {"read_local_file": _FakeTool("read_local_file", _counting)},
+                       "再读一次同一个文件")
+check("★ 重复调用短路：同工具同参数第二次不再真执行（执行次数恰为 1）",
+      exec_count["n"] == 1, f"实际执行 {exec_count['n']} 次")
+check("短路时明确提示模型不要重复调用",
+      any("重复调用" in str(t.get("detail", "")) for t in tr2),
+      str([t.get("detail") for t in tr2])[:110])
+
+# ── ③ 跨轮次隔离：下一轮"再读一次"必须真的重新执行 ──
+exec_count["n"] = 0
+llm3 = ScriptedLLM("read_local_file", {"file_path": SAFE_PATH}, ANSWER, tool_rounds=1)
+run_worker(llm3, {"read_local_file": _FakeTool("read_local_file", _counting)}, "第一轮：读文件")
+llm4 = ScriptedLLM("read_local_file", {"file_path": SAFE_PATH}, ANSWER, tool_rounds=1)
+run_worker(llm4, {"read_local_file": _FakeTool("read_local_file", _counting)}, "第二轮：再读一次这个文件")
+check("★ 短路缓存在新一轮不生效（用户要求重读时必须真读，文件可能已变）",
+      exec_count["n"] == 2, f"两轮共执行 {exec_count['n']} 次")
+
+# ── ④ 工具失败：反馈可行动，且模型据此能改变做法 ──
+def _boom(args):
+    raise FileNotFoundError("[Errno 2] No such file or directory: 'nope.txt'")
+
+
+llm5 = ScriptedLLM("read_local_file", {"file_path": SAFE_PATH}, ANSWER, tool_rounds=1)
+tr5, fin5 = run_worker(llm5, {"read_local_file": _FakeTool("read_local_file", _boom)}, "读一下 nope.txt")
+check("工具失败被记录为轨迹（状态 fail）",
+      any(t.get("kind") == "tool" and t.get("status") == "fail" for t in tr5),
+      str([(t.get("kind"), t.get("status")) for t in tr5])[:90])
+
+print(chr(10) + "=" * 78)
 if failures:
     print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))
     sys.exit(1)
-print("✅ 全部通过：配置/会话加密落盘、工具消息保留、旧格式兼容、服务编排与事件转发均正常")
+print("✅ 全部通过：配置/会话加密落盘、工具消息保留、旧格式兼容、服务编排与事件转发、模型利用率与工具链均正常")
 sys.exit(0)
