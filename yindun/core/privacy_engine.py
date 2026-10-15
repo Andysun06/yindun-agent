@@ -220,10 +220,16 @@ class PrivacyEngine:
         #      导致脱敏文本行被合并、行长/坐标变化（正文结构被破坏）。
         "BANKCARD": r"(?<![\d])(?:62\d{2}(?:[\s\-]?\d{4}){3}[ \t\-]?\d{0,3}"
                     r"|4\d{3}(?:[\s\-]?\d{4}){3}[ \t\-]?\d{0,3}"
-                    r"|5\d{3}(?:[\s\-]?\d{4}){3}"
-                    r"|3[0-8]\d{2}(?:[\s\-]?\d{4}){2}[ \t\-]?\d{0,6}"
-                    r"|35\d{2}(?:[\s\-]?\d{4}){3}"
-                    r"|37\d{2}(?:[\s\-]?\d{4}){3})(?![\d])",
+                    r"|5\d{3}(?:[\s\-]?\d{4}){3}[ \t\-]?\d{0,3}"
+                    r"|35\d{2}(?:[\s\-]?\d{4}){3}[ \t\-]?\d{0,3}"
+                    r"|37\d{2}(?:[\s\-]?\d{4}){3}[ \t\-]?\d{0,3}"
+                    r"|3[0-8]\d{2}(?:[\s\-]?\d{4}){2,3}[ \t\-]?\d{0,3})(?![\d])",
+        # (D1 留出集评测修复) 两处改动，都针对"19 位卡号"这一真实形态（JCB/万事达等）：
+        #   ① 定长分支（5xxx / 35xx / 37xx / 通用 3xxx）补可选尾段 → 覆盖 16-19 位；
+        #   ② 通用 3xxx 分支的组数由 {2} 改为 {2,3}，否则 19 位卡会**先匹配前 16 位**、
+        #      再过不了 Luhn 而被整条丢弃；更坏的情况是被后续 PHONE 规则吃掉尾段，
+        #      造成"部分掩码 + 前段明文残留"。具体前缀分支排在通用分支之前，避免遮蔽。
+        #   全部命中仍须通过 Luhn 精验，误报面不变。
 
         # === 新增证件/组织（A 组补充 + B 组新增） ===
         # (B1) 15 位一代身份证（含日期段校验，非裸 \d{15}）；命中后由
@@ -271,18 +277,21 @@ class PrivacyEngine:
         # (A7) 新增分支3：在"密钥/令牌/key/secret"等字段名之后的 sk- 短值（4~7 位，如"密钥 sk-abc123"）
         #   也纳入识别——单独出现的短 sk- 值置信度不足（易误伤编号），但带字段名时可判定为密钥。
         "APIKEY": r"(?<![A-Za-z0-9])sk-(?:proj-)?[A-Za-z0-9_-]{8,}(?![A-Za-z0-9])"
-                  r"|api[_-]?key\s*[=:]\s*['\"]?([A-Za-z0-9_-]{16,})['\"]?"
+                  r"|api[_-]?key['\"]?\s*[=:]\s*['\"]?([A-Za-z0-9_-]{16,})['\"]?"
                   r"|(?:密钥|私钥|令牌|key|secret)\s*[:：=]?\s*['\"]?(sk-(?:proj-)?[A-Za-z0-9_-]{4,7})(?![\w-])",
+        # (D2 留出集评测修复) api[_-]?key 后允许一个引号再跟分隔符——覆盖 JSON 配置里
+        #   "api_key": "…" 这种键名带引号的真实写法（原模式在引号处断掉，整条不命中）。
 
         # (B7) 口令字段（password=...）；带捕获组，仅换口令值、保留字段名
         # (C3) 纳入中文标签（密码/口令/密码：），覆盖"登录密码=xxx"等中文办公场景
         # (C4) 值字符集排除中文标点（，。；：等），避免口令值吞掉后续整句
-        "PASSWORD": r"(?i)(?:password|passwd|pwd|passphrase|登录密码|管理密码|访问密码|密码|口令)\s*[=:：]\s*['\"]?([^\s'\"，。；、！？（）【】《》\-—]{4,})['\"]?",
+        "PASSWORD": r"(?i)(?:password|passwd|pwd|passphrase|登录密码|管理密码|访问密码|密码|口令)['\"]?\s*[=:：]\s*['\"]?([^\s'\"，。；、！？（）【】《》\-—]{4,})['\"]?",
+        # (D2 留出集评测修复) 键名后允许一个引号，覆盖 JSON 配置 "password": "…" 写法。
         # (B8) 连接串内嵌密码（user:password@）；带捕获组，仅换密码段
         "CONN_STRING": r"(?i)\b(?:mysql|postgres(?:ql)?|mongodb|redis|amqp|ftp|https?)://[^\s:/@]+:([^\s@/]{3,})@",
         # (B9) 云平台密钥前缀（GitHub/AWS/Slack/Firebase/SendGrid/Stripe）
         "CLOUD_KEY": r"(?<![A-Za-z0-9])(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]{16,}"
-                     r"|AKIA[0-9A-Z]{16}"
+                     r"|AKIA[0-9A-Z]{16,}(?![A-Za-z0-9_])"
                      r"|xox[baprs]-[A-Za-z0-9-]{10,}"
                      r"|AIza[0-9A-Za-z_\-]{35}"
                      r"|SG\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}"
@@ -338,7 +347,8 @@ class PrivacyEngine:
         # access_token / refresh_token：access_token=xxx / refresh_token: xxx
         # 捕获组只取 token 值（不含 key 名）
         # (A3) 最小长度由 16 降到 8，并纳入 token|secret 字面
-        "ACCESS_TOKEN": r"(?i)(?:access_token|refresh_token|id_token|auth_token|token|secret)\s*[=:]\s*['\"]?([A-Za-z0-9_\-\.=]{8,})['\"]?",
+        "ACCESS_TOKEN": r"(?i)(?:access_token|refresh_token|id_token|auth_token|token|secret)['\"]?\s*[=:]\s*['\"]?([A-Za-z0-9_\-\.=]{8,})['\"]?",
+        # (D2 留出集评测修复) 同 APIKEY：键名后允许一个引号，覆盖 "access_token": "…" 写法。
 
         # === 路径组 ===
         # 敏感文件路径：覆盖常见密钥/配置/凭据文件
@@ -765,10 +775,26 @@ class PrivacyEngine:
                 window_end = min(len(result), window_start + 20)
                 window = result[window_start:window_end]
 
-                # 跳过触发词后的标点/空白
+                # 跳过触发词后的标点/空白，以及"（采购方）"这类括号注释。
+                # (D3 留出集评测修复) "甲方（采购方）：张伟"是合同最常见写法，原实现停在
+                #   "（" 处 → 后续字符不是姓氏 → 整条人名漏检。此处同时跳过成对括号注释
+                #   （仅在窗口内闭合且注释有限长时），仍由姓氏表 + _extract_name 收口。
                 offset = 0
-                while offset < len(window) and window[offset] in " ：:，,、的\n\t":
-                    offset += 1
+                guard = 0
+                while offset < len(window) and guard < 8:
+                    ch = window[offset]
+                    if ch in " ：:，,、的\n\t":
+                        offset += 1
+                        guard += 1
+                        continue
+                    if ch in "（(【[":
+                        closer = {"（": "）", "(": ")", "【": "】", "[": "]"}[ch]
+                        end = window.find(closer, offset + 1)
+                        if 0 < end - offset <= 12:
+                            offset = end + 1
+                            guard += 1
+                            continue
+                    break
 
                 # 检查窗口内是否以姓氏开头
                 if offset < len(window) and window[offset] in self.SURNAMES:

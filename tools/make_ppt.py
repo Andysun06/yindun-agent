@@ -155,7 +155,7 @@ para(tf, "面向涉密办公场景的本地化隐私防护桌面智能体", size
 rect(s, M, 6.15, 6.2, 0.02, fill="2E6B50")
 tf = box(s, M, 6.35, 11, 0.6)
 para(tf, [("Yindun Security Agent", {"bold": True, "color": "FFFFFF"}),
-          ("    ·    V3.4.5    ·    LangChain · pywebview/WebView2 · 本地/云端双算力    ·    2026", {"color": "8FD3B4"})],
+          ("    ·    V3.4.6    ·    LangChain · pywebview/WebView2 · 本地/云端双算力    ·    2026", {"color": "8FD3B4"})],
      size=13, first=True)
 
 # ══════════════════ 2 · 背景痛点 ══════════════════
@@ -365,22 +365,23 @@ pagenum(s, 6)
 s = slide()
 kicker(s, "效果验证")
 title(s, "隐私防护有效性：攻击实验与结果", size=27)
-tf = box(s, M, 1.78, W-2*M, 0.35)
-para(tf, "13 篇合成办公语料 · 41 个敏感实体实例（含国际前缀/全角/分段卡号/PEM/JWT/IPv6 等边界格式）· 17 个业务数字负样本 · 可一键复现",
-     size=12.5, color=MUTED, first=True)
+tf = box(s, M, 1.72, W-2*M, 0.5)
+para(tf, "评测协议：开发集（13 篇，仅作回归基线）与留出集（60 篇 · 280 个注入值）分离，注入值零重合、规则冻结后一次性运行",
+     size=12, color=MUTED, first=True, line=1.1)
+para(tf, "两条性质分开陈述：架构保证不依赖识别覆盖率 —— 认出来的绝不出网，认不出来的逐项公开",
+     size=12, color=ACC, bold=True, line=1.1)
 rows = [
-    ("实验（威胁）", "指标", "结果"),
-    ("黑盒 · 出网泄露", "脱敏召回率 / 明文泄露", "100%  /  0 例"),
-    ("黑盒 · 误伤", "业务数字误报率", "0%（0/17）"),
-    ("可用性 · 往返", "还原正确率", "100%（13/13）"),
-    ("黑盒主动 · 还原劫持", "植入字面量占位符劫持成功率", "0 / 500 轮"),
-    ("黑盒主动 · 提示注入", "模型可见上下文中的真实 PII 数", "0"),
-    ("白盒 · 持久化扫描", "落盘文件明文 PII 命中", "0"),
-    ("白盒 · 审计预览", "审计掩码后明文 PII 命中", "0"),
-    ("白盒 · 无密钥还原", "strict 模式是否泄露明文", "否"),
+    ("性质", "指标", "结果"),
+    ("架构保证 · 出网", "已识别实体的出网明文实例", "0 例"),
+    ("架构保证 · 还原", "往返逐字一致 / 劫持成功", "60/60 · 0（500 轮）"),
+    ("架构保证 · 落盘", "持久化与审计产物明文命中", "0"),
+    ("经验测量 · 识别", "留出集完整脱敏（全量口径）", "222/280"),
+    ("经验测量 · 识别", "其中：系统声明支持的写法", "222/230"),
+    ("经验测量 · 误伤", "业务数字被误脱敏", "0/80"),
+    ("边界公开", "已声明未覆盖的形态清单", "50 例（报告 5.4）"),
 ]
-tbl = s.shapes.add_table(len(rows), 3, Inches(M), Inches(2.15), Inches(W-2*M), Inches(3.7)).table
-tbl.columns[0].width = Inches(3.4); tbl.columns[1].width = Inches(5.5); tbl.columns[2].width = Inches(W-2*M-8.9)
+tbl = s.shapes.add_table(len(rows), 3, Inches(M), Inches(2.42), Inches(W-2*M), Inches(3.2)).table
+tbl.columns[0].width = Inches(2.7); tbl.columns[1].width = Inches(6.2); tbl.columns[2].width = Inches(W-2*M-8.9)
 for ci, txt in enumerate(rows[0]):
     c = tbl.cell(0, ci); c.text = txt
     c.fill.solid(); c.fill.fore_color.rgb = RGBColor.from_string(PRIM)
@@ -394,10 +395,13 @@ for ri in range(1, len(rows)):
         p.alignment = PP_ALIGN.CENTER if ci==2 else PP_ALIGN.LEFT
         col = PRIM if ci==2 else TEXT
         for r in p.runs: style(r, 12, col, bold=(ci==2))
-tf = box(s, M, 6.05, W-2*M, 1.0)
+tf = box(s, M, 5.75, W-2*M, 1.3)
 para(tf, [("关键结论：", {"bold": True, "color": ACC}),
-          ("出网零明文 ⇒ 模型信息论上无法泄露它没见过的数据；nonce ⇒ 还原环节不可被植入劫持（碰撞率≈5.9×10⁻⁷）；Fernet+DPAPI ⇒ 拿走磁盘文件、无密钥也无法恢复明文。", {"color": TEXT})],
+          ("认出来的实体绝不出网——模型在信息论上无法泄露它从未接触的数据；认不出来的形态我们不隐藏、逐项公开并说明原因。",
+           {"color": TEXT})],
      size=13, first=True, line=1.2)
+para(tf, [("nonce ⇒ 还原环节不可被植入劫持（碰撞率≈5.9×10⁻⁷）；Fernet+DPAPI ⇒ 拿走磁盘文件、无密钥也恢复不出明文；全部读数可一键复现。", {"color": MUTED})],
+     size=12, line=1.2)
 pagenum(s)
 
 # ══════════════════ 7 · 纵深防御链 ══════════════════
@@ -549,7 +553,7 @@ for i, (t, d) in enumerate(rules):
     tf = box(s, 7.25, ry+0.36, 5.4, 0.66)
     para(tf, d, size=12, color=MUTED, first=True, line=1.2)
     ry += 1.02
-tf = box(s, 6.75, 7.4, 5.9, 0.4)
+tf = box(s, 6.75, 7.02, 5.9, 0.4)
 para(tf, "内置 6 个插件（默认关闭，按需启用；启停与配置改动均写审计）", size=12.5, color=PRIM, bold=True, first=True)
 pagenum(s)
 
@@ -627,7 +631,7 @@ kicker(s, "质量与交付")
 title(s, "全量回归通过 · 免安装单文件 exe 就绪")
 # 左：测试套件
 tf = box(s, M, 1.72, 6.2, 0.55)
-para(tf, "20 个测试套件 · 全部通过（含攻防评测 9 项实验）", size=14.5, color=PRIM, bold=True, first=True)
+para(tf, "21 个测试/评测套件 · 全部通过（含攻防评测 9 项实验 + 留出集覆盖率评测）", size=14.5, color=PRIM, bold=True, first=True)
 suites = [("隐私引擎 + 回归", "27 类实体；泄露 0 / 误伤 0 / 落盘扫描"),
           ("对抗集 + 真实文档", "14 项格式变体；8 种真实格式全链路"),
           ("审计黑匣子", "哈希链 + 链锚点 19/19"),

@@ -176,30 +176,56 @@ R["whitebox_nokey"] = {
 }
 
 # ══ 实验9：按实体类别的召回细分 ══
+# 断言口径（V3.4.6 加固）：每个样本给出"必须消失的敏感字面量"，要求
+#   ① 全部字面量在脱敏文本中消失；② 脱敏文本确实出现占位符。
+# 旧口径只对样本里的 4 位以上数字串做检查（如 api_key=abcdefgh12345678 只查 12345678），
+# 若引擎只替换了字母段、数字段恰好也消失，检查会漏判——现改为全字面断言。
+# 凭据类样本按仓库约定分段拼接（避免被静态凭据扫描器误报为硬编码密钥）。
 import re as _re
+_SK = "sk-" + "proj-" + "9xK2mQ7vLpR4tW8yZ3aB"
+_JWT = ".".join(["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+                 "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"])
 CATS = {
- "PHONE": ["手机13812345678","联系139-8765-4321","+86 13700001111"],
- "IDCARD": ["身份证110101199003072316","证号 440301199202020011"],
- "BANKCARD": ["卡号6228480402564890018","账号 6217850012345678908"],
- "EMAIL": ["邮箱a@b.com","联系 wf@acme.cn"],
- "APIKEY": ["密钥sk-proj-9xK2mQ7vLpR4tW8yZ3aB","api_key=abcdefgh12345678"],
- "MONEY": ["金额28,500元","服务费32000元","报价158,000元"],
- "IP": ["服务器192.168.1.100","公网203.0.113.45"],
- "NAME": ["联系人刘建国","员工张伟","患者陈静","负责人王芳"],
- "ADDRESS": ["地址北京市朝阳区建国路88号","住北京市海淀区中关村大街27号"],
- "JWT": ["令牌eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"],
- "PASSWORD": ["登录密码=Adm!n#2026","password=Secret123"],
+ "PHONE": [("手机13812345678", ["13812345678"]),
+           ("联系139-8765-4321", ["139-8765-4321", "13987654321"]),
+           ("+86 13700001111", ["13700001111"])],
+ "IDCARD": [("身份证110101199003072316", ["110101199003072316"]),
+            ("证号 440301199202020011", ["440301199202020011"])],
+ "BANKCARD": [("卡号6228480402564890018", ["6228480402564890018"]),
+              ("账号 6217850012345678908", ["6217850012345678908"])],
+ "EMAIL": [("邮箱a@b.com", ["a@b.com"]),
+           ("联系 wf@acme.cn", ["wf@acme.cn"])],
+ "APIKEY": [("密钥" + _SK, [_SK]),
+            ("api_key=abcdefgh12345678", ["abcdefgh12345678"])],
+ "MONEY": [("金额28,500元", ["28,500元"]),
+           ("服务费32000元", ["32000元"]),
+           ("报价158,000元", ["158,000元"])],
+ "IP": [("服务器192.168.1.100", ["192.168.1.100"]),
+        ("公网203.0.113.45", ["203.0.113.45"])],
+ "NAME": [("联系人刘建国", ["刘建国"]), ("员工张伟", ["张伟"]),
+          ("患者陈静", ["陈静"]), ("负责人王芳", ["王芳"])],
+ "ADDRESS": [("地址北京市朝阳区建国路88号", ["北京市朝阳区建国路88号"]),
+             ("住北京市海淀区中关村大街27号", ["北京市海淀区中关村大街27号"])],
+ "JWT": [("令牌" + _JWT, [_JWT])],
+ "PASSWORD": [("登录密码=Adm!n#2026", ["Adm!n#2026"]),
+              ("password=Secret123", ["Secret123"])],
 }
 cat_break = {}
+cat_fail = []
 for cat, samples in CATS.items():
     d = 0
-    for t in samples:
+    for t, must_gone in samples:
         anon, _ = eng.anonymize(t)
-        digs = _re.findall(r"\d{4,}", t)
-        leaked = any(x in anon for x in digs) if digs else (t == anon)
-        if not leaked: d += 1
+        cleaned = all(x not in anon for x in must_gone)
+        has_ph = _re.search(r"\[[A-Z][A-Z0-9_]*_\d+_[a-z0-9]{4}\]", anon) is not None
+        if cleaned and has_ph:
+            d += 1
+        else:
+            cat_fail.append(f"{cat}: {t!r} -> {anon!r}")
     cat_break[cat] = f"{d}/{len(samples)}"
 R["per_category_recall"] = cat_break
+if cat_fail:
+    print("[per_category 未通过]  " + "；".join(cat_fail))
 
 # ── 输出 ──
 print(json.dumps(R, ensure_ascii=False, indent=2))
