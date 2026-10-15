@@ -476,6 +476,22 @@ check("工具失败被记录为轨迹（状态 fail）",
       any(t.get("kind") == "tool" and t.get("status") == "fail" for t in tr5),
       str([(t.get("kind"), t.get("status")) for t in tr5])[:90])
 
+
+# ── ⑤ 轨迹必须**真落盘**（发布前验收抓到：内存里有、磁盘上没有——set_messages 不落盘）──
+_sv = SessionStore(path=LOOP_TMP / "trace_sess.json"); _sv.load()
+_ssvc = AgentService(settings=SettingsStore(path=LOOP_TMP / "trace_cfg.json"), sessions=_sv,
+                     plugin_data_root=LOOP_TMP / "tp")
+_ssvc.initialize()
+_sid = _sv.create("轨迹落盘验收"); _sv.set_current(_sid)
+_ssvc._append_trace({"kind": "judge", "name": "laya 风险分级", "detail": "风险等级：中",
+                     "status": "ok", "ms": 810})
+_rel = SessionStore(path=LOOP_TMP / "trace_sess.json"); _rel.load()
+check("★ 轨迹真落盘：重新加载后仍在（重启不丢）",
+      any((m.get("trace") or {}).get("name") == "laya 风险分级"
+          for m in (_rel.get_messages(_sid) or [])))
+check("轨迹落盘仍加密（明文名/详情都不出现）",
+      "laya" not in (LOOP_TMP / "trace_sess.json").read_text(encoding="utf-8", errors="ignore"))
+
 print(chr(10) + "=" * 78)
 if failures:
     print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))

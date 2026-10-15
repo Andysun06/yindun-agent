@@ -1242,6 +1242,10 @@ class AgentService:
             messages = self.sessions.get_messages(sid) or []
             messages.append({"role": "trace", "trace": record})
             self.sessions.set_messages(sid, messages)
+            # ★ set_messages 只改内存（本仓约定：落盘由调用方显式 save），
+            #   漏掉这一行会让轨迹在重启后消失——"落库"就成了空话。
+            #   （这条是发布前验收抓到的：内存里有、磁盘上没有。）
+            self.sessions.save()
         except Exception as exc:
             print(f"[AgentService] 轨迹落库失败（不影响推理）：{exc}")
         self._emit("trace", record)
