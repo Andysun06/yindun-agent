@@ -2,16 +2,16 @@
 """
 隐盾控制面 · 免安装单文件（onefile）PyInstaller 配置
 
-目标：产出一个 exe，双击即启动企业控制面（集中管理服务 + 集中控制台），
+目标：产出一个 exe，双击即启动企业控制面（集中管理服务 + 集中控制台窗口），
       数据写在 exe 同目录的 control_data/（冻结态下 yindun.APP_ROOT = exe 所在目录），
       管理令牌明文只落在 control_data/admin_token.txt（数据库内只存哈希）。
 
 构建入口：python tools/build_control.py
 
 ★ 与客户端包的关键差异（这也是它的优势）：
-  控制面**只用 Python 标准库**（http.server + sqlite3 + hmac），不依赖 LangChain/Chroma/torch，
-  因此这里把客户端那些重依赖全部排除 —— 产物是十几 MB 量级的独立小工具，
-  可以单独拷到管理机上跑，不需要装 Ollama、也不需要装客户端。
+  控制面业务**只用 Python 标准库**（http.server + sqlite3 + hmac），不依赖 LangChain/Chroma/torch，
+  因此把客户端那些重依赖全部排除；唯一保留的第三方依赖是 **pywebview**（桌面窗口宿主），
+  产物仍只有几十 MB，可以单独拷到管理机上跑，不需要装 Ollama、也不需要装客户端。
 
 注意（环境依赖，不进包）：无。控制面自身不需要任何网络依赖；对外提供服务前请自行加 TLS 反代。
 """
@@ -55,22 +55,24 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    # 控制面零第三方依赖：把客户端与端点的重依赖整体排除，产物因此很小。
+    # 控制面业务本身零第三方依赖（http.server + sqlite3 + hmac），客户端/Torch 那些重依赖
+    # 整体排除，产物因此很小。**唯一保留的第三方依赖是 pywebview**：控制端要"双击就有一个
+    # 可操作的窗口"，它负责开原生窗口承载控制台（没有它时自动退回系统浏览器）。
     # 端点侧上报器（agent_reporter）**不在**这里：它属于客户端，跑在员工机上。
     excludes=["PySide6", "shiboken6", "tkinter", "torch", "tensorflow", "transformers",
               "tokenizers", "safetensors", "hf_xet", "sentence_transformers", "accelerate",
               "scipy", "chromadb", "langchain", "langchain_core", "langchain_ollama",
               "langchain_openai", "langchain_chroma", "langchain_text_splitters",
               "onnxruntime", "rapidocr_onnxruntime", "pymupdf", "pdfplumber", "PyPDF2",
-              "docx", "openpyxl", "PIL", "huggingface_hub", "pywebview",
+              "docx", "openpyxl", "PIL", "huggingface_hub",
               "IPython", "jupyter", "matplotlib", "pytest"],
     noarchive=False,
 )
 
 pyz = PYZ(a.pure)
 
-# onefile；console=True：控制面是"命令行启动、打印监听地址与令牌"的服务型工具，
-# 需要把启动信息与访问日志展示给运维（关掉窗口即停服，符合"可见即可控"）。
+# onefile；console 仍为 True：启动信息（监听地址/数据目录/对外监听告警）与访问日志
+# 需要给运维看到——窗口模式下关掉控制台窗口即停服，符合"可见即可控"。
 exe = EXE(
     pyz,
     a.scripts,

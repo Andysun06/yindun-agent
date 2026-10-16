@@ -171,16 +171,44 @@ class ControlStore:
         with self._lock:
             existing_hash = self._get_setting("admin_token_hash")
             if existing_hash:
-                token_file = self.dir / "admin_token.txt"
-                if token_file.exists():
-                    return token_file.read_text(encoding="utf-8").strip()
-                return ""      # 已存在但明文文件被删：只能重置
+                return self._read_token_file(existing_hash)
             token = secrets.token_urlsafe(24)
             self._set_setting("admin_token_hash", _sha256(token))
             (self.dir / "admin_token.txt").write_text(
-                "# 隐盾控制面管理令牌（请妥善保管；数据库内只存哈希）\n" + token + "\n",
+                "# 隐盾控制面管理令牌（请妥善保管；数据库内只存哈希）\n"
+                "# 下面一行就是令牌本身；本文件内容改变后请用 reset 重新生成。\n" + token + "\n",
                 encoding="utf-8")
             return token
+
+    def _read_token_file(self, expected_hash: str) -> str:
+        """从令牌文件里取回明文令牌：**只认第一个非注释行**，并与库里的哈希核对。
+
+        ★ 这里曾经出过一个真事故（V3.5.5 修复）：旧实现直接 `read_text().strip()`，
+        把注释头也当成了令牌的一部分，于是"第二次启动"时拿到的是带中文与换行的字符串。
+        后果很隐蔽——服务照常起、也能鉴权失败得很有礼貌，但**控制台登录不了**：
+        用这段字符串做 Authorization 头会直接抛
+        `Failed to read the 'headers' property: String contains non-ISO-8859-1 code point`，
+        页面只显示一句"无法连接控制面"，看不出是令牌的问题。
+        现在的行为：取不到合法令牌就返回空串（调用方会提示"文件被删/被改，请重置"），
+        绝不把一个"注定鉴权失败"的字符串交出去。
+        """
+        token_file = self.dir / "admin_token.txt"
+        if not token_file.exists():
+            return ""      # 已存在哈希但明文文件被删：只能重置
+        try:
+            lines = token_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception as exc:
+            print(f"[ControlStore] 读取令牌文件失败：{exc}")
+            return ""
+        for line in lines:
+            text = line.strip().lstrip("\ufeff")
+            if not text or text.startswith("#"):
+                continue
+            if secrets.compare_digest(_sha256(text), expected_hash):
+                return text
+            print("[ControlStore] 令牌文件里的明文与库中哈希不一致——请重置管理令牌")
+            return ""
+        return ""
 
     def reset_admin_token(self) -> str:
         with self._lock:
@@ -458,6 +486,49 @@ class ControlStore:
             "FROM usage GROUP BY model, scope ORDER BY calls DESC").fetchall()
         return [{"model": r["model"], "scope": r["scope"], "calls": r["calls"],
                  "chars": r["chars"], "endpoints": r["eps"]} for r in rows]
+
+    # ── 统计分析（控制台"统计分析"页）──────────────────────
+    def stats(self, days: int = 14) -> Dict[str, Any]:
+        """按维度汇总事件：趋势 / 类型 / 级别 / 端点活跃度。
+
+        为什么不由界面聚合：界面只有**当前页**的事件（列表是分页的），前端算出来的"总数"
+        必然是错的——那是"看着有统计、数字却对不上"的经典坑。这里全部走 SQL 聚合。
+        """
+        days = max(1, min(int(days or 14), 90))
+        # 趋势按天分桶：用 date(received_at) 而非 substr，带时区偏移的两种写法都能解析，
+        # substr 会在 ts 与 received_at 格式不一致时切错位。
+        rows = self._conn.execute(
+            "SELECT date(received_at) d, COUNT(*) c, "
+            "       SUM(CASE WHEN severity IN ('critical','security') THEN 1 ELSE 0 END) high "
+            "FROM events GROUP BY d ORDER BY d").fetchall()
+        by_day = {r["d"]: (r["c"], r["high"] or 0) for r in rows if r["d"]}
+        # 补齐没有事件的日期：否则横轴被压缩，会被误读成"每天都在涨"
+        today = datetime.now(timezone.utc).astimezone().date()
+        daily: List[Dict[str, Any]] = []
+        for offset in range(days - 1, -1, -1):
+            day = (today - timedelta(days=offset)).isoformat()
+            count, high = by_day.get(day, (0, 0))
+            daily.append({"date": day, "count": count, "high": high})
+
+        by_type = [{"event_type": r["event_type"], "count": r["c"]} for r in self._conn.execute(
+            "SELECT event_type, COUNT(*) c FROM events GROUP BY event_type ORDER BY c DESC LIMIT 12").fetchall()]
+        by_sev = {r["severity"]: r["c"] for r in self._conn.execute(
+            "SELECT severity, COUNT(*) c FROM events GROUP BY severity").fetchall()}
+        top_eps = [{"endpoint_id": r["endpoint_id"], "count": r["c"]} for r in self._conn.execute(
+            "SELECT endpoint_id, COUNT(*) c FROM events GROUP BY endpoint_id ORDER BY c DESC LIMIT 10").fetchall()]
+        totals = self._conn.execute(
+            "SELECT COUNT(*) c, MIN(received_at) first_at, MAX(received_at) last_at FROM events").fetchone()
+        return {
+            "days": days,
+            "daily": daily,
+            "by_type": by_type,
+            "by_severity": by_sev,
+            "top_endpoints": top_eps,
+            "total_events": totals["c"] or 0,
+            "first_event_at": totals["first_at"] or "",
+            "last_event_at": totals["last_at"] or "",
+            "generated_at": _now(),
+        }
 
     # ── 策略 ─────────────────────────────────────────────
     def set_policy(self, scope: str, bundle: Dict[str, Any]) -> Dict[str, Any]:

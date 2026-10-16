@@ -231,14 +231,26 @@ python run.py
 <h3>4.6 控制面（企业侧集中管理，运维用）</h3>
 <p>给 IT/安全管理员用，普通使用者不需要碰。<strong>默认关闭</strong>——集中管理是显式选用的能力，程序绝不静默上报。</p>
 <p><strong>在管理机上启动控制面：</strong></p>
-<pre><code class="language-bash">python -m yindun.control.server --port 8787      # 默认只监听 127.0.0.1
+<ul>
+<li><strong>便携版（推荐）</strong>：双击 <code>dist/隐盾控制端_&lt;版本&gt;_便携版.exe</code> → <strong>直接打开一个控制台窗口并自动登录</strong>，
+  不需要抄地址、也不需要手输令牌（令牌仍保护远程访问；窗口只在本机回环打开，且页面会立刻把它从地址栏抹掉）。
+  关掉窗口即停服；启动信息（监听地址、数据目录、对外监听告警）同时打印在控制台窗口里。</li>
+<li><strong>源码/服务器</strong>：</li>
+</ul>
+<pre><code class="language-bash">python -m yindun.control              # 起服务 + 开桌面窗口（默认）
+python -m yindun.control --no-window  # 只起 HTTP 服务：装到服务器上、由别人用浏览器访问
+python -m yindun.control --browser    # 不弹窗口，用系统默认浏览器打开
+python -m yindun.control --host 0.0.0.0 --window yes   # 对外监听（默认不弹窗口，需显式要求）
 </code></pre>
-<p>启动后终端会打印监听地址与数据目录；<strong>管理令牌</strong>在 <code>control_data/admin_token.txt</code>（数据库里只存哈希）。
-浏览器打开 <code>http://127.0.0.1:8787/</code>，粘贴令牌即可进入集中控制台（令牌只留在当前标签页，关闭即清除）。</p>
-<p>控制台五页：<strong>态势总览</strong>（在管端点 / 事件总量 / 高危事件 / 链告警 + 链锚定状态 + 告警流）、
+<p><strong>管理令牌</strong>在 <code>control_data/admin_token.txt</code>（数据库里只存哈希）。远程用户用浏览器打开
+<code>http://&lt;控制面&gt;:8787/</code>，粘贴令牌即可进入（令牌只留在当前标签页，关闭即清除）。</p>
+<p>控制台六页：<strong>态势总览</strong>（在管端点 / 事件总量 / 高危事件 / 链告警 + 链锚定状态 + 告警流）、
+<strong>统计分析</strong>（近 14 天趋势柱图，深色段为高风险；事件类型 Top 12；级别构成；端点活跃度；近 7 天与环比）、
 <strong>事件台账</strong>（按端点/类型/级别/关键词检索）、<strong>端点资产</strong>（版本、链长、模型、插件、严格模式、生效策略）、
 <strong>策略下发</strong>（只提供"收紧"语义的四类输入）、<strong>模型用量</strong>（调用计数与交互体量，不含内容）。
-支持明暗双主题、10 秒自动刷新、<code>/</code> 聚焦搜索、<code>1</code>~<code>5</code> 切页、<code>R</code> 刷新。</p>
+统计口径全部在服务端聚合（界面只拿到分页事件，自己算总数会对不上），缺事件的日期补 0 柱，
+横轴按真实天数铺满——不会把"周末没人用"画成"一直在涨"。
+支持明暗双主题、10 秒自动刷新、<code>/</code> 聚焦搜索、<code>1</code>~<code>6</code> 切页、<code>R</code> 刷新。</p>
 <p><strong>在员工机器上接入（端点侧）：</strong></p>
 <ol>
 <li>在控制台所在机器上登记端点（需要管理令牌），拿到<strong>端点令牌</strong>与<strong>策略签名密钥</strong>：</li>

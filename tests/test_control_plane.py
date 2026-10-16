@@ -671,6 +671,93 @@ check("显式撤销后规则清空、判定回到基线",
       cleared.get("removed", 0) > 0 and pm.check("read_local_file", normal_file) == "approve",
       str(cleared))
 
+# ── 【I】统计分析接口 + 桌面外壳的承载决策（V3.5.5）──────────
+section("【I】统计分析（服务端聚合）与桌面外壳启动形态")
+
+# ⑬ /api/v1/stats：需管理令牌，且数字必须与已上报的事件对得上
+st, _unauth, _ = http_json("GET", "/api/v1/stats", None, "")
+check("统计接口需要管理令牌（未鉴权 → 401）", st == 401, str(st))
+st, stats, _ = http_json("GET", "/api/v1/stats?days=7", None, e2e_admin)
+check("统计接口返回 200", st == 200, str(st))
+check("趋势补齐每一天（缺事件的日期也要给 0，横轴不能压缩）",
+      isinstance(stats.get("daily"), list) and len(stats.get("daily")) == 7,
+      str(len(stats.get("daily") or [])))
+check("趋势各天之和 = 累计事件数（服务端聚合，不是界面自己按当前页算）",
+      sum(d["count"] for d in stats["daily"]) == stats["total_events"],
+      f"{sum(d['count'] for d in stats['daily'])} vs {stats.get('total_events')}")
+check("事件总数与总览口径一致（两处不能各说各话）",
+      stats["total_events"] == ov["events"], f"{stats['total_events']} vs {ov['events']}")
+check("类型分布按条数倒序、且条数之和 = 总数",
+      bool(stats["by_type"]) and sum(t["count"] for t in stats["by_type"]) == stats["total_events"],
+      str(stats["by_type"]))
+check("级别构成覆盖已上报的级别且计数之和 = 总数",
+      set(stats["by_severity"]) <= {"info", "warning", "critical", "security"}
+      and sum(stats["by_severity"].values()) == stats["total_events"], str(stats["by_severity"]))
+check("端点活跃度按条数倒序、且都是已登记的端点",
+      all(stats["top_endpoints"][i]["count"] >= stats["top_endpoints"][i + 1]["count"]
+          for i in range(len(stats["top_endpoints"]) - 1))
+      and all(t["endpoint_id"] in {e["endpoint_id"] for e in eps2["endpoints"]}
+              for t in stats["top_endpoints"]), str(stats["top_endpoints"]))
+check("days 越界值被收敛（不接受的参数不能把服务打爆）",
+      http_json("GET", "/api/v1/stats?days=99999", None, e2e_admin)[1].get("days") == 90
+      and http_json("GET", "/api/v1/stats?days=abc", None, e2e_admin)[1].get("days") == 14)
+
+# ⑭ stats() 的边界：空库也要给出可画的形状（不抛异常、不缺字段）
+empty_store = ControlStore(Path(TMP) / "empty" / "control.db")
+empty_stats = empty_store.stats()
+check("空库时统计仍返回完整形状（14 根 0 柱，而不是报错）",
+      len(empty_stats["daily"]) == 14 and all(d["count"] == 0 for d in empty_stats["daily"])
+      and empty_stats["total_events"] == 0 and empty_stats["by_type"] == []
+      and empty_stats["top_endpoints"] == [], str(empty_stats)[:140])
+empty_store.close()
+
+# ⑭b 令牌取回（★ 真事故回归）：第二次启动必须拿到**同一枚**单行 ASCII 令牌
+#   旧实现把整份文件的注释头也算作令牌 → 窗口自动登录时 HTTP 头含中文与换行 →
+#   浏览器抛 "non-ISO-8859-1 code point"，表现成"控制台登录不了"。
+tok_store = ControlStore(Path(TMP) / "tokenfile" / "control.db")
+first = tok_store.ensure_admin_token()
+second = tok_store.ensure_admin_token()          # 模拟"第二次启动"
+third = tok_store.ensure_admin_token()
+check("首次生成的令牌是单行 ASCII（能放进 HTTP 头）",
+      bool(first) and first.isascii() and chr(10) not in first, repr(first))
+check("第二次启动取回的是同一枚令牌，且不含注释头/换行",
+      second == first == third and second.isascii() and "#" not in second, repr(second))
+check("令牌文件里确实有注释头（说明上面挡住的正是真会发生的情况）",
+      "#" in (Path(TMP) / "tokenfile" / "admin_token.txt").read_text(encoding="utf-8"))
+check("取回的令牌能真正通过鉴权（不是「看着像令牌」）", tok_store.verify_admin(second))
+# 文件被手工改坏：宁可返回空（提示重置），也不交出一个注定失败的令牌
+(Path(TMP) / "tokenfile" / "admin_token.txt").write_text("被手改坏了" + chr(10), encoding="utf-8")
+check("令牌文件被改坏 → 返回空串（不交出注定鉴权失败的字符串）",
+      tok_store.ensure_admin_token() == "")
+tok_store.close()
+# ⑮ 桌面外壳：承载方式决策 + 自动登录地址（不真开窗口，只验决策与拼地址）
+from yindun.control import desktop  # noqa: E402
+check("默认（回环监听）→ 开桌面窗口；对外监听 → 只起服务（服务器场景不该弹窗口）",
+      desktop.plan_launch("127.0.0.1", "auto")[0] == "window"
+      and desktop.plan_launch("0.0.0.0", "auto")[0] == "server")
+check("显式开关优先于默认策略",
+      desktop.plan_launch("0.0.0.0", "yes")[0] == "window"
+      and desktop.plan_launch("127.0.0.1", "no")[0] == "server"
+      and desktop.plan_launch("127.0.0.1", "browser")[0] == "browser")
+check("窗口地址把令牌放在 fragment（不进服务器日志、不随 Referer 外发）",
+      desktop.console_url("127.0.0.1", 8787, "tok") == "http://127.0.0.1:8787/#token=tok",
+      desktop.console_url("127.0.0.1", 8787, "tok"))
+check("监听 0.0.0.0 时窗口仍访问回环地址（监听地址本身不可访问）",
+      desktop.console_url("0.0.0.0", 8787).startswith("http://127.0.0.1:8787/"))
+check("纯服务模式不把令牌放进地址（终端打印，由人自己输）",
+      desktop.console_url("127.0.0.1", 8787, "") == "http://127.0.0.1:8787/")
+check("非单行/含中文的令牌不会进到地址里（HTTP 头只能承载 ISO-8859-1）",
+      desktop.usable_token("abc") == "abc" and desktop.usable_token("a" + chr(10) + "b") == ""
+      and desktop.usable_token("令牌") == "" and desktop.usable_token("  x  ") == "x")
+check("控制台支持从 fragment 自动登录，并立刻从地址栏抹掉",
+      "#token=" in Path("yindun/control/web/app.js").read_text(encoding="utf-8")
+      and "history.replaceState" in Path("yindun/control/web/app.js").read_text(encoding="utf-8"))
+check("控制台含统计分析页（导航项 + 渲染函数 + 服务端接口）",
+      'data-page="stats"' in Path("yindun/control/web/index.html").read_text(encoding="utf-8")
+      and "async function renderStats" in Path("yindun/control/web/app.js").read_text(encoding="utf-8")
+      and "/api/v1/stats" in Path("yindun/control/server.py").read_text(encoding="utf-8"))
+
+
 httpd.shutdown()
 httpd.server_close()
 e2e_store.close()

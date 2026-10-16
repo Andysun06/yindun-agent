@@ -17,6 +17,7 @@ const PAGES = {
   endpoints: { title: "端点资产", sub: "每台装了隐盾的机器：版本、能力、链状态" },
   policy:    { title: "策略下发", sub: "只能收紧：敏感路径取并集、审批取更严、允许集取交集" },
   usage:     { title: "模型用量", sub: "调用计数与交互体量（内容不经过控制面）" },
+  stats:     { title: "统计分析", sub: "趋势、类型分布、级别构成与端点活跃度（服务端聚合）" },
 };
 const SEV_LABEL = { info: "提示", warning: "警告", critical: "严重", security: "安全" };
 const TYPE_LABEL = {
@@ -107,6 +108,21 @@ async function boot() {
   }
   state.base = sessionStorage.getItem("yd.base") || "";
   state.token = sessionStorage.getItem("yd.token") || "";
+  // 桌面外壳（双击 exe 开窗口）会把令牌放在 fragment 带进来：本机窗口免手抄。
+  // 用 fragment 而非 query 是为了不进服务器日志、不随 Referer 外发；
+  // 取到后立刻从地址栏抹掉，只留在 sessionStorage（关窗即失效）。
+  if (!state.token && location.hash.startsWith("#token=")) {
+    try {
+      const fromUrl = decodeURIComponent(location.hash.slice("#token=".length));
+      if (fromUrl) {
+        state.token = fromUrl;
+        state.base = location.origin;
+        sessionStorage.setItem("yd.token", fromUrl);
+        sessionStorage.setItem("yd.base", location.origin);
+        history.replaceState(null, "", location.pathname);
+      }
+    } catch (e) { /* 解析失败就退回手输，不静默 */ }
+  }
   if (!state.base || !state.token) return showAuth();
   try { await api("/api/v1/overview"); start(); }
   catch (e) { showAuth(e.unauthorized ? "令牌无效或已过期，请重新输入" : `无法连接控制面：${e.message}`); }
@@ -182,6 +198,7 @@ async function render(showStamp = false) {
     else if (state.page === "events") await renderEvents(box);
     else if (state.page === "endpoints") await renderEndpoints(box);
     else if (state.page === "policy") await renderPolicy(box);
+    else if (state.page === "stats") await renderStats(box);
     else await renderUsage(box);
     box.dataset.painted = "1";
     setStatus("live", MOCK ? "预览数据" : "已连接");
@@ -455,6 +472,106 @@ async function submitPolicy() {
   } catch (e) { toast("下发被拒绝：" + e.message, 5200); }
 }
 
+/* ── 页面：统计分析（服务端聚合，界面只画）─────────────────
+   为什么要有这一页：总览给的是"当下几个数"，但管理员真正要看的是**走向**——
+   这周比上周多还是少、哪类事件在涨、哪台机器最活跃。图表全部手绘 SVG：
+   控制台是零依赖原型，引一个图表库只为画柱子和横条不划算，且离线可用是本项目的底线。 */
+
+function sparkBars(daily) {
+  // 趋势：每日一根柱，高风险部分叠成第二种颜色。高度按最大值归一化（全 0 时给一个基线）
+  const max = Math.max(1, ...daily.map((d) => d.count));
+  const W = 100 / Math.max(1, daily.length);          // 百分比宽度，随容器自适应
+  return `<div class="chart" role="img" aria-label="近 ${daily.length} 天事件趋势">
+    ${daily.map((d, i) => {
+      const h = Math.round((d.count / max) * 100);
+      const hi = d.count ? Math.round((d.high / d.count) * h) : 0;
+      return `<div class="chart__col" style="left:${(i * W).toFixed(3)}%;width:${W.toFixed(3)}%"
+                   title="${d.date}：${d.count} 条（高风险 ${d.high} 条）">
+        <span class="chart__bar" style="height:${h}%"><i style="height:${hi}%"></i></span>
+      </div>`;
+    }).join("")}
+    <div class="chart__axis"><span>${daily[0] ? daily[0].date.slice(5) : ""}</span>
+      <span>峰值 ${max} 条/天</span>
+      <span>${daily.length ? daily[daily.length - 1].date.slice(5) : ""}</span></div>
+  </div>`;
+}
+
+function hBars(items, labelFn, total) {
+  // 横条排行：宽度按占最大项的比例（不是占总数的比例）——排行榜要看相对差距
+  const max = Math.max(1, ...items.map((i) => i.count));
+  return `<div class="hbars">${items.map((i) => `
+    <div class="hbar">
+      <span class="hbar__name" title="${esc(labelFn(i))}">${esc(labelFn(i))}</span>
+      <span class="hbar__track"><i style="width:${Math.round((i.count / max) * 100)}%"></i></span>
+      <span class="hbar__num">${num(i.count)}${total ? `<em>${Math.round((i.count / total) * 100)}%</em>` : ""}</span>
+    </div>`).join("")}</div>`;
+}
+
+async function renderStats(box) {
+  const [st, eps] = await Promise.all([api("/api/v1/stats?days=14"), api("/api/v1/endpoints")]);
+  const daily = st.daily || [];
+  const week = daily.slice(-7).reduce((a, d) => a + d.count, 0);
+  const prevWeek = daily.slice(0, 7).reduce((a, d) => a + d.count, 0);
+  const total = st.total_events || 0;
+  const sev = st.by_severity || {};
+  const highCount = (sev.critical || 0) + (sev.security || 0);
+  const epName = {};
+  (eps.endpoints || []).forEach((e) => { epName[e.endpoint_id] = e.name || e.endpoint_id; });
+  const delta = prevWeek ? Math.round(((week - prevWeek) / prevWeek) * 100) : (week ? 100 : 0);
+
+  box.innerHTML = `<section>
+    <div class="metrics">
+      <div class="metric"><div class="metric__label">近 7 天事件</div>
+        <div class="metric__value">${num(week)}<small>条</small></div></div>
+      <div class="metric ${delta > 0 ? "metric--alert" : "metric--ok"}">
+        <div class="metric__label">环比上周</div>
+        <div class="metric__value">${delta > 0 ? "+" : ""}${delta}<small>%</small></div></div>
+      <div class="metric"><div class="metric__label">累计事件</div>
+        <div class="metric__value">${num(total)}<small>条</small></div></div>
+      <div class="metric ${highCount ? "metric--alert" : "metric--ok"}">
+        <div class="metric__label">其中高风险</div>
+        <div class="metric__value">${num(highCount)}<small>条</small></div></div>
+    </div>
+
+    <div class="block">
+      <div class="block__head"><h3>事件趋势（近 ${st.days || 14} 天）</h3>
+        <p>柱高＝当日事件数，深色段＝其中高风险；${st.first_event_at ? `数据自 ${esc(st.first_event_at.slice(0, 16))} 起` : "尚无数据"}</p></div>
+      ${total ? sparkBars(daily) : emptyState("还没有事件", "端点上报后这里会出现趋势")}
+    </div>
+
+    <div class="two-col">
+      <div class="block">
+        <div class="block__head"><h3>事件类型分布</h3><p>按条数排序（前 12 类）</p></div>
+        ${(st.by_type || []).length
+          ? hBars(st.by_type, (i) => TYPE_LABEL[i.event_type] || i.event_type, total)
+          : emptyState("还没有数据", "")}
+      </div>
+      <div class="block">
+        <div class="block__head"><h3>级别构成</h3><p>提示 / 警告 / 严重（安全）</p></div>
+        ${Object.keys(sev).length ? `<div class="sev-list">${Object.entries(sev)
+          .sort((a, b) => b[1] - a[1]).map(([k, v]) => `
+          <div class="sev-row"><span class="badge badge--${k === "critical" || k === "security" ? "bad"
+            : (k === "warning" ? "warn" : "idle")}">${esc(SEV_LABEL[k] || k)}</span>
+            <span class="hbar__track"><i class="sev-${esc(k)}" style="width:${total ? Math.round((v / total) * 100) : 0}%"></i></span>
+            <span class="hbar__num">${num(v)}</span></div>`).join("")}</div>`
+          : emptyState("还没有数据", "")}
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="block__head"><h3>端点活跃度</h3><p>上报事件最多的工作站（前 10）</p></div>
+      ${(st.top_endpoints || []).length ? `<div class="table-wrap"><table class="grid">
+        <thead><tr><th>端点</th><th>标识</th><th class="num">事件数</th><th class="num">占比</th></tr></thead>
+        <tbody>${st.top_endpoints.map((t) => `<tr>
+          <td>${esc(epName[t.endpoint_id] || t.endpoint_id)}</td>
+          <td class="mono">${esc(t.endpoint_id)}</td>
+          <td class="num">${num(t.count)}</td>
+          <td class="num">${total ? Math.round((t.count / total) * 100) : 0}%</td></tr>`).join("")}</tbody>
+      </table></div>` : emptyState("还没有端点上报", "员工机在「设置 → 企业控制面」配对后即开始上报")}
+    </div>
+  </section>`;
+}
+
 /* ── 页面：模型用量 ───────────────────────────────────── */
 async function renderUsage(box) {
   const [usage, eps] = await Promise.all([api("/api/v1/usage"), api("/api/v1/endpoints")]);
@@ -509,6 +626,26 @@ function emptyState(title, sub) {
 /* ── 预览数据（仅 #mock）───────────────────────────────── */
 const MOCK_DATA = {
   overview: { endpoints: 3, events: 418, high_events: 6, chain_alerts: 1, generated_at: "2026-10-16T09:12:00" },
+  stats: (() => {
+    // 近 14 天样例趋势（含一个高峰日与两天零上报的周末，便于看图形是否可信）
+    const counts = [12, 18, 9, 0, 0, 24, 31, 27, 44, 38, 0, 0, 29, 41];
+    const daily = counts.map((c, i) => ({
+      date: new Date(Date.now() - (counts.length - 1 - i) * 86400000).toISOString().slice(0, 10),
+      count: c * 3, high: c > 35 ? 2 : (c > 20 ? 1 : 0),
+    }));
+    return {
+      days: 14, daily,
+      by_type: [{ event_type: "tool_call", count: 268 }, { event_type: "tool_result", count: 241 },
+                { event_type: "llm_output", count: 186 }, { event_type: "llm_input", count: 174 },
+                { event_type: "privacy_sensitive", count: 96 }, { event_type: "control_report", count: 62 },
+                { event_type: "access_control", count: 31 }, { event_type: "workflow_step_executed", count: 18 }],
+      by_severity: { info: 902, warning: 128, critical: 5, security: 1 },
+      top_endpoints: [{ endpoint_id: "ep-fin-27", count: 216 }, { endpoint_id: "ep-hr-04", count: 132 },
+                      { endpoint_id: "ep-dev-11", count: 70 }],
+      total_events: 1036, first_event_at: "2026-10-03T09:14:22", last_event_at: "2026-10-16T09:11:30",
+      generated_at: "2026-10-16T09:12:00",
+    };
+  })(),
   endpoints: { endpoints: [
     { endpoint_id: "ep-fin-27", name: "财务部-27号机", version: "3.4.6", platform: "Windows-11",
       last_seen_at: "2026-10-16T09:11:30", strict_mode: false, policy_version: 3, total_count: 216,

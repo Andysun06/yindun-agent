@@ -19,6 +19,7 @@ import argparse
 import json
 import sys
 import threading
+import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -30,6 +31,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from yindun.control import CONTROL_VERSION                      # noqa: E402
+from yindun.control import desktop                              # noqa: E402
 from yindun.control import policy as policy_mod                 # noqa: E402
 from yindun.control.models import EndpointReport, ReportError   # noqa: E402
 from yindun.control.store import ControlStore                   # noqa: E402
@@ -101,6 +103,11 @@ class ControlServer:
         if method == "GET" and path == "/api/v1/usage":
             self.require_admin(headers)
             return 200, {"usage": self.store.usage_summary()}
+        if method == "GET" and path == "/api/v1/stats":
+            # 统计分析页用：趋势 / 类型 / 级别 / 端点活跃度（全部服务端聚合，界面只画）
+            self.require_admin(headers)
+            days = (query.get("days") or ["14"])[0]
+            return 200, self.store.stats(int(days) if str(days).isdigit() else 14)
         if method == "GET" and path == "/api/v1/alerts":
             self.require_admin(headers)
             ep = (query.get("endpoint_id") or [""])[0]
@@ -409,30 +416,59 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--data", default="", help="控制面数据目录（默认 control_data/）")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--window", dest="window", nargs="?", const="yes", default="auto",
+                        choices=["auto", "yes", "no", "browser"],
+                        help="承载方式：auto（默认，回环监听时开桌面窗口）/ yes / no（纯服务）/ browser（用默认浏览器打开）")
+    # 两个等价简写：日常更顺手，语义与 --window no / --window browser 完全一致
+    parser.add_argument("--no-window", dest="window", action="store_const", const="no",
+                        help="等价于 --window no：只起 HTTP 服务（装到服务器上的场景）")
+    parser.add_argument("--browser", dest="window", action="store_const", const="browser",
+                        help="等价于 --window browser：不弹窗口，用系统默认浏览器打开控制台")
     args = parser.parse_args(argv)
 
     store = ControlStore(Path(args.data) / "control.db") if args.data else ControlStore()
     token = store.ensure_admin_token()
     httpd = serve(args.host, args.port, store, verbose=not args.quiet)
+    external = args.host not in ("127.0.0.1", "localhost", "::1", "")
 
-    print("=" * 74)
-    print("隐盾控制面 · 企业侧集中管理（演示级原型）")
-    print("=" * 74)
-    print(f"  监听       http://{args.host}:{args.port}")
-    print(f"  数据目录   {store.dir}")
-    print(f"  管理令牌   {store.dir / 'admin_token.txt'}")
-    if token:
-        print(f"            {token}")
-    if args.host not in ("127.0.0.1", "localhost", "::1"):
-        print("  ⚠ 已对外监听：本原型**不带 TLS**，请务必挂在 TLS 反向代理之后，并限制来源 IP。")
-    print("  数据边界   控制面只接收掩码事件、链头与元数据；映射密钥在端点（DPAPI 绑定），")
-    print("            控制面架构上无法还原明文。策略只能收紧，不能放行。")
-    print("=" * 74)
+    mode, why = desktop.plan_launch(args.host, args.window)
+    url = desktop.console_url(args.host, args.port, token if mode == "window" else "")
+    # 令牌只在"不会被自动登录"的模式下打印到终端（窗口/浏览器模式已带进去，没必要再吐一次）
+    desktop.stdout_banner(args.host, args.port, store.dir, store.dir / "admin_token.txt",
+                          token if mode == "server" else "", external=external)
+    print(f"  启动方式   {why}")
+
+    if mode == "server":
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print("\n[控制面] 已停止")
+        finally:
+            httpd.server_close()
+        return 0
+
+    # 窗口 / 浏览器：HTTP 放后台线程，主线程让给 GUI（pywebview 的循环必须在主线程）
+    desktop.serve_in_background(httpd)
     try:
-        httpd.serve_forever()
+        if mode == "browser":
+            if not desktop.open_browser(url):
+                print(f"[控制面] 未能自动打开浏览器，请手动访问：{url}")
+            print("[控制面] 服务运行中，按 Ctrl+C 停止")
+            while True:
+                time.sleep(0.5)
+        else:
+            print("[控制面] 控制台窗口已打开（关闭窗口即退出服务）")
+            if not desktop.open_window(url):
+                # 兜底：没有 WebView2/桌面环境时退回浏览器，并明确说明发生了什么
+                desktop.open_browser(url)
+                print("[控制面] 已在默认浏览器中打开控制台")
+                while True:
+                    time.sleep(0.5)
     except KeyboardInterrupt:
-        print("\n[控制面] 已停止")
+        pass
     finally:
+        print("\n[控制面] 已停止")
+        httpd.shutdown()
         httpd.server_close()
     return 0
 
