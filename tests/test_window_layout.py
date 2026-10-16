@@ -233,6 +233,33 @@ check("Esc 可展开", 'e.key === "Escape" && miniOn()' in js)
 check("主输入与浮条共用同一个发送实现（避免两套行为漂移）",
       js.count("await sendText(text)") >= 2, f"sendText 调用次数 {js.count('await sendText(text)')}")
 
+# ── 浮条输入的两处真机缺陷（用户实测反馈 → 修复 → 固化）──
+# ① 用户反馈"闪发模式下按住 Shift+Enter 直接发送了"：单行 input 装不下换行符，
+#    且 keydown 只判 Enter 不判 shiftKey。② "输入框内容不同步"：浮条与主输入框是两个控件，
+#    没有任何草稿搬运，而展开分支还显式清空了浮条（折叠期间打的字被丢掉）。
+check("浮条输入是多行控件（单行 input 装不下换行，Shift+Enter 会变成空操作）",
+      '<textarea class="minibar__input" id="mini-input"' in html)
+check("浮条输入框有高度上限（浮条窗口固定 60px，不能被文本撑破）",
+      "max-height: 44px" in css and 'AUTOSIZE_MAX = { input: 180, "mini-input": 44 }' in js)
+check("Shift+Enter 在浮条里不发送（交给控件默认行为插入换行）",
+      'if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); miniSubmit(); }' in js
+      and 'if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); miniSubmit(); }' not in js)
+check("草稿双向搬运：折叠时主输入 → 浮条，展开时浮条 → 主输入",
+      'carryDraft("mini-input", "input")' in js and 'carryDraft("input", "mini-input")' in js
+      and '$("mini-input").value = ""' not in js, "展开分支不得再直接清空浮条（丢字根因）")
+check("草稿搬运是「复制 + 清空来源」（来回折叠不会复制出两份草稿）",
+      re.search(r"function carryDraft[\s\S]{0,400}?to\.value = from\.value[\s\S]{0,80}?from\.value = \"\"", js)
+      is not None)
+check("忙时不吞掉用户打的字（先判忙、再清空；旧写法相反）",
+      (lambda body: body.index("state.busy") < body.index("clearDrafts()"))(
+          js.split("async function miniSubmit")[1].split("\n  }")[0]))
+check("发送后两份草稿一起清空（展开时不会把已发出的内容搬回来）",
+      "clearDrafts();" in js.split("async function miniSubmit")[1][:400]
+      and "clearDrafts();" in js.split('$("composer").addEventListener("submit"')[1][:600])
+check("自动增高只有一套实现（浮条与主输入共用，避免上限规则各写一份）",
+      "function autosizeInput" in js and js.count("autosizeInput(") >= 4
+      and "el.style.height = Math.min(el.scrollHeight, 180)" not in js)
+
 # ── 思考模式工具活动流（真机跑工具链才暴露的渲染缺陷回归）──
 # entryEl 返回的是外层 .row，.entry__body 是 .entry 的子节点；
 # 旧写法 entry.insertBefore(box, body) 必抛 NotFoundError —— 工具活动流从未渲染出来。

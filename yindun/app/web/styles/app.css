@@ -117,9 +117,14 @@ body.is-mini .minibar {
 .minibar__send { background: var(--accent-500); border-color: var(--accent-500); color: #fff; }
 .minibar__send:hover { background: var(--accent-600); border-color: var(--accent-600); color: #fff; }
 .minibar__expand svg, .minibar__send svg { width: 14px; height: 14px; }
+/* 浮条输入框：单行起步、最多两行高（浮条窗口固定 60px），再多就在框内滚动。
+   换行必须真的可见，否则用户按了 Shift+Enter 却什么都看不到，会以为键盘坏了。 */
 .minibar__input {
-  flex: 1; min-width: 0; height: 28px; border: none; background: transparent;
-  color: var(--text-1); font-size: var(--fs-sm); -webkit-app-region: no-drag;
+  flex: 1; min-width: 0; resize: none; overflow-y: auto;
+  height: 28px; max-height: 44px; padding: 4px 0;
+  border: none; background: transparent; color: var(--text-1);
+  font-family: inherit; font-size: var(--fs-sm); line-height: 1.35;
+  -webkit-app-region: no-drag;
 }
 .minibar__input::placeholder { color: var(--text-3); }
 .minibar__input:focus { outline: none; }

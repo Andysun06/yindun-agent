@@ -450,6 +450,40 @@
        · 浮条常显一行状态，折叠时也能看出"是否在推理" */
   function miniOn() { return document.body.classList.contains("is-mini"); }
 
+  /* 两个输入框（主输入 / 浮条）的自动增高上限：浮条所在窗口固定 60px，不能按 180 长 */
+  const AUTOSIZE_MAX = { input: 180, "mini-input": 44 };
+  function autosizeInput(el) {
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, AUTOSIZE_MAX[el.id] || 180) + "px";
+  }
+
+  /** 把草稿从一个输入框**搬**到另一个（复制 + 清空来源，光标落末尾）。
+   *  为什么必须搬：主输入框与浮条是两个独立控件，不搬就会出现两种丢字——
+   *    ① 折叠时：刚在主输入框打好的字跟着界面一起被隐藏（浮条里空着，只能重打）；
+   *    ② 展开时：折叠期间在浮条里打的字被 setMini 清掉（历史上这里确实直接 value=""）。
+   *  "复制 + 清空来源"保证任意时刻只有一处持有草稿，来回折叠不会复制出两份。 */
+  function carryDraft(toId, fromId) {
+    const to = $(toId), from = $(fromId);
+    if (!to || !from) return;
+    to.value = from.value || "";
+    from.value = "";
+    from.style.height = "";
+    autosizeInput(to);
+    try {
+      to.focus();
+      to.setSelectionRange(to.value.length, to.value.length);
+    } catch (e) { /* 元素不可聚焦/不支持选区时忽略：草稿本身已经搬过去 */ }
+  }
+
+  /** 清空两份草稿（发送后调用，避免展开时把已发出的内容又搬回来） */
+  function clearDrafts() {
+    ["input", "mini-input"].forEach((id) => {
+      const el = $(id);
+      if (el) { el.value = ""; el.style.height = ""; }
+    });
+  }
+
   function setMiniStatus(text, busy) {
     const el = $("mini-status");
     if (!el) return;
@@ -468,11 +502,12 @@
       return;
     }
     if (on) {
+      // 折叠：把主输入框里的草稿带进浮条——否则刚打的字跟着界面一起消失
+      carryDraft("mini-input", "input");
       setMiniStatus(state.busy ? "推理中…" : "", state.busy);
-      $("mini-input").focus();
     } else {
-      $("mini-input").value = "";
-      $("mini-input").focus();
+      // 展开：把折叠期间在浮条里打的字带回来（旧实现直接清空，属于丢字）
+      carryDraft("input", "mini-input");
     }
   }
 
@@ -492,8 +527,10 @@
     const input = $("mini-input");
     const text = (input.value || "").trim();
     if (!text) return;
-    input.value = "";
+    // 忙判定必须在清空之前：旧写法先 value="" 再判忙，模型推理中按回车
+    // 会把用户打的字吞掉且不留痕迹（既没发出去，输入框也空了）。
     if (state.busy) { toast("正在推理中，请稍候或先停止"); return; }
+    clearDrafts();
     if (miniOn()) await setMini(false);
     await sendText(text);
   }
@@ -1770,18 +1807,20 @@
       const input = $("input");
       const text = input.value.trim();
       if (!text) return;
-      input.value = ""; input.style.height = "auto";
+      clearDrafts();                 // 与浮条共用同一条清空路径（含自动增高复位）
       await sendText(text);
     });
 
-    // 闪发浮条：回车发送（自动展开）、Esc 展开、按钮发送
+    // 闪发浮条：回车发送（自动展开，且先展开视图再发送）、Shift+Enter 换行、Esc 展开、按钮发送
     $("btn-mini").onclick = () => setMini(true);
     $("btn-mini-expand").onclick = () => setMini(false);
     $("btn-mini-send").onclick = miniSubmit;
     $("mini-input").addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); miniSubmit(); }
+      // 只拦"不按 Shift 的 Enter"：Shift+Enter 交给控件默认行为插入换行
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); miniSubmit(); }
       if (e.key === "Escape") { e.preventDefault(); setMini(false); }
     });
+    $("mini-input").addEventListener("input", (e) => autosizeInput(e.target));
     document.addEventListener("keydown", (e) => {
       // 全局 Esc：折叠态下展开（浮条只有一个输入框，不会与其它 Esc 语义冲突）
       if (e.key === "Escape" && miniOn()) { e.preventDefault(); setMini(false); }
@@ -1792,10 +1831,7 @@
         e.preventDefault(); $("composer").requestSubmit();
       }
     });
-    $("input").addEventListener("input", (e) => {
-      const el = e.target; el.style.height = "auto";
-      el.style.height = Math.min(el.scrollHeight, 180) + "px";
-    });
+    $("input").addEventListener("input", (e) => autosizeInput(e.target));
 
     $("btn-new-session").onclick = newSession;
     $("btn-kb-add").onclick = async () => {
