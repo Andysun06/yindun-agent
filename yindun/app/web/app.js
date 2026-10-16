@@ -15,6 +15,9 @@
     attachments: [], audit: null,
     pane: "settings", auditFormats: [], wfFormats: [],
     catalog: null,           // 三档算力清单（本机 / 局域网 / 公网）
+    plugins: [],             // 插件清单（市场页渲染 + 搜索过滤都基于它）
+    sessionPermission: null, // 本对话的权限覆盖（null = 跟随设置默认）
+    laya: null,              // laya 接入状态（本机 / 局域网 / 正则回退）
   };
 
   /* ── 工具 ─────────────────────────────────────────── */
@@ -407,7 +410,7 @@
       : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 8 6 8-16-8z"/></svg>`;
     $("input").disabled = busy;
     $("composer-hint").textContent = busy
-      ? "推理中…（可随时点停止，取消立即生效）"
+      ? "推理中…（可随时点停止）"
       : "数据在本机脱敏后才送入模型";
     if (busy) startBusyWatchdog(); else stopBusyWatchdog();
   }
@@ -727,7 +730,9 @@
   };
 
   /* AI 权限四档的说明文案来自内核 yindun/core/permission.py 的 HINTS/LABELS
-     （单一事实来源在 Python 侧；此处同步为界面文案，tests/test_window_layout.py 会比对）。 */
+     （单一事实来源在 Python 侧；此处同步为界面文案，tests/test_permission.py 会比对）。
+     PERM_ORDER 的顺序 = 内核 MODES：由紧到松。 */
+  const PERM_ORDER = ["plan", "ask", "auto", "full"];
   const PERM_MODES = {
     plan: { label: "计划模式", hint: "只读分析、给出计划；不写盘、不删除、不执行命令" },
     ask:  { label: "变更前确认", hint: "读操作自动放行；写盘 / 删除 / 执行命令前逐次人工确认（默认，最稳）" },
@@ -1041,14 +1046,43 @@
   // 自检结果缓存：{plugin_id: {hook: {ok, error}}}
   let pluginCheck = null;
 
+  // 插件分类顺序：没写 category 的落到"扩展"（manifest 里 category 是可选项）
+  const CATEGORY_ORDER = ["安全", "文档", "办公", "导出", "扩展"];
+
   function renderPlugins(list) {
-    const box = $("plugin-list");
+    const box = $("plugin-groups");
+    if (!box) return;
     const plugins = Array.isArray(list) ? list : [];
-    if (!plugins.length) {
-      box.innerHTML = `<div class="plugin-item__desc">没有发现插件</div>`;
-      return;
+    state.plugins = plugins;
+    const kw = ($("plugin-search") && $("plugin-search").value || "").trim().toLowerCase();
+    const hit = (p) => !kw || [p.name, p.description, p.category, p.id]
+      .filter(Boolean).join(" ").toLowerCase().indexOf(kw) >= 0;
+    const shown = plugins.filter(hit);
+
+    // ① 已安装瓷贴：一行方块，点一下展开对应卡片（ZCode 市场顶部那一排的做法）
+    const tiles = $("plugin-tiles");
+    if (tiles) {
+      tiles.innerHTML = plugins.length
+        ? plugins.map((p) => `<button type="button" class="market__tile${p.enabled ? "" : " is-off"}"
+            data-tile="${esc(p.id)}" title="${esc(p.name)}${p.enabled ? "" : "（未启用）"}">
+            ${esc((p.name || "?").trim().charAt(0))}<span class="market__dot"></span></button>`).join("")
+        : `<span class="market__empty">没有发现插件</span>`;
     }
-    box.innerHTML = plugins.map((p) => {
+    const cnt = $("plugin-count");
+    if (cnt) cnt.textContent = `${plugins.filter((p) => p.enabled).length} / ${plugins.length} 已启用`;
+
+    // ② 按分类分组、双列卡片
+    const groups = [];
+    shown.forEach((p) => {
+      const cat = CATEGORY_ORDER.indexOf(p.category) >= 0 ? p.category : "扩展";
+      const g = groups.find((x) => x[0] === cat);
+      if (g) g[1].push(p); else groups.push([cat, [p]]);
+    });
+    groups.sort((a, b) => CATEGORY_ORDER.indexOf(a[0]) - CATEGORY_ORDER.indexOf(b[0]));
+
+    box.innerHTML = groups.map(([cat, items]) => `
+      <div class="market__sec"><b>${esc(cat)}</b><span>${items.length} 个</span></div>
+      <div class="market__grid">${items.map((p) => {
       const caps = Array.isArray(p.capabilities) ? p.capabilities : [];
       const badges = [
         `<span class="plugin-badge plugin-badge--src">${esc(SOURCE_LABEL[p.source] || p.source)}</span>`,
@@ -1066,8 +1100,8 @@
         return `<div class="cap"><span class="cap__hook">${esc(c.hook)}</span>
           <span class="cap__text">${esc(c.summary)}${c.detail ? `　·　${esc(c.detail)}` : ""}</span>${state}</div>`;
       }).join("");
-      // 可编辑配置（如敏感词表）：直接嵌在卡片里，改完立即生效
-      const cfgFiles = Array.isArray(p.config_files) ? p.config_files : [];
+      // 可编辑配置（如敏感词表 / laya 接入）：改完即生效，落盘前写审计
+      const cfgFiles = (Array.isArray(p.config_files) ? p.config_files : []).filter((f) => !f.managed);
       const cfg = cfgFiles.map((f) => `
         <div class="plugin-cfg" data-cfg-for="${esc(p.id)}" data-cfg-name="${esc(f.name)}" hidden>
           <div class="plugin-cfg__head">
@@ -1100,20 +1134,51 @@
           (rt.status === "error" && rt.error ? `：${esc(rt.error)}` : "");
         runCls = (rt.status === "error" || rt.status === "timeout") ? "is-bad" : "is-ok";
       }
-      return `<div class="plugin-item">
-        <div class="plugin-item__head">
-          <span class="plugin-item__name">${esc(p.name)}<span class="plugin-item__ver">v${esc(p.version)}</span></span>
-          <label class="switch"><input type="checkbox" data-plugin="${esc(p.id)}" ${p.enabled ? "checked" : ""} ${disabled ? "disabled" : ""}><span class="switch__track"></span></label>
+      return `<div class="pcard" data-card="${esc(p.id)}">
+        <div class="pcard__main">
+          <span class="pcard__ico" aria-hidden="true">${esc((p.name || "?").trim().charAt(0))}</span>
+          <div class="pcard__text">
+            <span class="pcard__name">${esc(p.name)}<span class="pcard__ver">v${esc(p.version)}</span></span>
+            <span class="pcard__desc" title="${esc(p.description || "")}">${esc(p.description || "")}</span>
+          </div>
+          <div class="pcard__side">
+            <label class="switch" title="${p.enabled ? "停用" : "启用"}"><input type="checkbox" data-plugin="${esc(p.id)}" ${p.enabled ? "checked" : ""} ${disabled ? "disabled" : ""}><span class="switch__track"></span></label>
+            <button class="pcard__more" data-more="${esc(p.id)}" title="详情、能力清单与配置" aria-expanded="false">⋯</button>
+          </div>
         </div>
-        <div class="plugin-item__runtime ${runCls}" title="只统计实际被调用的次数；未触发的插件不代表失效，而是还没遇到对应场景">运行状态：${runText}</div>
-        <div class="plugin-item__desc" title="${esc(p.description || "")}">${esc(p.description || "")}</div>
-        <div class="plugin-item__meta">${badges}</div>
-        ${capList ? `<div class="plugin-caps">${capList}</div>` : ""}
-        ${(p.missing && p.missing.length) ? `<div class="plugin-item__desc">${p.missing.map(esc).join("<br>")}</div>` : ""}
-        ${cfgBtns ? `<div class="plugin-item__ops">${cfgBtns}</div>` : ""}
-        ${cfg}
+        <div class="pcard__state">${badges}</div>
+        <div class="pcard__detail" data-detail="${esc(p.id)}" hidden>
+          <div class="plugin-item__runtime ${runCls}" title="只统计实际被调用的次数；未触发的插件不代表失效，而是还没遇到对应场景">运行状态：${runText}</div>
+          ${capList ? `<div class="plugin-caps">${capList}</div>` : ""}
+          ${(p.missing && p.missing.length) ? `<div class="pcard__desc">${p.missing.map(esc).join("<br>")}</div>` : ""}
+          ${cfgBtns ? `<div class="plugin-item__ops">${cfgBtns}</div>` : ""}
+          ${cfg}
+        </div>
       </div>`;
-    }).join("");
+    }).join("")}</div>`).join("") || `<div class="market__empty">没有匹配的插件（换个关键词试试）</div>`;
+
+    // 瓷贴 → 展开并滚动到对应卡片
+    box.parentElement.querySelectorAll("[data-tile]").forEach((btn) => {
+      btn.onclick = () => {
+        const card = box.querySelector(`[data-card="${btn.dataset.tile}"]`);
+        if (!card) { if ($("plugin-search")) { $("plugin-search").value = ""; renderPlugins(state.plugins);
+                     setTimeout(() => renderPlugins(state.plugins), 0); } return; }
+        const det = card.querySelector(".pcard__detail");
+        if (det) det.hidden = false;
+        card.classList.add("is-hl");
+        card.scrollIntoView({ block: "center", behavior: "smooth" });
+        setTimeout(() => card.classList.remove("is-hl"), 1600);
+      };
+    });
+    // ⋯ 展开/收起详情
+    box.querySelectorAll("[data-more]").forEach((btn) => {
+      btn.onclick = () => {
+        const det = box.querySelector(`[data-detail="${btn.dataset.more}"]`);
+        if (!det) return;
+        det.hidden = !det.hidden;
+        btn.setAttribute("aria-expanded", det.hidden ? "false" : "true");
+      };
+    });
     box.querySelectorAll("[data-plugin]").forEach((input) => {
       input.onchange = async () => {
         const res = await call("plugin_set_enabled", input.dataset.plugin, input.checked);
@@ -1150,7 +1215,7 @@
         const res = await call("plugin_config_write", holder.dataset.cfgFor,
                                holder.dataset.cfgName, holder.querySelector(".plugin-cfg__text").value);
         if (res && res.ok) {
-          toast("已保存并立即生效（改动已写入审计）");
+          toast("已保存（改动已写入审计）");
           refreshSyncState();
         } else {
           toast("保存失败：" + ((res && res.error) || "未知原因"));
@@ -1458,6 +1523,7 @@
     model: ["模型接入", "按数据边界分三档：本机 / 局域网 / 公网"],
     control: ["企业控制面", "接入公司控制面：只上传掩码事件，只接受收紧策略"],
     safety: ["隐私与权限", "脱敏网关、AI 权限四档与执行严格模式"],
+    laya: ["laya 风险分级", "审批弹窗的风险提示：本机模型 / 局域网服务 / 正则规则回退"],
     kb: ["本地知识库", "入库即脱敏的本地检索（脱敏 RAG）"],
     plugin: ["插件", "能力扩展：只增不减，判定权仍在内核"],
     appearance: ["窗口与外观", "悬浮窗行为与明暗主题"],
@@ -1489,6 +1555,10 @@
   }
   function setSettingsPage(page) {
     if (page === "control") renderControlPage();
+    if (page === "laya") renderLayaPage();
+    // 插件列表按需加载：右栏的"设置"面板已不是入口（设置改成了独立视图），
+    // 只在打开这一页时拉一次——否则市场页会一片空白（真实缺陷，实测发现）。
+    if (page === "plugin") refreshPlugins();
     const meta = SET_META[page] || SET_META.model;
     $("set-title").textContent = meta[0];
     $("set-sub").textContent = meta[1];
@@ -1575,21 +1645,32 @@
   }
 
   /* ── 窗口控制 ─────────────────────────────────── */
+  /** 置顶按钮的状态显示：置顶中高亮（明暗两套主题各有自己的取色，见 .win-btn.is-active）。
+   *  只画状态，不改变窗口——真正的窗口动作在 window_action 里。 */
+  function paintPinState() {
+    const pin = $("btn-pin");
+    if (!pin) return;
+    const on = !!(state.settings && state.settings.topmost);
+    pin.classList.toggle("is-active", on);
+    pin.title = on ? "取消置顶" : "置顶";
+    pin.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+
   function bindWindowControls() {
     // 无边框悬浮是产品形态（不是设置项）：固定打开，让拖边缘热区与顶栏拖动始终可用，
     // 也就没有"改了要重启"这一说。
     document.documentElement.dataset.frameless = "1";
     placeWinCtrls();
+    paintPinState();
     document.querySelectorAll("[data-win]").forEach((btn) => {
       btn.onclick = async () => {
         const action = btn.dataset.win;
         const ok = await call("window_action", action);
-        // 置顶现在是即时生效的（复测确认运行时改 on_top 会作用到原生窗口）：
-        // 成功就按实际结果提示，失败则如实说"重启后生效"，不假装成功。
         if (action === "toggle_top") {
           if (ok === false) { toast("置顶切换失败"); return; }
           state.settings.topmost = !state.settings.topmost;
-          toast(state.settings.topmost ? "已置顶显示（立即生效）" : "已取消置顶（立即生效）");
+          paintPinState();
+          toast(state.settings.topmost ? "已置顶显示" : "已取消置顶");
           const sw = $("sw-topmost");
           if (sw) sw.checked = !!state.settings.topmost;
         }
@@ -1627,21 +1708,196 @@
     }
   }
 
-  /* ── 设置抽屉 ─────────────────────────────────────── */
-  /** 思考强度四档：把 thinking_depth(1–10) 折算成档位并高亮（旧的数值配置也能正确显示） */
-  function paintThinkLevel(depth) {
-    const box = $("think-level");
-    if (!box) return;
-    const cur = levelOf(depth);
-    box.querySelectorAll(".think__btn").forEach((b) => {
-      const on = b.dataset.level === cur.key;
-      b.classList.toggle("is-active", on);
-      b.setAttribute("aria-checked", on ? "true" : "false");
-    });
-    box.title = cur.hint;
+  /* ── laya 风险分级：接入页（V3.5.3）─────────────────────
+     口径与「模型接入」同源，因为这里是同一类问题——**同一能力可以来自不同数据边界**：
+       本机 laya 模型（数据不出这台电脑）
+       局域网 laya 服务（出机器、不出企业）
+       正则规则（无模型时的保险回退，全离线）
+     页面只做三件事：说清当前生效的是哪一级、让你配另外两级、真连通一次给你看。 */
+  const LAYA_SOURCES = {
+    local: { label: "本机 laya 模型", boundary: "数据不出这台电脑",
+             hint: "本机已安装 laya（pip install laya，依赖 torch）。首次加载可能需要联网下载权重——涉密环境请预先离线导入权重目录。" },
+    lan: { label: "局域网 laya 服务", boundary: "数据出这台电脑，但不出企业内网",
+           hint: "公司内网部署的 laya 推理服务。需要暴露一个 OpenAI 兼容接口（/chat/completions）；地址只用于本机发起的探测与打分请求，不经过任何第三方。" },
+    regex: { label: "正则规则（回退）", boundary: "全离线，不依赖任何模型",
+             hint: "没有 laya 时使用。规则可在下方直接编辑：每行一条「级别|正则|说明」。规则只产生弹窗提示，不改变任何放行判定。" },
+  };
+
+  async function renderLayaPage() {
+    const st = await call("laya_status");
+    if (st) state.laya = st;
+    const cur = st || {};
+    // 顶部：当前生效后端 + 最近一次分级的来源（"到底有没有在工作"的直接证据）
+    const dot = $("laya-dot");
+    if (dot) dot.className = "laya__tierdot " + (cur.active_backend === "regex" ? "is-off" : "is-ok");
+    if ($("laya-active")) $("laya-active").textContent = cur.active_label || "未接入（将使用正则规则）";
+    if ($("laya-active-note")) {
+      $("laya-active-note").textContent = [
+        cur.last_used ? `最近一次分级：${cur.last_used}` : "本会话还没有触发过审批分级",
+        cur.local && cur.local.detail ? `本机：${cur.local.detail}` : "",
+        cur.lan && cur.lan.detail ? `局域网：${cur.lan.detail}` : "",
+      ].filter(Boolean).join(" · ");
+    }
+    const sel = state.layaSel || (state.layaSel = { tier: cur.source || "local" });
+    const tiers = ["local", "lan", "regex"];
+    const list = $("laya-list");
+    if (list) {
+      list.innerHTML = tiers.map((t) => {
+        const meta = LAYA_SOURCES[t];
+        const info = t === "regex" ? null : (cur[t] || {});
+        const ok = t === "regex" ? true : !!info.available;
+        const active = cur.active_backend === t;
+        return `<button class="prov__item${sel.tier === t ? " is-active" : ""}" type="button" data-t="${t}">
+          <span class="prov__name"><span class="laya__tierdot ${ok ? "is-ok" : "is-off"}"></span>${esc(meta.label)}
+            ${active ? `<i class="prov__cur">使用中</i>` : ""}</span>
+          <span class="prov__meta">${esc(meta.boundary)}</span>
+        </button>`;
+      }).join("");
+    }
+    const det = $("laya-detail");
+    if (det) det.innerHTML = layaDetailHtml(sel.tier, cur);
+    bindLayaDetail(sel.tier);
   }
 
-  /** 权限四档：高亮当前档并同步说明文案（说明文案与内核 HINTS 一致） */
+  function layaDetailHtml(tier, cur) {
+    const meta = LAYA_SOURCES[tier] || LAYA_SOURCES.local;
+    const head = `<div class="prov__title">${esc(meta.label)}<span class="prov__badge">${esc(meta.boundary)}</span></div>
+      <div class="prov__desc">${esc(meta.hint)}</div>`;
+    if (tier === "regex") {
+      const rules = (cur.regex || {});
+      return head + `
+        <div class="setcard">
+          <div class="setrow"><div class="setrow__text"><b>规则文件</b>
+            <span>${rules.path ? esc(rules.path) : "risk_rules.txt"} · 已载入 ${rules.count || 0} 条规则</span></div>
+            <div class="setrow__ctrl">
+              <button class="btn" data-laya="load-rules" type="button">读取</button>
+              <button class="btn btn--primary" data-laya="save-rules" type="button">保存</button>
+            </div>
+          </div>
+        </div>
+        <textarea class="laya__rules" id="laya-rules" spellcheck="false" placeholder="点「读取」载入当前规则…"></textarea>
+        <div class="laya__probe"><span class="laya__result" id="laya-result"></span></div>`;
+    }
+    if (tier === "local") {
+      const info = cur.local || {};
+      return head + `
+        <div class="setcard">
+          <div class="setrow"><div class="setrow__text"><b>本机 laya 检测</b><span>${esc(info.detail || "尚未检测")}</span></div>
+            <div class="setrow__ctrl"><button class="btn" data-laya="probe-local" type="button">重新检测</button></div>
+          </div>
+        </div>
+        <div class="laya__probe"><span class="laya__result" id="laya-result">${info.available ? "本机 laya 可用：审批弹窗将用模型打分" : "本机未检测到 laya：将按下一条可用来源（局域网 → 正则）"}</span></div>`;
+    }
+    const info = cur.lan || {};
+    const cfg = cur.config || {};
+    return head + `
+      <div class="setcard">
+        <div class="setrow"><div class="setrow__text"><b>服务地址</b><span>内网地址，例如 http://10.0.0.8:8080/v1</span></div>
+          <div class="setrow__ctrl"><input type="text" id="laya-endpoint" value="${esc(cfg.endpoint || "")}" placeholder="http://10.0.0.8:8080/v1" spellcheck="false"></div>
+        </div>
+        <div class="setrow"><div class="setrow__text"><b>模型名</b><span>该服务上提供分级能力的模型名（可留空，由服务端默认）</span></div>
+          <div class="setrow__ctrl"><input type="text" id="laya-model" value="${esc(cfg.model || "")}" placeholder="laya" spellcheck="false"></div>
+        </div>
+        <div class="setrow"><div class="setrow__text"><b>连通性</b><span>${esc(info.detail || "点右侧按钮发一次真实探测（地址只取本页输入框）")}</span></div>
+          <div class="setrow__ctrl">
+            <button class="btn" data-laya="probe-lan" type="button">测试连接</button>
+            <button class="btn" data-laya="try-lan" type="button">试打分</button>
+            <button class="btn btn--primary" data-laya="save-lan" type="button">保存</button>
+          </div>
+        </div>
+      </div>
+      <div class="laya__probe"><span class="laya__result" id="laya-result"></span></div>
+      <p class="setfoot">「试打分」会真发一次分级请求并回显它返回的级别——不是"声称能连上"，而是把一次真实结果给你看。
+        接口口径：OpenAI 兼容的 <code>/chat/completions</code>，回复里需要出现 0–1 的概率或「高危/中危/低危」字样；解析不出就如实报错并回退正则。</p>`;
+  }
+
+  function bindLayaDetail(tier) {
+    const box = $("laya-detail");
+    if (!box) return;
+    const put = (text, cls) => {
+      const el = $("laya-result");
+      if (el) { el.textContent = text || ""; el.className = "laya__result" + (cls ? " " + cls : ""); }
+    };
+    box.querySelectorAll("[data-laya]").forEach((btn) => {
+      btn.onclick = async () => {
+        const act = btn.dataset.laya;
+        if (act === "load-rules") {
+          const res = await call("plugin_config_read", "laya_risk", "risk_rules.txt");
+          if (res && res.ok) { $("laya-rules").value = res.text || ""; put("已载入规则，可直接编辑后保存", "is-ok"); }
+          else put("读取失败：" + ((res && res.error) || "未知原因"), "is-bad");
+        } else if (act === "save-rules") {
+          const res = await call("plugin_config_write", "laya_risk", "risk_rules.txt", $("laya-rules").value);
+          if (res && res.ok) { put("规则已保存并生效（改动已写入审计）", "is-ok"); renderLayaPage(); }
+          else put("保存失败：" + ((res && res.error) || "未知原因"), "is-bad");
+        } else if (act === "probe-local" || act === "probe-lan") {
+          put("探测中…");
+          const res = await call("laya_probe", act === "probe-local" ? "local" : "lan",
+                                 act === "probe-lan" ? { endpoint: $("laya-endpoint").value.trim() } : null);
+          put((res && res.detail) || "探测没有返回结果", res && res.ok ? "is-ok" : "is-bad");
+        } else if (act === "try-lan") {
+          put("正在真发一次分级请求…");
+          const res = await call("laya_try",
+                                 { endpoint: $("laya-endpoint").value.trim(), model: $("laya-model").value.trim() });
+          put((res && res.detail) || "没有返回结果", res && res.ok ? "is-ok" : "is-bad");
+        } else if (act === "save-lan") {
+          const res = await call("laya_save", { source: "lan",
+            endpoint: $("laya-endpoint").value.trim(), model: $("laya-model").value.trim() });
+          if (res && res.ok) { put(res.detail || "已保存", "is-ok"); renderLayaPage(); }
+          else put("保存失败：" + ((res && res.error) || "未知原因"), "is-bad");
+        }
+      };
+    });
+    const list = $("laya-list");
+    if (list) {
+      list.querySelectorAll("[data-t]").forEach((b) => {
+        b.onclick = async () => {
+          state.layaSel = { tier: b.dataset.t };
+          renderLayaPage();
+          // 切到本机/局域网即表示"用它"（可选来源里手动置顶），保存 source
+          if (b.dataset.t !== "regex") {
+            await call("laya_save", { source: b.dataset.t });
+            renderLayaPage();
+          }
+        };
+      });
+    }
+  }
+
+  /* ── 设置抽屉 ─────────────────────────────────────── */
+  /** 思考强度：胶囊 + 下拉（低 / 中 / 高 / 最高）。旧数值配置折算到最近档显示。 */
+  function paintThinkLevel(depth) {
+    const box = $("think-select");
+    if (!box) return;
+    const cur = levelOf(depth);
+    if ($("think-value")) $("think-value").textContent = cur.label;
+    const pop = $("think-pop");
+    if (pop) {
+      pop.innerHTML = THINK_LEVELS.map((lv) => `
+        <button type="button" class="think__opt${lv.key === cur.key ? " is-cur" : ""}"
+                role="option" aria-selected="${lv.key === cur.key}" data-level="${lv.key}">
+          <b>${esc(lv.label)}</b><span>${esc(lv.hint)}</span>
+        </button>`).join("");
+    }
+    box.setAttribute("data-level", cur.key);
+  }
+
+  function closeThinkPop() {
+    const pop = $("think-pop"), box = $("think-select"), trg = $("think-trigger");
+    if (pop) pop.hidden = true;
+    if (box) box.classList.remove("is-open");
+    if (trg) trg.setAttribute("aria-expanded", "false");
+  }
+
+  function openThinkPop() {
+    const pop = $("think-pop"), box = $("think-select"), trg = $("think-trigger");
+    if (!pop) return;
+    pop.hidden = false;
+    if (box) box.classList.add("is-open");
+    if (trg) trg.setAttribute("aria-expanded", "true");
+  }
+
+  /** 权限四档（设置页）：高亮当前档并同步说明文案（文案与内核 HINTS 一致）。
+   *  这里是**新对话的默认档**；本对话的覆盖在输入区胶囊里改（见 paintPermPill）。 */
   function paintPermModes(value) {
     const box = $("perm-modes");
     if (!box) return;
@@ -1653,6 +1909,56 @@
     });
     const hint = $("perm-hint");
     if (hint) hint.textContent = (PERM_MODES[cur] || {}).hint || "—";
+    const defNote = $("perm-default-note");
+    if (defNote) defNote.textContent = `当前默认：${(PERM_MODES[cur] || {}).label || cur}`;
+  }
+
+  /** 权限四档（输入区胶囊）：显示**本对话生效**的档位，下拉里可切本对话或改默认。
+   *  sessionMode=null 表示本对话跟随默认（不覆盖）。 */
+  function paintPermPill(sessionMode) {
+    const box = $("perm-pill");
+    if (!box) return;
+    const def = permKey((state.settings || {}).permission);
+    const override = sessionMode ? permKey(sessionMode) : "";
+    const cur = override || def;
+    box.dataset.mode = cur;
+    if ($("perm-value")) $("perm-value").textContent = (PERM_MODES[cur] || {}).label || cur;
+    const trg = $("perm-trigger");
+    if (trg) {
+      trg.title = override
+        ? `本对话：${(PERM_MODES[cur] || {}).label}（已覆盖默认）· 点此修改`
+        : `本对话：跟随默认 ${(PERM_MODES[def] || {}).label} · 点此为本对话单独设置`;
+    }
+    const pop = $("perm-pop");
+    if (pop) {
+      const opt = (m) => `<button type="button" class="perm__opt${m === cur ? " is-cur" : ""}"
+          role="option" aria-selected="${m === cur}" data-mode="${m}">
+          <svg class="perm__ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5.5c0 4.3-2.9 7.9-7 9-4.1-1.1-7-4.7-7-9V6l7-3z"/></svg>
+          <span><b>${esc(PERM_MODES[m].label)}</b><em>${esc(PERM_MODES[m].hint)}</em></span></button>`;
+      pop.innerHTML = PERM_ORDER.map(opt).join("")
+        + `<div class="perm__sep"></div>
+           <button type="button" class="perm__opt${override ? "" : " is-cur"}" role="option"
+                   aria-selected="${override ? "false" : "true"}" data-mode="">
+             <span><b>跟随设置默认</b><em>新对话默认 ${esc((PERM_MODES[def] || {}).label || def)}；本对话不单独覆盖</em></span>
+           </button>
+           <div class="perm__note">执行命令在任何档位都要人工确认；沙箱、脱敏网关与审计链与档位无关。</div>`;
+    }
+  }
+
+  function closePermPop() {
+    const pop = $("perm-pop"), box = $("perm-pill"), trg = $("perm-trigger");
+    if (pop) pop.hidden = true;
+    if (box) box.classList.remove("is-open");
+    if (trg) trg.setAttribute("aria-expanded", "false");
+  }
+
+  function openPermPop() {
+    const pop = $("perm-pop"), box = $("perm-pill"), trg = $("perm-trigger");
+    if (!pop) return;
+    pop.hidden = false;
+    if (box) box.classList.add("is-open");
+    if (trg) trg.setAttribute("aria-expanded", "true");
   }
 
   function fillSettings() {
@@ -1669,6 +1975,9 @@
     $("sw-topmost").checked = !!s.topmost;
     paintThinkLevel(s.thinking_depth);
     paintPermModes(s.permission);
+    // 输入区胶囊显示"本对话生效档位"：后端在 bootstrap/state 里给出 session_permission，
+    // 拿不到时按"跟随默认"显示（新会话的初始状态）。
+    paintPermPill(state.sessionPermission);
 
     document.documentElement.dataset.theme = s.dark_mode ? "dark" : "light";
     // 注意：无边框模式的窗口控制按钮必须在"设置已加载后"决定是否显示，
@@ -1729,6 +2038,12 @@
         setBusy(!!payload.busy);
         renderStats(payload);
         if (miniOn()) setMiniStatus(payload.busy ? "推理中…" : "已完成", payload.busy);
+        // 后端把"本对话生效的权限档位"一并带回来：切会话/改档位后胶囊与态势条都要跟着变
+        if ("permission" in payload || "session_permission" in payload) {
+          state.sessionPermission = payload.session_permission || null;
+          paintPermPill(state.sessionPermission);
+          renderPosture(payload);
+        }
         if (!payload.busy) {
           hideApproval();
           const sid = payload.session_id;
@@ -1778,13 +2093,15 @@
     state.llm = data.llm || state.llm;
     state.sessions = data.sessions || [];
     state.currentId = data.current_session_id || null;
+    state.sessionPermission = data.session_permission || null;   // 本对话的权限覆盖（null=跟随默认）
     $("brand-version").textContent = data.version || "";
     const seg = state.settings.think_mode || "快速回答";
     document.querySelectorAll("#mode-switch .seg__btn").forEach((b) =>
       b.classList.toggle("is-active", b.dataset.mode === seg));
     fillSettings(); renderSessions();
     renderStats({ model: state.settings.model, privacy: state.settings.privacy,
-                  permission: state.settings.permission, sandbox: state.settings.sandbox });
+                  permission: state.settings.permission,
+                  session_permission: state.sessionPermission, sandbox: state.settings.sandbox });
     call("audit_snapshot", 1).then((snap) => { if (snap) { state.audit = snap; renderPosture(null); } });
     if (state.currentId) await openSession(state.currentId); else renderMessages();
     onEvent("llm_status", state.llm);
@@ -1922,6 +2239,8 @@
       toast(res && res.ok ? `已撤销 ${res.removed} 条控制面规则` : "撤销失败");
       renderControlPage();
     };
+    // 插件市场搜索：客户端过滤（插件数是个位数到几十，不需要往返一次）
+    if ($("plugin-search")) $("plugin-search").oninput = () => renderPlugins(state.plugins);
     const themeBtn2 = $("btn-theme-2");
     if (themeBtn2) themeBtn2.onclick = () => persist({ dark_mode: document.documentElement.dataset.theme !== "dark" });
     $("btn-toggle-right").onclick = () => { autoCollapsedRight = false; setRightCollapsed(!rightCollapsed()); };
@@ -1948,8 +2267,7 @@
     $("sw-privacy").onchange = (e) => persist({ privacy: e.target.checked });
     $("sw-script-exec").onchange = (e) => persist({ allow_script_exec: e.target.checked });
     $("sw-topmost").onchange = (e) => persist({ topmost: e.target.checked });
-    // 权限四档：点击即落库，后端把档位写进 YINDUN_PERMISSION 环境变量，
-    // 工具函数每次调用都重新读取 → 下一个操作就按新档位判定（无需重启）。
+    // 权限四档（设置页）：这里是**新对话默认档**，点击即落库；本对话的覆盖在输入区胶囊里改。
     const permBox = $("perm-modes");
     if (permBox) {
       permBox.onclick = (e) => {
@@ -1957,8 +2275,46 @@
         if (!btn) return;
         const mode = btn.dataset.mode;
         persist({ permission: mode });
-        toast(`权限已切到「${(PERM_MODES[mode] || {}).label || mode}」· 下一个操作立即生效`);
+        // 本对话没有单独覆盖时，默认档一改，本对话立刻跟着变（没有覆盖才跟随）
+        if (!state.sessionPermission) paintPermPill(null);
+        toast(`新对话默认权限：${(PERM_MODES[mode] || {}).label || mode}`);
       };
+    }
+    // 权限四档（输入区胶囊）：只作用于**本对话**。选「跟随设置默认」= 清除本对话覆盖。
+    const permPill = $("perm-pill");
+    if (permPill) {
+      const permTrig = $("perm-trigger"), permPop = $("perm-pop");
+      permTrig.onclick = () => (permPop.hidden ? openPermPop() : closePermPop());
+      permPop.onclick = async (e) => {
+        const btn = e.target.closest(".perm__opt");
+        if (!btn) return;
+        const mode = btn.dataset.mode || "";        // "" = 跟随设置默认
+        closePermPop();
+        const res = await call("set_session_permission", mode);
+        if (!res || !res.ok) { toast("切换失败：" + ((res && res.error) || "未知原因")); return; }
+        state.sessionPermission = res.permission || null;
+        paintPermPill(state.sessionPermission);
+        renderPosture(res.posture || null);
+        toast(mode ? `本对话权限：${(PERM_MODES[mode] || {}).label || mode}` : "本对话权限：跟随设置默认");
+      };
+      document.addEventListener("click", (e) => { if (!permPill.contains(e.target)) closePermPop(); });
+    }
+    // 思考强度：胶囊 + 下拉（点选即落库；点浮层外或 Esc 关闭）
+    const thinkSel = $("think-select");
+    if (thinkSel) {
+      const thinkTrig = $("think-trigger"), thinkPop = $("think-pop");
+      thinkTrig.onclick = () => (thinkPop.hidden ? openThinkPop() : closeThinkPop());
+      thinkPop.onclick = (e) => {
+        const btn = e.target.closest(".think__opt");
+        if (!btn) return;
+        const lv = THINK_LEVELS.find((l) => l.key === btn.dataset.level);
+        closeThinkPop();
+        if (!lv) return;
+        persist({ thinking_depth: lv.depth });
+        toast(`思考强度 · ${lv.label}（约 ${lv.depth} 轮推理）`);
+      };
+      document.addEventListener("click", (e) => { if (!thinkSel.contains(e.target)) closeThinkPop(); });
+      document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeThinkPop(); });
     }
     // 模型下拉（自绘，替代原生 datalist——弹层不随主题、内网手输无回显）：
     // 触发器开合 / 搜索过滤 / 键盘 ↑↓·Enter·Esc / 点选与手输（回车提交非匹配名=内网模型入口）/
@@ -2059,18 +2415,7 @@
       if (!mSel.contains(e.target)) closeModelPop();
     });
     // Ollama 地址的绑定在 renderProv() 里（该输入框随详情面板一起渲染/重建）
-    // 思考强度四档：点一下就切，落到 thinking_depth（低2 / 中4 / 高7 / 最高10）
-    const thinkBox = $("think-level");
-    if (thinkBox) {
-      thinkBox.onclick = (e) => {
-        const btn = e.target.closest(".think__btn");
-        if (!btn) return;
-        const lv = THINK_LEVELS.find((l) => l.key === btn.dataset.level);
-        if (!lv) return;
-        persist({ thinking_depth: lv.depth });
-        toast(`思考强度 · ${lv.label}（约 ${lv.depth} 轮推理）`);
-      };
-    }
+    // 思考强度的绑定在上面的「输入区胶囊」一段（下拉在 #think-select 里）
 
     restoreLayout();
     window.addEventListener("resize", onViewportResize);

@@ -321,12 +321,16 @@ print("【5】置顶：运行时即时生效（不再要求重启）")
 print("=" * 78)
 check("桥接层在保存设置后立即写窗口标志",
       "window.on_top = new_value" in webview_src and "即时应用置顶失败" in webview_src)
-check("界面不再声称「置顶需重启」",
-      "置顶（立即生效）" in html and "重启生效）" not in html.split("btn-pin")[1][:80])
+check("界面既不声称「置顶需重启」、也不再挂「立即生效」标签（所有设置都即时生效，不必逐个声明）",
+      "重启" not in html.split("btn-pin")[1][:120] and "立即生效" not in html
+      and 'title="置顶 / 取消置顶"' in html)
 check("切换后按实际结果提示（含失败时的诚实降级）",
-      "已置顶显示（立即生效）" in js and "置顶切换失败" in js)
-check("设置面板的置顶开关同样即时生效（V3.5.0 设置改版：断言随行式布局对齐，意图不变）",
-      'id="sw-topmost"' in html and "立即生效" in html.split('id="sw-topmost"')[0][-400:]
+      '"已置顶显示"' in js and "置顶切换失败" in js)
+check("置顶按钮自身显示状态（明暗主题各有取色，不写死颜色）",
+      "function paintPinState" in js and ".win-btn.is-active {" in css
+      and "color: var(--accent-600)" in css.split(".win-btn.is-active {")[1][:120])
+check("设置面板的置顶开关同样即时生效（断言随行式布局对齐，意图不变）",
+      'id="sw-topmost"' in html and "重启" not in html.split('id="sw-topmost"')[0][-300:]
       and "save_settings" in webview_src
       and "topmost" in webview_src.split("def save_settings")[1][:600])
 
@@ -353,18 +357,24 @@ check("四档按钮与 core/permission.py 的 MODES 一一对应",
       all(f'data-mode="{m}"' in html for m in ("plan", "ask", "auto", "full")))
 check("选择器带无障碍语义（radiogroup + 每档一个 radio）",
       'id="perm-modes" role="radiogroup"' in html and html.count('class="permseg__btn"') == 4)
-check("切换即落库并提示「立即生效」（不写「重启后生效」这类话）",
-      'persist({ permission: mode })' in js and "下一个操作立即生效" in js)
+check("切换即落库（不再挂「立即生效」字样；「重启后生效」这类话也不允许出现）",
+      'persist({ permission: mode })' in js and "立即生效" not in js and "重启后生效" not in js)
 check("后端把档位立刻下发到内核环境变量（不是只写配置文件）",
       "def apply_runtime_env" in service_src and "os.environ[PERMISSION_ENV] = mode" in service_src
       and '"permission" in patch' in webview_src
       and "apply_runtime_env()" in webview_src.split("def save_settings")[1][:900])
 check("启动即下发（界面画出来之前工具层已按设置行事）",
       "apply_runtime_env()" in service_src.split("def initialize")[1][:600])
-check("思考强度改为四档（低 / 中 / 高 / 最高），旧的 1–10 下拉已移除",
-      'id="think-level"' in html and html.count('class="think__btn"') == 4
+check("思考强度是胶囊 + 下拉（低 / 中 / 高 / 最高），旧的 1–10 下拉已移除",
+      'id="think-select"' in html and 'id="think-pop"' in html
       and "sel-depth" not in html and "sel-depth" not in js
-      and all(f'data-level="{lv}"' in html for lv in ("low", "mid", "high", "max")))
+      and all(f'"{lv}"' in js for lv in ("low", "mid", "high", "max"))
+      and 'data-level="${lv.key}"' in js)
+check("点开下拉才展开选项、点选项即落库（一个词 + 一个箭头，不占输入区）",
+      "function openThinkPop" in js and "function closeThinkPop" in js
+      and 'thinkTrig.onclick = () => (thinkPop.hidden ? openThinkPop() : closeThinkPop())' in js)
+check("两个输入区下拉都以「点击外部关闭」收尾（不靠用户猜怎么关）",
+      js.count("!thinkSel.contains(e.target)") == 1 and js.count("!permPill.contains(e.target)") == 1)
 check("四档映射到 worker 的 thinking_depth 且旧数值能折算回档位",
       "THINK_LEVELS" in js and re.search(r'key: "max",\s*label: "最高",\s*depth: 10', js) is not None
       and "levelOf" in js)
@@ -381,6 +391,70 @@ check("无边框不再是设置项：开关行与持久化都移除，形态固�
       "sw-frameless" not in html and "sw-frameless" not in js
       and 'document.documentElement.dataset.frameless = "1"' in js
       and '"frameless": True' in webview_src)
+
+# ── 7) V3.5.3 界面契约：主题化高亮 / 窗口按钮贴角 / 本对话权限 / 插件市场 / laya 接入 ──
+print("\n" + "=" * 78)
+print("【7】主题化高亮 · 窗口按钮贴角 · 本对话权限 · 插件市场 · laya 接入")
+print("=" * 78)
+tokens = (ROOT / "yindun" / "app" / "web" / "styles" / "tokens.css").read_text(encoding="utf-8")
+
+check("焦点环是**两套显式取值**（浅色水洗铺在深色底上会变成刺眼光晕）",
+      "--focus-ring:" in tokens.split('html[data-theme="dark"]')[0]
+      and "--focus-ring:" in tokens.split('html[data-theme="dark"]')[1])
+check("输入框/文本域/开关的高亮都走同一个 token（不再各写一份 --accent-50）",
+      css.count("var(--focus-ring)") >= 5
+      and ".composer__box:focus-within { border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--focus-ring); }" in css
+      and "textarea:focus { border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--focus-ring); }" in css)
+check("提示条（含置顶提示）颜色也来自 token，明暗各自取值",
+      "--toast-bg:" in tokens and "--toast-fg:" in tokens
+      and tokens.count("--toast-bg:") == 2 and "var(--toast-bg)" in css
+      and 'html[data-theme="dark"] .toast' not in css)
+check("设置页的窗口按钮固定在窗口右上角（原来跟着头部内边距走，看起来没对齐）",
+      ".win-ctrls--head { position: fixed; top: 6px; right: 10px;" in css)
+check("发送按钮箭头朝右（旧路径的顶点在左侧，渲染出来像「◀」）",
+      'id="btn-send"' in html and 'M4 12h15M12 6l6 6-6 6' in html.split('id="btn-send"')[1][:220])
+
+check("输入区有本对话权限胶囊（设置页那份是「新对话默认」）",
+      'id="perm-pill"' in html and 'id="perm-pop"' in html
+      and "function paintPermPill" in js and 'call("set_session_permission", mode)' in js)
+check("下拉里含「跟随设置默认」一项（可清除本对话覆盖）",
+      "跟随设置默认" in js and 'data-mode=""' in js)
+check("切换本对话档位后同时刷新胶囊与安全态势条",
+      "state.sessionPermission = res.permission || null" in js
+      and js.count("paintPermPill(state.sessionPermission)") >= 2)
+check("后端提供会话级档位接口（空值 = 清除覆盖）",
+      "def set_session_permission" in service_src and "def effective_permission" in service_src
+      and "def set_session_permission" in webview_src)
+check("档位取值范围仍受内核约束（界面传什么都会被 resolve_mode 规范化）",
+      "value = resolve_mode(mode) if str(mode or \"\").strip() else None" in service_src)
+
+check("插件页改成市场式布局（搜索 + 已安装瓷贴 + 分类双列卡片）",
+      'id="plugin-search"' in html and 'id="plugin-tiles"' in html and 'id="plugin-groups"' in html
+      and "function renderPlugins" in js and "market__grid" in css and "pcard" in css)
+check("卡片默认只给结论（图标/名称/一句话/开关），详情点开才展开",
+      'class="pcard__more" data-more=' in js and 'class="pcard__detail" data-detail=' in js)
+check("按 category 分组、未知分类落到「扩展」",
+      "const CATEGORY_ORDER" in js and '"扩展"' in js.split("CATEGORY_ORDER")[1][:120])
+check("托管配置不在卡片里给裸文本编辑（避免把 JSON 当便签改坏）",
+      "filter((f) => !f.managed)" in js and "managed" in (ROOT / "yindun/plugins/host.py").read_text(encoding="utf-8"))
+check("搜索框走客户端过滤（插件数量级不需要往返一次）",
+      'if ($("plugin-search")) $("plugin-search").oninput = () => renderPlugins(state.plugins);' in js)
+
+check("laya 是独立的一级设置页（不是藏在插件卡片里的一个配置项）",
+      'data-set="laya"' in html and "laya: [\"laya 风险分级\"" in js
+      and "async function renderLayaPage" in js and "function bindLayaDetail" in js)
+check("laya 页按三档来源组织（本机 / 局域网 / 正则回退），与模型接入同一范式",
+      "const LAYA_SOURCES" in js and all(k in js for k in ('local: { label', 'lan: { label', 'regex: { label'))
+      and 'class="prov"' in html.split('<div class="setpage" data-set="laya">')[1][:600])
+check("探活与试打分是两个动作（「连上了」不等于「分级可用」）",
+      '"laya_probe"' in js and '"laya_try"' in js
+      and "试打分" in js and "服务有响应但无法解析分级结果" in
+      (ROOT / "yindun/plugins/builtin/laya_risk/plugin.py").read_text(encoding="utf-8"))
+check("laya 接入配置由设置页与插件共用同一份文件（不会各写一份）",
+      "CONFIG_NAME = \"laya_source.json\"" in (ROOT / "yindun/app/laya_service.py").read_text(encoding="utf-8")
+      and '"laya_source.json"' in (ROOT / "yindun/plugins/builtin/laya_risk/plugin.py").read_text(encoding="utf-8"))
+check("仍然声明「laya 不参与放行判定」（亮点能力也不能越过安全不变量）",
+      "不参与任何放行判定" in html.split('<div class="setpage" data-set="laya">')[1][:2200])
 
 print("\n" + "=" * 78)
 if failures:

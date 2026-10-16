@@ -209,9 +209,15 @@ html[data-frameless="1"] .win-ctrls { display: inline-flex; }
 .win-btn:hover { background: var(--bg-hover); color: var(--text-1); }
 .win-btn--close:hover { background: var(--danger-500); color: #fff; }
 .win-btn svg { width: 13px; height: 13px; }
-/* 落在右栏标签栏 / 设置页头部时：贴近窗口右上角，与相邻按钮留出距离 */
+/* 置顶生效中：按钮自身要能看出状态（明暗主题各自取色，不写死颜色） */
+.win-btn.is-active { background: var(--bg-active); color: var(--accent-600); }
+.win-btn.is-active:hover { background: var(--bg-active); color: var(--accent-600); }
+/* 落在右栏标签栏时：贴近窗口右上角，与相邻按钮留出距离 */
 .win-ctrls--panel { margin-left: var(--sp-4); }
-.win-ctrls--head { margin-left: var(--sp-4); align-self: center; }
+/* 落在设置页时：**固定贴窗口右上角**。设置页的头部有 28px 内边距，
+   跟着流式布局走会落在标题那一行的中间，看起来"没对齐"（用户实测反馈）。
+   固定定位后与顶栏/右栏两处的落位视觉一致。 */
+.win-ctrls--head { position: fixed; top: 6px; right: 10px; margin: 0; z-index: 41; }
 
 /* ── 对话区：居中窄栏，画布上直接排版（无卡片） ───────────── */
 .sheet { flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -322,7 +328,7 @@ html[data-frameless="1"] .win-ctrls { display: inline-flex; }
 .ctrl-form { display: flex; gap: var(--sp-3); flex-wrap: wrap; }
 .ctrl-form input { flex: 1; min-width: 200px; padding: 7px 10px; background: var(--bg-input);
   border: 1px solid var(--border-2); border-radius: var(--r-ctrl); font-size: var(--fs-sm); outline: none; }
-.ctrl-form input:focus { border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--accent-50); }
+.ctrl-form input:focus { border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--focus-ring); }
 .ctrl-rules { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px;
   font-size: var(--fs-sm); }
 .ctrl-rules li { padding-left: var(--sp-4); border-left: 2px solid var(--accent-500); color: var(--text-2); }
@@ -337,7 +343,7 @@ html[data-frameless="1"] .win-ctrls { display: inline-flex; }
   background: var(--bg-input); border: 1px solid var(--border-2); border-radius: var(--r-block);
   transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
-.composer__box:focus-within { border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--accent-50); }
+.composer__box:focus-within { border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--focus-ring); }
 .composer textarea { width: 100%; resize: none; border: none; outline: none; background: transparent; padding: 0; max-height: 180px; line-height: 1.6; font-size: var(--fs-base); }
 .composer textarea::placeholder { color: var(--text-3); }
 .composer__hint { margin-top: var(--sp-3); font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-3); text-align: center; }
@@ -364,24 +370,72 @@ html[data-frameless="1"] .win-ctrls { display: inline-flex; }
 .pill--select { position: relative; padding-right: var(--sp-2); }
 .pill__label { color: var(--text-3); white-space: nowrap; flex: none; }
 
-/* ── 思考强度：四档分段控件（低 / 中 / 高 / 最高）─────────
-   为什么不用下拉：只有四个互斥档位，展开一次下拉多两步点击；
-   分段控件把"现在处于哪一档"直接画在输入框旁边，一眼可见、一步可切。 */
-.think {
-  display: inline-flex; align-items: center; gap: 2px; flex: none;
-  height: 28px; padding: 2px 2px 2px var(--sp-3); border-radius: 999px;
-  background: var(--bg-subtle); color: var(--text-2); font-size: var(--fs-sm);
+/* ── 思考强度：胶囊 + 下拉（参考 ZCode 输入区的「最高 ⌄」）─────
+   为什么又改回下拉：四档是"一次设定、长期不动"的参数，常驻四个选项会
+   把输入区挤成工具栏；下拉把它收成一个词 + 一个箭头，点开才是选项。 */
+.think { position: relative; flex: none; }
+.think__trigger {
+  display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 var(--sp-3);
+  border: 1px solid transparent; border-radius: 999px; background: transparent;
+  color: var(--text-2); font-size: var(--fs-sm); cursor: pointer; white-space: nowrap;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
-.think__label { color: var(--text-3); white-space: nowrap; flex: none; padding-right: 2px; font-size: var(--fs-meta); }
-.think__btn {
-  appearance: none; border: none; background: transparent; cursor: pointer;
-  font: inherit; font-size: var(--fs-meta); color: var(--text-2);
-  height: 24px; min-width: 26px; padding: 0 7px; border-radius: 999px;
-  white-space: nowrap; transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+.think__trigger:hover { background: var(--bg-hover); color: var(--text-1); }
+.think.is-open .think__trigger { border-color: var(--border-2); background: var(--bg-canvas); box-shadow: 0 0 0 3px var(--focus-ring); }
+.think__label { color: var(--text-3); font-size: var(--fs-meta); }
+.think__value { color: var(--text-1); font-weight: 600; }
+.think__chev { width: 12px; height: 12px; color: var(--text-3); }
+.think.is-open .think__chev { transform: rotate(180deg); }
+.think__chev { transition: transform var(--dur) var(--ease); }
+.think__pop {
+  position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 30;
+  min-width: 232px; padding: var(--sp-2); border: 1px solid var(--border-2);
+  border-radius: var(--r-ctrl); background: var(--bg-canvas); box-shadow: var(--shadow-pop);
 }
-.think__btn:hover { background: var(--bg-hover); color: var(--text-1); }
-.think__btn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent-500); }
-.think__btn.is-active { background: var(--bg-canvas); color: var(--text-1); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+.think__opt {
+  display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 7px 10px;
+  border-radius: var(--r-chip); text-align: left; color: var(--text-2); font-size: var(--fs-sm);
+}
+.think__opt:hover { background: var(--bg-hover); color: var(--text-1); }
+.think__opt.is-cur { background: var(--bg-active); color: var(--text-1); font-weight: 600; }
+.think__opt span { color: var(--text-3); font-size: var(--fs-meta); font-weight: 400; }
+
+/* ── AI 权限：输入区胶囊 + 下拉（本对话生效；设置页里的是"新对话默认"）──
+   盾牌按档位着色：越松越警示（计划=中性 · 确认=常规 · 自主=琥珀 · 完全=红），
+   让"我现在放得有多开"在输入框旁边一眼可见。 */
+.perm { position: relative; flex: none; }
+.perm__trigger {
+  display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 var(--sp-3);
+  border: 1px solid transparent; border-radius: 999px; background: transparent;
+  color: var(--text-2); font-size: var(--fs-sm); cursor: pointer; white-space: nowrap;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.perm__trigger:hover { background: var(--bg-hover); color: var(--text-1); }
+.perm.is-open .perm__trigger { border-color: var(--border-2); background: var(--bg-canvas); box-shadow: 0 0 0 3px var(--focus-ring); }
+.perm__ico { width: 14px; height: 14px; flex: none; }
+.perm__value { font-weight: 600; color: var(--text-1); }
+.perm__chev { width: 12px; height: 12px; color: var(--text-3); transition: transform var(--dur) var(--ease); }
+.perm.is-open .perm__chev { transform: rotate(180deg); }
+.perm[data-mode="plan"] .perm__ico { color: var(--text-2); }
+.perm[data-mode="ask"] .perm__ico { color: var(--accent-600); }
+.perm[data-mode="auto"] .perm__ico { color: var(--warn-500); }
+.perm[data-mode="full"] .perm__ico { color: var(--danger-500); }
+.perm__pop {
+  position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 30;
+  min-width: 300px; padding: var(--sp-2); border: 1px solid var(--border-2);
+  border-radius: var(--r-ctrl); background: var(--bg-canvas); box-shadow: var(--shadow-pop);
+}
+.perm__opt {
+  display: flex; align-items: flex-start; gap: var(--sp-3); width: 100%; padding: 8px 10px;
+  border-radius: var(--r-chip); text-align: left; color: var(--text-2); font-size: var(--fs-sm);
+}
+.perm__opt:hover { background: var(--bg-hover); color: var(--text-1); }
+.perm__opt.is-cur { background: var(--bg-active); color: var(--text-1); }
+.perm__opt b { font-weight: 600; }
+.perm__opt em { display: block; margin-top: 2px; color: var(--text-3); font-size: var(--fs-meta); font-style: normal; line-height: 1.5; }
+.perm__opt .perm__ico { margin-top: 2px; }
+.perm__sep { height: 1px; margin: var(--sp-2) var(--sp-2); background: var(--border-1); }
+.perm__note { padding: 4px 10px var(--sp-1); color: var(--text-3); font-size: var(--fs-meta); line-height: 1.5; }
 .pill--send { width: 28px; padding: 0; justify-content: center; background: var(--accent-600); color: #fff; }
 .pill--send:hover { background: var(--accent-500); color: #fff; }
 .pill--stop { width: auto; padding: 0 var(--sp-4); background: var(--danger-500); color: #fff; font-weight: 600; }
@@ -453,7 +507,7 @@ html[data-frameless="1"] .win-ctrls { display: inline-flex; }
 .setrow__ctrl { flex: none; display: flex; align-items: center; gap: var(--sp-3); }
 .setrow__ctrl input[type="text"] { width: 300px; padding: 6px 10px; background: var(--bg-input);
   border: 1px solid var(--border-2); border-radius: var(--r-ctrl); font-size: var(--fs-sm); outline: none; }
-.setrow__ctrl input[type="text"]:focus { border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--accent-50); }
+.setrow__ctrl input[type="text"]:focus { border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--focus-ring); }
 .setrow__ctrl select { min-width: 210px; padding: 6px 10px; background: var(--bg-input); color: var(--text-1);
   border: 1px solid var(--border-2); border-radius: var(--r-ctrl); font-size: var(--fs-sm); }
 .setrow__ro { color: var(--text-3); font-size: var(--fs-meta); }
@@ -565,7 +619,7 @@ html[data-frameless="1"] .win-ctrls { display: inline-flex; }
   gap: var(--sp-3); padding: 7px var(--sp-4); border-radius: var(--r-ctrl);
   background: var(--bg-canvas); border: 1px solid var(--border-2); font-size: var(--fs-sm); color: var(--text-1); }
 .model-select__trigger:hover, .model-select.is-open .model-select__trigger { border-color: var(--accent-500); }
-.model-select.is-open .model-select__trigger { box-shadow: 0 0 0 3px var(--accent-50); }
+.model-select.is-open .model-select__trigger { box-shadow: 0 0 0 3px var(--focus-ring); }
 .model-select__value { font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-select__chev { width: 14px; height: 14px; flex: none; color: var(--text-3); transition: transform var(--dur) var(--ease); }
 .model-select.is-open .model-select__chev { transform: rotate(180deg); }
@@ -588,7 +642,7 @@ html[data-frameless="1"] .win-ctrls { display: inline-flex; }
 .model-opt--empty { color: var(--text-3); cursor: default; }
 .model-select__foot { font-size: var(--fs-meta); color: var(--text-2); padding: 0 var(--sp-2) var(--sp-1); }
 select, input[type="text"] { width: 100%; padding: 7px var(--sp-4); border-radius: var(--r-ctrl); background: var(--bg-canvas); border: 1px solid var(--border-2); outline: none; font-size: var(--fs-sm); }
-select:focus, input[type="text"]:focus { border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--accent-50); }
+select:focus, input[type="text"]:focus, textarea:focus { border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--focus-ring); }
 
 /* 设置页分节头（替代裸 divider）：给长表单一个可扫读的骨架 */
 .set-sec { display: flex; align-items: center; gap: var(--sp-4); margin: var(--sp-2) 0 0; }
@@ -673,6 +727,76 @@ html[data-theme="dark"] .plugin-item__runtime.is-bad { background: rgba(196, 54,
 .cap__ok { color: var(--accent-600); }
 .cap__bad { color: var(--warn-500); }
 .plugin-item__ops { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+
+/* ── 插件市场（参考 ZCode 插件市场的组织方式：搜索 + 已安装瓷贴 + 分类双列卡片）──
+   为什么改成"市场"而不是一行行列表：插件数量在长，平铺列表既看不出分类、
+   也没有"逛"的感觉；卡片把 图标 / 名称 / 一句话 / 开关 收在一屏里，
+   详情（运行状态、能力清单、配置编辑）点开才展开——先给结论，再给证据。 */
+.market__bar { display: flex; align-items: center; gap: var(--sp-3); margin: var(--sp-2) 0 var(--sp-5); }
+.market__search {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--sp-3);
+  height: 34px; padding: 0 var(--sp-4); border: 1px solid var(--border-2);
+  border-radius: var(--r-ctrl); background: var(--bg-input);
+}
+.market__search svg { width: 14px; height: 14px; color: var(--text-3); flex: none; }
+.market__search input { flex: 1; min-width: 0; border: none; background: transparent; color: var(--text-1); font-size: var(--fs-sm); }
+.market__search input:focus { outline: none; }
+.market__search:focus-within { border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--focus-ring); }
+.market__sec { display: flex; align-items: center; gap: var(--sp-3); margin: var(--sp-6) 0 var(--sp-3); }
+.market__sec b { font-size: var(--fs-sm); font-weight: 700; color: var(--text-2); }
+.market__sec span { color: var(--text-3); font-size: var(--fs-meta); }
+.market__tiles { display: flex; gap: var(--sp-3); overflow-x: auto; padding-bottom: var(--sp-2); }
+.market__tile {
+  flex: none; width: 44px; height: 44px; border-radius: var(--r-ctrl);
+  border: 1px solid var(--border-2); background: var(--bg-canvas); color: var(--text-2);
+  display: grid; place-items: center; font-size: var(--fs-base); font-weight: 700; position: relative;
+}
+.market__tile:hover { border-color: var(--accent-500); color: var(--text-1); }
+.market__tile.is-off { opacity: .45; }
+.market__tile .market__dot { position: absolute; right: 4px; bottom: 4px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent-500); }
+.market__tile.is-off .market__dot { background: var(--gray-400); }
+.market__empty { color: var(--text-3); font-size: var(--fs-sm); padding: var(--sp-4) 0; }
+.market__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-3); }
+@media (max-width: 1080px) { .market__grid { grid-template-columns: minmax(0, 1fr); } }
+.pcard {
+  display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-4);
+  border: 1px solid var(--border-1); border-radius: 12px; background: var(--bg-canvas);
+}
+.pcard.is-hl { border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--focus-ring); }
+.pcard__main { display: flex; align-items: flex-start; gap: var(--sp-3); }
+.pcard__ico {
+  width: 34px; height: 34px; flex: none; border-radius: 9px; display: grid; place-items: center;
+  background: var(--bg-subtle); color: var(--text-1); font-weight: 700; font-size: var(--fs-base);
+}
+.pcard__text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.pcard__name { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-sm); font-weight: 600; }
+.pcard__ver { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-3); font-weight: 400; }
+.pcard__desc { color: var(--text-3); font-size: var(--fs-meta); line-height: 1.55;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.pcard__side { flex: none; display: flex; align-items: center; gap: var(--sp-2); }
+.pcard__more {
+  width: 26px; height: 26px; border-radius: var(--r-chip); color: var(--text-3);
+  display: grid; place-items: center; border: 1px solid transparent;
+}
+.pcard__more:hover { background: var(--bg-hover); color: var(--text-1); border-color: var(--border-2); }
+.pcard__state { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.pcard__detail { display: flex; flex-direction: column; gap: var(--sp-3); border-top: 1px solid var(--border-1); padding-top: var(--sp-3); }
+.pcard__detail[hidden] { display: none; }
+
+/* ── laya 风险分级：接入页（复用模型接入的"左列表 + 右详情"范式）── */
+.laya__state { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap;
+  padding: var(--sp-4) var(--sp-5); border: 1px solid var(--border-1); border-radius: 12px; background: var(--bg-canvas); margin-bottom: var(--sp-5); }
+.laya__state b { font-size: var(--fs-sm); }
+.laya__probe { display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-3); flex-wrap: wrap; }
+.laya__result { font-size: var(--fs-meta); color: var(--text-3); line-height: 1.6; overflow-wrap: anywhere; }
+.laya__result.is-ok { color: var(--accent-600); }
+.laya__result.is-bad { color: var(--danger-500); }
+.laya__tierdot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--gray-400); }
+.laya__tierdot.is-ok { background: var(--accent-500); }
+.laya__tierdot.is-off { background: var(--warn-500); }
+.laya__rules { width: 100%; min-height: 180px; font-family: var(--font-mono); font-size: var(--fs-meta);
+  line-height: 1.7; padding: var(--sp-3); border: 1px solid var(--border-2); border-radius: var(--r-ctrl);
+  background: var(--bg-input); color: var(--text-1); resize: vertical; }
 .plugin-cfg { display: flex; flex-direction: column; gap: var(--sp-2); border: 1px solid var(--border-1); border-radius: var(--r-ctrl); padding: var(--sp-3); background: var(--bg-2); }
 /* 显式 display 会盖掉 UA 的 [hidden]{display:none}，必须自己补一条，否则折叠态永远显示 */
 .plugin-cfg[hidden] { display: none; }
@@ -731,8 +855,8 @@ html[data-theme="dark"] .plugin-item__runtime.is-bad { background: rgba(196, 54,
 
 /* ── 提示 ─────────────────────────────────────────── */
 .toast-root { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); display: flex; flex-direction: column; gap: var(--sp-2); z-index: 80; }
-.toast { padding: var(--sp-3) var(--sp-5); border-radius: var(--r-ctrl); background: var(--gray-900); color: #fff; box-shadow: var(--shadow-pop); font-size: var(--fs-sm); }
-html[data-theme="dark"] .toast { background: var(--gray-100); color: var(--gray-900); }
+.toast { padding: var(--sp-3) var(--sp-5); border-radius: var(--r-ctrl); background: var(--toast-bg); color: var(--toast-fg); box-shadow: var(--shadow-pop); font-size: var(--fs-sm); border: 1px solid var(--border-2); }
+/* 明暗两套取值来自 token（--toast-bg / --toast-fg），不再靠单边覆盖 */
 
 @media (max-width: 900px) {
   .chat, .composer { padding-left: var(--sp-4); padding-right: var(--sp-4); }

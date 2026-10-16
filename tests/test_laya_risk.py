@@ -68,9 +68,13 @@ check("requires 为空：没装 laya 也算依赖满足",
       item is not None and item["usable"] is True and not item["missing"], str(item))
 check("挂在建议型钩子上（不参与判定）",
       item is not None and item["hooks"] == ["advisory_for_approval"], str(item))
-check("声明了可编辑的规则与后端文件",
-      item is not None and [f["name"] for f in item["config_files"]] == ["risk_rules.txt", "backend.txt"],
+check("声明了可编辑的规则文件（并新增「托管」的接入配置，仍在清单里可读）",
+      item is not None
+      and [f["name"] for f in item["config_files"]] == ["laya_source.json", "risk_rules.txt", "backend.txt"],
       str(item.get("config_files") if item else None))
+check("laya 接入配置标为 managed（由设置页维护，不在卡片里给裸文本编辑）",
+      item is not None and any(f.get("managed") for f in item["config_files"]
+                               if f["name"] == "laya_source.json"))
 check("内置插件默认关闭", item is not None and item["enabled"] is False)
 
 # ── 2) 宿主链路：启用→出提示，停用→收回 ──────────
@@ -148,6 +152,30 @@ if _saved_laya == "MISSING":
 else:
     sys.modules["laya"] = _saved_laya
 host.write_config_file("laya_risk", "backend.txt", "auto\n")
+
+# ★ 旧版 backend.txt 必须**语义等价**映射到新的三级接入（V3.5.3 起由 laya_source.json 主导）：
+#   旧 `laya` 是"只用模型、不可用就不提示"（不回退），映射成自动回退等于偷偷改了老用户的行为。
+from yindun.plugins.builtin.laya_risk import plugin as _laya_plugin  # noqa: E402
+
+
+def _legacy_cfg(kind: str):
+    """只留 backend.txt 时新三档解析出的 (source, auto)。临时数据目录隔离，不碰真实配置。"""
+    with tempfile.TemporaryDirectory() as td:
+        saved = _laya_plugin.PLUGIN_DATA_DIR
+        _laya_plugin.PLUGIN_DATA_DIR = td
+        try:
+            (Path(td) / "backend.txt").write_text(kind + "\n", encoding="utf-8")
+            cfg = _laya_plugin._source_config()
+            return cfg["source"], cfg["auto"]
+        finally:
+            _laya_plugin.PLUGIN_DATA_DIR = saved
+
+
+check("旧版 backend.txt 的语义被等价映射（laya=只用模型不回退 · regex=强制正则 · auto=自动回退）",
+      _legacy_cfg("laya") == ("local", False)
+      and _legacy_cfg("regex") == ("regex", True)
+      and _legacy_cfg("auto") == ("local", True),
+      f"{_legacy_cfg('laya')} / {_legacy_cfg('regex')} / {_legacy_cfg('auto')}")
 
 # ── 5) laya 路径（注入假模块，验证接入后的行为） ──
 print("\n" + "=" * 78)

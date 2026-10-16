@@ -107,6 +107,7 @@ class AgentService:
         # 最近一次能力同步的结果（注册了哪些模板、识别器是否挂上），供界面与审计展示
         self._plugin_sync: Dict[str, Any] = {"templates": [], "templates_removed": [],
                                              "recognizer": False, "errors": []}
+        self._laya_service: Any = None      # laya 接入服务（懒建，避免启动时做 import 探测）
 
     # ── 生命周期 ──────────────────────────────────
     def initialize(self) -> None:
@@ -124,20 +125,64 @@ class AgentService:
     def set_listener(self, listener: Optional[Listener]) -> None:
         self._listener = listener
 
-    def apply_runtime_env(self) -> str:
+    def apply_runtime_env(self, session_id: Optional[str] = None) -> str:
         """把设置里的「工具层即时生效」开关下发给内核（环境变量是界面与工具层之间的唯一协议）。
 
         管两件事：**权限档位**（plan/ask/auto/full）与**脚本执行开关**（严格模式）。
+        权限档位取**本对话生效值**：会话单独设过就用会话的，没设过才用设置页的新对话默认档
+        （permission 是"这件事我打算让 AI 做到什么程度"的上下文，按会话记才符合实际使用）。
+
         工具函数与策略引擎**每次调用**都会重新读这两个变量，所以：
-          · 启动 / 每轮开始时调用 → 保证取值与设置一致；
-          · 设置页改动时立即再调一次（见 webview_app.save_settings）→ 正在跑的轮次里
-            下一个工具调用就按新设置判定，不需要重启，也不需要等下一轮。
+          · 启动 / 切会话 / 每轮开始时调用 → 保证取值与当前上下文一致；
+          · 设置页或输入区胶囊改动时立即再调一次 → 正在跑的轮次里下一个工具调用就生效。
         返回值是落到环境变量里的稳定档位键，便于调用方校验/断言。
         """
-        mode = resolve_mode(self.settings.get("permission"))
+        sid = session_id or self.current_session_id()
+        session_mode = self.sessions.get_permission(sid) if sid else None
+        mode = resolve_mode(session_mode or self.settings.get("permission"))
         os.environ[PERMISSION_ENV] = mode
         os.environ["ALLOW_SCRIPT_EXEC"] = "1" if self.settings.get("allow_script_exec", True) else "0"
         return mode
+
+    def effective_permission(self, session_id: Optional[str] = None) -> Dict[str, Any]:
+        """本对话生效的权限档位 + 它是"会话覆盖"还是"跟随默认"（界面据此显示与提示）。"""
+        sid = session_id or self.current_session_id()
+        session_mode = self.sessions.get_permission(sid) if sid else None
+        default_mode = resolve_mode(self.settings.get("permission"))
+        return {
+            "session_permission": resolve_mode(session_mode) if session_mode else None,
+            "default_permission": default_mode,
+            "effective": resolve_mode(session_mode) if session_mode else default_mode,
+        }
+
+    def set_session_permission(self, mode: str = "") -> Dict[str, Any]:
+        """设置**本对话**的权限档位；空值 = 清除覆盖、回到设置页的默认档。
+        改完立刻下发到内核环境变量（下一个工具调用即按新档位判定）。"""
+        sid = self.current_session_id()
+        if not sid:
+            return {"ok": False, "error": "没有活动会话"}
+        value = resolve_mode(mode) if str(mode or "").strip() else None
+        if not self.sessions.set_permission(sid, value):
+            return {"ok": False, "error": "会话不存在"}
+        self.sessions.save()
+        self.apply_runtime_env(sid)
+        self._audit_permission_change(sid, value)
+        out = {"ok": True}
+        out.update(self.effective_permission(sid))
+        return out
+
+    def _audit_permission_change(self, session_id: str, value: Optional[str]) -> None:
+        """档位改动写审计：放宽权限是有安全含义的动作，必须留痕（哪次会话、改成什么）。
+        用既有的 ACCESS_CONTROL 事件类型 + WARNING 级别，不新增枚举（避免审计台账出现无人认识的事件名）。"""
+        try:
+            from yindun.core.audit_log import AuditEventType, AuditLog, AuditSeverity
+            AuditLog().add_entry(
+                AuditEventType.ACCESS_CONTROL, AuditSeverity.WARNING,
+                f"本对话权限档位改为：{value or '跟随设置默认'}",
+                {"session_id": session_id, "permission": value or "default", "scope": "session"},
+            )
+        except Exception as exc:
+            print(f"[AgentService] 权限改动写审计失败：{exc}")
 
     def _emit(self, event: str, payload: Any = None) -> None:
         listener = self._listener
@@ -226,6 +271,9 @@ class AgentService:
         """
         self.sessions.set_current(session_id)
         self.sessions.save()
+        # ★ 权限档位是**会话级**上下文：切会话必须立刻把内核环境变量换成该会话的档位，
+        #   否则上一个会话的档位会继续作用于本会话（"只读会话"里却能写盘）。
+        self.apply_runtime_env(session_id)
         messages = self.sessions.get_messages(session_id)
         box = self.sessions.get_box_mapping(session_id) or {}
         messages = self._restore_display_text(messages)
@@ -885,6 +933,54 @@ class AgentService:
     def plugin_config_read(self, plugin_id: str, name: str) -> Dict[str, Any]:
         return self._plugins.read_config_file(plugin_id, name)
 
+    # ── laya 风险分级接入（本机 / 局域网 / 正则回退，V3.5.3）──
+    # 接入配置与探测放在应用层，分级本身仍由插件执行；两边读的是同一份配置文件
+    # （经宿主既有的 plugin_config_* 通道），所以不存在"设置页写的、插件读不到"。
+    def _laya(self) -> Any:
+        if self._laya_service is None:
+            from yindun.app.laya_service import LayaService
+            self._laya_service = LayaService(
+                read_config=self.plugin_config_read,
+                write_config=self.plugin_config_write,
+                runtime_lookup=self._laya_runtime,
+            )
+        return self._laya_service
+
+    def _laya_runtime(self) -> Dict[str, Any]:
+        """插件最近一次分级用的来源（模块级记录，供设置页回答"到底有没有在工作"）。"""
+        try:
+            from yindun.plugins.builtin.laya_risk import plugin as laya_plugin
+            return {"last_source": laya_plugin.last_source()}
+        except Exception:
+            return {}
+
+    def laya_status(self) -> Dict[str, Any]:
+        try:
+            return self._laya().status()
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
+    def laya_save(self, cfg: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            return self._laya().save(cfg or {})
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def laya_probe(self, kind: str = "local", cfg: Dict[str, Any] = None) -> Dict[str, Any]:
+        try:
+            svc = self._laya()
+            if str(kind) == "lan":
+                return svc.probe_lan((cfg or {}).get("endpoint", ""))
+            return svc.probe_local()
+        except Exception as exc:
+            return {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
+
+    def laya_try(self, cfg: Dict[str, Any] = None) -> Dict[str, Any]:
+        try:
+            return self._laya().try_lan(cfg or {})
+        except Exception as exc:
+            return {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
+
     def plugin_selfcheck(self) -> Dict[str, Any]:
         """逐个导入插件模块，确认声明的钩子都真的有同名函数。
 
@@ -1229,7 +1325,7 @@ class AgentService:
         # 权限等级与脚本执行开关通过环境变量下发给工具层（与旧界面一致）
         # 权限档位：走 core/permission.py 的统一协议（稳定代码 plan/ask/auto/full），
         # 工具层与策略引擎每次调用现读 → 设置一改立即生效，无需重启。
-        self.apply_runtime_env()
+        self.apply_runtime_env(sid)      # 按本会话的档位下发（会话覆盖优先，其次设置默认）
         os.environ["SANDBOX_PATH"] = worker.sandbox_path
 
         for topic in WORKER_EVENTS:
@@ -1352,6 +1448,7 @@ class AgentService:
             "model": self.settings.get("model"),
             "privacy": bool(self.settings.get("privacy", True)),
             "permission": self.settings.get("permission"),
+            "session_permission": self.effective_permission(session_id).get("session_permission"),
             "sandbox": os.environ.get("SANDBOX_PATH", str(APP_ROOT)),
             "think_mode": self.settings.get("think_mode") or "快速回答",
         }

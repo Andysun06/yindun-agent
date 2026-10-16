@@ -104,6 +104,7 @@ class SessionStore:
                 "messages": [],
                 "attachment_fulltext": {},
                 "box_mapping": {},
+                "permission": None,        # None = 跟随设置页的新对话默认档
             }
             self._current_id = sid
             return sid
@@ -150,6 +151,25 @@ class SessionStore:
             if sess is not None:
                 sess["attachment_fulltext"] = dict(fulltext or {})
 
+    # ── 每个会话的 AI 权限档位（V3.5.3）──────────────────
+    # 为什么放在会话里：权限是"这件事我打算让 AI 做到什么程度"的上下文，
+    # 写代码的会话想看计划、整理文件的会话想让它自动落盘——按会话记才符合实际使用。
+    # 存 None 表示**不覆盖**，跟随设置页里的新对话默认档。
+    def get_permission(self, session_id: str) -> Optional[str]:
+        with self._lock:
+            sess = self._sessions.get(session_id) or {}
+            value = sess.get("permission")
+            return str(value) if value else None
+
+    def set_permission(self, session_id: str, mode: Optional[str]) -> bool:
+        with self._lock:
+            sess = self._sessions.get(session_id)
+            if sess is None:
+                return False
+            sess["permission"] = str(mode) if mode else None
+            sess["updated_at"] = _now()
+            return True
+
     # ── 持久化 ───────────────────────────────────
     def load(self) -> None:
         """加载并解密；任何解密失败都留痕（不静默吞掉，也不回退明文）。"""
@@ -186,6 +206,8 @@ class SessionStore:
                     "messages": self._decode_messages(sm, sid, item.get("messages")),
                     "attachment_fulltext": self._decode_attachments(sm, sid, item),
                     "box_mapping": item.get("box_mapping") or {},
+                    # 旧会话文件没有这个字段 → None（跟随默认档），不猜、不补默认值
+                    "permission": item.get("permission") or None,
                 }
             sid = payload.get("current_session_id")
             self._current_id = sid if sid in self._sessions else None
@@ -236,6 +258,8 @@ class SessionStore:
                     "id": sess["id"], "title": sess["title"],
                     "created_at": sess.get("created_at", ""),
                     "updated_at": sess.get("updated_at", ""),
+                    # 档位只是"松紧偏好"，不含任何明文内容，与标题同级存放即可
+                    "permission": sess.get("permission") or None,
                     "messages": [self._encode_message(sm, sess["id"], m)
                                  for m in sess.get("messages", []) or []],
                     "box_mapping": sess.get("box_mapping", {}) or {},

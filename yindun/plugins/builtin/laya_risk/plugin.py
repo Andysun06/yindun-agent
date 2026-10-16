@@ -295,21 +295,193 @@ def _grade_with_rules(haystack: str) -> Optional[Dict[str, str]]:
     return {"level": _LABEL[level], "text": f"风险分级（正则规则）：{level} —— {best[2]}"}
 
 
+# ── 局域网 laya 服务（V3.5.3 新增的一级接入）──
+# 企业内网可以把 laya 部署成一个服务，员工机器不装模型也能拿到分级。
+# 接口口径**如实公开**：OpenAI 兼容的 /chat/completions，回复里需要有 0–1 的概率
+# 或「高危/中危/低危」字样；解析不出就报错回退正则——绝不把"连上了"当成"分级可用"。
+_LAN_SYSTEM = ("你是操作风险分级器。判断待执行操作是否可能破坏数据、超出用户请求范围或不可逆。"
+               "只回答一个 0 到 1 之间的小数（越大越危险），不要解释。")
+_LEVEL_WORDS = (("高危", 1.0), ("中危", 0.5), ("低危", 0.0))
+
+
+def _source_config() -> Dict[str, Any]:
+    """读取接入配置（与 app/laya_service.py 写的是同一份文件，单一事实来源）。
+
+    读不到/坏了就回到默认（本机优先、自动回退），并在提示里说明来源——
+    不让"配置坏了"变成"能力静默消失"。
+    """
+    path = _data_dir() / "laya_source.json"
+    default = {"source": "local", "auto": True, "endpoint": "", "model": "", "timeout": 8}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        if not isinstance(raw, dict):
+            return default
+    except Exception:
+        # 兼容旧版：只有 backend.txt（auto/laya/regex）时按它映射。
+        # ★ 语义必须等价：旧版 `laya` 是"只用模型，模型不可用就不提示"（**不回退**），
+        #   映射成 auto=True 会让它在模型缺失时偷偷回退正则——那等于改了老用户的行为。
+        legacy = _backend_choice()
+        if legacy == "regex":
+            return dict(default, source="regex", auto=True)
+        if legacy == "laya":
+            return dict(default, source="local", auto=False)
+        return dict(default, source="local", auto=True)
+    out = dict(default)
+    src = str(raw.get("source") or "").strip().lower()
+    if src in ("local", "lan", "regex"):
+        out["source"] = src
+    ep = str(raw.get("endpoint") or "").strip()
+    out["endpoint"] = ep if ep.lower().startswith(("http://", "https://")) else ""
+    out["model"] = str(raw.get("model") or "").strip()[:80]
+    out["auto"] = bool(raw.get("auto", True))
+    try:
+        out["timeout"] = max(2, min(int(raw.get("timeout") or 8), 60))
+    except (TypeError, ValueError):
+        pass
+    return out
+
+
+def score_via_endpoint(endpoint: str, model: str, haystack: str,
+                       timeout: int = 8) -> Tuple[bool, str, str]:
+    """向局域网服务发一次分级请求。返回 (是否成功, 说明, 级别)。
+
+    成功 = HTTP 通 + 回复里能解析出概率或级别；只有 HTTP 通不算成功——
+    那只是"服务活着"，不是"分级可用"。
+    """
+    import urllib.error
+    import urllib.request
+
+    url = endpoint.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": model or "laya",
+        "messages": [{"role": "system", "content": _LAN_SYSTEM},
+                     {"role": "user", "content": haystack[:1500]}],
+        "temperature": 0,
+        "max_tokens": 32,
+    }
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):   # noqa: D102
+            return None
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+    req = urllib.request.Request(url, data=data, method="POST",
+                                 headers={"Content-Type": "application/json",
+                                          "Accept": "application/json"})
+    try:
+        with opener.open(req, timeout=max(2, min(int(timeout or 8), 60))) as resp:
+            body = resp.read(65536).decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return False, f"服务拒绝访问（HTTP {exc.code}）：确认该内网服务是否允许本机调用", ""
+        return False, f"服务返回 HTTP {exc.code}", ""
+    except urllib.error.URLError as exc:
+        return False, f"连不上：{exc.reason}", ""
+    except Exception as exc:
+        return False, f"请求失败：{type(exc).__name__}: {exc}", ""
+
+    try:
+        parsed = json.loads(body)
+        text = str((parsed.get("choices") or [{}])[0].get("message", {}).get("content") or "")
+    except Exception:
+        text = body
+    level, prob = _parse_level(text)
+    if level is None:
+        return False, f"服务有响应但无法解析分级结果（回复片段：{text[:80] or '空'}）", ""
+    return True, f"{text.strip()[:80] or '(空回复)'}", level
+
+
+def _parse_level(text: str) -> Tuple[Optional[str], Optional[float]]:
+    """从服务回复里解析级别：优先中文级别词，其次 0–1 的小数。"""
+    text = str(text or "")
+    for word, prob in _LEVEL_WORDS:
+        if word in text:
+            return word, prob
+    match = re.search(r"(?<![\d.])(0(?:\.\d+)?|1(?:\.0+)?)(?![\d.])", text)
+    if match:
+        prob = float(match.group(1))
+        level = "高危" if prob >= _HIGH else ("中危" if prob >= _MID else "低危")
+        return level, prob
+    return None, None
+
+
+def _grade_with_endpoint(haystack: str, context: Dict[str, Any], cfg: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """局域网分级：失败一律返回 None（交给调用方回退正则并写明原因）。"""
+    request = str(context.get("user_request") or "")[:300]
+    state = f"用户请求：{request or '（本轮没有可对照的用户原话）'}\n待执行操作：{haystack}"
+    ok, detail, level = score_via_endpoint(cfg.get("endpoint", ""), cfg.get("model", ""),
+                                           state, int(cfg.get("timeout") or 8))
+    if not ok or not level:
+        print(f"[laya_risk] 局域网分级不可用，本次改用正则规则：{detail}")
+        _remember_source("")
+        return None
+    _remember_source("局域网 laya 服务")
+    return {"level": _LABEL[level], "text": f"风险分级（局域网 laya 服务）：{level}"}
+
+
+# ── 最近一次分级的来源（设置页用它回答"到底有没有在工作"）──
+_LAST_SOURCE = ""
+
+
+def _remember_source(name: str) -> None:
+    global _LAST_SOURCE
+    _LAST_SOURCE = name
+
+
+def last_source() -> str:
+    return _LAST_SOURCE
+
+
+def rules_overview() -> Tuple[str, int]:
+    """给设置页用：规则文件路径 + 已载入条数（不触发任何分级）。"""
+    path = _data_dir() / "risk_rules.txt"
+    try:
+        count = len(_load_rules())
+    except Exception:
+        count = 0
+    return str(path), count
+
+
 def advisory_for_approval(context: Dict[str, Any]) -> Optional[Dict[str, str]]:
-    """钩子入口：backend=auto 时先试 laya 模型、不可用/失败则回退正则规则；
-    backend=regex 强制只用正则；backend=laya 只用模型（模型不可用则不提示）。"""
+    """钩子入口（三级来源，按数据边界由近及远）：
+
+      source=local（默认）：本机 laya → 局域网（若配置了）→ 正则
+      source=lan          ：局域网 → 正则
+      source=regex        ：只用正则
+      auto=false          ：只用所选那一级，不可用时不假装（返回 None）
+    无论走哪条路径，提示里都写明**本次来源**，绝不冒充。
+    """
     if not isinstance(context, dict):
         return None
-    choice = _backend_choice()
+    cfg = _source_config()
+    choice = cfg["source"]
+    auto = cfg["auto"]
     haystack = _build_haystack(context)
     if not haystack:
         return None
-    if choice != "regex":
-        router = _load_router()
+
+    if not auto:
+        # 用户显式关掉回退：只用所选那一级；不可用就什么都不提示，而不是偷偷换成正则
+        if choice == "regex":
+            return _grade_with_rules(haystack)
+        if choice == "local":
+            router = _load_router()
+            return _grade_with_laya(router, haystack, context) if router is not None else None
+        if cfg.get("endpoint"):
+            return _grade_with_endpoint(haystack, context, cfg)
+        return None
+
+    if choice in ("local", "lan"):
+        router = _load_router() if choice == "local" else None
         if router is not None:
             graded = _grade_with_laya(router, haystack, context)
             if graded is not None:
+                _remember_source("本机 laya 模型")
                 return graded
-        if choice == "laya":
-            return None      # 只用模型：模型不可用时不假装、不兜底
+        if cfg.get("endpoint"):
+            graded = _grade_with_endpoint(haystack, context, cfg)
+            if graded is not None:
+                return graded
     return _grade_with_rules(haystack)
+

@@ -77,6 +77,27 @@ class JsApi:
     def rename_session(self, session_id: str, title: str) -> bool:
         return self._svc.rename_session(session_id, title)
 
+    def set_session_permission(self, mode: str = ""):
+        """设置**本对话**的权限档位（空 = 跟随设置页默认档）。改完立刻作用于下一次工具调用。"""
+        return self._svc.set_session_permission(mode)
+
+    def session_permission(self):
+        """本对话生效的权限档位 + 是否被会话覆盖（界面初始化胶囊用）。"""
+        return self._svc.effective_permission()
+
+    # ── laya 风险分级接入（本机 / 局域网 / 正则回退）──
+    def laya_status(self):
+        return self._svc.laya_status()
+
+    def laya_save(self, cfg: Dict[str, Any] = None):
+        return self._svc.laya_save(cfg or {})
+
+    def laya_probe(self, kind: str = "local", cfg: Dict[str, Any] = None):
+        return self._svc.laya_probe(kind, cfg or {})
+
+    def laya_try(self, cfg: Dict[str, Any] = None):
+        return self._svc.laya_try(cfg or {})
+
     # ── 推理 ─────────────────────────────────────
     def send(self, text: str) -> bool:
         return self._svc.send(text)

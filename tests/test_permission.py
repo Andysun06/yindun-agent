@@ -229,6 +229,54 @@ for mode in perm.MODES:
     check(f"界面说明文案「{perm.LABELS[mode]}」与内核 HINTS 一致",
           perm.HINTS[mode] in js, perm.HINTS[mode])
 
+# ── 4c) 会话级档位：设置页那份是「新对话默认」，每个会话可单独覆盖 ──
+print("-" * 78)
+print("会话级档位：覆盖优先于默认 · 空值回到默认 · 切会话即换档（不串味）")
+print("-" * 78)
+from yindun.app.session_store import SessionStore  # noqa: E402
+
+with tempfile.TemporaryDirectory() as tmp2:
+    store = SessionStore(Path(tmp2) / "sessions.json")
+    a = store.create("只读会话")
+    b = store.create("动手会话")
+    check("新会话默认不覆盖（get_permission 为 None = 跟随设置默认）",
+          store.get_permission(a) is None and store.get_permission(b) is None)
+    check("按会话写档位", store.set_permission(a, "plan") and store.set_permission(b, "full"))
+    check("各会话互不影响（只读的那个不会因为另一个放开了而放开）",
+          store.get_permission(a) == "plan" and store.get_permission(b) == "full")
+    check("空值 = 清除覆盖、回到跟随默认", store.set_permission(a, None) and store.get_permission(a) is None)
+    check("对不存在的会话写入明确失败（不静默创建）", store.set_permission("no-such-session", "plan") is False)
+    store.set_permission(a, "auto")
+
+    # 落盘 → 重新加载：覆盖值必须还在（重启后不能悄悄回到默认）
+    store.save()
+    store2 = SessionStore(Path(tmp2) / "sessions.json")
+    store2.load()
+    check("覆盖值加密落盘并能在重新加载后读回",
+          store2.get_permission(a) == "auto" and store2.get_permission(b) == "full",
+          f"{store2.get_permission(a)} / {store2.get_permission(b)}")
+
+    # 与内核的衔接：生效档位 = 会话覆盖 ?? 设置默认
+    class _Settings:
+        data = {"permission": "ask"}
+
+        def get(self, key, default=None):
+            return self.data.get(key, default)
+
+        def set(self, key, value):
+            self.data[key] = value
+
+    from yindun.app.agent_service import AgentService  # noqa: E402
+    svc = AgentService.__new__(AgentService)      # 只验证档位解析，不启动整个服务
+    svc.settings = _Settings()
+    svc.sessions = store2
+    svc.current_session_id = lambda: a
+    check("生效档位取会话覆盖（auto），不是设置默认（ask）",
+          svc.effective_permission()["effective"] == "auto", str(svc.effective_permission()))
+    svc.current_session_id = lambda: "no-such-session"
+    check("没有会话时回落到设置默认（不给「无会话」状态放行）",
+          svc.effective_permission()["effective"] == "ask", str(svc.effective_permission()))
+
 print("\n" + "=" * 78)
 if failures:
     print(f"❌ 回归失败：{len(failures)} 项")

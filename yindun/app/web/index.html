@@ -113,7 +113,7 @@
           <button class="win-btn" data-win="minimize" title="最小化">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg>
           </button>
-          <button class="win-btn" data-win="toggle_top" id="btn-pin" title="置顶（立即生效）">
+          <button class="win-btn" data-win="toggle_top" id="btn-pin" title="置顶 / 取消置顶">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h6l-1 6 3 3H7l3-3-1-6zM12 13v7"/></svg>
           </button>
           <button class="win-btn win-btn--close" data-win="close" title="关闭">
@@ -144,6 +144,15 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
               </button>
               <span class="composer__spacer"></span>
+              <!-- 本对话权限：胶囊 + 下拉（设置页里的是"新对话默认"，这里是本对话覆盖） -->
+              <div class="perm" id="perm-pill" data-mode="ask">
+                <button type="button" id="perm-trigger" class="perm__trigger" aria-haspopup="listbox" aria-expanded="false" title="本对话的 AI 权限模式（只影响本对话）">
+                  <svg class="perm__ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5.5c0 4.3-2.9 7.9-7 9-4.1-1.1-7-4.7-7-9V6l7-3z"/></svg>
+                  <span class="perm__value" id="perm-value">变更前确认</span>
+                  <svg class="perm__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+                </button>
+                <div class="perm__pop" id="perm-pop" role="listbox" hidden></div>
+              </div>
               <!-- 模型胶囊：三档分组下拉（本机 / 局域网 / 公网） -->
               <div class="model-select" id="model-select">
                 <button type="button" id="model-trigger" class="pill pill--model" aria-haspopup="listbox" aria-expanded="false" title="切换模型（按数据边界分三档）">
@@ -157,16 +166,17 @@
                   <div class="model-select__foot" id="model-hint">—</div>
                 </div>
               </div>
-              <!-- 思考强度：四档（低 / 中 / 高 / 最高），点击即生效并落库 -->
-              <div class="think" id="think-level" role="radiogroup" aria-label="思考强度">
-                <span class="think__label" title="越高推理轮次越多、耗时越长">思考</span>
-                <button type="button" class="think__btn" data-level="low" role="radio" aria-checked="false" title="低 · 约 2 轮推理，最快">低</button>
-                <button type="button" class="think__btn" data-level="mid" role="radio" aria-checked="false" title="中 · 约 4 轮推理">中</button>
-                <button type="button" class="think__btn" data-level="high" role="radio" aria-checked="false" title="高 · 约 7 轮推理">高</button>
-                <button type="button" class="think__btn" data-level="max" role="radio" aria-checked="false" title="最高 · 约 10 轮推理，最慢也最稳">最高</button>
+              <!-- 思考强度：胶囊 + 下拉（低 / 中 / 高 / 最高） -->
+              <div class="think" id="think-select">
+                <button type="button" id="think-trigger" class="think__trigger" aria-haspopup="listbox" aria-expanded="false" title="思考强度：越高推理轮次越多、耗时越长">
+                  <span class="think__label">思考</span>
+                  <span class="think__value" id="think-value">中</span>
+                  <svg class="think__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+                </button>
+                <div class="think__pop" id="think-pop" role="listbox" hidden></div>
               </div>
               <button class="pill pill--send" id="btn-send" type="submit" title="发送（Enter）">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 8 6 8-16-8z"/></svg>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h15M12 6l6 6-6 6"/></svg>
               </button>
             </div>
           </div>
@@ -186,6 +196,7 @@
           </div>
           <div class="setnav__group"><span>安全</span>
             <button class="setnav__item" data-set="safety" type="button">隐私与权限</button>
+            <button class="setnav__item" data-set="laya" type="button">laya 风险分级</button>
             <button class="setnav__item" data-set="kb" type="button">本地知识库</button>
             <button class="setnav__item" data-set="plugin" type="button">插件</button>
           </div>
@@ -195,7 +206,7 @@
           <div class="setnav__group"><span>界面</span>
             <button class="setnav__item" data-set="appearance" type="button">窗口与外观</button>
           </div>
-          <div class="setnav__foot" id="settings-note">改动立即生效；配置与会话在本机加密保存。</div>
+          <div class="setnav__foot" id="settings-note">配置与会话在本机加密保存。</div>
         </aside>
 
         <div class="setmain">
@@ -267,6 +278,23 @@
                 四档权限只放宽"本机文件变更"，<b>执行命令在任何档位都要确认</b>，沙箱与审计链与档位无关。</p>
             </div>
 
+            <!-- ── laya 风险分级（接入页：本机 / 局域网 两档 + 正则回退）── -->
+            <div class="setpage" data-set="laya">
+              <div class="laya__state" id="laya-state">
+                <span class="laya__tierdot" id="laya-dot"></span>
+                <b id="laya-active">正在检测…</b>
+                <span class="laya__result" id="laya-active-note"></span>
+              </div>
+              <div class="prov">
+                <div class="prov__list" id="laya-list"></div>
+                <div class="prov__detail" id="laya-detail"></div>
+              </div>
+              <p class="setfoot">laya 只做一件事：在人工审批弹窗里补一行风险分级（高危 / 中危 / 低危），
+                <b>不参与任何放行判定</b>——判定权永远在内核。三级来源按"数据边界"分档：
+                本机 laya 模型（数据不出本机）→ 局域网 laya 服务（出机器、不出企业）→ 本机正则规则（无模型时的回退，全离线）。
+                每次提示都会写明本次来源，不冒充。</p>
+            </div>
+
             <!-- ── 本地知识库 ── -->
             <div class="setpage" data-set="kb">
               <div class="setcard">
@@ -284,12 +312,18 @@
               <p class="setfoot">入库即脱敏：文档先整篇脱敏再切块，向量库只存占位符，元数据不写本机路径。</p>
             </div>
 
-            <!-- ── 插件 ── -->
+            <!-- ── 插件（市场式布局：搜索 + 已安装瓷贴 + 分类双列卡片，参考 ZCode）── -->
             <div class="setpage" data-set="plugin">
-              <div class="setcard">
-                <div class="setrow setrow--stack">
-                  <div class="plugin-list" id="plugin-list"></div>
+              <div class="market__bar">
+                <div class="market__search">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+                  <input type="text" id="plugin-search" placeholder="搜索插件…" autocomplete="off" spellcheck="false">
                 </div>
+              </div>
+              <div class="market__sec"><b>已安装</b><span id="plugin-count">—</span></div>
+              <div class="market__tiles" id="plugin-tiles"></div>
+              <div id="plugin-groups"></div>
+              <div class="setcard" style="margin-top:var(--sp-6)">
                 <div class="setrow">
                   <div class="setrow__text"><b>插件自检</b><span id="plugin-sync">—</span></div>
                   <div class="setrow__ctrl"><button class="btn" id="btn-plugin-check" type="button">运行自检</button></div>
@@ -347,7 +381,7 @@
             <div class="setpage" data-set="appearance">
               <div class="setcard">
                 <div class="setrow">
-                  <div class="setrow__text"><b>窗口置顶</b><span>始终浮在其它窗口之上（立即生效）</span></div>
+                  <div class="setrow__text"><b>窗口置顶</b><span>始终浮在其它窗口之上</span></div>
                   <div class="setrow__ctrl"><label class="switch"><input type="checkbox" id="sw-topmost"><span class="switch__track"></span></label></div>
                 </div>
                 <div class="setrow">

@@ -295,6 +295,9 @@ class PluginRecord:
     description: str
     path: Path
     source: str                      # builtin | user
+    # 市场页分组用的分类（manifest 可选字段，缺省落到"扩展"）。
+    # 必须排在必填字段之后：dataclass 不允许"带默认值的字段"出现在必填字段之前。
+    category: str = ""
     hooks: List[str] = field(default_factory=list)
     requires: Dict[str, Any] = field(default_factory=dict)
     permissions: Dict[str, Any] = field(default_factory=dict)
@@ -337,6 +340,7 @@ class PluginRecord:
         return {
             "id": self.plugin_id, "name": self.name, "version": self.version,
             "description": self.description, "source": self.source,
+            "category": self.category,
             "hooks": list(self.hooks), "permissions": dict(self.permissions),
             "enabled": bool(self.enabled), "error": self.error,
             "timeout_seconds": self.timeout_seconds,
@@ -409,6 +413,7 @@ class PluginHost:
             name=str(data.get("name") or plugin_id),
             version=str(data.get("version") or "-"),
             description=str(data.get("description") or ""),
+            category=str(data.get("category") or "")[:8],
             path=directory, source=source,
             hooks=[str(h) for h in (data.get("hooks") or [])],
             requires=dict(data.get("requires") or {}),
@@ -512,9 +517,14 @@ class PluginHost:
             # 只允许平台中立的简单文件名：挡掉子目录与 ../ 越界写法
             if not _FILE_NAME_RE.match(name) or ".." in name:
                 continue
-            out.append({"name": name,
-                        "label": str(item.get("label") or name)[:40],
-                        "hint": str(item.get("hint") or "")[:200]})
+            entry = {"name": name,
+                     "label": str(item.get("label") or name)[:40],
+                     "hint": str(item.get("hint") or "")[:200]}
+            # managed=true：该文件由专属设置页维护（如 laya 接入配置），
+            # 界面对它只显示"去设置页"，不提供裸文本编辑——避免把 JSON 配置当便签改坏
+            if item.get("managed"):
+                entry["managed"] = True
+            out.append(entry)
         return out[:6]
 
     def _check_requirements(self, record: PluginRecord) -> List[str]:
