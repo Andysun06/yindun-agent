@@ -202,7 +202,7 @@
 
   const api = {
     bootstrap: () => Promise.resolve({
-      version: "V3.5.3",
+      version: "V3.5.4",
       settings: {
         model: "qwen3.5:4b", ollama_host: "http://127.0.0.1:11434", privacy: true, allow_script_exec: true,
         dark_mode: location.hash.indexOf("light") < 0, topmost: true,
@@ -298,7 +298,11 @@
     laya_try: () => Promise.resolve({ ok: true, detail: "预览模式：服务已返回分级结果，判为「高危」：0.82", level: "高危" }),
     set_session_permission: (mode) => Promise.resolve({ ok: true, session_permission: mode || null,
       default_permission: "ask", effective: mode || "ask", posture: { permission: mode || "ask" } }),
-    plugin_set_enabled: () => Promise.resolve({ ok: true, plugins }),
+    plugin_set_enabled: (id, on) => {      // 与后端同语义：真的改状态再回列表
+      const item = plugins.find((x) => x.id === id);
+      if (item) item.enabled = !!on;
+      return Promise.resolve({ ok: true, plugins });
+    },
     plugin_sync_state: () => Promise.resolve(pluginSync),
     plugin_selfcheck: () => Promise.resolve(pluginCheck),
     plugin_config_read: () => Promise.resolve({

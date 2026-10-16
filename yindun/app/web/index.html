@@ -196,9 +196,12 @@
           </div>
           <div class="setnav__group"><span>安全</span>
             <button class="setnav__item" data-set="safety" type="button">隐私与权限</button>
-            <button class="setnav__item" data-set="laya" type="button">laya 风险分级</button>
             <button class="setnav__item" data-set="kb" type="button">本地知识库</button>
             <button class="setnav__item" data-set="plugin" type="button">插件</button>
+          </div>
+          <!-- 插件专属设置栏目：启用带设置的插件时才出现（内容由 refreshPluginNav() 填） -->
+          <div class="setnav__group" id="setnav-plugins" hidden>
+            <span>插件</span>
           </div>
           <div class="setnav__group"><span>企业</span>
             <button class="setnav__item" data-set="control" type="button">企业控制面</button>
@@ -278,22 +281,8 @@
                 四档权限只放宽"本机文件变更"，<b>执行命令在任何档位都要确认</b>，沙箱与审计链与档位无关。</p>
             </div>
 
-            <!-- ── laya 风险分级（接入页：本机 / 局域网 两档 + 正则回退）── -->
-            <div class="setpage" data-set="laya">
-              <div class="laya__state" id="laya-state">
-                <span class="laya__tierdot" id="laya-dot"></span>
-                <b id="laya-active">正在检测…</b>
-                <span class="laya__result" id="laya-active-note"></span>
-              </div>
-              <div class="prov">
-                <div class="prov__list" id="laya-list"></div>
-                <div class="prov__detail" id="laya-detail"></div>
-              </div>
-              <p class="setfoot">laya 只做一件事：在人工审批弹窗里补一行风险分级（高危 / 中危 / 低危），
-                <b>不参与任何放行判定</b>——判定权永远在内核。三级来源按"数据边界"分档：
-                本机 laya 模型（数据不出本机）→ 局域网 laya 服务（出机器、不出企业）→ 本机正则规则（无模型时的回退，全离线）。
-                每次提示都会写明本次来源，不冒充。</p>
-            </div>
+            <!-- laya 风险分级的设置页不再写死在这里：它是 laya_risk 插件的专属设置，
+                 启用该插件时才在左侧「插件」分组出现（见 #setnav-plugins 与 renderPluginSettings）。 -->
 
             <!-- ── 本地知识库 ── -->
             <div class="setpage" data-set="kb">
@@ -319,9 +308,8 @@
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
                   <input type="text" id="plugin-search" placeholder="搜索插件…" autocomplete="off" spellcheck="false">
                 </div>
+                <span class="market__count" id="plugin-count">—</span>
               </div>
-              <div class="market__sec"><b>已安装</b><span id="plugin-count">—</span></div>
-              <div class="market__tiles" id="plugin-tiles"></div>
               <div id="plugin-groups"></div>
               <div class="setcard" style="margin-top:var(--sp-6)">
                 <div class="setrow">
@@ -329,8 +317,12 @@
                   <div class="setrow__ctrl"><button class="btn" id="btn-plugin-check" type="button">运行自检</button></div>
                 </div>
               </div>
-              <p class="setfoot">插件只能做加法：补充识别、扩展解析、工作流模板、导出格式；脱敏豁免 / 白名单 / 审批放行 / 审计写入永不开放。</p>
+              <p class="setfoot">有专属设置的插件在<b>启用之后</b>会在左侧设置栏的「插件」分组里出现对应栏目，停用后隐藏、能力同时收回。
+                插件只能做加法：补充识别、扩展解析、工作流模板、导出格式；脱敏豁免 / 白名单 / 审批放行 / 审计写入永不开放。</p>
             </div>
+
+            <!-- ── 插件专属设置页（容器）：启用某个有设置的插件后，把它的设置渲染到这里 ── -->
+            <div class="setpage" id="plugin-settings-page"></div>
 
             <!-- ── 企业控制面（V3.5.0）── -->
             <div class="setpage" data-set="control">

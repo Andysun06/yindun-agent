@@ -745,17 +745,8 @@ html[data-theme="dark"] .plugin-item__runtime.is-bad { background: rgba(196, 54,
 .market__sec { display: flex; align-items: center; gap: var(--sp-3); margin: var(--sp-6) 0 var(--sp-3); }
 .market__sec b { font-size: var(--fs-sm); font-weight: 700; color: var(--text-2); }
 .market__sec span { color: var(--text-3); font-size: var(--fs-meta); }
-.market__tiles { display: flex; gap: var(--sp-3); overflow-x: auto; padding-bottom: var(--sp-2); }
-.market__tile {
-  flex: none; width: 44px; height: 44px; border-radius: var(--r-ctrl);
-  border: 1px solid var(--border-2); background: var(--bg-canvas); color: var(--text-2);
-  display: grid; place-items: center; font-size: var(--fs-base); font-weight: 700; position: relative;
-}
-.market__tile:hover { border-color: var(--accent-500); color: var(--text-1); }
-.market__tile.is-off { opacity: .45; }
-.market__tile .market__dot { position: absolute; right: 4px; bottom: 4px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent-500); }
-.market__tile.is-off .market__dot { background: var(--gray-400); }
 .market__empty { color: var(--text-3); font-size: var(--fs-sm); padding: var(--sp-4) 0; }
+.market__count { flex: none; color: var(--text-3); font-size: var(--fs-meta); font-family: var(--font-mono); }
 .market__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-3); }
 @media (max-width: 1080px) { .market__grid { grid-template-columns: minmax(0, 1fr); } }
 .pcard {
@@ -766,8 +757,12 @@ html[data-theme="dark"] .plugin-item__runtime.is-bad { background: rgba(196, 54,
 .pcard__main { display: flex; align-items: flex-start; gap: var(--sp-3); }
 .pcard__ico {
   width: 34px; height: 34px; flex: none; border-radius: 9px; display: grid; place-items: center;
-  background: var(--bg-subtle); color: var(--text-1); font-weight: 700; font-size: var(--fs-base);
+  background: var(--bg-subtle); color: var(--text-2);
 }
+/* 拼图图标：插件都用同一枚"拼图"——插件＝可拼装的能力；
+   各插件靠名称区分，不靠"首字当图标"（汉字首字当图标的辨识度反而更低）。 */
+.pcard__ico svg { width: 18px; height: 18px; }
+.pcard.is-on .pcard__ico { color: var(--accent-600); }
 .pcard__text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .pcard__name { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-sm); font-weight: 600; }
 .pcard__ver { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-3); font-weight: 400; }
@@ -794,6 +789,14 @@ html[data-theme="dark"] .plugin-item__runtime.is-bad { background: rgba(196, 54,
 .laya__tierdot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--gray-400); }
 .laya__tierdot.is-ok { background: var(--accent-500); }
 .laya__tierdot.is-off { background: var(--warn-500); }
+.pset__head { display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-4); }
+.pset__tag {
+  flex: none; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border-2);
+  color: var(--text-3); font-size: var(--fs-meta); font-family: var(--font-mono);
+}
+.pset__path { margin-top: var(--sp-2); color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-meta); overflow-wrap: anywhere; }
+.pset__file + .pset__file { margin-top: var(--sp-5); }
+.plugin-cfg__text:focus { outline: none; border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--focus-ring); }
 .laya__rules { width: 100%; min-height: 180px; font-family: var(--font-mono); font-size: var(--fs-meta);
   line-height: 1.7; padding: var(--sp-3); border: 1px solid var(--border-2); border-radius: var(--r-ctrl);
   background: var(--bg-input); color: var(--text-1); resize: vertical; }

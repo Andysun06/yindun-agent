@@ -16,6 +16,8 @@
     pane: "settings", auditFormats: [], wfFormats: [],
     catalog: null,           // 三档算力清单（本机 / 局域网 / 公网）
     plugins: [],             // 插件清单（市场页渲染 + 搜索过滤都基于它）
+    settingsPage: null,      // 当前设置页标识（判断"插件被停用后要不要退回"用）
+    settingsPlugin: null,    // 当前打开的插件设置页属于哪个插件
     sessionPermission: null, // 本对话的权限覆盖（null = 跟随设置默认）
     laya: null,              // laya 接入状态（本机 / 局域网 / 正则回退）
   };
@@ -1043,6 +1045,10 @@
   const PERM_LABEL = { "local-only": "仅本机网络", none: "无网络" };
   const KIND_LABEL = { advisory: "建议型", additive: "增强型" };
 
+  // 插件图标：统一画一枚拼图（插件＝可拼装的能力）。各插件靠名称区分，
+  // 不用"插件名首字"当图标——汉字首字辨识度低，还容易被误读成缩写。
+  const PUZZLE_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 5H10A2 2 0 0 1 14 5H18A1 1 0 0 1 19 6V10A2 2 0 0 0 19 14V18A1 1 0 0 1 18 19H14A2 2 0 0 1 10 19H6A1 1 0 0 1 5 18V14A2 2 0 0 0 5 10V6A1 1 0 0 1 6 5Z"/></svg>`;
+
   // 自检结果缓存：{plugin_id: {hook: {ok, error}}}
   let pluginCheck = null;
 
@@ -1059,19 +1065,10 @@
       .filter(Boolean).join(" ").toLowerCase().indexOf(kw) >= 0;
     const shown = plugins.filter(hit);
 
-    // ① 已安装瓷贴：一行方块，点一下展开对应卡片（ZCode 市场顶部那一排的做法）
-    const tiles = $("plugin-tiles");
-    if (tiles) {
-      tiles.innerHTML = plugins.length
-        ? plugins.map((p) => `<button type="button" class="market__tile${p.enabled ? "" : " is-off"}"
-            data-tile="${esc(p.id)}" title="${esc(p.name)}${p.enabled ? "" : "（未启用）"}">
-            ${esc((p.name || "?").trim().charAt(0))}<span class="market__dot"></span></button>`).join("")
-        : `<span class="market__empty">没有发现插件</span>`;
-    }
     const cnt = $("plugin-count");
     if (cnt) cnt.textContent = `${plugins.filter((p) => p.enabled).length} / ${plugins.length} 已启用`;
 
-    // ② 按分类分组、双列卡片
+    // 按分类分组、双列卡片
     const groups = [];
     shown.forEach((p) => {
       const cat = CATEGORY_ORDER.indexOf(p.category) >= 0 ? p.category : "扩展";
@@ -1100,23 +1097,16 @@
         return `<div class="cap"><span class="cap__hook">${esc(c.hook)}</span>
           <span class="cap__text">${esc(c.summary)}${c.detail ? `　·　${esc(c.detail)}` : ""}</span>${state}</div>`;
       }).join("");
-      // 可编辑配置（如敏感词表 / laya 接入）：改完即生效，落盘前写审计
-      const cfgFiles = (Array.isArray(p.config_files) ? p.config_files : []).filter((f) => !f.managed);
-      const cfg = cfgFiles.map((f) => `
-        <div class="plugin-cfg" data-cfg-for="${esc(p.id)}" data-cfg-name="${esc(f.name)}" hidden>
-          <div class="plugin-cfg__head">
-            <span>${esc(f.label || f.name)}<span class="plugin-item__ver">${esc(f.name)}</span></span>
-            <button class="btn btn--ghost" data-cfg-toggle>收起</button>
-          </div>
-          <textarea class="plugin-cfg__text" rows="7" spellcheck="false"></textarea>
-          <div class="plugin-cfg__ops">
-            <span class="field__hint">${esc(f.hint || "")}</span>
-            <button class="btn btn--primary" data-cfg-save>保存并生效</button>
-          </div>
-        </div>`).join("");
-      const cfgBtns = cfgFiles.map((f) =>
-        `<button class="btn btn--ghost" data-cfg-open="${esc(f.name)}" data-cfg-plugin="${esc(p.id)}">编辑${esc(f.label || f.name)}</button>`
-      ).join("");
+      // 插件设置**不在这一页编辑**（V3.5.4 起）：有设置的插件启用后会在左侧设置栏
+      // 出现它自己的栏目，这里只给一个跳转入口——市场页管"有哪些插件、开不开"，
+      // 设置页管"这个插件怎么配"，两者不混在一起（负责人实测后明确的口径）。
+      const hasSettings = (Array.isArray(p.config_files) ? p.config_files : []).length > 0
+        || PLUGIN_SETTINGS_RENDERERS[p.id];
+      const settingsHint = hasSettings
+        ? (p.enabled
+            ? `<div class="plugin-item__ops"><button class="btn btn--primary" data-open-settings="${esc(p.id)}">打开「${esc(p.name)}」设置</button></div>`
+            : `<div class="pcard__desc">启用后，左侧设置栏的「插件」分组里会出现它的专属设置。</div>`)
+        : `<div class="pcard__desc">这个插件没有可调项：启用即生效。</div>`;
       // 运行状态：回答"启用之后它到底有没有在工作"——只有真正被调用过才算数
       const rt = p.runtime || {};
       let runText, runCls;
@@ -1134,9 +1124,9 @@
           (rt.status === "error" && rt.error ? `：${esc(rt.error)}` : "");
         runCls = (rt.status === "error" || rt.status === "timeout") ? "is-bad" : "is-ok";
       }
-      return `<div class="pcard" data-card="${esc(p.id)}">
+      return `<div class="pcard${p.enabled ? " is-on" : ""}" data-card="${esc(p.id)}">
         <div class="pcard__main">
-          <span class="pcard__ico" aria-hidden="true">${esc((p.name || "?").trim().charAt(0))}</span>
+          <span class="pcard__ico" aria-hidden="true">${PUZZLE_SVG}</span>
           <div class="pcard__text">
             <span class="pcard__name">${esc(p.name)}<span class="pcard__ver">v${esc(p.version)}</span></span>
             <span class="pcard__desc" title="${esc(p.description || "")}">${esc(p.description || "")}</span>
@@ -1151,25 +1141,11 @@
           <div class="plugin-item__runtime ${runCls}" title="只统计实际被调用的次数；未触发的插件不代表失效，而是还没遇到对应场景">运行状态：${runText}</div>
           ${capList ? `<div class="plugin-caps">${capList}</div>` : ""}
           ${(p.missing && p.missing.length) ? `<div class="pcard__desc">${p.missing.map(esc).join("<br>")}</div>` : ""}
-          ${cfgBtns ? `<div class="plugin-item__ops">${cfgBtns}</div>` : ""}
-          ${cfg}
+          ${settingsHint}
         </div>
       </div>`;
     }).join("")}</div>`).join("") || `<div class="market__empty">没有匹配的插件（换个关键词试试）</div>`;
 
-    // 瓷贴 → 展开并滚动到对应卡片
-    box.parentElement.querySelectorAll("[data-tile]").forEach((btn) => {
-      btn.onclick = () => {
-        const card = box.querySelector(`[data-card="${btn.dataset.tile}"]`);
-        if (!card) { if ($("plugin-search")) { $("plugin-search").value = ""; renderPlugins(state.plugins);
-                     setTimeout(() => renderPlugins(state.plugins), 0); } return; }
-        const det = card.querySelector(".pcard__detail");
-        if (det) det.hidden = false;
-        card.classList.add("is-hl");
-        card.scrollIntoView({ block: "center", behavior: "smooth" });
-        setTimeout(() => card.classList.remove("is-hl"), 1600);
-      };
-    });
     // ⋯ 展开/收起详情
     box.querySelectorAll("[data-more]").forEach((btn) => {
       btn.onclick = () => {
@@ -1183,8 +1159,15 @@
       input.onchange = async () => {
         const res = await call("plugin_set_enabled", input.dataset.plugin, input.checked);
         if (res && res.ok) {
-          toast(input.checked ? "插件已启用（已写入审计）" : "插件已停用");
-          renderPlugins(res.plugins);
+          state.plugins = res.plugins || state.plugins;
+          renderPlugins(state.plugins);
+          // 启停即刷新设置栏：启用后它的专属栏目出现，停用后栏目隐藏、能力同时被宿主收回
+          refreshPluginNav();
+          const name = ((state.plugins || []).find((x) => x.id === input.dataset.plugin) || {}).name || "";
+          toast(input.checked
+            ? (pluginSettingsEntries().some((p) => p.id === input.dataset.plugin)
+                ? `已启用「${name}」· 可在左侧「插件」分组里设置` : "插件已启用（已写入审计）")
+            : "插件已停用");
           refreshSyncState();
           refreshExportFormats();
         } else {
@@ -1193,38 +1176,127 @@
         }
       };
     });
-    // 打开配置编辑器：内容按需读取（不预读，避免一次拉一堆文件）
-    box.querySelectorAll("[data-cfg-open]").forEach((btn) => {
-      btn.onclick = async () => {
-        const holder = box.querySelector(
-          `[data-cfg-for="${btn.dataset.cfgPlugin}"][data-cfg-name="${btn.dataset.cfgOpen}"]`);
-        if (!holder) return;
-        const res = await call("plugin_config_read", btn.dataset.cfgPlugin, btn.dataset.cfgOpen);
-        if (!res || !res.ok) { toast("读取失败：" + ((res && res.error) || "未知原因")); return; }
-        holder.hidden = false;
-        holder.querySelector(".plugin-cfg__text").value = res.text || "";
-        holder.querySelector(".plugin-cfg__text").dataset.path = res.path || "";
-      };
-    });
-    box.querySelectorAll("[data-cfg-toggle]").forEach((btn) => {
-      btn.onclick = () => { btn.closest(".plugin-cfg").hidden = true; };
-    });
-    box.querySelectorAll("[data-cfg-save]").forEach((btn) => {
-      btn.onclick = async () => {
-        const holder = btn.closest(".plugin-cfg");
-        const res = await call("plugin_config_write", holder.dataset.cfgFor,
-                               holder.dataset.cfgName, holder.querySelector(".plugin-cfg__text").value);
-        if (res && res.ok) {
-          toast("已保存（改动已写入审计）");
-          refreshSyncState();
-        } else {
-          toast("保存失败：" + ((res && res.error) || "未知原因"));
-        }
-      };
+    // 「打开设置」→ 跳到该插件的专属设置栏目
+    box.querySelectorAll("[data-open-settings]").forEach((btn) => {
+      btn.onclick = () => openPluginSettings(btn.dataset.openSettings);
     });
   }
 
-  async function refreshPlugins() { renderPlugins(await call("plugins_list")); }
+  async function refreshPlugins() {
+    const list = await call("plugins_list");
+    renderPlugins(list);
+    refreshPluginNav();
+  }
+
+  /* ══ 插件专属设置（V3.5.4）══════════════════════════════════
+     口径（负责人实测后明确）：**插件页只管"有哪些插件、开不开"，
+     插件怎么配放到设置栏里**。带设置的插件一旦启用，左侧「插件」分组里
+     就出现它自己的栏目；停用即隐藏，能力同时被宿主收回（不是"界面藏起来、
+     实际还在跑"——启停本身就走 plugin_set_enabled 的注册/注销）。
+     通用设置页由 config_files 生成（文本配置），有专属界面的插件
+     （如 laya 的三级接入）注册在 PLUGIN_SETTINGS_RENDERERS 里覆盖。 */
+  const PLUGIN_SETTINGS_RENDERERS = {
+    laya_risk: { render: renderLayaSettings, subtitle: "审批弹窗的风险提示：本机模型 / 局域网服务 / 正则规则回退" },
+  };
+
+  /** 当前该显示哪些插件设置栏目：启用 + 有设置（config_files 或专属渲染器） */
+  function pluginSettingsEntries(list) {
+    const plugins = Array.isArray(list) ? list : (state.plugins || []);
+    return plugins
+      .filter((p) => p.enabled && (((p.config_files || []).length) > 0 || PLUGIN_SETTINGS_RENDERERS[p.id]))
+      .sort((a, b) => (CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category))
+                    || String(a.name).localeCompare(String(b.name), "zh"));
+  }
+
+  function refreshPluginNav() {
+    const group = $("setnav-plugins");
+    if (!group) return;
+    const entries = pluginSettingsEntries();
+    const current = group.querySelectorAll(".setnav__item");
+    const sig = entries.map((p) => p.id + ":" + p.name).join("|");
+    if (group.dataset.sig !== sig) {
+      group.dataset.sig = sig;
+      group.querySelectorAll(".setnav__item").forEach((el) => el.remove());
+      entries.forEach((p) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "setnav__item";
+        btn.dataset.set = "plugin-settings";
+        btn.dataset.plugin = p.id;
+        btn.textContent = p.name;
+        btn.onclick = () => setSettingsPage("plugin-settings", p.id);
+        group.appendChild(btn);
+      });
+    }
+    group.hidden = entries.length === 0;
+    // 当前正开着某个插件的设置页、而它刚被停用 → 退回插件页（不留一个空壳页面）
+    if (state.settingsPage === "plugin-settings" && !entries.some((p) => p.id === state.settingsPlugin)) {
+      setSettingsPage("plugin");
+      toast("该插件已停用，设置栏目已隐藏");
+    }
+  }
+
+  function openPluginSettings(pluginId) {
+    if (!pluginSettingsEntries().some((p) => p.id === pluginId)) {
+      toast("先启用这个插件，它的设置才会出现");
+      return;
+    }
+    setSettingsPage("plugin-settings", pluginId);
+  }
+
+  /** 插件设置页：题头随插件而变；正文由专属渲染器或配置项生成 */
+  async function renderPluginSettings(pluginId) {
+    const page = $("plugin-settings-page");
+    if (!page) return;
+    const p = (state.plugins || []).find((x) => x.id === pluginId);
+    const custom = PLUGIN_SETTINGS_RENDERERS[pluginId];
+    page.dataset.set = "plugin-settings";      // 供 setSettingsPage 的显隐判断使用
+    page.innerHTML = `
+      <div class="pset__head"><span class="pset__tag">插件</span>
+        <b>${esc((p && p.name) || pluginId)}</b></div>
+      <div id="pset-body"></div>`;
+    const body = $("pset-body");
+    if (custom) { await custom.render(body); return; }
+    // 通用：每个配置项一张卡（标签 + 提示 + 路径 + 编辑器）
+    // managed=true 的文件由专属渲染器接管（例：laya 的三级接入），通用页面不把它当便签改
+    const files = ((p && p.config_files) || []).filter((f) => !f.managed);
+    if (!files.length) {
+      body.innerHTML = `<div class="market__empty">这个插件没有可调项：启用即生效。</div>`;
+      return;
+    }
+    body.innerHTML = files.map((f) => `
+      <div class="pset__file setcard" data-file="${esc(f.name)}">
+        <div class="setrow"><div class="setrow__text"><b>${esc(f.label || f.name)}</b>
+          <span>${esc(f.hint || "")}</span></div>
+          <div class="setrow__ctrl">
+            <button class="btn" data-pset-load="${esc(f.name)}" type="button">读取</button>
+            <button class="btn btn--primary" data-pset-save="${esc(f.name)}" type="button">保存</button>
+          </div>
+        </div>
+        <div class="setrow setrow--stack">
+          <textarea class="plugin-cfg__text" data-pset-text="${esc(f.name)}" rows="9" spellcheck="false"></textarea>
+          <div class="pset__path" data-pset-path="${esc(f.name)}"></div>
+        </div>
+      </div>`).join("");
+    const load = async (name) => {
+      const res = await call("plugin_config_read", pluginId, name);
+      if (!res || !res.ok) { toast("读取失败：" + ((res && res.error) || "未知原因")); return; }
+      body.querySelector(`[data-pset-text="${name}"]`).value = res.text || "";
+      const pathEl = body.querySelector(`[data-pset-path="${name}"]`);
+      if (pathEl) pathEl.textContent = res.path || "";
+    };
+    body.querySelectorAll("[data-pset-load]").forEach((b) => { b.onclick = () => load(b.dataset.psetLoad); });
+    body.querySelectorAll("[data-pset-save]").forEach((b) => {
+      b.onclick = async () => {
+        const name = b.dataset.psetSave;
+        const res = await call("plugin_config_write", pluginId, name,
+                               body.querySelector(`[data-pset-text="${name}"]`).value);
+        if (res && res.ok) { toast("已保存（改动已写入审计）"); refreshSyncState(); }
+        else toast("保存失败：" + ((res && res.error) || "未知原因"));
+      };
+    });
+    files.forEach((f) => load(f.name));      // 进页面即载入，省一次点击
+  }
 
   async function refreshSyncState() {
     const el = $("plugin-sync");
@@ -1523,9 +1595,8 @@
     model: ["模型接入", "按数据边界分三档：本机 / 局域网 / 公网"],
     control: ["企业控制面", "接入公司控制面：只上传掩码事件，只接受收紧策略"],
     safety: ["隐私与权限", "脱敏网关、AI 权限四档与执行严格模式"],
-    laya: ["laya 风险分级", "审批弹窗的风险提示：本机模型 / 局域网服务 / 正则规则回退"],
     kb: ["本地知识库", "入库即脱敏的本地检索（脱敏 RAG）"],
-    plugin: ["插件", "能力扩展：只增不减，判定权仍在内核"],
+    plugin: ["插件", "启用 / 停用能力扩展；带设置的插件启用后会在左侧出现专属栏目"],
     appearance: ["窗口与外观", "悬浮窗行为与明暗主题"],
   };
   async function openSettings(page) {
@@ -1541,7 +1612,7 @@
     app.classList.add("is-settings-open");
     applyLayout();                      // 列宽走单一出口
     placeWinCtrls();                    // 顶栏与右栏都被隐藏 → 窗口按钮改挂设置页头部右侧
-    if (page) setSettingsPage(page);
+    if (page) setSettingsPage(page); else if (!state.settingsPage) setSettingsPage("model");
     if (!state.catalog) renderProv(await call("model_catalog"));
   }
   function closeSettings() {
@@ -1553,19 +1624,32 @@
     applyLayout();                      // 列宽回到用户的折叠/拖拽状态（单一出口）
     placeWinCtrls();                    // 窗口按钮回到顶栏 / 右栏
   }
-  function setSettingsPage(page) {
+  function setSettingsPage(page, pluginId) {
+    state.settingsPage = page;
+    state.settingsPlugin = pluginId || null;
     if (page === "control") renderControlPage();
-    if (page === "laya") renderLayaPage();
     // 插件列表按需加载：右栏的"设置"面板已不是入口（设置改成了独立视图），
     // 只在打开这一页时拉一次——否则市场页会一片空白（真实缺陷，实测发现）。
     if (page === "plugin") refreshPlugins();
-    const meta = SET_META[page] || SET_META.model;
+    const meta = page === "plugin-settings"
+      ? pluginSettingsMeta(pluginId)
+      : (SET_META[page] || SET_META.model);
     $("set-title").textContent = meta[0];
     $("set-sub").textContent = meta[1];
     document.querySelectorAll(".setnav__item").forEach((b) =>
-      b.classList.toggle("is-active", b.dataset.set === page));
+      b.classList.toggle("is-active", b.dataset.set === page
+        && (page !== "plugin-settings" || b.dataset.plugin === pluginId)));
     document.querySelectorAll(".setpage").forEach((p) =>
       p.classList.toggle("is-active", p.dataset.set === page));
+    if (page === "plugin-settings") renderPluginSettings(pluginId);
+  }
+
+  function pluginSettingsMeta(pluginId) {
+    const p = (state.plugins || []).find((x) => x.id === pluginId);
+    const custom = PLUGIN_SETTINGS_RENDERERS[pluginId];
+    return [(p && p.name) || "插件设置",
+            (custom && custom.subtitle)
+              || ((p && p.description) || "该插件的专属设置").slice(0, 80)];
   }
 
   /** 面板顶部动作区：按当前页显示导出入口（格式来自内核 + 已启用插件） */
@@ -1723,10 +1807,25 @@
              hint: "没有 laya 时使用。规则可在下方直接编辑：每行一条「级别|正则|说明」。规则只产生弹窗提示，不改变任何放行判定。" },
   };
 
-  async function renderLayaPage() {
+  async function renderLayaSettings(host) {
     const st = await call("laya_status");
     if (st) state.laya = st;
     const cur = st || {};
+    if (!host) return;
+    host.innerHTML = `
+      <div class="laya__state" id="laya-state">
+        <span class="laya__tierdot" id="laya-dot"></span>
+        <b id="laya-active">正在检测…</b>
+        <span class="laya__result" id="laya-active-note"></span>
+      </div>
+      <div class="prov">
+        <div class="prov__list" id="laya-list"></div>
+        <div class="prov__detail" id="laya-detail"></div>
+      </div>
+      <p class="setfoot">laya 只做一件事：在人工审批弹窗里补一行风险分级（高危 / 中危 / 低危），
+        <b>不参与任何放行判定</b>——判定权永远在内核。三级来源按「数据边界」分档：
+        本机 laya 模型（数据不出本机）→ 局域网 laya 服务（出机器、不出企业）→ 本机正则规则（全离线回退）。
+        每次提示都会写明本次来源，不冒充。</p>`;
     // 顶部：当前生效后端 + 最近一次分级的来源（"到底有没有在工作"的直接证据）
     const dot = $("laya-dot");
     if (dot) dot.className = "laya__tierdot " + (cur.active_backend === "regex" ? "is-off" : "is-ok");
@@ -1827,7 +1926,7 @@
           else put("读取失败：" + ((res && res.error) || "未知原因"), "is-bad");
         } else if (act === "save-rules") {
           const res = await call("plugin_config_write", "laya_risk", "risk_rules.txt", $("laya-rules").value);
-          if (res && res.ok) { put("规则已保存并生效（改动已写入审计）", "is-ok"); renderLayaPage(); }
+          if (res && res.ok) { put("规则已保存并生效（改动已写入审计）", "is-ok"); renderLayaSettings(host); }
           else put("保存失败：" + ((res && res.error) || "未知原因"), "is-bad");
         } else if (act === "probe-local" || act === "probe-lan") {
           put("探测中…");
@@ -1842,7 +1941,7 @@
         } else if (act === "save-lan") {
           const res = await call("laya_save", { source: "lan",
             endpoint: $("laya-endpoint").value.trim(), model: $("laya-model").value.trim() });
-          if (res && res.ok) { put(res.detail || "已保存", "is-ok"); renderLayaPage(); }
+          if (res && res.ok) { put(res.detail || "已保存", "is-ok"); renderLayaSettings(host); }
           else put("保存失败：" + ((res && res.error) || "未知原因"), "is-bad");
         }
       };
@@ -1852,11 +1951,11 @@
       list.querySelectorAll("[data-t]").forEach((b) => {
         b.onclick = async () => {
           state.layaSel = { tier: b.dataset.t };
-          renderLayaPage();
+          renderLayaSettings(host);
           // 切到本机/局域网即表示"用它"（可选来源里手动置顶），保存 source
           if (b.dataset.t !== "regex") {
             await call("laya_save", { source: b.dataset.t });
-            renderLayaPage();
+            renderLayaSettings(host);
           }
         };
       });

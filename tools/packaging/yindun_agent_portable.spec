@@ -61,12 +61,35 @@ except Exception as exc:
 
 # ── 产品代码与随包文档 ──
 hiddenimports += collect_submodules("yindun")
+
+
+def _collect_dir(src, dest, skip_dirs=(".mimosa", "__pycache__"), skip_ext=(".pyc", ".pyo")):
+    """把一个目录收进 datas，并**跳过不属于本产品的垃圾**。
+
+    为什么不能用 Tree：Tree 产出 3 元组（name, path, typecode），只适合 COLLECT；
+    Analysis 的 datas 要 2 元组，混进去会以 "too many values to unpack" 失败。
+    为什么要跳过：目录整包拷贝会把 .mimosa（Mimosa 安全门禁的会话状态 JSON）与
+    __pycache__ 一起打进 exe——前者是别的工具的运行时数据，出现在交付物里
+    既浪费体积，也让"交付内容"变得不可解释。
+    """
+    out = []
+    for root, dirs, files in os.walk(src):
+        dirs[:] = [d for d in dirs if d not in skip_dirs]
+        for name in files:
+            if name.endswith(skip_ext):
+                continue
+            full = os.path.join(root, name)
+            parent = os.path.dirname(os.path.relpath(full, src))
+            out.append((full, os.path.join(dest, parent) if parent else dest))
+    return out
+
+
 datas += [
     # ★ Web 前端资源必须打进包：冻结后前端由 file:// 从这里加载
-    (os.path.join(_ROOT, "yindun", "app", "web"), os.path.join("yindun", "app", "web")),
+    *_collect_dir(os.path.join(_ROOT, "yindun", "app", "web"), os.path.join("yindun", "app", "web")),
     # ★ 内置插件必须打进包：插件是按【文件路径】加载的（不是 import），PyInstaller 不会自动收集；
     #   漏了会表现为"设置页里一个插件都没有"，而且不会有任何报错
-    (os.path.join(_ROOT, "yindun", "plugins", "builtin"), os.path.join("yindun", "plugins", "builtin")),
+    *_collect_dir(os.path.join(_ROOT, "yindun", "plugins", "builtin"), os.path.join("yindun", "plugins", "builtin")),
     (os.path.join(_ROOT, "docs", "使用说明.pdf"), "."),   # 随包附使用说明
     (os.path.join(_ROOT, "docs", "插件开发.md"), "."),    # 随包附插件开发指南
     (os.path.join(_ROOT, "assets", "demo_contract.txt"), "assets"),

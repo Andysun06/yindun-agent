@@ -23,9 +23,23 @@ import os
 _ROOT = os.path.normpath(os.path.join(SPECPATH, "..", ".."))   # tools/packaging/ → 仓库根
 _ENTRY = os.path.join(_ROOT, "yindun", "control", "__main__.py")
 
+def _collect_dir(src, dest, skip_dirs=(".mimosa", "__pycache__"), skip_ext=(".pyc", ".pyo")):
+    """目录收进 datas 并跳过 .mimosa / __pycache__（Tree 只适合 COLLECT，datas 要 2 元组）。"""
+    out = []
+    for root, dirs, files in os.walk(src):
+        dirs[:] = [d for d in dirs if d not in skip_dirs]
+        for name in files:
+            if name.endswith(skip_ext):
+                continue
+            full = os.path.join(root, name)
+            parent = os.path.dirname(os.path.relpath(full, src))
+            out.append((full, os.path.join(dest, parent) if parent else dest))
+    return out
+
+
 datas = [
     # ★ 控制台前端资源必须打进包：冻结后由 file:// 从包内加载（与客户端同理）
-    (os.path.join(_ROOT, "yindun", "control", "web"), os.path.join("yindun", "control", "web")),
+    *_collect_dir(os.path.join(_ROOT, "yindun", "control", "web"), os.path.join("yindun", "control", "web")),
     # 随包附交付文档，便于管理机现场查阅
     (os.path.join(_ROOT, "docs", "使用说明.pdf"), "."),
     (os.path.join(_ROOT, "docs", "隐盾安全智能体_技术报告.pdf"), "."),

@@ -11,6 +11,7 @@
 
 用法：python tests/test_window_layout.py   （退出码 0 = 全部通过）
 """
+import json
 import os
 import re
 import sys
@@ -428,24 +429,42 @@ check("后端提供会话级档位接口（空值 = 清除覆盖）",
 check("档位取值范围仍受内核约束（界面传什么都会被 resolve_mode 规范化）",
       "value = resolve_mode(mode) if str(mode or \"\").strip() else None" in service_src)
 
-check("插件页改成市场式布局（搜索 + 已安装瓷贴 + 分类双列卡片）",
-      'id="plugin-search"' in html and 'id="plugin-tiles"' in html and 'id="plugin-groups"' in html
+check("插件页是市场式布局（搜索 + 分类双列卡片），且**没有**顶部瓷贴条",
+      'id="plugin-search"' in html and 'id="plugin-groups"' in html
+      and "plugin-tiles" not in html and "market__tile" not in css and "market__tile" not in js
       and "function renderPlugins" in js and "market__grid" in css and "pcard" in css)
+check("插件图标是画出来的拼图（不再拿插件名首字当图标）",
+      "const PUZZLE_SVG" in js and "${PUZZLE_SVG}" in js and ".pcard__ico svg {" in css
+      and "charAt(0)" not in js.split("function renderPlugins")[1][:4000])
 check("卡片默认只给结论（图标/名称/一句话/开关），详情点开才展开",
       'class="pcard__more" data-more=' in js and 'class="pcard__detail" data-detail=' in js)
+check("插件页不再编辑插件设置（卡片里没有文本编辑器，只有「打开设置」入口）",
+      "data-cfg-open" not in js and "data-cfg-save" not in js
+      and "data-open-settings" in js and "function openPluginSettings" in js
+      and "先启用这个插件，它的设置才会出现" in js)
 check("按 category 分组、未知分类落到「扩展」",
       "const CATEGORY_ORDER" in js and '"扩展"' in js.split("CATEGORY_ORDER")[1][:120])
-check("托管配置不在卡片里给裸文本编辑（避免把 JSON 当便签改坏）",
-      "filter((f) => !f.managed)" in js and "managed" in (ROOT / "yindun/plugins/host.py").read_text(encoding="utf-8"))
+check("托管配置（managed）在通用设置页里也不给裸文本编辑（留给专属界面接管）",
+      "((p && p.config_files) || []).filter((f) => !f.managed)" in js
+      and "managed" in (ROOT / "yindun/plugins/host.py").read_text(encoding="utf-8")
+      and any(f.get("managed") for f in json.loads(
+          (ROOT / "yindun/plugins/builtin/laya_risk/manifest.json").read_text(encoding="utf-8"))["config_files"]))
 check("搜索框走客户端过滤（插件数量级不需要往返一次）",
       'if ($("plugin-search")) $("plugin-search").oninput = () => renderPlugins(state.plugins);' in js)
 
-check("laya 是独立的一级设置页（不是藏在插件卡片里的一个配置项）",
-      'data-set="laya"' in html and "laya: [\"laya 风险分级\"" in js
-      and "async function renderLayaPage" in js and "function bindLayaDetail" in js)
+check("laya 的接入设置是**插件专属设置页**（启用后出现在设置栏，不是写死的静态页）",
+      'data-set="laya"' not in html and "laya_risk: { render: renderLayaSettings" in js
+      and "async function renderLayaSettings" in js and "function bindLayaDetail" in js)
+check("带设置的插件启用后，设置栏出现它的专属栏目；停用即隐藏并退回插件页",
+      'id="setnav-plugins"' in html and "function refreshPluginNav" in js
+      and "function pluginSettingsEntries" in js and "p.enabled &&" in js
+      and "该插件已停用，设置栏目已隐藏" in js and "refreshPluginNav();" in js)
+check("设置页题头随插件而变（标题=插件名、副标题=它的说明）",
+      "function pluginSettingsMeta" in js and "function renderPluginSettings" in js
+      and "pset__tag" in css and 'id="plugin-settings-page"' in html)
 check("laya 页按三档来源组织（本机 / 局域网 / 正则回退），与模型接入同一范式",
       "const LAYA_SOURCES" in js and all(k in js for k in ('local: { label', 'lan: { label', 'regex: { label'))
-      and 'class="prov"' in html.split('<div class="setpage" data-set="laya">')[1][:600])
+      and 'class="prov"' in js.split("async function renderLayaSettings")[1][:900])
 check("探活与试打分是两个动作（「连上了」不等于「分级可用」）",
       '"laya_probe"' in js and '"laya_try"' in js
       and "试打分" in js and "服务有响应但无法解析分级结果" in
@@ -454,7 +473,7 @@ check("laya 接入配置由设置页与插件共用同一份文件（不会各�
       "CONFIG_NAME = \"laya_source.json\"" in (ROOT / "yindun/app/laya_service.py").read_text(encoding="utf-8")
       and '"laya_source.json"' in (ROOT / "yindun/plugins/builtin/laya_risk/plugin.py").read_text(encoding="utf-8"))
 check("仍然声明「laya 不参与放行判定」（亮点能力也不能越过安全不变量）",
-      "不参与任何放行判定" in html.split('<div class="setpage" data-set="laya">')[1][:2200])
+      "不参与任何放行判定" in js.split("async function renderLayaSettings")[1][:1600])
 
 print("\n" + "=" * 78)
 if failures:

@@ -42,11 +42,27 @@ for pkg in [
 hiddenimports += collect_submodules("yindun")
 # ★ 路径基准锚定仓库根目录（spec 内的相对路径以 spec 所在目录为基准，故必须用绝对路径）
 _ROOT = os.path.normpath(os.path.join(SPECPATH, "..", ".."))
+
+
+def _collect_dir(src, dest, skip_dirs=(".mimosa", "__pycache__"), skip_ext=(".pyc", ".pyo")):
+    """目录收进 datas 并跳过 .mimosa / __pycache__（Tree 只适合 COLLECT，datas 要 2 元组）。"""
+    out = []
+    for root, dirs, files in os.walk(src):
+        dirs[:] = [d for d in dirs if d not in skip_dirs]
+        for name in files:
+            if name.endswith(skip_ext):
+                continue
+            full = os.path.join(root, name)
+            parent = os.path.dirname(os.path.relpath(full, src))
+            out.append((full, os.path.join(dest, parent) if parent else dest))
+    return out
+
+
 datas += [
     # ★ Web 前端资源必须打进包：冻结后前端由 file:// 从这里加载
-    (os.path.join(_ROOT, "yindun", "app", "web"), os.path.join("yindun", "app", "web")),
+    *_collect_dir(os.path.join(_ROOT, "yindun", "app", "web"), os.path.join("yindun", "app", "web")),
     # ★ 内置插件必须打进包：插件按【文件路径】加载，PyInstaller 不会自动收集
-    (os.path.join(_ROOT, "yindun", "plugins", "builtin"), os.path.join("yindun", "plugins", "builtin")),
+    *_collect_dir(os.path.join(_ROOT, "yindun", "plugins", "builtin"), os.path.join("yindun", "plugins", "builtin")),
     (os.path.join(_ROOT, "docs", "使用说明.pdf"), "."),
     (os.path.join(_ROOT, "docs", "插件开发.md"), "."),
     (os.path.join(_ROOT, "assets", "demo_contract.txt"), "assets"),
