@@ -25,6 +25,7 @@
 | 交付物 | 位置 |
 |---|---|
 | 📦 **免安装单文件 exe**（双击即用，无需安装与脚本） | [Release](https://github.com/Andysun06/yindun-agent/releases) → `Yindun-Portable-v3.5.0.exe`（GitHub 资产名不支持中文，会净化成下划线，故用英文名；本地构建产物名为 `隐盾安全智能体_V3.5.0_便携版.exe`，`python tools/build_portable.py`） |
+| 🏢 **企业控制端 exe**（集中管理服务 + 控制台，零依赖十几 MB） | `python tools/build_control.py` → `dist/隐盾控制端_V3.5.0_便携版.exe`（拷到管理机双击即用；也可源码跑 `python -m yindun.control`） |
 | 🎬 **项目演示视频**（1080p，3分28秒） | [Release v3.3.0](https://github.com/Andysun06/yindun-agent/releases/tag/v3.3.0) → `Yindun-Demo-v3.3.0.mp4` |
 | 📄 **技术报告**（含隐私算法形式化 / 威胁模型 / 攻击实验 / 企业部署形态 · V3.5.0） | [docs/隐盾安全智能体_技术报告.pdf](docs/隐盾安全智能体_技术报告.pdf) |
 | 📽 **汇报 PPT**（21 页 · V3.5.0） | [docs/隐盾安全智能体_项目汇报.pptx](docs/隐盾安全智能体_项目汇报.pptx) |
@@ -240,6 +241,13 @@ yindun-agent/
 ├── 开发记忆.md                  # 🧠 对内：架构/决策/路线图/协作规范（每次改动必须同步）
 ├── AGENTS.md                   # AI 助手协作约定（指向开发记忆）
 ├── PRIVACY.md                  # 隐私说明
+├── SECURITY.md                 # 安全策略：能力边界 / 明确不主张 / 漏洞报告流程
+├── CONTRIBUTING.md             # 协作入口（规则单一来源＝开发记忆，此处只指路）
+├── CHANGELOG.md                # 变更日志入口（同上，避免两份 changelog 漂移）
+├── pyproject.toml              # 工程配置（ruff / pytest 约定；不做打包构建，见文件头）
+├── .editorconfig / .gitattributes   # 编辑器与行尾统一（.bat 保 CRLF）
+├── .github/                    # CI 全量回归矩阵 + PR / Issue 模板
+├── archive/                    # 归档区：历史证据与备份（不入库）
 │
 ├── yindun/                     # 📦 主包
 │   ├── __init__.py             # 包标识与版本号
@@ -315,12 +323,15 @@ yindun-agent/
 │   ├── make_ppt.py             #   生成 docs/汇报PPT
 │   └── md2pdf.py               #   Markdown → 排版 HTML → PDF
 │
-├── docs/                       # 📄 对外文档
+├── docs/                       # 📄 文档（对外交付物 + 内部笔记分层，见 docs/README.md）
 │   ├── 隐盾安全智能体_技术报告.{html,pdf}
 │   ├── 隐盾安全智能体_项目汇报.pptx
 │   ├── 使用说明.{md,html,pdf}
 │   ├── 作品简介（隐盾安全智能体）.html
-│   ├── 素材录制指南.md / 视频脚本_AI生成用.md
+│   ├── dev/                    # 内部开发笔记（素材录制 / 视频脚本 / 选型对比）
+│   ├── README.md               #   文档索引（对外 / 内部两层）
+│   ├── samples/                #   样例产物（审计报告样例等）
+│   ├── dev/                    #   内部开发笔记（素材录制指南 / 视频脚本 / 选型对比）
 │   └── screenshots/            #   报告与 PPT 的图源（唯一图源）
 │
 ├── assets/                     # 🎬 演示与录制素材

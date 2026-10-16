@@ -1,0 +1,22 @@
+# 编辑器统一约定（企业级项目最低要求：缩进/编码/换行由仓库决定，而非各人 IDE）
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{js,css,html,json,yml,yaml}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false      # Markdown 行尾双空格是换行语法
+
+[*.bat]
+end_of_line = crlf
+
+[Makefile]
+indent_style = tab

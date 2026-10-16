@@ -1,0 +1,25 @@
+# 统一行尾与二进制识别（避免跨平台 diff 噪声：此前每次提交都会提示 LF→CRLF）
+* text=auto eol=lf
+
+# Windows 专用入口脚本必须保持 CRLF（cmd.exe 对 LF 的 .bat 兼容性差）
+*.bat text eol=crlf
+
+# 二进制/产物：不要做行尾转换，也不要在 diff 里展开
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.pdf binary
+*.pptx binary
+*.docx binary
+*.xlsx binary
+*.mp4 binary
+*.exe binary
+*.db binary
+*.woff2 binary
+
+# 生成物与锁文件：语言统计里不计入
+docs/*.pdf linguist-generated=true
+*.pptx linguist-generated=true
+tests/privacy_holdout_results.json linguist-generated=true
+tests/privacy_eval_results.json linguist-generated=true

@@ -1,0 +1,42 @@
+# ─────────────────────────────────────────────────────────────
+# 隐盾安全智能体 · 工程配置
+#
+# 说明（为什么这里没有 [build-system] / [project]）：
+#   本产品的交付形态是「免安装单文件 exe」（PyInstaller onefile）+ 可源码直跑，
+#   不走 PyPI 分发，因此**不做打包构建配置**，只在此集中存放工具链约定。
+#   版本号的单一来源是 `yindun/__init__.py` 的 `__version__`（打包脚本动态读取，
+#   避免"改了代码忘了改打包脚本"）。
+# ─────────────────────────────────────────────────────────────
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+extend-exclude = ["build", "dist", "docs", "assets", "archive", "paper", "论文研究"]
+
+[tool.ruff.lint]
+# 只启用"真会出问题"的规则：安全相关的 S（bandit）+ 常见缺陷 F/E。
+# 不启用格式化类规则（团队用编辑器/IDE 自行统一，避免大范围重排掩盖真实改动）。
+select = ["E", "F", "W", "S", "B"]
+ignore = [
+    "E501",   # 行长由 ruff.line-length 提示，不阻断（中文注释行常超）
+    "S101",   # 断言：本仓库的测试套件就是靠 assert/check 风格写的
+    "S603",   # 子进程调用：仓库门禁已另行拦截（见 AGENTS.md），不重复报
+    "S607",   # 部分可执行路径
+    "S311",   # 非密码学随机数：评测语料生成需要确定性随机（可复现），非安全用途
+    "B008",   # 默认参数里的函数调用（typer/FastAPI 风格），本项目无此依赖但保持宽容
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "B"]          # 测试校样本身含"假密钥/假 PII"等刻意写法
+"tools/*" = ["S"]               # 构建与文档工具
+
+[tool.pytest.ini_options]
+# 说明：本仓库的测试套件是**可直接执行的脚本**（`python tests/xxx.py`，退出码即结论），
+# 不是 pytest 用例。此处仅为 IDE/编辑器提供收集约定，不改变运行方式。
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["yindun"]
+omit = ["yindun/app/web/*", "yindun/control/web/*", "*/__pycache__/*"]
