@@ -171,8 +171,10 @@
     p.classList.toggle("is-off", !privacy);
     p.querySelector("span").textContent = privacy ? "已启用" : "已关闭";
 
+    // 后端现在下发档位键（plan/ask/auto/full），这里翻成中文档位名显示（含旧中文名的兼容）
     const permission = (payload && payload.permission) || s.permission || "—";
-    $("posture-permission").querySelector("span").textContent = permission.replace(/\s*\(.*\)$/, "");
+    $("posture-permission").querySelector("span").textContent =
+      (PERM_MODES[permKey(permission)] || {}).label || String(permission).replace(/\s*\(.*\)$/, "");
 
     const sandbox = (payload && payload.sandbox) || s.sandbox || state.sandbox || "—";
     $("posture-sandbox").querySelector("span").textContent = sandbox;
@@ -666,6 +668,41 @@
            hint: "公司内网的推理服务 / Ollama，填内网地址（10.x / 192.168.x / 内网主机名）" },
     wan: { label: "公网模型", boundary: "数据出企业内网；送出前内容已在本机脱敏", cls: "tier--wan",
            hint: "云端 OpenAI 兼容接口（https://…/v1）；密钥加密存本机、不回显" },
+  };
+
+  /* ══ 思考强度四档 ═══════════════════════════════════════════
+     界面给四档（低/中/高/最高），底层仍是 worker 的 thinking_depth(1–10)：
+     档位只是把"该调几轮"这件事从数字变成人话。相邻档位的数值区间见 levelOf()。 */
+  const THINK_LEVELS = [
+    { key: "low",  label: "低",   depth: 2,  hint: "最快：只做一两轮推理，适合闲聊与简单问答" },
+    { key: "mid",  label: "中",   depth: 4,  hint: "日常默认：够应付多数指令" },
+    { key: "high", label: "高",   depth: 7,  hint: "慢一些：多轮自检，适合改代码 / 排查" },
+    { key: "max",  label: "最高", depth: 10, hint: "最慢也最稳：多轮推理，适合复杂任务" },
+  ];
+  const levelOf = (depth) => {
+    const d = Number(depth);
+    if (!isFinite(d)) return THINK_LEVELS[0];
+    // 旧值（1–10）落到最近的档：<=3 低、<=5 中、<=8 高、其余最高
+    if (d <= 3) return THINK_LEVELS[0];
+    if (d <= 5) return THINK_LEVELS[1];
+    if (d <= 8) return THINK_LEVELS[2];
+    return THINK_LEVELS[3];
+  };
+
+  /* AI 权限四档的说明文案来自内核 yindun/core/permission.py 的 HINTS/LABELS
+     （单一事实来源在 Python 侧；此处同步为界面文案，tests/test_window_layout.py 会比对）。 */
+  const PERM_MODES = {
+    plan: { label: "计划模式", hint: "只读分析、给出计划；不写盘、不删除、不执行命令" },
+    ask:  { label: "变更前确认", hint: "读操作自动放行；写盘 / 删除 / 执行命令前逐次人工确认（默认，最稳）" },
+    auto: { label: "自主模式", hint: "沙箱内的创建与写入自动放行；删除与执行命令仍逐次确认" },
+    full: { label: "完全访问", hint: "沙箱内的创建 / 写入 / 删除自动放行；执行命令仍逐次确认（底线不可越）" },
+  };
+  const permKey = (v) => {
+    const s = String(v || "");
+    if (PERM_MODES[s]) return s;                       // 新档位名
+    if (s.indexOf("彻底审计") >= 0 || s.indexOf("安全只读") >= 0) return "plan";   // 旧中文档位
+    if (s.indexOf("完全控制") >= 0) return "ask";
+    return "ask";                                      // 空值 / 未知 → 默认档
   };
 
   /** 渲染「模型接入」页：左侧按三档列供应商，右侧是选中项的详情表单。
@@ -1329,6 +1366,28 @@
     applyLayout();
   }
 
+  /** 窗口控制按钮落位：跟着"当前可见的右上角"走。
+   *  1) 设置视图：顶栏与右栏都隐藏 → 落在设置页头部右侧（#set-actions 之后）；
+   *  2) 右栏展开：右栏本就占满窗口右侧 → 落在右栏标签栏内（即窗口右上角）；
+   *  3) 其余（右栏收起）：回到中栏顶栏最右。
+   *  只挪 DOM、不重建按钮（id 与 onclick 绑定不受影响）：appendChild 会连事件一起搬走，
+   *  用 innerHTML 重建则会把绑定丢光。 */
+  function placeWinCtrls() {
+    const box = $("win-ctrls");
+    if (!box) return;
+    const app = document.querySelector(".app");
+    const settingsOpen = !!(app && app.classList.contains("is-settings-open"));
+    const tabs = document.querySelector(".panel__tabs");
+    const head = document.querySelector(".setmain__head");
+    const topbar = document.querySelector(".topbar");
+    let host = topbar, where = "topbar";
+    if (settingsOpen && head) { host = head; where = "head"; }
+    else if (tabs && !rightCollapsed()) { host = tabs; where = "panel"; }
+    if (host && box.parentElement !== host) host.appendChild(box);
+    box.classList.toggle("win-ctrls--panel", where === "panel");
+    box.classList.toggle("win-ctrls--head", where === "head");
+  }
+
   /** 收起/展开右栏。persist=false 用于"因窗口窄而自动收起"——
    *  自动行为不能被当成用户意图存下来，否则"临时窄一下"会被永久记住。 */
   function setRightCollapsed(isCollapsed, persist = true) {
@@ -1336,6 +1395,7 @@
     if (persist) {
       try { localStorage.setItem("yd_right_collapsed", isCollapsed ? "1" : "0"); } catch (e) {}
     }
+    placeWinCtrls();
     applyLayout();
   }
 
@@ -1360,7 +1420,7 @@
   const SET_META = {
     model: ["模型接入", "按数据边界分三档：本机 / 局域网 / 公网"],
     control: ["企业控制面", "接入公司控制面：只上传掩码事件，只接受收紧策略"],
-    safety: ["隐私与权限", "脱敏网关、权限等级与执行严格模式"],
+    safety: ["隐私与权限", "脱敏网关、AI 权限四档与执行严格模式"],
     kb: ["本地知识库", "入库即脱敏的本地检索（脱敏 RAG）"],
     plugin: ["插件", "能力扩展：只增不减，判定权仍在内核"],
     appearance: ["窗口与外观", "悬浮窗行为与明暗主题"],
@@ -1377,6 +1437,7 @@
     const app = document.querySelector(".app");
     app.classList.add("is-settings-open");
     applyLayout();                      // 列宽走单一出口
+    placeWinCtrls();                    // 顶栏与右栏都被隐藏 → 窗口按钮改挂设置页头部右侧
     if (page) setSettingsPage(page);
     if (!state.catalog) renderProv(await call("model_catalog"));
   }
@@ -1387,6 +1448,7 @@
     if (sheet) sheet.hidden = false;
     document.querySelector(".app").classList.remove("is-settings-open");
     applyLayout();                      // 列宽回到用户的折叠/拖拽状态（单一出口）
+    placeWinCtrls();                    // 窗口按钮回到顶栏 / 右栏
   }
   function setSettingsPage(page) {
     if (page === "control") renderControlPage();
@@ -1477,8 +1539,10 @@
 
   /* ── 窗口控制 ─────────────────────────────────── */
   function bindWindowControls() {
-    const frameless = !!(state.settings && state.settings.frameless);
-    document.documentElement.dataset.frameless = frameless ? "1" : "0";
+    // 无边框悬浮是产品形态（不是设置项）：固定打开，让拖边缘热区与顶栏拖动始终可用，
+    // 也就没有"改了要重启"这一说。
+    document.documentElement.dataset.frameless = "1";
+    placeWinCtrls();
     document.querySelectorAll("[data-win]").forEach((btn) => {
       btn.onclick = async () => {
         const action = btn.dataset.win;
@@ -1527,6 +1591,33 @@
   }
 
   /* ── 设置抽屉 ─────────────────────────────────────── */
+  /** 思考强度四档：把 thinking_depth(1–10) 折算成档位并高亮（旧的数值配置也能正确显示） */
+  function paintThinkLevel(depth) {
+    const box = $("think-level");
+    if (!box) return;
+    const cur = levelOf(depth);
+    box.querySelectorAll(".think__btn").forEach((b) => {
+      const on = b.dataset.level === cur.key;
+      b.classList.toggle("is-active", on);
+      b.setAttribute("aria-checked", on ? "true" : "false");
+    });
+    box.title = cur.hint;
+  }
+
+  /** 权限四档：高亮当前档并同步说明文案（说明文案与内核 HINTS 一致） */
+  function paintPermModes(value) {
+    const box = $("perm-modes");
+    if (!box) return;
+    const cur = permKey(value);
+    box.querySelectorAll(".permseg__btn").forEach((b) => {
+      const on = b.dataset.mode === cur;
+      b.classList.toggle("is-active", on);
+      b.setAttribute("aria-checked", on ? "true" : "false");
+    });
+    const hint = $("perm-hint");
+    if (hint) hint.textContent = (PERM_MODES[cur] || {}).hint || "—";
+  }
+
   function fillSettings() {
     const s = state.settings || {};
     // 三档算力清单由 renderProv() 渲染；这里只同步与模型相关的少量状态。
@@ -1539,10 +1630,8 @@
     $("sw-privacy").checked = !!s.privacy;
     $("sw-script-exec").checked = s.allow_script_exec !== false;
     $("sw-topmost").checked = !!s.topmost;
-    $("sw-frameless").checked = !!s.frameless;
-    const depth = s.thinking_depth ?? 3;
-    if ($("sel-depth")) $("sel-depth").value = String(depth);
-    $("sel-permission").value = s.permission || "完全控制 (读/写/列表)";
+    paintThinkLevel(s.thinking_depth);
+    paintPermModes(s.permission);
 
     document.documentElement.dataset.theme = s.dark_mode ? "dark" : "light";
     // 注意：无边框模式的窗口控制按钮必须在"设置已加载后"决定是否显示，
@@ -1823,11 +1912,18 @@
     $("sw-privacy").onchange = (e) => persist({ privacy: e.target.checked });
     $("sw-script-exec").onchange = (e) => persist({ allow_script_exec: e.target.checked });
     $("sw-topmost").onchange = (e) => persist({ topmost: e.target.checked });
-    $("sw-frameless").onchange = (e) => {
-      persist({ frameless: e.target.checked });
-      toast("无边框悬浮模式将在重启后生效");
-    };
-    $("sel-permission").onchange = (e) => persist({ permission: e.target.value });
+    // 权限四档：点击即落库，后端把档位写进 YINDUN_PERMISSION 环境变量，
+    // 工具函数每次调用都重新读取 → 下一个操作就按新档位判定（无需重启）。
+    const permBox = $("perm-modes");
+    if (permBox) {
+      permBox.onclick = (e) => {
+        const btn = e.target.closest(".permseg__btn");
+        if (!btn) return;
+        const mode = btn.dataset.mode;
+        persist({ permission: mode });
+        toast(`权限已切到「${(PERM_MODES[mode] || {}).label || mode}」· 下一个操作立即生效`);
+      };
+    }
     // 模型下拉（自绘，替代原生 datalist——弹层不随主题、内网手输无回显）：
     // 触发器开合 / 搜索过滤 / 键盘 ↑↓·Enter·Esc / 点选与手输（回车提交非匹配名=内网模型入口）/
     // 点浮层外关闭。选择即 persist（后端立即重建算力）。
@@ -1927,13 +2023,17 @@
       if (!mSel.contains(e.target)) closeModelPop();
     });
     // Ollama 地址的绑定在 renderProv() 里（该输入框随详情面板一起渲染/重建）
-    // 思考强度：输入区胶囊（原设置页滑杆已移除，语义不变：1–10，越高推理轮次越多）
-    const depthSel = $("sel-depth");
-    if (depthSel) {
-      depthSel.innerHTML = Array.from({ length: 10 }, (_, i) => i + 1)
-        .map((n) => `<option value="${n}">${n}</option>`).join("");
-      depthSel.value = String((state.settings && state.settings.thinking_depth) ?? 3);
-      depthSel.onchange = (e) => persist({ thinking_depth: Number(e.target.value) });
+    // 思考强度四档：点一下就切，落到 thinking_depth（低2 / 中4 / 高7 / 最高10）
+    const thinkBox = $("think-level");
+    if (thinkBox) {
+      thinkBox.onclick = (e) => {
+        const btn = e.target.closest(".think__btn");
+        if (!btn) return;
+        const lv = THINK_LEVELS.find((l) => l.key === btn.dataset.level);
+        if (!lv) return;
+        persist({ thinking_depth: lv.depth });
+        toast(`思考强度 · ${lv.label}（约 ${lv.depth} 轮推理）`);
+      };
     }
 
     restoreLayout();

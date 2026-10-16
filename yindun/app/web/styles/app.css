@@ -198,12 +198,15 @@ body.is-mini .minibar {
 .stats__item--bad { color: var(--danger-500); }
 @media (max-width: 1240px) { .stats { display: none; } }
 
-.win-ctrls { display: none; gap: 2px; margin-left: var(--sp-2); }
+.win-ctrls { display: none; gap: 2px; margin-left: var(--sp-2); align-items: center; }
 html[data-frameless="1"] .win-ctrls { display: inline-flex; }
 .win-btn { width: 26px; height: 26px; border-radius: var(--r-chip); display: grid; place-items: center; color: var(--text-3); }
 .win-btn:hover { background: var(--bg-hover); color: var(--text-1); }
 .win-btn--close:hover { background: var(--danger-500); color: #fff; }
 .win-btn svg { width: 13px; height: 13px; }
+/* 落在右栏标签栏 / 设置页头部时：贴近窗口右上角，与相邻按钮留出距离 */
+.win-ctrls--panel { margin-left: var(--sp-4); }
+.win-ctrls--head { margin-left: var(--sp-4); align-self: center; }
 
 /* ── 对话区：居中窄栏，画布上直接排版（无卡片） ───────────── */
 .sheet { flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -355,13 +358,25 @@ html[data-frameless="1"] .win-ctrls { display: inline-flex; }
 .model-select__value { max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pill--select { position: relative; padding-right: var(--sp-2); }
 .pill__label { color: var(--text-3); white-space: nowrap; flex: none; }
-.pill--select select {
-  appearance: none; border: none; background: transparent; color: var(--text-1);
-  font: inherit; font-size: var(--fs-sm); padding: 0 14px 0 0; cursor: pointer;
-  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
-  background-position: right 6px center, right 2px center; background-size: 4px 4px, 4px 4px; background-repeat: no-repeat;
+
+/* ── 思考强度：四档分段控件（低 / 中 / 高 / 最高）─────────
+   为什么不用下拉：只有四个互斥档位，展开一次下拉多两步点击；
+   分段控件把"现在处于哪一档"直接画在输入框旁边，一眼可见、一步可切。 */
+.think {
+  display: inline-flex; align-items: center; gap: 2px; flex: none;
+  height: 28px; padding: 2px 2px 2px var(--sp-3); border-radius: 999px;
+  background: var(--bg-subtle); color: var(--text-2); font-size: var(--fs-sm);
 }
-.pill--select select:focus { outline: none; }
+.think__label { color: var(--text-3); white-space: nowrap; flex: none; padding-right: 2px; font-size: var(--fs-meta); }
+.think__btn {
+  appearance: none; border: none; background: transparent; cursor: pointer;
+  font: inherit; font-size: var(--fs-meta); color: var(--text-2);
+  height: 24px; min-width: 26px; padding: 0 7px; border-radius: 999px;
+  white-space: nowrap; transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.think__btn:hover { background: var(--bg-hover); color: var(--text-1); }
+.think__btn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent-500); }
+.think__btn.is-active { background: var(--bg-canvas); color: var(--text-1); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
 .pill--send { width: 28px; padding: 0; justify-content: center; background: var(--accent-600); color: #fff; }
 .pill--send:hover { background: var(--accent-500); color: #fff; }
 .pill--stop { width: auto; padding: 0 var(--sp-4); background: var(--danger-500); color: #fff; font-weight: 600; }
@@ -438,6 +453,30 @@ html[data-frameless="1"] .win-ctrls { display: inline-flex; }
   border: 1px solid var(--border-2); border-radius: var(--r-ctrl); font-size: var(--fs-sm); }
 .setrow__ro { color: var(--text-3); font-size: var(--fs-meta); }
 .setfoot { margin-top: var(--sp-4); color: var(--text-3); font-size: var(--fs-meta); line-height: 1.75; }
+
+/* ── AI 权限四档：分段选择 + 能力对照矩阵 ───────────────
+   选择器用分段控件而非下拉：四档是"从紧到松"的一条轴，并排显示才看得出方向；
+   矩阵把每档对四类操作的判定摊开（文案由内核 MODE_POLICY 决定，测试比对，不能手改口径）。 */
+.permseg { display: inline-flex; gap: 2px; padding: 2px; background: var(--bg-subtle); border-radius: var(--r-ctrl); }
+.permseg__btn {
+  appearance: none; border: none; background: transparent; cursor: pointer;
+  font: inherit; font-size: var(--fs-sm); color: var(--text-2);
+  height: 28px; padding: 0 var(--sp-4); border-radius: var(--r-chip); white-space: nowrap;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.permseg__btn:hover { background: var(--bg-hover); color: var(--text-1); }
+.permseg__btn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent-500); }
+.permseg__btn.is-active { background: var(--bg-canvas); color: var(--text-1); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+
+.permmatrix { width: 100%; border-collapse: collapse; font-size: var(--fs-meta); }
+.permmatrix th, .permmatrix td { padding: 7px var(--sp-3); text-align: left; border-top: 1px solid var(--border-1); }
+.permmatrix thead th { border-top: none; color: var(--text-3); font-weight: 500; }
+.permmatrix tbody th { font-weight: 500; color: var(--text-2); }
+.permmatrix td { color: var(--text-2); }
+/* 三种判定各给一个色：允许＝安全绿 · 每次确认＝中性提示 · 禁止＝危险红（靠色相就能读出松紧） */
+.permmatrix td[data-decision="approve"] { color: var(--accent-600); }
+.permmatrix td[data-decision="confirm"] { color: var(--text-1); }
+.permmatrix td[data-decision="deny"] { color: var(--danger-500); }
 
 /* 模型接入：供应商列表（左）+ 选中详情（右） */
 .prov { display: grid; grid-template-columns: 266px minmax(0, 1fr); gap: var(--sp-6); align-items: start; }

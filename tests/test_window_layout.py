@@ -303,6 +303,58 @@ check("设置面板的置顶开关同样即时生效（V3.5.0 设置改版：断
       and "save_settings" in webview_src
       and "topmost" in webview_src.split("def save_settings")[1][:600])
 
+# ── 6) V3.5.1 界面契约：四档权限 / 四档思考 / 窗口按钮归位 / 无边框不再是开关 ──
+print("\n" + "=" * 78)
+print("【6】四档权限 / 四档思考 / 窗口按钮归位 / 无边框固定为产品形态")
+print("=" * 78)
+service_src = (ROOT / "yindun" / "app" / "agent_service.py").read_text(encoding="utf-8")
+# 行为验证（不只看源码）：保存档位后环境变量必须立刻变，这就是"立即生效"的证据
+_prev_perm = svc.settings.get("permission")
+ok_plan = api.save_settings({"permission": "plan"})
+check("保存档位 → 内核环境变量立刻更新（下一个操作即按新档位判定）",
+      ok_plan is True and os.environ.get("YINDUN_PERMISSION") == "plan",
+      str(os.environ.get("YINDUN_PERMISSION")))
+check("档位键规范化后再下发（前端传的也是稳定键 plan/ask/auto/full）",
+      svc.settings.get("permission") == "plan")
+api.save_settings({"permission": "ask"})
+check("严格模式开关同样即时下发（同一个出口，避免两套写法漂移）",
+      os.environ.get("ALLOW_SCRIPT_EXEC") in ("0", "1"))
+api.save_settings({"permission": _prev_perm, "allow_script_exec": svc.settings.get("allow_script_exec", True)})
+check("权限控件改为四档分段选择器（旧的 3 选项下拉已移除）",
+      'id="perm-modes"' in html and "sel-permission" not in html and "sel-permission" not in js)
+check("四档按钮与 core/permission.py 的 MODES 一一对应",
+      all(f'data-mode="{m}"' in html for m in ("plan", "ask", "auto", "full")))
+check("选择器带无障碍语义（radiogroup + 每档一个 radio）",
+      'id="perm-modes" role="radiogroup"' in html and html.count('class="permseg__btn"') == 4)
+check("切换即落库并提示「立即生效」（不写「重启后生效」这类话）",
+      'persist({ permission: mode })' in js and "下一个操作立即生效" in js)
+check("后端把档位立刻下发到内核环境变量（不是只写配置文件）",
+      "def apply_runtime_env" in service_src and "os.environ[PERMISSION_ENV] = mode" in service_src
+      and '"permission" in patch' in webview_src
+      and "apply_runtime_env()" in webview_src.split("def save_settings")[1][:900])
+check("启动即下发（界面画出来之前工具层已按设置行事）",
+      "apply_runtime_env()" in service_src.split("def initialize")[1][:600])
+check("思考强度改为四档（低 / 中 / 高 / 最高），旧的 1–10 下拉已移除",
+      'id="think-level"' in html and html.count('class="think__btn"') == 4
+      and "sel-depth" not in html and "sel-depth" not in js
+      and all(f'data-level="{lv}"' in html for lv in ("low", "mid", "high", "max")))
+check("四档映射到 worker 的 thinking_depth 且旧数值能折算回档位",
+      "THINK_LEVELS" in js and re.search(r'key: "max",\s*label: "最高",\s*depth: 10', js) is not None
+      and "levelOf" in js)
+check("窗口按钮（最小化 / 置顶 / 关闭）会随右栏展开移入右栏头部",
+      'id="win-ctrls"' in html and "function placeWinCtrls" in js
+      and "placeWinCtrls();" in js.split("function setRightCollapsed")[1][:400]
+      and "placeWinCtrls()" in js.split("function openSettings")[1][:700]
+      and "placeWinCtrls()" in js.split("function closeSettings")[1][:500])
+check("设置视图下顶栏与右栏都隐藏，按钮改挂设置页头部（否则设置页里没有关闭按钮）",
+      ".app.is-settings-open .band," in css and "setmain__head" in js.split("function placeWinCtrls")[1][:600])
+check("按钮只在容器之间搬移、不重建（重建会丢 onclick 绑定）",
+      "host.appendChild(box)" in js and "innerHTML" not in js.split("function placeWinCtrls")[1][:400])
+check("无边框不再是设置项：开关行与持久化都移除，形态固定打开",
+      "sw-frameless" not in html and "sw-frameless" not in js
+      and 'document.documentElement.dataset.frameless = "1"' in js
+      and '"frameless": True' in webview_src)
+
 print("\n" + "=" * 78)
 if failures:
     print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))

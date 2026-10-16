@@ -106,7 +106,7 @@
             <path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>
           </svg>
         </button>
-        <!-- 无边框悬浮模式下的窗口控制 -->
+        <!-- 窗口控制：右栏展开时由 setRightCollapsed 移入右栏头部（贴窗口右上角），折叠时回到这里 -->
         <div class="win-ctrls" id="win-ctrls">
           <button class="win-btn" data-win="minimize" title="最小化">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg>
@@ -155,10 +155,14 @@
                   <div class="model-select__foot" id="model-hint">—</div>
                 </div>
               </div>
-              <label class="pill pill--select" title="深度思考强度（1–10，越高推理轮次越多）">
-                <span class="pill__label">思考</span>
-                <select id="sel-depth" aria-label="深度思考强度"></select>
-              </label>
+              <!-- 思考强度：四档（低 / 中 / 高 / 最高），点击即生效并落库 -->
+              <div class="think" id="think-level" role="radiogroup" aria-label="思考强度">
+                <span class="think__label" title="越高推理轮次越多、耗时越长">思考</span>
+                <button type="button" class="think__btn" data-level="low" role="radio" aria-checked="false" title="低 · 约 2 轮推理，最快">低</button>
+                <button type="button" class="think__btn" data-level="mid" role="radio" aria-checked="false" title="中 · 约 4 轮推理">中</button>
+                <button type="button" class="think__btn" data-level="high" role="radio" aria-checked="false" title="高 · 约 7 轮推理">高</button>
+                <button type="button" class="think__btn" data-level="max" role="radio" aria-checked="false" title="最高 · 约 10 轮推理，最慢也最稳">最高</button>
+              </div>
               <button class="pill pill--send" id="btn-send" type="submit" title="发送（Enter）">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 8 6 8-16-8z"/></svg>
               </button>
@@ -219,15 +223,32 @@
                   <div class="setrow__ctrl"><label class="switch"><input type="checkbox" id="sw-privacy"><span class="switch__track"></span></label></div>
                 </div>
                 <div class="setrow">
-                  <div class="setrow__text"><b>权限等级</b>
-                    <span>写盘 / 删除 / 执行命令始终需要人工审批，与等级无关</span></div>
+                  <div class="setrow__text"><b>AI 权限模式</b>
+                    <span id="perm-hint">—</span></div>
                   <div class="setrow__ctrl">
-                    <select id="sel-permission">
-                      <option value="完全控制 (读/写/列表)">完全控制（读 / 写 / 列表）</option>
-                      <option value="安全只读 (仅读/列表)">安全只读（仅读 / 列表）</option>
-                      <option value="彻底审计 (仅对话)">彻底审计（仅对话）</option>
-                    </select>
+                    <!-- 四档权限：与 yindun/core/permission.py 的 MODES 一一对应（下方矩阵由测试比对内核策略） -->
+                    <div class="permseg" id="perm-modes" role="radiogroup" aria-label="AI 权限模式">
+                      <button type="button" class="permseg__btn" data-mode="plan" role="radio" aria-checked="false">计划模式</button>
+                      <button type="button" class="permseg__btn" data-mode="ask" role="radio" aria-checked="false">变更前确认</button>
+                      <button type="button" class="permseg__btn" data-mode="auto" role="radio" aria-checked="false">自主模式</button>
+                      <button type="button" class="permseg__btn" data-mode="full" role="radio" aria-checked="false">完全访问</button>
+                    </div>
                   </div>
+                </div>
+                <div class="setrow setrow--stack">
+                  <div class="setrow__text"><b>四档能力对照</b>
+                    <span>只影响本机文件变更与命令执行；切换后下一个操作立即按新档位判定</span></div>
+                  <table class="permmatrix" id="perm-matrix">
+                    <thead>
+                      <tr><th>本机操作</th><th>计划模式</th><th>变更前确认</th><th>自主模式</th><th>完全访问</th></tr>
+                    </thead>
+                    <tbody>
+                      <tr data-op="read"><th>读取 / 搜索</th><td data-decision="approve">允许</td><td data-decision="approve">允许</td><td data-decision="approve">允许</td><td data-decision="approve">允许</td></tr>
+                      <tr data-op="write"><th>新建 / 修改文件</th><td data-decision="deny">禁止</td><td data-decision="confirm">每次确认</td><td data-decision="approve">允许</td><td data-decision="approve">允许</td></tr>
+                      <tr data-op="delete"><th>删除文件</th><td data-decision="deny">禁止</td><td data-decision="confirm">每次确认</td><td data-decision="confirm">每次确认</td><td data-decision="approve">允许</td></tr>
+                      <tr data-op="execute"><th>执行命令</th><td data-decision="deny">禁止</td><td data-decision="confirm">每次确认</td><td data-decision="confirm">每次确认</td><td data-decision="confirm">每次确认</td></tr>
+                    </tbody>
+                  </table>
                 </div>
                 <div class="setrow">
                   <div class="setrow__text"><b>允许执行本地脚本</b>
@@ -235,12 +256,13 @@
                   <div class="setrow__ctrl"><label class="switch"><input type="checkbox" id="sw-script-exec"><span class="switch__track"></span></label></div>
                 </div>
                 <div class="setrow">
-                  <div class="setrow__text"><b>深度思考强度</b>
-                    <span>已移到输入框下方的「思考」胶囊，对话时随手调（1–10）</span></div>
+                  <div class="setrow__text"><b>思考强度</b>
+                    <span>四档：低 / 中 / 高 / 最高（对应推理轮次约 2 / 4 / 7 / 10）。控件在输入框下方，对话时随手切</span></div>
                   <div class="setrow__ctrl"><span class="setrow__ro">见输入区</span></div>
                 </div>
               </div>
-              <p class="setfoot">判定权（脱敏 / 放行 / 审批 / 审计写入）永远在内核，不对外开放——插件与控制面都只能"管得更严"。</p>
+              <p class="setfoot">判定权（脱敏 / 放行 / 审批 / 审计写入）永远在内核，不对外开放——插件与控制面都只能"管得更严"；
+                四档权限只放宽"本机文件变更"，<b>执行命令在任何档位都要确认</b>，沙箱与审计链与档位无关。</p>
             </div>
 
             <!-- ── 本地知识库 ── -->
@@ -322,10 +344,6 @@
             <!-- ── 窗口与外观 ── -->
             <div class="setpage" data-set="appearance">
               <div class="setcard">
-                <div class="setrow">
-                  <div class="setrow__text"><b>无边框悬浮模式</b><span>沉浸式浮窗（顶栏可拖动）；关闭则使用系统边框</span></div>
-                  <div class="setrow__ctrl"><label class="switch"><input type="checkbox" id="sw-frameless"><span class="switch__track"></span></label></div>
-                </div>
                 <div class="setrow">
                   <div class="setrow__text"><b>窗口置顶</b><span>始终浮在其它窗口之上（立即生效）</span></div>
                   <div class="setrow__ctrl"><label class="switch"><input type="checkbox" id="sw-topmost"><span class="switch__track"></span></label></div>

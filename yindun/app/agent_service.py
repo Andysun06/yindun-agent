@@ -27,6 +27,7 @@ from yindun.app.attachment import build_attachment_context, parse_attachment
 from yindun.app.llm_factory import (TIER_LABEL, build_llm, detect_chat_models,
                                     detect_ollama_models, infer_tier, model_catalog,
                                     probe_endpoint, tier_of)
+from yindun.core.permission import PERMISSION_ENV, resolve_mode
 from yindun.app.session_store import SessionStore
 from yindun.app.settings_store import SettingsStore
 from yindun.core.file_tools import (
@@ -117,9 +118,26 @@ class AgentService:
         #   若用户从不触发保存，明文会长期留在磁盘上。启动即检测并迁移一次。
         self.sessions.migrate_legacy_plaintext()
         self._sync_plugin_capabilities()
+        # 启动即下发权限档位与严格模式：界面还没画出来时，工具层也已经按设置行事
+        self.apply_runtime_env()
 
     def set_listener(self, listener: Optional[Listener]) -> None:
         self._listener = listener
+
+    def apply_runtime_env(self) -> str:
+        """把设置里的「工具层即时生效」开关下发给内核（环境变量是界面与工具层之间的唯一协议）。
+
+        管两件事：**权限档位**（plan/ask/auto/full）与**脚本执行开关**（严格模式）。
+        工具函数与策略引擎**每次调用**都会重新读这两个变量，所以：
+          · 启动 / 每轮开始时调用 → 保证取值与设置一致；
+          · 设置页改动时立即再调一次（见 webview_app.save_settings）→ 正在跑的轮次里
+            下一个工具调用就按新设置判定，不需要重启，也不需要等下一轮。
+        返回值是落到环境变量里的稳定档位键，便于调用方校验/断言。
+        """
+        mode = resolve_mode(self.settings.get("permission"))
+        os.environ[PERMISSION_ENV] = mode
+        os.environ["ALLOW_SCRIPT_EXEC"] = "1" if self.settings.get("allow_script_exec", True) else "0"
+        return mode
 
     def _emit(self, event: str, payload: Any = None) -> None:
         listener = self._listener
@@ -721,7 +739,7 @@ class AgentService:
         # ① 严格模式（只开不关：控制面无权关掉端点自己开的严格模式）
         if policy.get("require_strict_mode") and self.settings.get("allow_script_exec", True):
             self.settings.set("allow_script_exec", False)
-            os.environ["ALLOW_SCRIPT_EXEC"] = "0"
+            self.apply_runtime_env()        # 环境变量只有一个出口，避免两处写法漂移
             effects.append("已强制开启严格模式（禁用解释器）")
 
         # ② 插件允许集：停用不在列表内的插件（只减不增）
@@ -1209,9 +1227,10 @@ class AgentService:
         worker.session_id = sid
 
         # 权限等级与脚本执行开关通过环境变量下发给工具层（与旧界面一致）
-        os.environ["PERMISSION_LEVEL"] = str(self.settings.get("permission", "完全控制 (读/写/列表)"))
+        # 权限档位：走 core/permission.py 的统一协议（稳定代码 plan/ask/auto/full），
+        # 工具层与策略引擎每次调用现读 → 设置一改立即生效，无需重启。
+        self.apply_runtime_env()
         os.environ["SANDBOX_PATH"] = worker.sandbox_path
-        os.environ["ALLOW_SCRIPT_EXEC"] = "1" if self.settings.get("allow_script_exec", True) else "0"
 
         for topic in WORKER_EVENTS:
             worker.bus.subscribe(topic, self._make_forwarder(run_id, topic))

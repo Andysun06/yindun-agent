@@ -450,6 +450,10 @@ class JsApi:
             if key in allowed:
                 self._svc.settings.set(key, value)
         self._svc.settings.save()
+        # 权限档位改了要**立刻**落到内核（工具层每次调用现读环境变量）：
+        # 只写配置文件的话，正在跑的轮次仍会用旧档位，那就是"假立即生效"。
+        if "permission" in patch or "allow_script_exec" in patch:
+            self._svc.apply_runtime_env()
         # 换模型 / 换 Ollama 地址（含内网）→ 后台重建算力，不用重启；
         # worker 在每轮开始时取 self._llm 的新引用，重建不会打断在跑的轮次。
         if any(k in patch for k in ("model", "ollama_host")):
@@ -503,9 +507,10 @@ class WebApp:
 
         api = JsApi(self.service, self._window_holder)
         settings = self.service.settings.data
-        # 无边框悬浮模式（产品标志性形态）：窗口本身无系统边框，由前端顶栏承担拖拽与窗口控制；
-        # 若拖动异常，可在设置里关掉"无边框悬浮模式"回退到系统边框。
-        frameless = bool(settings.get("frameless", True))
+        # 无边框悬浮是**产品形态本身**（不是可选项）：窗口无系统边框，由前端顶栏承担拖拽与窗口控制。
+        # V3.5.0 起移除了该开关——它只能在创建窗口时生效、改了要重启，与"所有设置立即生效"冲突；
+        # 保留固定形态后既没有重启项，也不会出现"关了它界面还是无边框"的中间态。
+        frameless = True
         window_kwargs: Dict[str, Any] = {
             "width": window_layout.EXPANDED_W,
             "height": window_layout.EXPANDED_H,

@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 from yindun import APP_ROOT
+from yindun.core.permission import gate_reason
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
@@ -251,9 +252,8 @@ class SearchInFilesInput(BaseModel):
 @tool(args_schema=ListFilesInput)
 def list_local_files(target_directory: str = "当前沙箱目录") -> str:
     """获取指定安全沙箱目录下的所有文件和文件夹列表。"""
-    perm = os.environ.get("PERMISSION_LEVEL", "完全控制 (读/写/列表)")
-    if "彻底审计" in perm:
-        return "❌ 权限安全拦截：当前系统权限等级为【彻底审计】，已彻底断开大模型的所有本地物理文件访问权限！"
+    # 只读操作在四档权限（计划/确认/自主/完全）中一律放行，沙箱边界照旧
+    # —— 硬闸只拦"变更类"，见 core/permission.py 的设计表。
         
     base_dir = _resolve_target_dir(target_directory)
     _, within = _enforce_sandbox(base_dir)
@@ -278,11 +278,9 @@ def create_local_file(filename: str, content: str = "", target_directory: str = 
     如果用户仅仅是说：“帮我写一段Python代码”、“给我生成一份机密报告文档”、“帮我排版一个网页HTML”，而没有明确要求‘保存/创建为物理文件’，
     你绝对禁止、严禁调用此工具！你应当直接在对话框里使用标准的 Markdown 语法（如 ``` 块）直接输出给用户看。
     """
-    perm = os.environ.get("PERMISSION_LEVEL", "完全控制 (读/写/列表)")
-    if "彻底审计" in perm:
-        return "❌ 权限安全拦截：当前系统权限等级为【彻底审计】，已彻底断开大模型的所有本地物理文件访问权限！"
-    elif "安全只读" in perm:
-        return "❌ 权限安全拦截：当前系统权限等级为【安全只读】，大模型无权在当前目录进行任何写盘、修改或创建文件操作！"
+    _blocked = gate_reason("write", "创建文件")
+    if _blocked:
+        return _blocked
 
     base_dir = _resolve_target_dir(target_directory)
     _, within = _enforce_sandbox(base_dir)
@@ -309,9 +307,9 @@ def create_local_file(filename: str, content: str = "", target_directory: str = 
 @tool(args_schema=DeleteFileInput)
 def delete_local_file(filename: str, target_directory: str = "当前沙箱目录") -> str:
     """在指定的安全沙箱目录下删除、移除或清理一个已存在的文本文件。"""
-    perm = os.environ.get("PERMISSION_LEVEL", "完全控制 (读/写/列表)")
-    if "完全控制" not in perm:
-        return "❌ 权限安全拦截：当前系统权限等级限制，大模型无权执行物理删除操作！"
+    _blocked = gate_reason("delete", "删除文件")
+    if _blocked:
+        return _blocked
 
     base_dir = _resolve_target_dir(target_directory)
     _, within = _enforce_sandbox(base_dir)
@@ -334,9 +332,7 @@ def delete_local_file(filename: str, target_directory: str = "当前沙箱目录
 @tool(args_schema=ReadFileInput)
 def read_local_file(filename: str, target_directory: str = "当前沙箱目录") -> str:
     """读取指定安全沙箱目录下的文件内容，用于分析、总结或修改文件。"""
-    perm = os.environ.get("PERMISSION_LEVEL", "完全控制 (读/写/列表)")
-    if "彻底审计" in perm:
-        return "❌ 权限安全拦截：当前系统权限等级为【彻底审计】，已彻底断开大模型的所有本地物理文件访问权限！"
+    # 只读一律放行（四档权限均如此）；审批与否由策略引擎按档位判定
     
     base_dir = _resolve_target_dir(target_directory)
     _, within = _enforce_sandbox(base_dir)
@@ -366,11 +362,9 @@ def modify_local_file(filename: str, old_content: str = "", new_content: str = "
     - 如果提供了 old_content，精确匹配后替换为 new_content
     - 如果 old_content 为空，将 new_content 追加到文件末尾
     """
-    perm = os.environ.get("PERMISSION_LEVEL", "完全控制 (读/写/列表)")
-    if "彻底审计" in perm:
-        return "❌ 权限安全拦截：当前系统权限等级为【彻底审计】，已彻底断开大模型的所有本地物理文件访问权限！"
-    elif "安全只读" in perm:
-        return "❌ 权限安全拦截：当前系统权限等级为【安全只读】，大模型无权在当前目录进行任何写盘、修改或创建文件操作！"
+    _blocked = gate_reason("write", "修改文件")
+    if _blocked:
+        return _blocked
     
     base_dir = _resolve_target_dir(target_directory)
     _, within = _enforce_sandbox(base_dir)
@@ -517,9 +511,11 @@ def run_local_command(command: str, target_directory: str = "当前沙箱目录"
       另提供**严格模式**（设置页关闭「允许执行本地脚本」）：此时解释器执行被整体禁用，
       只剩只读命令，不存在任意代码执行路径。需要更强隔离时请配合系统级方案（受限账户/虚拟机）。
     """
-    perm = os.environ.get("PERMISSION_LEVEL", "完全控制 (读/写/列表)")
-    if "彻底审计" in perm or "安全只读" in perm:
-        return "❌ 权限安全拦截：当前系统权限等级不允许执行命令！"
+    # 执行命令：计划模式下直接拒绝；其余三档放行到审批层——
+    # ★ 而审批层对所有档位都要求人工确认（硬底线，见 core/permission.py 的 MODE_POLICY）
+    _blocked = gate_reason("execute", "执行命令")
+    if _blocked:
+        return _blocked
     
     base_dir = _resolve_target_dir(target_directory)
     _, within = _enforce_sandbox(base_dir)
@@ -830,9 +826,7 @@ def analyze_project(target_directory: str = "当前沙箱目录", max_depth: int
     
     适用于回答"这个项目是做什么的"、"项目结构"、"技术栈"等问题。
     """
-    perm = os.environ.get("PERMISSION_LEVEL", "完全控制 (读/写/列表)")
-    if "彻底审计" in perm:
-        return "❌ 权限安全拦截：当前系统权限等级为【彻底审计】，已彻底断开大模型的所有本地物理文件访问权限！"
+    # 只读操作（分析 / 检索）在四档权限中一律放行，沙箱边界照旧
     
     # 优先使用传入的 target_directory 参数，其次使用环境变量，最后使用当前目录
     base_dir = _resolve_target_dir(target_directory)
@@ -901,9 +895,7 @@ def search_in_files(pattern: str, file_pattern: str = "*", target_directory: str
     在指定目录的所有文件中搜索文本模式（类似 grep）。
     支持文件名过滤（如 *.py），支持正则表达式。
     """
-    perm = os.environ.get("PERMISSION_LEVEL", "完全控制 (读/写/列表)")
-    if "彻底审计" in perm:
-        return "❌ 权限安全拦截：当前系统权限等级为【彻底审计】，已彻底断开大模型的所有本地物理文件访问权限！"
+    # 只读操作（分析 / 检索）在四档权限中一律放行，沙箱边界照旧
     
     base_dir = _resolve_target_dir(target_directory)
     _, within = _enforce_sandbox(base_dir)

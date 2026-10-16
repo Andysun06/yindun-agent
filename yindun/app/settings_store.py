@@ -27,7 +27,9 @@ DEFAULTS: Dict[str, Any] = {
     "dark_mode": False,
     "topmost": True,
     "thinking_depth": 3,
-    "permission": "完全控制 (读/写/列表)",
+    # 四档权限：plan(计划模式) / ask(变更前确认·默认) / auto(自主模式) / full(完全访问)
+    # 旧版中文档位名（彻底审计/安全只读/完全控制）由 core/permission.resolve_mode 自动兼容
+    "permission": "ask",
     # 是否允许执行本地脚本（解释器）：关闭 = 严格模式，禁用 python/python3，仅保留只读命令
     "allow_script_exec": True,
     "think_mode": "快速回答",

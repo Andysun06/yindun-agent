@@ -21,6 +21,8 @@ import os
 from pathlib import Path
 from typing import Literal, Optional, Dict, List
 
+from yindun.core.permission import base_decision, stricter
+
 
 # ── 操作类型映射 ──
 READ_OPERATIONS = {"read_local_file", "search_in_files", "analyze_project", "list_local_files"}
@@ -49,9 +51,13 @@ DEFAULT_APPROVAL_RULES = [
     {"path_pattern": "**\\.env", "operations": "*", "policy": "confirm"},
     {"path_pattern": "**\\id_rsa*", "operations": "*", "policy": "confirm"},
     {"path_pattern": "**\\credentials*", "operations": "*", "policy": "confirm"},
-    # 删除/执行操作 → 需审批
-    {"path_pattern": "*", "operations": "delete_local_file", "policy": "confirm"},
-    {"path_pattern": "*", "operations": "run_local_command", "policy": "confirm"},
+    # 说明（V3.5.0 权限四档模型）：原先这里还有两条**类别级兜底**规则——
+    #   delete_local_file → confirm、run_local_command → confirm。
+    # 它们现在由 `core/permission.py` 的 MODE_POLICY 承担（档位决定基础判定）：
+    #   · 执行命令在**四档中一律 confirm**（硬底线，写死在 MODE_POLICY，不可能被放开）；
+    #   · 删除在 计划/确认/自主 三档 confirm，仅「完全访问」档在沙箱内自动放行。
+    # 保留类别级规则会让高档位形同虚设（档位允许了、兜底规则又拦回去），故移交档位模型。
+    # 上面这些**路径级**规则（系统目录 deny、凭据目录 confirm）是内核硬底线，任何档位都照旧生效。
 ]
 
 DEFAULT_CLASSIFICATION_RULES = [
@@ -150,11 +156,37 @@ class PolicyManager:
                 self._classification_rules = data.get("classification_rules", DEFAULT_CLASSIFICATION_RULES)
                 self._anonymize_rules = data.get("anonymize_rules", DEFAULT_ANONYMIZE_RULES)
                 self._custom_sensitive_paths = data.get("custom_sensitive_paths", [])
+                self._migrate_legacy_rules()
             except Exception:
                 self._init_defaults()
         else:
             self._init_defaults()
             self.save()  # 首次自动写入配置文件
+
+    # 旧版本把「删除 / 执行命令需审批」写成**类别级兜底规则**存进了 policy.json；
+    # V3.5.0 起这两条由 core/permission.py 的档位模型承担（档位决定基础判定）。
+    # 若不清掉存量副本，升级后的机器会出现"档位放开了、旧配置又拦回去"——
+    # 高档位形同虚设，且用户看不出原因（配置文件是他从没打开过的东西）。
+    LEGACY_CATEGORY_RULES = (
+        {"path_pattern": "*", "operations": "delete_local_file"},
+        {"path_pattern": "*", "operations": "run_local_command"},
+    )
+
+    def _migrate_legacy_rules(self) -> int:
+        """升级迁移：丢掉已由档位模型接管的类别级兜底规则。返回移除条数。"""
+        def is_legacy(rule: dict) -> bool:
+            return any(
+                str(rule.get("path_pattern")) == legacy["path_pattern"]
+                and str(rule.get("operations")) == legacy["operations"]
+                for legacy in self.LEGACY_CATEGORY_RULES
+            )
+        before = len(self._approval_rules)
+        self._approval_rules = [r for r in self._approval_rules if not is_legacy(r)]
+        removed = before - len(self._approval_rules)
+        if removed:
+            print(f"[Policy] 迁移：移除 {removed} 条已由权限档位接管的旧规则")
+            self.save()
+        return removed
 
     def _init_defaults(self):
         self._approval_rules = list(DEFAULT_APPROVAL_RULES)
@@ -185,8 +217,15 @@ class PolicyManager:
     # ── 审批检查 ────────────────────────────
 
     def check(self, tool_name: str, target_path: str) -> Literal["approve", "confirm", "deny"]:
-        """
-        检查操作是否需要审批。
+        """检查操作是否需要审批（四档权限模型 + 只能收紧的规则）。
+
+        判定分两层，顺序不能颠倒：
+          ① **档位基础判定**（`core/permission.py`）：计划模式直接拒绝变更类操作；
+             变更前确认 / 自主模式 / 完全访问 的差别在于"哪些要人工确认"。
+             ★ 执行命令在**所有档位**都是 confirm —— 这是硬底线，写死在 MODE_POLICY 里。
+          ② **规则只能在此基础上更严**：命中的第一条规则与基础判定取更严
+             （deny > confirm > approve）。因此控制面与自定义规则**不可能**把
+             档位已经要求的人工确认降级掉。
 
         参数：
             tool_name: 工具名（如 "create_local_file"）
@@ -199,17 +238,19 @@ class PolicyManager:
         """
         normalized_path = self._normalize_path(target_path)
 
-        # 按规则列表顺序逐条匹配（优先级：deny > confirm > approve，先命中先返回）
+        # ① 档位基础判定（每次调用现读环境变量 → 设置一改立即生效）
+        operation = PolicyManager.get_operation_category(tool_name)
+        if operation not in ("read", "write", "delete", "execute"):
+            operation = "write"          # 未知工具按"可能的变更"处理，绝不默认放行
+        decision = base_decision(operation)
+
+        # ② 规则只能收紧：第一条命中的规则与基础判定取更严（保持"首条命中优先"语义）
         for rule in self._approval_rules:
             if self._match_rule(rule, tool_name, normalized_path):
-                return rule["policy"]  # type: ignore
+                decision = stricter(decision, str(rule.get("policy") or "confirm"))
+                break
 
-        # 白名单免审批：仅"只读"白名单工具且路径在沙箱内时才自动放行
-        if tool_name in APPROVE_READ_WHITELIST and PolicyManager._within_sandbox(target_path):
-            return "approve"
-
-        # 无规则命中且不在白名单：一律人工审批（fail-closed，不再默认放行）
-        return "confirm"
+        return decision  # type: ignore[return-value]
 
     def _match_rule(self, rule: dict, tool_name: str, path: str) -> bool:
         """检查单条规则是否匹配"""

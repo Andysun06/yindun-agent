@@ -194,11 +194,11 @@
 
   const api = {
     bootstrap: () => Promise.resolve({
-      version: "V3.4.5",
+      version: "V3.5.1",
       settings: {
         model: "qwen3.5:4b", ollama_host: "http://127.0.0.1:11434", privacy: true, allow_script_exec: true,
         dark_mode: location.hash.indexOf("light") < 0, topmost: true,
-        thinking_depth: 4, permission: "完全控制 (读/写/列表)", think_mode: "深度思考", frameless: true, sandbox: "E:\yindun-agent",
+        thinking_depth: 7, permission: "ask", think_mode: "深度思考", sandbox: "E:\yindun-agent",
         ollama_models_cache: ["qwen2.5:7b-instruct", "nomic-embed-text:latest"],
       },
       llm: {
