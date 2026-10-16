@@ -41,7 +41,7 @@ for pkg in [
 
 hiddenimports += collect_submodules("yindun")
 # ★ 路径基准锚定仓库根目录（spec 内的相对路径以 spec 所在目录为基准，故必须用绝对路径）
-_ROOT = os.path.normpath(os.path.join(SPECPATH, ".."))
+_ROOT = os.path.normpath(os.path.join(SPECPATH, "..", ".."))
 datas += [
     # ★ Web 前端资源必须打进包：冻结后前端由 file:// 从这里加载
     (os.path.join(_ROOT, "yindun", "app", "web"), os.path.join("yindun", "app", "web")),

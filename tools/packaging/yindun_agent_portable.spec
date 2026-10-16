@@ -14,8 +14,8 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 import os
 
 # ★ 路径基准必须锚定"仓库根目录"：PyInstaller 解析 spec 内的相对路径时，
-#   基准是 spec 文件所在目录（tools/），不是当前工作目录。
-_ROOT = os.path.normpath(os.path.join(SPECPATH, ".."))
+#   基准是 spec 文件所在目录（tools/packaging/），不是当前工作目录。
+_ROOT = os.path.normpath(os.path.join(SPECPATH, "..", ".."))
 _ENTRY = os.path.join(_ROOT, "run.py")
 
 datas = []

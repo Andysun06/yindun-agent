@@ -7,7 +7,7 @@
 | 文档 | 说明 |
 |---|---|
 | [隐盾安全智能体_技术报告.pdf](隐盾安全智能体_技术报告.pdf) · [.html](隐盾安全智能体_技术报告.html) | 技术报告：隐私算法形式化、威胁模型、攻防评测、企业部署形态 |
-| [隐盾安全智能体_项目汇报.pptx](隐盾安全智能体_项目汇报.pptx) | 决赛汇报 PPT（`python tools/make_ppt.py` 生成） |
+| [隐盾安全智能体_项目汇报.pptx](隐盾安全智能体_项目汇报.pptx) | 决赛汇报 PPT（`python tools/docs/make_ppt.py` 生成） |
 | [使用说明.md](使用说明.md) · [.pdf](使用说明.pdf) | 安装、算力接入（本机/局域网/公网）、功能演示、控制面速览 |
 | [插件开发.md](插件开发.md) | 插件钩子契约与安全边界 |
 | [作品简介（隐盾安全智能体）.html](作品简介（隐盾安全智能体）.html) | 一页版作品简介 |
@@ -22,5 +22,5 @@
 | [dev/视频脚本_AI生成用.md](dev/视频脚本_AI生成用.md) | 分镜脚本与数字口径（改口径时须同步） |
 | [dev/Qwen2.5-Qwen3-Qwen3.5_性能折线对比.html](dev/Qwen2.5-Qwen3-Qwen3.5_性能折线对比.html) | 算力选型对比素材 |
 
-> 生成方式：`python tools/md2pdf.py docs/使用说明.md docs/使用说明.pdf`、
-> `python tools/make_ppt.py`；技术报告为 HTML 编辑后经 Edge 无头打印为 PDF（见开发记忆 §9）。
+> 生成方式：`python tools/docs/md2pdf.py docs/使用说明.md docs/使用说明.pdf`、
+> `python tools/docs/make_ppt.py`；技术报告为 HTML 编辑后经 Edge 无头打印为 PDF（见开发记忆 §9）。

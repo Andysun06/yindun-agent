@@ -20,11 +20,11 @@ import sys
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # tools/packaging/ → 仓库根
 sys.path.insert(0, ROOT)
 import yindun as _pkg  # noqa: E402  # 只为取 __display_version__（模块级只有路径/代理设置）
 
-SPEC = os.path.join("tools", "yindun_control.spec")
+SPEC = os.path.join("tools", "packaging", "yindun_control.spec")
 DIST = os.path.join(ROOT, "dist")
 RAW_EXE = os.path.join(DIST, "YindunControl.exe")
 FINAL_NAME = f"隐盾控制端_{_pkg.__display_version__}_便携版.exe"

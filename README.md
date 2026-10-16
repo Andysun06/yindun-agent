@@ -24,8 +24,8 @@
 
 | 交付物 | 位置 |
 |---|---|
-| 📦 **免安装单文件 exe**（双击即用，无需安装与脚本） | [Release](https://github.com/Andysun06/yindun-agent/releases) → `Yindun-Portable-v3.5.0.exe`（GitHub 资产名不支持中文，会净化成下划线，故用英文名；本地构建产物名为 `隐盾安全智能体_V3.5.0_便携版.exe`，`python tools/build_portable.py`） |
-| 🏢 **企业控制端 exe**（集中管理服务 + 控制台，零依赖十几 MB） | `python tools/build_control.py` → `dist/隐盾控制端_V3.5.0_便携版.exe`（拷到管理机双击即用；也可源码跑 `python -m yindun.control`） |
+| 📦 **免安装单文件 exe**（双击即用，无需安装与脚本） | [Release](https://github.com/Andysun06/yindun-agent/releases) → `Yindun-Portable-v3.5.0.exe`（GitHub 资产名不支持中文，会净化成下划线，故用英文名；本地构建产物名为 `隐盾安全智能体_V3.5.0_便携版.exe`，`python tools/packaging/build_portable.py`） |
+| 🏢 **企业控制端 exe**（集中管理服务 + 控制台，零依赖十几 MB） | `python tools/packaging/build_control.py` → `dist/隐盾控制端_V3.5.0_便携版.exe`（拷到管理机双击即用；也可源码跑 `python -m yindun.control`） |
 | 🎬 **项目演示视频**（1080p，3分28秒） | [Release v3.3.0](https://github.com/Andysun06/yindun-agent/releases/tag/v3.3.0) → `Yindun-Demo-v3.3.0.mp4` |
 | 📄 **技术报告**（含隐私算法形式化 / 威胁模型 / 攻击实验 / 企业部署形态 · V3.5.0） | [docs/隐盾安全智能体_技术报告.pdf](docs/隐盾安全智能体_技术报告.pdf) |
 | 📽 **汇报 PPT**（21 页 · V3.5.0） | [docs/隐盾安全智能体_项目汇报.pptx](docs/隐盾安全智能体_项目汇报.pptx) |
@@ -198,20 +198,26 @@ python run.py          # 启动 Web 界面
 
 - 配置、会话、审计日志、知识库向量数据都写在 **exe 同目录**（放桌面/便携盘均可，卸载 = 删除 exe 与同目录生成的数据）
 - 主密钥由 Windows DPAPI 按当前用户保护，不随 exe 移动
-- 自行构建：`python tools/build_portable.py`（产物在 `dist/`；单文件模式首次启动约需 10~20 秒解压）
+- 自行构建：`python tools/packaging/build_portable.py`（产物在 `dist/`；单文件模式首次启动约需 10~20 秒解压）
 - 打包不再包含 Qt（界面已改为 Web）：便携包 164MB → 127MB
 
-### 方式二：源码运行（开发者）
+**企业控制端**（管理机用，与客户端相互独立）：
 
 ```bash
-# Windows：双击运行（自动建虚拟环境并装依赖）
-准备环境.bat
+python tools/packaging/build_control.py      # 产物 dist/隐盾控制端_<版本>_便携版.exe（约 19MB）
+# 双击即启动集中管理服务 + 控制台；管理令牌见 exe 同目录 control_data/admin_token.txt
+# 源码态等价命令：python -m yindun.control --port 8787
+```
 
-# 启动
-启动.bat
-# 或命令行
+### 方式二：源码运行（仅开发调试用）
+
+> 交付形态只有 exe：**使用者一律用上面的便携包**（免安装、免脚本）。
+> 下面这条路是给改代码的人用的——**不再提供 `.bat` 启动脚本**，直接命令行即可。
+
+```bash
 pip install -r requirements.txt
-python run.py
+python run.py                 # 启动客户端（Web 界面，pywebview）
+python -m yindun.control      # 启动企业控制端
 ```
 
 ### 首次使用（两种方式相同）
@@ -232,13 +238,11 @@ python run.py
 
 ```text
 yindun-agent/
-├── run.py                      # 🚀 程序入口（开发态：python run.py）
+├── run.py                      # 🚀 客户端入口（开发态：python run.py；交付形态是 dist/ 的 exe）
 ├── requirements.txt            # 依赖清单
 ├── .gitignore
-├── 启动.bat                    # 开发用一键启动脚本
-├── 准备环境.bat                # 开发用环境部署脚本
 ├── README.md                   # 项目门面（对外）
-├── 开发记忆.md                  # 🧠 对内：架构/决策/路线图/协作规范（每次改动必须同步）
+├── docs/dev/开发记忆.md                  # 🧠 对内：架构/决策/路线图/协作规范（每次改动必须同步）
 ├── AGENTS.md                   # AI 助手协作约定（指向开发记忆）
 ├── PRIVACY.md                  # 隐私说明
 ├── SECURITY.md                 # 安全策略：能力边界 / 明确不主张 / 漏洞报告流程
@@ -315,13 +319,15 @@ yindun-agent/
 │   ├── privacy_holdout_eval.py #   ★ 留出集覆盖率评测（随机化语料/冻结规则一次性运行，V3.4.6）
 │   └── test_knowledge_base.py  #   知识库集成（需 Ollama，不在线自动跳过）
 │
-├── tools/                      # 🔨 构建与文档工具
+├── tools/                      # 🔨 工具（按用途分类）
+│   ├── packaging/              #   打包：build_portable.py（客户端）/ build_control.py（企业端）/ *.spec
+│   ├── docs/                   #   文档生成：make_ppt.py / md2pdf.py
 │   ├── build_portable.py       #   免安装单文件 exe 构建入口
 │   ├── yindun_agent_portable.spec #  onefile 打包配置（主推）
 │   ├── yindun_agent.spec       #   onedir 打包配置（备选）
 │   ├── installer.nsi           #   NSIS 安装包脚本（备选分发形态）
 │   ├── make_ppt.py             #   生成 docs/汇报PPT
-│   └── md2pdf.py               #   Markdown → 排版 HTML → PDF
+
 │
 ├── docs/                       # 📄 文档（对外交付物 + 内部笔记分层，见 docs/README.md）
 │   ├── 隐盾安全智能体_技术报告.{html,pdf}
