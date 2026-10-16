@@ -119,13 +119,13 @@ def _parse_message(data: bytes) -> tuple[str, str]:
                 continue
             content_type = (part.get_content_type() or "").lower()
             if content_type == "text/plain":
-                payload = part.get_content()
-                if isinstance(payload, str):
-                    plain_parts.append(payload)
+                text = _part_text(part)
+                if text:
+                    plain_parts.append(text)
             elif content_type in ("text/html", "application/xhtml+xml"):
-                payload = part.get_content()
-                if isinstance(payload, str):
-                    html_parts.append(payload)
+                text = _part_text(part)
+                if text:
+                    html_parts.append(text)
     except Exception:
         pass
 
@@ -135,6 +135,42 @@ def _parse_message(data: bytes) -> tuple[str, str]:
     if attachments:
         headers.append("附件：" + "、".join(attachments[:20]))
     return "\n".join(headers), body
+
+
+def _part_text(part) -> str:
+    """取部件正文：优先按声明的 charset，声明缺失/不可用时按中文语料常用编码兜底。
+
+    为什么必须兜底（实测出来的缺陷）：不少国产工具导出的 .eml / .mht **不声明 charset**，
+    而 MIME 的默认字符集是 us-ascii——于是 UTF-8 或 GBK 的中文正文会被解码成一串 "�"。
+    这是"附件明明解析成功了、正文却全是问号"的典型成因，对中文语料尤其致命。
+    判据有两条：解出来带替换符（U+FFFD），或声明是 ascii/us-ascii 而正文里其实有高位字节。
+    """
+    payload = None
+    try:
+        payload = part.get_content()
+    except Exception:
+        payload = None
+    if isinstance(payload, str):
+        charset = (part.get_content_charset() or "").strip().lower()
+        raw = b""
+        try:
+            raw = part.get_payload(decode=True) or b""
+        except Exception:
+            raw = b""
+        broken = "\ufffd" in payload
+        if not broken and charset in ("", "ascii", "us-ascii") and isinstance(raw, bytes):
+            broken = any(byte >= 0x80 for byte in raw[:4096])
+        if not broken:
+            return payload
+        if isinstance(raw, bytes) and raw:
+            return _decode_text(raw)          # utf-8 → gbk → gb18030 → latin-1
+        return payload
+    # get_content() 失败（如未知编码）：退到原始字节自己解
+    try:
+        raw = part.get_payload(decode=True) or b""
+    except Exception:
+        raw = b""
+    return _decode_text(raw) if raw else ""
 
 
 def attachment_parser(context):
