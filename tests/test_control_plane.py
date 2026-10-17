@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -24,7 +25,7 @@ sys.path.insert(0, str(_ROOT))
 
 from yindun.control import policy as policy_mod                      # noqa: E402
 from yindun.control.agent_reporter import ControlReporter             # noqa: E402
-from yindun.control.models import EndpointReport, ReportError         # noqa: E402
+from yindun.control.models import EndpointReport, ReportError, _TS_RE  # noqa: E402
 from yindun.control.server import ApiError, ControlServer             # noqa: E402
 from yindun.control.store import ControlStore                         # noqa: E402
 from yindun.control.verify import ChainSnapshot, verify_report        # noqa: E402
@@ -367,7 +368,9 @@ RAW_PATH = "D:\\公司\\薪资\\2026Q2.xlsx"
 class FakeEntry:
     def __init__(self, event_type="llm_input", severity="info", message="", details=None,
                  legacy=False, seq=1):
-        self.timestamp = "2026-10-16T09:00:00"
+        # ★ 时间戳刻意用**真实审计条目的形态**：datetime.now().isoformat() 带微秒、不带时区
+        #   （V3.6.0 之前这里写死 "2026-10-16T09:00:00"，掩盖了"服务端只认到秒"的格式冲突）
+        self.timestamp = (datetime.now() if seq % 2 else datetime(2026, 10, 16, 9, 0, 0, 0)).isoformat()
         self.event_type = event_type
         self.severity = severity
         self.message = message
@@ -425,6 +428,27 @@ check("上报体带链声明与续传序号",
 check("上报体带能力清单", payload["capabilities"]["models"] is not None)
 check("用量为端点级聚合（不编造按模型归因）",
       payload["usage"] and payload["usage"][0]["model"] == "(端点合计)", str(payload["usage"]))
+
+# ★ 回归（V3.6.0 冒烟实测出来的真缺陷）：把端点自己生成的 payload **回灌给服务端校验器**。
+#   教训：以前只验了"payload 字段齐、脱敏了"，没让服务端的 EndpointReport 真正解析它——
+#   于是审计时间戳带微秒（datetime.isoformat()）而服务端正则只认到秒，**真实上报必然 400**，
+#   套件却一路绿灯。现在把这条链路钉死：端点产出 → 服务端解析 → 校验通过。
+from yindun.control.models import EndpointReport as _EndpointReport  # noqa: E402
+try:
+    _parsed = _EndpointReport.from_dict(payload)
+    _parse_error = ""
+except Exception as exc:                                              # noqa: BLE001
+    _parsed, _parse_error = None, f"{type(exc).__name__}: {exc}"
+check("端点产出的上报体能被服务端校验器接受（时间戳格式两端一致）",
+      _parsed is not None, _parse_error)
+check("微秒级/带时区的时间戳都在服务端格式白名单内",
+      _EndpointReport.from_dict(make_report([1])).chain.total_count == 1
+      and bool(_TS_RE.match("2026-10-16T13:00:24.889339"))
+      and bool(_TS_RE.match("2026-10-16T13:00:24.889+08:00"))
+      and bool(_TS_RE.match("2026-10-16T13:00:24Z")),
+      "服务端时间戳正则不接受小数秒/时区")
+check("非法时间戳仍然被拒（放宽没有变成不校验）",
+      not _TS_RE.match("2026-10-16T13:00:24.889339 随便写") and not _TS_RE.match("昨天下午"))
 
 # 失败不应推进进度
 before = reporter._config.get("last_sent_count", 0)

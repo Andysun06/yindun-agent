@@ -960,6 +960,7 @@
   /* ── 工作流 ───────────────────────────────────── */
   const WF_STATUS_LABEL = {
     pending: ["待执行", ""], running: ["执行中", "wf-status--run"],
+    approved: ["已审批，待执行", "wf-status--run"],
     completed: ["已完成", "wf-status--done"], failed: ["失败", "wf-status--fail"],
     skipped: ["已跳过", ""], waiting_approval: ["待审批", "wf-status--wait"],
   };
@@ -1011,7 +1012,7 @@
         <div class="wf-step__body">
           <div class="wf-step__name">${esc(st.name)}
             <span class="wf-status ${cls}">${esc(label)}</span>
-            ${st.demo ? `<span class="plugin-badge plugin-badge--warn">演示步骤</span>` : ""}
+            ${st.unimplemented ? `<span class="plugin-badge plugin-badge--warn">未实现</span>` : ""}
             ${st.approval_type === "manual" ? `<span class="plugin-badge">${st.forced_approval ? "审批由内核强制" : "需审批"}</span>` : ""}
           </div>
           <div class="wf-step__desc">${esc(st.description || "")}</div>
@@ -1027,11 +1028,11 @@
         else toast("操作失败：" + ((res && res.error) || "该步骤当前不在待审批状态"));
       };
     });
-    const demo = (status.steps || []).filter((x) => x.demo).length;
+    const todo = (status.steps || []).filter((x) => x.unimplemented).length;
     $("wf-notice").innerHTML = [
-      status.demo_notice || "",
-      demo ? `本模板含 ${demo} 个演示步骤。` : "",
-      "工作流实例仅保存在内存中，重启后不保留；导出记录落盘前已脱敏。",
+      status.impl_notice || "",
+      todo ? `本模板含 ${todo} 个未实现步骤。` : "",
+      "工作流实例会持久化（重启后可继续执行/审批）；导出记录落盘前已脱敏。",
     ].filter(Boolean).join(" ");
   }
 
@@ -2150,6 +2151,18 @@
         }
         break;
       }
+      case "startup": {
+        // 启动阶段播报（探测算力 → 载入模型 → 就绪）：见 AgentService.prepare_llm / _warmup_llm。
+        // 首次启动"模型载入内存"要 20~60 秒，以前这段全静默 → 用户以为界面坏了。
+        const p2 = payload || {};
+        const boot = $("bootline");
+        if (boot) {
+          if (p2.done) { boot.hidden = true; boot.textContent = ""; }
+          else { boot.hidden = false; boot.textContent = p2.text || "正在准备…"; }
+        }
+        if (p2.done) setStatus(p2.text || "");
+        break;
+      }
       case "llm_status": {
         state.llm = payload || state.llm;
         const ready = !!state.llm.ready;
@@ -2204,6 +2217,10 @@
     call("audit_snapshot", 1).then((snap) => { if (snap) { state.audit = snap; renderPosture(null); } });
     if (state.currentId) await openSession(state.currentId); else renderMessages();
     onEvent("llm_status", state.llm);
+    if (!(state.llm && state.llm.ready)) {   // 还没就绪：先说明在准备，别让用户对着空界面猜
+      const boot0 = $("bootline");
+      if (boot0) { boot0.hidden = false; boot0.textContent = "正在准备算力与模型…（首次启动较慢）"; }
+    }
     // ★ 首屏右栏默认停在"设置"页，但该页的加载器只在"点击标签页"时触发——
     //   不主动跑一次的话，插件列表 / 知识库状态 / 自定义模型要等用户"切走再切回"才出现，
     //   表现为"设置页是空的、插件（如 laya 风险分级）找不到"（用户实测踩到）。

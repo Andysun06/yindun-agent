@@ -29,7 +29,12 @@ MAX_ID_LEN = 64
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_.:\-]{1,%d}$" % MAX_ID_LEN)
 _HASH_RE = re.compile(r"^[0-9a-f]{0,%d}$" % MAX_HASH_LEN)
-_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?([+-]\d{2}:?\d{2}|Z)?$")
+# ISO-8601，允许可选的小数秒（1~9 位）与可选的时区偏移。
+# ★ 必须留出小数秒分支（V3.6.0）：端点的审计时间戳来自 `datetime.isoformat()`，天生带微秒；
+#   旧正则没有小数位 → 端点侧第一批真数据必然被 400 拒掉（详见 agent_reporter._iso 的说明）。
+#   服务端对发送端保持宽容：格式合法就收，越权的字段另有校验。
+_TS_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?(\.\d{1,9})?([+-]\d{2}:?\d{2}|Z)?$")
 
 # 与 `core/audit_log.AuditEventType` 的 .value 对齐（小写蛇形）。
 # 不认识的新类型不拒绝（前向兼容），但会被归入 OTHER_* 以免界面被脏数据撑爆。

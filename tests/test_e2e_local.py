@@ -7,7 +7,7 @@
   3. 工具 + 审批（深度思考）：创建沙箱文件 → need_confirm → 审批弹窗 →
      插件 advisory（laya 风险分级 + 审批决策提示）→ 放行 → 文件真实落盘 → 审计留痕
   4. 知识库（脱敏 RAG）：入库 → 检索问答 → search_knowledge_base 工具被调用
-  5. 工作流：内置模板（含演示步骤）→ 审批 → 逐步执行 → 完成 → 导出 md
+  5. 工作流：内置模板 → 审批 → 逐步执行 → 完成 → 导出 md
   6. 审计：快照有记录、链校验通过
   7. 窗口：边缘改尺寸（单次 resize(fix_point)，几何正确、对侧锚定）
   8. 插件运行状态：laya_risk 的 runtime.calls ≥ 1（可见化闭环）
@@ -228,15 +228,21 @@ def driver(window):
                   str(last[-1].get("content", ""))[:80] if last else "无回答")
             print("  [ℹ️] 本轮模型未调用 search_knowledge_base（4B 能力边界，非检索链路缺陷）")
 
-        # ── 5) 工作流（内置模板，含演示步骤）──
+        # ── 5) 工作流（内置模板）──
         tpls = svc.workflow_templates()
         check("工作流模板列表可用", len(tpls) >= 1, str([t.get("id") for t in tpls])[:120])
-        demo = next((t for t in tpls if t.get("source", "builtin") != "plugin"), tpls[0])
-        started = svc.workflow_start(demo["id"], path=str(ROOT / "assets" / "demo_contract.txt"), name="E2E")
+        tpl = next((t for t in tpls if t.get("source", "builtin") != "plugin"), tpls[0])
+        started = svc.workflow_start(tpl["id"], path=str(ROOT / "assets" / "demo_contract.txt"), name="E2E")
         inst = started.get("instance_id") or started.get("id")
         check("工作流实例启动", bool(inst), str(started)[:120])
         ok_flow, steps_done = True, 0
-        for _ in range(16):
+        # ★ 这一步必须**等每一步真的跑完**再发下一次执行请求（V3.6.0 修）：
+        #   工作流步骤是后台线程执行的，而"提取关键条款"这类步骤要调本地模型（数秒到数十秒）。
+        #   旧写法 16 次 × 0.4 秒 的空转，等于在步骤还没跑完时反复请求（多半被"已有步骤正在执行"挡回），
+        #   于是永远走不到底——而当时的断言只看 `steps>0`，所以**一直绿灯**，
+        #   顺带把"审批通过后步骤卡在 approved 跑不动"的缺陷也放过去了。
+        deadline = time.time() + 420
+        while time.time() < deadline:
             st = svc.workflow_status(inst)
             if not st:
                 ok_flow = False
@@ -249,14 +255,31 @@ def driver(window):
             waiting = (st.get("progress") or {}).get("waiting_approval") or st.get("waiting_approval") \
                 or st.get("status") == "WAITING_APPROVAL"
             if waiting:
-                pend = st.get("pending_step_id") or (st.get("pending") or {}).get("step_id") \
-                    or (st.get("progress") or {}).get("pending_step_id")
+                # ★ 待审批步骤的 id 就在 `current_step.step_id`（V3.6.0 修）：
+                #   旧写法找 `pending_step_id` / `pending.step_id` / `progress.pending_step_id` ——
+                #   `get_workflow_status` 根本不返回这些键，于是**永远拿不到 pend、永远不审批**，
+                #   循环只是一路空转到次数用完（当时的断言只看 steps>0，所以从没暴露）。
+                cur = st.get("current_step") or {}
+                pend = cur.get("step_id") or st.get("pending_step_id") or (st.get("pending") or {}).get("step_id")
                 if pend:
                     svc.workflow_approve(inst, pend, True)
-            svc.workflow_execute_next(inst)
-            steps_done += 1
-            time.sleep(0.4)
-        check("工作流执行完成（含审批）", ok_flow and steps_done > 0, f"steps={steps_done}")
+                    print(f"  [i] 审批通过：{cur.get('name') or pend}")
+                time.sleep(0.3)
+                continue
+            with svc._lock:                      # 有步骤在跑就等它跑完，别重复请求
+                busy = getattr(svc, "_wf_running", False)
+            if not busy:
+                svc.workflow_execute_next(inst)
+                steps_done += 1
+            time.sleep(1.0)
+        # 必须真的走完（V3.6.0 前这里只看 steps>0，把"审批通过后步骤卡在 approved、
+        # 永远执行不了"的缺陷放过去了——现在直接断言实例完成）
+        final_status = svc.workflow_status(inst)
+        stuck = [f"{s['name']}:{s['status']}" for s in final_status.get("steps", [])
+                 if s["status"] not in ("completed", "skipped")]
+        check("工作流执行完成（含审批）",
+              ok_flow and steps_done > 0 and final_status.get("is_complete"),
+              f"steps={steps_done} complete={final_status.get('is_complete')} 未完成={stuck}")
         exp = svc.workflow_export(inst, "md")
         check("工作流报告导出（dict ok=True 或内容非空）",
               (isinstance(exp, dict) and exp.get("ok")) or (isinstance(exp, str) and len(exp) > 50),

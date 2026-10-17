@@ -141,13 +141,20 @@ class WorkflowTemplate:
                 if s.status in (StepStatus.PENDING, StepStatus.WAITING_APPROVAL)]
 
     def get_current_step(self) -> Optional[WorkflowStep]:
-        """获取当前正在执行或等待审批的步骤"""
+        """获取当前正在执行或等待审批的步骤，否则给出下一个可以开始的步骤。
+
+        ★ V3.6.0 修：候选里必须包含 APPROVED。
+          approve() 把步骤置为 APPROVED（"审批已通过、还没执行"），而旧实现只找
+          WAITING_APPROVAL/EXECUTING 和 PENDING——于是 Web 端"审批通过 → 执行下一步"
+          这条路永远捡不起这一步：界面显示审批完成，但怎么点都跑不动（实例卡在 approved）。
+          `execute_step` 本来就接受 APPROVED，这里补上候选即可。
+        """
         for s in self.steps:
             if s.status in (StepStatus.WAITING_APPROVAL, StepStatus.EXECUTING):
                 return s
-        # 查找下一个可以开始的步骤（前序步骤均已完成）
+        # 查找下一个可以开始的步骤（前序步骤均已完成）：PENDING 与 APPROVED 一视同仁
         for i, s in enumerate(self.steps):
-            if s.status == StepStatus.PENDING:
+            if s.status in (StepStatus.PENDING, StepStatus.APPROVED):
                 # 检查前序步骤
                 if i == 0 or self.steps[i-1].status in (StepStatus.COMPLETED, StepStatus.SKIPPED):
                     return s
@@ -203,6 +210,13 @@ class WorkflowEngine:
     def register_execution_handler(self, tool_name: str, handler: Callable):
         """注册工具执行处理器"""
         self._execution_handlers[tool_name] = handler
+
+    def has_execution_handler(self, tool_name: str) -> bool:
+        """该工具是否有真实执行器（界面据此标注"未实现"，不再靠维护一份硬编码清单）。"""
+        return str(tool_name or "") in self._execution_handlers
+
+    def execution_handler_names(self) -> List[str]:
+        return sorted(self._execution_handlers)
 
     # ── 实例持久化：重启不丢 ──────────────────────────
     # 此前实例只存在内存里：执行到一半（尤其是"等待人工审批"的步骤）重启应用，
@@ -630,13 +644,19 @@ class WorkflowEngine:
         return resolved
 
     def _default_executor(self, step: WorkflowStep, context: Dict) -> Any:
-        """默认执行器"""
+        """没有真实执行器的工具：如实失败，不再返回 status=success 顶包。
+
+        旧实现给任何未注册工具返回一个"成功"占位结果并计为完成——用户看到一个
+        没有任何实现的步骤也"执行成功"，属于最坏的一类假信息。现在返回 ok=False，
+        由执行流程标记为失败并附上原因（模板注册阶段也会拦掉未知工具，这里是兜底）。
+        """
         return {
-            "step": step.name,
+            "ok": False,
             "tool": step.tool_name,
             "args": self._resolve_args(step.tool_args, context),
-            "executed_at": datetime.now().isoformat(),
-            "status": "success"
+            "error": (f"工具「{step.tool_name}」没有真实执行器，本步骤未执行任何操作"
+                      f"（可用执行器：{', '.join(self.execution_handler_names())}）"),
+            "summary": f"{step.name}：未实现，未执行",
         }
 
     def _register_builtin_templates(self):
@@ -780,6 +800,55 @@ class WorkflowEngine:
         ))
         self._templates["wf_security_check"] = security_template
 
+        # ------------------------------------------------------------
+        # 模板4: 数据处理流水线（V3.6.0 新增：五个数据处理 handler 真实化之后，
+        #        这条链路才算真的能出东西，值得作为一个内置模板摆出来）
+        #   采集(读真文件) → 清洗(去空行/去重复) → 分析(逐列统计写 Markdown)
+        #   → 出图(手绘 SVG) → 导出报告(落盘 .md，高危步骤强制人工审批)
+        # ------------------------------------------------------------
+        data_template = WorkflowTemplate(
+            template_id="wf_data_pipeline",
+            name="数据处理流水线",
+            description="读取数据文件 → 清洗 → 逐列统计 → 生成柱状图 → 导出报告。"
+                        "全部为真实步骤，产物落在沙箱工作目录里"
+        )
+        data_template.add_step(WorkflowStep(
+            name="采集数据",
+            description="读取沙箱内的数据文件（.csv/.json/.xlsx/.txt），并落一份归一化副本",
+            tool_name="fetch_data",
+            tool_args={"source": "{{data_path}}"},
+            approval_type=ApprovalType.AUTO,
+        ))
+        data_template.add_step(WorkflowStep(
+            name="数据清洗",
+            description="去空行、去完全重复行、清理首尾空白，产出清洗后的 CSV",
+            tool_name="clean_data",
+            tool_args={},
+            approval_type=ApprovalType.AUTO,
+        ))
+        data_template.add_step(WorkflowStep(
+            name="数据分析",
+            description="逐列统计（数值列给最小/最大/均值/合计，文本列给取值分布）",
+            tool_name="analyze_data",
+            tool_args={},
+            approval_type=ApprovalType.AUTO,
+        ))
+        data_template.add_step(WorkflowStep(
+            name="生成图表",
+            description="按分类列生成柱状图（SVG，双击用浏览器打开）",
+            tool_name="generate_chart",
+            tool_args={},
+            approval_type=ApprovalType.AUTO,
+        ))
+        data_template.add_step(WorkflowStep(
+            name="导出报告",
+            description="把分析报告落盘为 Markdown（写盘步骤：需人工审批）",
+            tool_name="export_file",
+            tool_args={"format": "md"},
+            approval_type=ApprovalType.MANUAL,
+        ))
+        self._templates["wf_data_pipeline"] = data_template
+
     def write_rendered_report(self, title: str, content: str, ext: str = "txt",
                               out_dir: str = None) -> str:
         """写入**已由外部渲染好**的报告内容（如插件贡献的导出格式）。
@@ -828,11 +897,14 @@ class WorkflowEngine:
         waiting = sum(1 for s in instance.steps
                       if s.status == StepStatus.WAITING_APPROVAL)
         failed = sum(1 for s in instance.steps if s.status == StepStatus.FAILED)
+        # 已审批待执行的步骤也报给界面：不然"审批完了"的这段时间进度条毫无变化
+        approved = sum(1 for s in instance.steps if s.status == StepStatus.APPROVED)
 
         return {
             "total": total,
             "completed": completed,
             "waiting_approval": waiting,
+            "approved_pending_run": approved,
             "failed": failed,
             "percentage": round(completed / total * 100, 1) if total > 0 else 0
         }
@@ -891,7 +963,17 @@ def _load_workflow_llm_config():
 
 
 def _get_workflow_llm():
-    """懒加载并缓存工作流专用 LLM 客户端（ChatOllama）。"""
+    """懒加载并缓存工作流专用 LLM 客户端（ChatOllama）。
+
+    ★ 必须关掉「思考」（`reasoning=False`，V3.6.0 实测）：
+      工作流这几步是**结构化抽取**（只输出 JSON），而 qwen3.5 是思考型模型——
+      不关思考时它会把 `num_predict=2048` 的预算全用在内部推理上，
+      **可见输出为空**，于是「提取关键条款」直接报"返回格式异常"，整条合同审查流水线走不下去。
+      同一句抽取任务实测：不关思考 **35.7 秒 / 0 字输出 / 解析失败**；
+      关掉思考 **15.1 秒 / 2266 字 / 解析出 41 条条款**。
+      这与主对话链路（`llm_factory.reasoning_for_mode`）同一条教训：**只下压、不猜模型能力**
+      （`False` 对非思考型模型也安全；`True` 才会被 Ollama 以 400 拒绝）。
+    """
     global _wf_llm, _wf_llm_signature
     model, host = _load_workflow_llm_config()
     sig = (model, host)
@@ -901,7 +983,8 @@ def _get_workflow_llm():
     _wf_llm = ChatOllama(
         model=model,
         base_url=host,
-        timeout=120,
+        timeout=180,
+        reasoning=False,
         options={"num_ctx": 16384, "num_predict": 2048, "temperature": 0.2},
         keep_alive=300,
     )
@@ -1479,28 +1562,402 @@ def init_workflow_integration(engine: WorkflowEngine):
 
     engine.register_execution_handler("export_file", _h_export_file)
 
-    # 3.9 其他未注册工具：默认把 context 里的参数存起来
-    def _h_default_tool(args: dict, context: dict, tool_name: str) -> dict:
-        return {"ok": True, "tool": tool_name,
-                "args": args,
-                "summary": f"{tool_name} 步骤完成 (模拟模式)"}
+    # 3.8 数据处理四件套 + 人工审核：真实实现（V3.6.0）
+    #
+    # 历史问题：这五个 handler 是返回「…（模拟）」文案的占位实现。用户跑完一条数据管线，
+    # 磁盘上什么都不会多出来，界面却显示"采集到 42 条数据（模拟）"——对"真实办公流程"
+    # 这个卖点是硬伤。现在：真读文件、真清洗、真统计、真出图，失败时如实报错（不假装成功）。
+    #
+    # 边界（三条不放松）：
+    #   ① 读写都过 file_tools._enforce_sandbox（与内核文件工具同一套 realpath+normcase+commonpath
+    #      判定），候选路径里出现 .. 上跳直接不受理，越界即拒绝——判定器不可用时宁可功能不可用；
+    #   ② 只用随包依赖（csv/json/openpyxl），不引 pandas/matplotlib（离线可用与打包体积是底线）；
+    #   ③ 图表手绘 SVG（双击用浏览器就能看），产物落沙箱 workflow_outputs/，回报真实路径。
 
-    engine.register_execution_handler("human_review",
-                                      lambda a, c=None, tn="human_review":
-                                      {"ok": True, "tool": tn, "summary": "已通过人工审核（模拟）"})
-    engine.register_execution_handler("fetch_data",
-                                      lambda a, c=None, tn="fetch_data":
-                                      {"ok": True, "tool": tn, "rows": 42,
-                                       "summary": "采集到 42 条数据（模拟）"})
-    engine.register_execution_handler("clean_data",
-                                      lambda a, c=None, tn="clean_data":
-                                      {"ok": True, "tool": tn, "summary": "数据清洗完成（模拟）"})
-    engine.register_execution_handler("analyze_data",
-                                      lambda a, c=None, tn="analyze_data":
-                                      {"ok": True, "tool": tn, "summary": "数据分析完成（模拟）"})
-    engine.register_execution_handler("generate_chart",
-                                      lambda a, c=None, tn="generate_chart":
-                                      {"ok": True, "tool": tn, "summary": "图表生成完成（模拟）"})
+    def _wf_root() -> str:
+        """沙箱根目录：与 file_tools 取**同一个**来源，避免"落点目录"与"判定目录"不一致。"""
+        try:
+            from yindun.core import file_tools as _ft
+            return _ft.SANDBOX
+        except Exception:
+            return _os.path.abspath(_os.environ.get("SANDBOX_PATH", "."))
+
+    def _wf_out_dir() -> str:
+        return _os.path.join(_wf_root(), "workflow_outputs")
+
+    _WF_DATA_EXTS = (".csv", ".tsv", ".json", ".xlsx", ".txt")
+
+    def _wf_newest_data_file(dir_path: str) -> str:
+        """目录形态的数据源：取该目录内最新的数据文件（只看一层，不递归）。
+
+        为什么支持目录：界面里数据源是一个路径输入框，用户很自然会填一个文件夹。
+        规则固定为"一层内最新的数据文件"，并且把选中的文件名写进结果摘要——
+        不是静默猜测，用户能看见到底用了哪个文件。
+        """
+        best, best_stamp = "", -1.0
+        try:
+            names = sorted(_os.listdir(dir_path))
+        except Exception:
+            return ""
+        for name in names:
+            if _os.path.splitext(name)[1].lower() not in _WF_DATA_EXTS:
+                continue
+            candidate = _os.path.join(dir_path, name)
+            if not _os.path.isfile(candidate) or not _wf_within(candidate):
+                continue
+            try:
+                stamp = _os.path.getmtime(candidate)
+            except Exception:
+                continue
+            if stamp > best_stamp:
+                best, best_stamp = candidate, stamp
+        return best
+
+    def _wf_within(path: str) -> bool:
+        """沙箱判定统一入口；判定器不可用一律拒绝（不放开边界）。"""
+        if _enforce_sandbox is None:
+            return False
+        try:
+            _, within = _enforce_sandbox(path)
+        except Exception:
+            return False
+        return bool(within)
+
+    def _wf_out_path(name: str) -> str:
+        """数据产物落点：沙箱内 workflow_outputs/。
+
+        文件名由本模块固定给出（不是用户输入），仍统一清洗（只留字母数字与 -_. 空格、
+        .. 一律改写）+ 落点复核，确保产物不会跑到该目录之外。
+        """
+        safe = "".join(c for c in str(name) if c.isalnum() or c in "-_. ")
+        safe = safe.replace("..", "_").strip(" .")[:60] or "data"
+        out_dir = _wf_out_dir()
+        _os.makedirs(out_dir, exist_ok=True)
+        path = _os.path.join(out_dir, safe)
+        if not _wf_within(path):
+            raise PermissionError("产物路径超出安全沙箱")
+        return path
+
+    def _wf_candidates(raw: str, context: dict) -> list:
+        """汇总"可能指向数据文件"的候选，**按优先级**排列：
+
+          ① 本步显式写的参数（tool_args 里的 path/source）；
+          ② 上一批步骤的产物（最新的优先）——流水线里"分析/出图"要读的是**上一步清洗过**的文件，
+             而不是最初的数据源，否则清洗步骤等于白做；
+          ③ 实例级上下文变量（data_source 等，只在前面都没有时才兜底）。
+        """
+        items = []
+        if raw:
+            items.append(str(raw))
+        for prev in reversed(list((context or {}).get("__prev_results", []) or [])):
+            inner = prev.get("result") if isinstance(prev, dict) and isinstance(prev.get("result"), dict) else prev
+            if isinstance(inner, dict) and inner.get("data_path"):
+                items.append(str(inner["data_path"]))
+        for key in ("data_path", "data_source", "data_file", "file", "path", "project_path"):
+            value = (context or {}).get(key)
+            if value:
+                items.append(str(value))
+        return items
+
+    def _wf_resolve_input(raw: str, context: dict) -> tuple:
+        """把"数据源"解析成沙箱内真实存在的文件。
+
+        返回 (路径, 拒绝原因)：解析成功为 (真实路径, "")；失败为 ("", reason)，
+        reason 取 "outside"（文件存在但在沙箱外）或 "missing"（找不到/没指定），
+        调用方据此给出**准确**的失败原因，而不是笼统的"读不到"。
+
+        安全：候选逐条清洗——未渲染的模板变量（{{…}}）跳过、按分隔符切段后任何一段是 ..
+        直接不受理；相对路径只在沙箱根下拼接；绝对路径也走同一条判定，越界即弃。
+        """
+        root = _wf_root()
+        blocked = ""
+        for cand in _wf_candidates(raw, context):
+            text = str(cand).strip().replace("\\", _os.sep).replace("/", _os.sep)
+            if not text or "{{" in text:
+                continue
+            parts = [p for p in text.split(_os.sep) if p not in ("", ".")]
+            if not parts or any(p == ".." for p in parts):
+                blocked = blocked or "outside"       # 带 .. 上跳的路径一律按越界处理
+                continue
+            probe = text if _os.path.isabs(text) else _os.path.join(root, *parts)
+            if not _os.path.isfile(probe):
+                if _os.path.isdir(probe) and _wf_within(probe):     # 目录：取里面最新的数据文件
+                    picked = _wf_newest_data_file(probe)
+                    if picked:
+                        return _os.path.realpath(picked), "from_dir"
+                continue
+            if not _wf_within(probe):
+                blocked = "outside"
+                continue
+            return _os.path.realpath(probe), ""
+        return "", (blocked or "missing")
+
+    def _wf_input_error(tool_name: str, raw: str, reason: str) -> dict:
+        where = (f"数据文件在沙箱之外，已拒绝读取：{raw}"
+                 if reason == "outside" else
+                 f"数据源不在沙箱内或不存在：{raw or '（未指定）'}")
+        return {"ok": False, "tool": tool_name,
+                "error": (f"{where}。请把数据文件放进沙箱（{_wf_root()}）后重试；"
+                          f"支持 .csv/.json/.xlsx/.txt"),
+                "summary": "失败：数据源不可用（沙箱外或不存在）"}
+
+    def _wf_read_rows(path: str):
+        """读成 ([{列名: 值}], [列名])。支持 .csv/.json/.xlsx/.txt；读前再过一次沙箱判定。"""
+        if not _wf_within(path):
+            raise PermissionError("路径超出安全沙箱，已拒绝读取")
+        ext = _os.path.splitext(path)[1].lower()
+        if ext == ".xlsx":
+            import openpyxl
+            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+            rows_iter = wb.active.iter_rows(values_only=True)
+            header = [str(c) if c is not None else f"列{i + 1}"
+                      for i, c in enumerate(next(rows_iter, []) or [])]
+            return [dict(zip(header, row)) for row in rows_iter], header
+        if ext == ".json":
+            from pathlib import Path as _RP
+            data = json.loads(_RP(path).read_text(encoding="utf-8", errors="replace"))
+            if isinstance(data, dict):
+                data = next((v for v in data.values() if isinstance(v, list)), [data])
+            rows = [r if isinstance(r, dict) else {"值": r} for r in (data or [])]
+            return rows, (list(rows[0].keys()) if rows else [])
+        import csv as _csv
+        from pathlib import Path as _RP
+        text = _RP(path).read_text(encoding="utf-8-sig", errors="replace")
+        if ext == ".txt":
+            body = [line for line in text.splitlines() if line.strip()]
+            try:
+                dialect = _csv.Sniffer().sniff("\n".join(body[:50]), delimiters=",\t;|")
+            except Exception:
+                dialect = None
+            if dialect is None:
+                return [{"行": line.strip()} for line in body], ["行"]
+        else:
+            try:
+                dialect = _csv.Sniffer().sniff(text[:4096], delimiters=",\t;|")
+            except Exception:
+                dialect = _csv.excel
+        reader = _csv.DictReader(text.splitlines(), dialect=dialect)
+        rows = [dict(r) for r in reader]
+        return rows, list(reader.fieldnames or [])
+
+    def _wf_num(value):
+        """能安全当数字就返回 float，否则 None（不把「1,2」这类文本误判成数字）。"""
+        text = str(value).strip()
+        if not text:
+            return None
+        if "," in text:                      # 只接受标准千分位写法
+            head, _, tail = text.partition(".")
+            groups = head.lstrip("+-").split(",")
+            if not (groups[0].isdigit() and len(groups[0]) <= 3
+                    and all(g.isdigit() and len(g) == 3 for g in groups[1:])
+                    and (not tail or tail.isdigit())):
+                return None
+            text = text.replace(",", "")
+        try:
+            number = float(text)
+        except Exception:
+            return None
+        if number != number or number in (float("inf"), float("-inf")):
+            return None
+        return number
+
+    def _wf_xml(text: str) -> str:
+        """SVG 文本转义（自己转义而不是拼裸字符串，避免标签被数据撑坏）。"""
+        return (str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace('"', "&quot;"))
+
+    def _wf_write_text(path: str, content: str, encoding: str = "utf-8") -> None:
+        """唯一写盘点：落点由 _wf_out_path 收敛在沙箱 workflow_outputs/ 内，此处只负责写。"""
+        from pathlib import Path as _WP
+        _WP(path).write_text(content, encoding=encoding)
+
+    def _h_fetch_data(args: dict, context: dict) -> dict:
+        raw = str((args or {}).get("source") or (args or {}).get("path") or "")
+        path, reason = _wf_resolve_input(raw, context or {})
+        if not path:
+            return _wf_input_error("fetch_data", raw, reason)
+        try:
+            rows, header = _wf_read_rows(path)
+        except Exception as exc:
+            return {"ok": False, "tool": "fetch_data",
+                    "error": f"读取失败：{type(exc).__name__}: {exc}",
+                    "summary": f"采集失败：{type(exc).__name__}"}
+        out = _wf_out_path("数据_归一化.json")
+        # 只留前 5000 行落盘：实例状态要序列化进 JSON，产物不能无限大
+        _wf_write_text(out, json.dumps(rows[:5000], ensure_ascii=False, indent=1))
+        preview = [dict(list(r.items())[:8]) for r in rows[:3]]
+        via_dir = "（数据源是目录，用的是其中最新的数据文件）" if reason == "from_dir" else ""
+        return {"ok": True, "tool": "fetch_data", "source_path": path, "data_path": out,
+                "row_count": len(rows), "columns": header[:30], "preview": preview,
+                "summary": (f"已采集 {len(rows)} 行 × {len(header)} 列"
+                            f"（来源：{_os.path.basename(path)}）{via_dir}，归一化副本：{out}")}
+
+    def _h_clean_data(args: dict, context: dict) -> dict:
+        raw = str((args or {}).get("path") or "")
+        path, reason = _wf_resolve_input(raw, context or {})
+        if not path:
+            result = _wf_input_error("clean_data", raw, reason)
+            result["error"] = "没有可清洗的数据（本步未指定 path，上一步也没有产出数据文件）：" + result["error"]
+            return result
+        try:
+            rows, header = _wf_read_rows(path)
+        except Exception as exc:
+            return {"ok": False, "tool": "clean_data",
+                    "error": f"读取失败：{type(exc).__name__}: {exc}",
+                    "summary": "清洗失败：读不到输入"}
+        cleaned, seen, dropped_empty, dropped_dup = [], set(), 0, 0
+        for row in rows:
+            item = {}
+            for key, value in row.items():
+                item[str(key).strip()] = (value.strip() if isinstance(value, str) else value)
+            if all(v in ("", None) for v in item.values()):
+                dropped_empty += 1
+                continue
+            fingerprint = tuple(sorted((k, str(v)) for k, v in item.items()))
+            if fingerprint in seen:
+                dropped_dup += 1
+                continue
+            seen.add(fingerprint)
+            cleaned.append(item)
+        cols = list(header or (list(cleaned[0].keys()) if cleaned else []))
+        import csv as _csv
+        import io as _io
+        buffer = _io.StringIO()
+        writer = _csv.DictWriter(buffer, fieldnames=cols, lineterminator="\n",
+                                 extrasaction="ignore")
+        writer.writeheader()
+        for row in cleaned:
+            writer.writerow({c: row.get(c, "") for c in cols})
+        out = _wf_out_path("数据_已清洗.csv")
+        _wf_write_text(out, buffer.getvalue(), encoding="utf-8-sig")
+        return {"ok": True, "tool": "clean_data", "data_path": out, "row_count": len(cleaned),
+                "columns": cols[:30], "dropped_empty": dropped_empty,
+                "dropped_duplicate": dropped_dup,
+                "summary": (f"清洗完成：{len(rows)} → {len(cleaned)} 行"
+                            f"（去空行 {dropped_empty}、去重复 {dropped_dup}），落点：{out}")}
+
+    def _h_analyze_data(args: dict, context: dict) -> dict:
+        raw = str((args or {}).get("path") or "")
+        path, reason = _wf_resolve_input(raw, context or {})
+        if not path:
+            result = _wf_input_error("analyze_data", raw, reason)
+            result["error"] = "没有可分析的数据（本步未指定 path，上一步也没有产出数据文件）：" + result["error"]
+            return result
+        try:
+            rows, header = _wf_read_rows(path)
+        except Exception as exc:
+            return {"ok": False, "tool": "analyze_data",
+                    "error": f"读取失败：{type(exc).__name__}: {exc}",
+                    "summary": "分析失败：读不到输入"}
+        cols = list(header or (list(rows[0].keys()) if rows else []))
+        lines = [f"# 数据分析（{len(rows)} 行 × {len(cols)} 列）", "",
+                 f"- 数据文件：`{path}`", ""]
+        for col in cols[:20]:
+            values = [r.get(col) for r in rows]
+            present = [v for v in values if v not in ("", None)]
+            missing = len(values) - len(present)
+            numbers = [_wf_num(v) for v in present]
+            if present and all(n is not None for n in numbers):
+                lines.append(f"- **{col}**（数值）：n={len(numbers)}，最小 {min(numbers):g}，"
+                             f"最大 {max(numbers):g}，均值 {sum(numbers) / len(numbers):.2f}，"
+                             f"合计 {sum(numbers):g}" + (f"，缺失 {missing}" if missing else ""))
+            else:
+                from collections import Counter
+                counter = Counter(str(v) for v in present)
+                top = counter.most_common(5)
+                lines.append(f"- **{col}**（文本）：n={len(present)}，取值 {len(counter)} 种"
+                             + (f"，缺失 {missing}" if missing else "")
+                             + (f"，最多：{('、'.join(f'{k}×{v}' for k, v in top))}" if top else ""))
+        body = "\n".join(lines)
+        out = _wf_out_path("数据分析.md")
+        _wf_write_text(out, body)
+        return {"ok": True, "tool": "analyze_data", "report_path": out, "data_path": path,
+                "row_count": len(rows), "report_title": "数据分析", "report_body": body,
+                "summary": f"分析完成：{len(cols)} 列统计已写入 {out}"}
+
+    def _h_generate_chart(args: dict, context: dict) -> dict:
+        raw = str((args or {}).get("path") or "")
+        path, reason = _wf_resolve_input(raw, context or {})
+        if not path:
+            result = _wf_input_error("generate_chart", raw, reason)
+            result["error"] = "没有可绘图的数据（本步未指定 path，上一步也没有产出数据文件）：" + result["error"]
+            return result
+        try:
+            rows, header = _wf_read_rows(path)
+        except Exception as exc:
+            return {"ok": False, "tool": "generate_chart",
+                    "error": f"读取失败：{type(exc).__name__}: {exc}",
+                    "summary": "绘图失败：读不到输入"}
+        from collections import Counter
+        cols = list(header or (list(rows[0].keys()) if rows else []))
+        pick, counts = "", []
+        for col in cols[:20]:                 # 选一个适合画柱状图的分类列（2~20 种取值）
+            values = [str(r.get(col)) for r in rows if r.get(col) not in ("", None)]
+            if 2 <= len(set(values)) <= 20:
+                pick, counts = col, Counter(values).most_common(12)
+                break
+        if not pick:
+            return {"ok": False, "tool": "generate_chart",
+                    "error": "数据里没有适合画柱状图的分类列（需要 2~20 种取值）",
+                    "summary": "绘图失败：没有合适的分类列"}
+        width, height, pad = 720, 320, 48
+        top = max(c for _, c in counts) or 1
+        step = (width - 2 * pad) / max(1, len(counts))
+        bar_w = max(12, int(step * 0.6))
+        parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+                 f'viewBox="0 0 {width} {height}">',
+                 f'<rect width="{width}" height="{height}" fill="#ffffff"/>',
+                 f'<text x="{pad}" y="26" font-family="Microsoft YaHei, sans-serif" font-size="15" '
+                 f'fill="#0f172a">「{_wf_xml(pick)}」取值分布（共 {len(rows)} 行）</text>',
+                 f'<line x1="{pad}" y1="{height - 40}" x2="{width - pad}" y2="{height - 40}" '
+                 f'stroke="#cbd5e1"/>']
+        for index, (label, count) in enumerate(counts):
+            bar_h = int((count / top) * (height - 100))
+            x = pad + index * step
+            y = height - 40 - bar_h
+            parts.append(f'<rect x="{x:.0f}" y="{y}" width="{bar_w}" height="{bar_h}" '
+                         f'fill="#16A163" rx="3"/>')
+            parts.append(f'<text x="{x:.0f}" y="{y - 5}" font-family="Consolas, monospace" '
+                         f'font-size="11" fill="#334155">{count}</text>')
+            parts.append(f'<text x="{x:.0f}" y="{height - 24}" '
+                         f'font-family="Microsoft YaHei, sans-serif" font-size="11" '
+                         f'fill="#475569">{_wf_xml(label[:10])}</text>')
+        parts.append("</svg>")
+        out = _wf_out_path("图表.svg")
+        _wf_write_text(out, "\n".join(parts))
+        return {"ok": True, "tool": "generate_chart", "chart_path": out, "data_path": path,
+                "column": pick, "categories": len(counts),
+                "summary": (f"已生成柱状图（按「{pick}」的 {len(counts)} 个取值）：{out}"
+                            f"（双击用浏览器打开）")}
+
+    def _h_human_review(args: dict, context: dict) -> dict:
+        """人工审核：记录**真实审批人与意见**，不再回一句"已通过人工审核（模拟）"。
+
+        这一步由引擎的审批门控保证"必须有人点过"（approval_type=MANUAL，未审批不放行）；
+        处理器负责把审批留痕写进结果，供报告与审计引用。查不到审批人 = 没走过审批门，如实报错。
+        """
+        step = (context or {}).get("__step")
+        reviewer = str(getattr(step, "reviewer", "") or "").strip()
+        comment = str(getattr(step, "review_comment", "") or "").strip()
+        if not reviewer:
+            return {"ok": False, "tool": "human_review",
+                    "error": "未记录到审批人：该步骤必须先经人工审批通过再执行",
+                    "summary": "人工审核失败：没有审批记录"}
+        return {"ok": True, "tool": "human_review", "reviewer": reviewer, "comment": comment,
+                "summary": f"人工审核通过（审核人：{reviewer}）" + (f"，意见：{comment}" if comment else "")}
+
+    engine.register_execution_handler("fetch_data", _h_fetch_data)
+    engine.register_execution_handler("clean_data", _h_clean_data)
+    engine.register_execution_handler("analyze_data", _h_analyze_data)
+    engine.register_execution_handler("generate_chart", _h_generate_chart)
+    engine.register_execution_handler("human_review", _h_human_review)
+
+    # 3.9 其他未注册工具：不假装成功（旧文案"（模拟模式）"容易被当成真的执行过）
+    def _h_default_tool(args: dict, context: dict, tool_name: str) -> dict:
+        return {"ok": False, "tool": tool_name, "args": args,
+                "error": (f"工具「{tool_name}」没有真实实现"
+                          f"（内核内置的是文件/命令/知识与数据处理工具）"),
+                "summary": f"{tool_name}：未注册的执行器，未执行任何操作"}
 
     # ---------------- 4. 集成审计日志（每步执行和审批后写入） ----------------
     if HAS_AUDIT:

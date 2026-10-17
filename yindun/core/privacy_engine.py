@@ -866,6 +866,74 @@ class PrivacyEngine:
     # ──────────────────────────────────────────
     # 逆向还原（接口完全保持兼容）
     # ──────────────────────────────────────────
+    def restore_kb_placeholders(self, text: str, mapping: dict) -> tuple:
+        """还原**知识库占位符**，且对编号变化不敏感（V3.6.0）。
+
+        为什么需要单独一条路径（实测出来的缺陷）：`deanonymize` 是**精确字符串替换**，
+        而模型在整理答案时经常重写占位符——`[KB_PHONE_0_a3f9]` 写成 `[KB_PHONE_1_a3f9]`、
+        或者干脆丢掉 nonce 写成 `[KB_PHONE_0]`。一旦不一致就还原不了，用户看到答案里残留
+        `[KB_…]`（这也是开发记忆里挂了两轮的那个"检索答案占位符还原不完整"）。
+
+        解析顺序（尽量还原、**绝不猜错**）：
+          ① 原样命中 → 用它；
+          ② 类型 + nonce 唯一（编号被改过也认得出）→ 用它；
+          ③ 类型 + 编号唯一（nonce 被丢掉）→ 用它；
+          ④ 该类型只有唯一候选 → 用它；
+          ⑤ 仍无法唯一确定 → **保留占位符原样**。
+        ★ ⑤ 是刻意的：宁可让用户看到"这里没还原"，也不能把另一个真实值塞进这句话里——
+          那会把"没还原"变成"编造事实"，对安全/合规产品更糟。
+
+        返回 `(还原后的文本, 未还原的数量)`；调用方应把未还原数量**如实告知用户**，不静默。
+        只接受 `[KB_…]`，其余占位符（用户输入脱敏）仍由 `deanonymize` 负责，两者互不越界。
+        """
+        if not text or not mapping:
+            return text, 0
+
+        kb_re = re.compile(r"\[KB_([A-Z][A-Z0-9_]*)_(\d+)(?:_([a-z0-9]{4}))?\]")
+        plain: Dict[str, str] = {}
+        for key, encrypted_value in mapping.items():
+            try:
+                plain[key] = self._crypto.decrypt(encrypted_value)
+            except Exception:
+                # 解不开的键不参与还原（与 deanonymize 同策略：不写回密文垃圾）
+                if not _NEW_PLACEHOLDER_RE.match(str(key)):
+                    plain[key] = encrypted_value        # 旧版明文 mapping 兼容
+        if not plain:
+            return text, 0
+
+        by_type_nonce: Dict[tuple, list] = {}
+        by_type_num: Dict[tuple, list] = {}
+        by_type: Dict[str, list] = {}
+        for key in plain:
+            m = kb_re.match(key)
+            if not m:
+                continue
+            type_, num, nonce = m.group(1), m.group(2), m.group(3)
+            by_type.setdefault(type_, []).append(key)
+            by_type_num.setdefault((type_, num), []).append(key)
+            if nonce:
+                by_type_nonce.setdefault((type_, nonce), []).append(key)
+
+        unresolved = 0
+
+        def _resolve(match: "re.Match") -> str:
+            nonlocal unresolved
+            key = match.group(0)
+            type_, num, nonce = match.group(1), match.group(2), match.group(3)
+            if key in plain:                                             # ①
+                return plain[key]
+            for bucket, needle in ((by_type_nonce, (type_, nonce)),       # ②
+                                   (by_type_num, (type_, num))):          # ③
+                if needle[1] and len(bucket.get(needle, [])) == 1:
+                    return plain[bucket[needle][0]]
+            same_type = by_type.get(type_, [])
+            if len(same_type) == 1:                                      # ④
+                return plain[same_type[0]]
+            unresolved += 1                                              # ⑤
+            return key
+
+        return kb_re.sub(_resolve, text), unresolved
+
     def deanonymize(self, text: str, mapping: dict, strict: bool = False) -> str:
         """
         【逆向还原】

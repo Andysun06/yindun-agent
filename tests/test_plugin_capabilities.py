@@ -48,6 +48,8 @@ def new_service(tag: str) -> AgentService:
                        sessions=SessionStore(path=root / "sess.json"),
                        plugin_data_root=root / "plugins_data")
     svc.initialize()
+    # 工作流实例持久化落点也给到本套件临时目录（否则测试实例会堆进仓库根运行时文件）
+    svc._workflow()._persistence_path = root / "workflow_instances.json"
     return svc
 
 

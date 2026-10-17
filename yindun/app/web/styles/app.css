@@ -223,6 +223,10 @@ html[data-frameless="1"] .win-ctrls { display: inline-flex; }
 .sheet { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .status-line { flex: none; font-size: var(--fs-meta); color: var(--text-3); text-align: center; padding: var(--sp-3) var(--sp-5) 0; }
 .status-line:empty { display: none; }
+/* 启动阶段提示：轻量一条，不抢注意力，但让人知道"在准备什么、大概要等多久" */
+.bootline { flex: none; margin: var(--sp-3) var(--sp-6) 0; padding: 7px var(--sp-4); border-radius: var(--r-ctrl);
+  background: var(--bg-subtle); color: var(--text-2); font-size: var(--fs-meta); text-align: center; line-height: 1.6; }
+.bootline::before { content: "◍ "; color: var(--accent-600); }
 .chat {
   flex: 1; min-height: 0; overflow-y: auto;
   padding: var(--sp-7) var(--sp-6) var(--sp-7);

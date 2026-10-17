@@ -544,10 +544,16 @@ class Worker:
                 except Exception:
                     pass
             # ★ 合并知识库映射表：如果本轮调用了 search_knowledge_base，
-            # LLM 回答中会含知识库检索的占位符，需要用 _kb_mapping 还原
+            # LLM 回答中会含知识库检索的占位符，需要用 _kb_mapping 还原。
+            # ★ 用 restore_kb_placeholders 而不是精确替换（V3.6.0）：模型会重写占位符编号、
+            #   甚至丢掉 nonce，精确匹配必然漏还原（用户看到答案里残留 [KB_…]）。
             if self._kb_mapping:
-                final_reply = engine.deanonymize(final_reply, self._kb_mapping)
+                final_reply, _kb_unresolved = engine.restore_kb_placeholders(final_reply, self._kb_mapping)
                 self._kb_mapping.clear()  # 用后即焚
+                if _kb_unresolved:
+                    # 不静默：告诉用户有几处没能还原，以及为什么（宁可少还原，也不猜错值）
+                    final_reply += (f"\n\n（提示：有 {_kb_unresolved} 处知识库占位符未能还原——"
+                                    "模型改动了占位符编号，无法唯一确定对应实体。可在知识库面板按来源核对。）")
             # ★ 审计：记录最终还原后的 LLM 输出（展示给用户的版本）
             try:
                 AuditLog().log_llm_output(_reply_before_restore, preview=_reply_before_restore[:200])

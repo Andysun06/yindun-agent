@@ -132,6 +132,9 @@
 
       <div class="sheet">
         <div class="status-line" id="status-line"></div>
+        <!-- 启动阶段提示：首次启动要等"探测算力 → 载入模型（20~60 秒）"，以前这段全静默，
+             用户看到的是"界面出来了但点了没反应"。就绪后由 startup 事件自动隐藏。 -->
+        <div class="bootline" id="bootline" hidden></div>
         <div class="chat" id="chat"></div>
 
         <form class="composer" id="composer" autocomplete="off">

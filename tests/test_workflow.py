@@ -139,10 +139,35 @@ def test_approval_chain():
 
 
 def test_custom_workflow():
-    """测试4: 自定义工作流创建"""
+    """测试4: 自定义工作流创建 —— 数据处理流水线（真实采集→清洗→分析→出图）
+
+    这条链路以前是"模拟"的（磁盘上不会多出任何文件，却显示采集到 42 条数据）；
+    V3.6.0 起为真实实现，因此本测试改成**真验产物**：
+      · 沙箱内放一份真 CSV → 采集步骤必须报出真实行数列数并落盘归一化 JSON；
+      · 清洗步骤必须真去空行/去重复并报出删了多少；
+      · 分析步骤必须写出 Markdown 统计（含数值列的均值）；
+      · 出图步骤必须写真 SVG 文件；
+      · 数据源不在沙箱内时，采集步骤必须**如实失败**（不假装成功）。
+    """
     print("=" * 60)
-    print("🧪 测试4: 自定义工作流 - 数据处理流水线")
+    print("🧪 测试4: 自定义工作流 - 数据处理流水线（真实实现）")
     print("=" * 60)
+
+    from pathlib import Path
+    from yindun.core.file_tools import SANDBOX
+
+    csv_path = Path(SANDBOX) / "_wf_pipeline_probe.csv"
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    # 落点受控：SANDBOX 为内核沙箱根目录，文件名固定，测试结束即删除
+    csv_path.write_text(
+        "部门,金额,备注\n"
+        "研发,1200,正常\n"
+        "市场,800,正常\n"
+        "研发,1200,正常\n"          # 与第 2 行完全重复 -> 应被去掉
+        ",,\n"                      # 空行 -> 应被去掉
+        "市场,950,\n"
+        "研发,1500,加急\n",
+        encoding="utf-8")
 
     template = WorkflowTemplate(
         template_id="custom_data_pipeline",
@@ -179,12 +204,34 @@ def test_custom_workflow():
     instance = engine.create_instance("custom_data_pipeline", "custom_001")
     print(f"  🔖 自定义实例: {instance.template_id}")
 
-    # 执行前3步
+    # 执行前3步（数据源就是上面那份真 CSV）
+    results = []
     for i in range(3):
         step_id = instance.steps[i].step_id
         result = engine.execute_step("custom_001", step_id,
-                                     context={"data_source": "api_server"})
-        print(f"  ▶ 步骤{i+1} [{instance.steps[i].name}]: {'✅' if result['success'] else '❌'}")
+                                     context={"data_source": str(csv_path)})
+        results.append(result)
+        print(f"  ▶ 步骤{i+1} [{instance.steps[i].name}]: {'✅' if result['success'] else '❌'}"
+              + ("" if result["success"] else f" —— {result.get('error')}"))
+        assert result["success"], f"步骤「{instance.steps[i].name}」应成功：{result.get('error')}"
+
+    fetch = results[0]["result"]
+    assert fetch["row_count"] == 6, f"应读到 6 行（含 1 空行 1 重复），实际 {fetch['row_count']}"
+    assert fetch["columns"][:2] == ["部门", "金额"], str(fetch["columns"])
+    assert Path(fetch["data_path"]).exists(), f"归一化副本应落盘：{fetch['data_path']}"
+    print(f"      ✅ 采集到真实数据: {fetch['summary']}")
+
+    clean = results[1]["result"]
+    assert clean["row_count"] == 4, f"清洗后应剩 4 行，实际 {clean['row_count']}"
+    assert clean["dropped_empty"] == 1 and clean["dropped_duplicate"] == 1, str(clean)
+    assert Path(clean["data_path"]).exists(), clean["data_path"]
+    print(f"      ✅ 清洗真实生效: {clean['summary']}")
+
+    analyze = results[2]["result"]
+    assert Path(analyze["report_path"]).exists(), analyze["report_path"]
+    report_text = Path(analyze["report_path"]).read_text(encoding="utf-8")
+    assert "均值" in report_text and "4450" in report_text, report_text[:200]
+    print(f"      ✅ 分析报告已落盘: {analyze['summary']}")
 
     # 第4步需要审批
     step4_id = instance.steps[3].step_id
@@ -197,9 +244,27 @@ def test_custom_workflow():
     # 审批通过并执行
     engine.approve_step("custom_001", step4_id, reviewer="admin", comment="OK")
     result = engine.execute_step("custom_001", step4_id)
-    assert result["success"]
-    print(f"  ✅ 审批后执行成功")
+    assert result["success"], f"出图步骤应成功：{result.get('error')}"
+    chart = result["result"]
+    svg_path = Path(chart["chart_path"])
+    assert svg_path.exists(), f"图表应落盘：{svg_path}"
+    assert svg_path.suffix == ".svg" and "<svg" in svg_path.read_text(encoding="utf-8")
+    print(f"      ✅ 图表真实生成: {chart['summary']}")
 
+    # 数据源越界 = 如实失败（不假装成功）：沙箱外放一份真实存在的同名 CSV
+    import tempfile
+    outside_dir = Path(tempfile.mkdtemp(prefix="yindun_wf_outside_"))
+    outside = outside_dir / "外部数据.csv"
+    # 落点受控：系统临时目录（本测试自己创建），跑完即删
+    outside.write_text("部门,金额\n研发,1\n", encoding="utf-8")
+    try:
+        bad = engine._execution_handlers["fetch_data"]({"source": str(outside)}, {})
+        assert bad["ok"] is False and "沙箱" in bad["error"], str(bad)
+        print(f"      ✅ 沙箱外数据源被拒绝: {bad['summary']}")
+    finally:
+        outside.unlink(missing_ok=True)
+
+    csv_path.unlink(missing_ok=True)
     print("  ✅ 自定义工作流测试通过\n")
     return True
 
@@ -241,6 +306,48 @@ def test_workflow_export():
     return True
 
 
+def test_human_review():
+    """测试6: 人工审核步骤 —— 记录真实审批人，未审批不放行，无留痕如实失败
+
+    V3.6.0 之前这个处理器固定返回"已通过人工审核（模拟）"，谁批的、批了什么一律不记；
+    现在必须来自引擎的审批门控（reviewer/review_comment），拿不到留痕就报错。
+    """
+    print("=" * 60)
+    print("🧪 测试6: 人工审核步骤（真实审批留痕）")
+    print("=" * 60)
+
+    engine = get_workflow_engine()
+    template = WorkflowTemplate(template_id="custom_review_probe",
+                                name="人工审核探针",
+                                description="单步人工审核")
+    template.add_step(WorkflowStep(name="人工确认", tool_name="human_review", tool_args={},
+                                   approval_type=ApprovalType.MANUAL))
+    engine._templates["custom_review_probe"] = template
+    engine.create_instance("custom_review_probe", "review_001")
+    step_id = engine._instances["review_001"].steps[0].step_id
+
+    blocked = engine.execute_step("review_001", step_id)
+    assert not blocked["success"] and blocked.get("needs_approval") is True, str(blocked)
+    status = engine.get_workflow_status("review_001")
+    assert status["current_step"]["status"] == StepStatus.WAITING_APPROVAL.value, str(status["current_step"])
+    print("      ✅ 未审批不放行")
+
+    engine.approve_step("review_001", step_id, reviewer="王工", comment="数据无误，通过")
+    done = engine.execute_step("review_001", step_id)
+    assert done["success"], str(done)
+    payload = done["result"]
+    assert payload.get("reviewer") == "王工" and payload.get("comment") == "数据无误，通过", str(payload)
+    assert "王工" in payload.get("summary", ""), payload.get("summary")
+    print(f"      ✅ 结果带真实审批留痕: {payload['summary']}")
+
+    bare = engine._execution_handlers["human_review"]({}, {})
+    assert bare["ok"] is False and "审批" in bare["error"], str(bare)
+    assert "模拟" not in str(bare), str(bare)
+    print(f"      ✅ 无审批留痕时如实失败: {bare['summary']}")
+    print("  ✅ 人工审核测试通过\n")
+    return True
+
+
 def _install_mock_handlers(engine):
     """为流程测试注入 mock 工具，避免依赖真实文件和远程 Ollama LLM。"""
     def _mock_read(args, context=None):
@@ -278,7 +385,12 @@ def main():
 
     # 注入 mock 工具，让流程测试只验证编排/审批/导出的机制，
     # 不依赖真实文件路径和远程 Ollama LLM。
-    _install_mock_handlers(get_workflow_engine())
+    # 实例持久化落点改到临时目录，避免把测试实例写进仓库根的运行时文件
+    import tempfile as _tempfile
+    from pathlib import Path as _Path
+    _wf_engine = get_workflow_engine()
+    _wf_engine._persistence_path = _Path(_tempfile.mkdtemp(prefix="yindun_wf_engine_")) / "workflow_instances.json"
+    _install_mock_handlers(_wf_engine)
 
     tests = [
         ("模板列表查询", test_template_listing),
@@ -286,6 +398,7 @@ def main():
         ("审批链机制", test_approval_chain),
         ("自定义工作流", test_custom_workflow),
         ("工作流数据导出", test_workflow_export),
+        ("人工审核留痕", test_human_review),
     ]
 
     results = []

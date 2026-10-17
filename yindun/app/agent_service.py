@@ -216,6 +216,12 @@ class AgentService:
     # ── 算力 ─────────────────────────────────────
     def prepare_llm(self) -> Dict[str, Any]:
         """构建算力（可能耗时，调用方应放后台线程）。"""
+        # ★ 首启体验（V3.6.0）：整个过程分阶段播报给界面。首次启动时用户要等的其实有三段——
+        #   ① onefile 解压（在 Python 起来之前，界面还没出现，只能靠文档说明）；
+        #   ② 探测算力 + 建算力（秒级）；③ **把模型载入内存**（本机实测 20~60 秒）。
+        #   以前这三段全静默，用户看到的是"界面出来了但点了没反应"，容易以为是坏的。
+        self._emit("startup", {"phase": "probe", "done": False,
+                               "text": "正在检测本机算力与模型…"})
         # ★ 本地回环与内网地址都绕过系统代理（Clash/V2Ray 会劫持 127.0.0.1 与内网段的请求，
         #   导致 langchain-ollama 调本地/内网 Ollama 时 502）。内网地址从设置里取。
         host_cfg = str(self.settings.get("ollama_host") or "http://127.0.0.1:11434")
@@ -262,7 +268,65 @@ class AgentService:
             self.settings.save()
         status = self.llm_status()
         self._emit("llm_status", status)
+        # ★ 第三段等待：把模型载入内存（本机实测 20~60 秒）。放在后台，不阻塞界面可用性。
+        #   注意"就绪"必须等**预热真的结束**才播报：早发一次会让界面提前收起提示，
+        #   用户以为可以问了、其实第一句话仍在等加载（第一版就是这么错的）。
+        if not self._warmup_llm():
+            self._emit("startup", {"phase": "ready", "done": True,
+                                   "text": f"已就绪：{self.settings.get('model') or ''}"})
         return status
+
+    def _warmup_llm(self) -> bool:
+        """后台把聊天模型载入内存（V3.6.0）。返回是否已在后台预热（True 时由它负责播报就绪）。
+
+        为什么要做：Ollama 是**首次调用**才把权重读进内存的，本机实测这一下要 20~60 秒。
+        不预热的话，用户点开界面问第一句话就等于在等这个加载——看起来像"卡住了"。
+        边界（很重要）：
+          · 只对**本机回环 / 局域网**的 Ollama 端点预热；自定义的公网 OpenAI 兼容端点按次计费，
+            不该被我们偷偷调用一次；
+          · 用"关思考"的变体预热（最省时），预热的是服务端同一个模型实例；
+          · 失败只记一条状态，绝不影响算力可用性。
+        """
+        try:
+            from urllib.parse import urlparse
+            cfg = self.settings.data if isinstance(self.settings.data, dict) else {}
+            model = str(self.settings.get("model") or "")
+            if not model or model in (cfg.get("custom_models") or {}):
+                return False      # 自定义（公网）模型不预热，直接算就绪
+            host = str(self.settings.get("ollama_host") or "http://127.0.0.1:11434")
+            h = (urlparse(host).hostname or "").strip().lower()
+            is_local = (h in ("127.0.0.1", "localhost", "::1") or h.startswith("10.")
+                        or h.startswith("192.168.") or h.startswith("172."))
+            if not is_local:
+                return False      # 非本机/内网端点不预热（按次计费的不该被我们偷偷调用）
+            llm = (self._llm_variants or {}).get(False)
+            if llm is None:
+                return False
+
+            # 播报"开始载入"必须落在**启动预热线程之前**：这一条是"还要等多久"的唯一提示，
+            # 缩进错一层它就会静默（第一版就是这么错的，实测事件流里看不到它）。
+            self._emit("startup", {"phase": "load", "done": False,
+                                   "text": f"正在把模型载入内存：{model}（首次约 20~60 秒，之后不用再等）…"})
+
+            def _run() -> None:
+                import time as _t
+                t0 = _t.time()
+                try:
+                    from langchain_core.messages import HumanMessage
+                    llm.invoke([HumanMessage(content="就绪")])
+                    self._emit("status", f"模型已载入内存（{_t.time() - t0:.0f} 秒），可以开始提问")
+                    self._emit("startup", {"phase": "ready", "done": True,
+                                           "text": f"已就绪：{model}"})
+                except Exception as exc:
+                    print(f"[AgentService] 模型预热失败（不影响使用，首次提问会慢一些）：{exc}")
+                    self._emit("startup", {"phase": "ready", "done": True,
+                                           "text": f"已就绪：{model}（首次提问可能慢一些）"})
+
+            threading.Thread(target=_run, daemon=True, name="yindun-llm-warmup").start()
+            return True
+        except Exception as exc:
+            print(f"[AgentService] 模型预热调度失败：{exc}")
+            return False
 
     def llm_status(self) -> Dict[str, Any]:
         return {
@@ -458,9 +522,9 @@ class AgentService:
         return len(self._attachments)
 
     # ── 工作流 ───────────────────────────────────
-    # 这些 handler 目前返回"（模拟）"结果（见 core/workflow.py 的注册处）。
-    # 界面必须如实标注，不能让人以为它们真在采集数据/画图。
-    DEMO_STEP_TOOLS = frozenset({"human_review", "fetch_data", "clean_data", "analyze_data", "generate_chart"})
+    # 标注口径（V3.6.0）：不再维护一份硬编码的"模拟步骤"清单——数据四件套与人工审核
+    # 已在 core/workflow.py 里真实化。现在直接问引擎"这个工具有没有真实执行器"，
+    # 没有的（只可能出现在外部自定义模板里）如实标为"未实现"，执行时会失败而不是假装成功。
 
     def _workflow(self):
         if self._wf_engine is None:
@@ -486,6 +550,7 @@ class AgentService:
     _WF_PATH_KEY = {
         "wf_contract_review": "contract_path",
         "wf_security_check": "project_path",
+        "wf_data_pipeline": "data_path",     # 数据源：文件或目录（目录则取其中最新数据文件）
     }
 
     def workflow_start(self, template_id: str, path: str = "", name: str = "") -> Dict[str, Any]:
@@ -513,12 +578,16 @@ class AgentService:
 
     def workflow_status(self, instance_id: str) -> Dict[str, Any]:
         try:
-            status = self._workflow().get_workflow_status(instance_id)
+            engine = self._workflow()
+            status = engine.get_workflow_status(instance_id)
         except Exception as exc:
             return {"error": f"{type(exc).__name__}: {exc}"}
         for step in status.get("steps", []) or []:
-            step["demo"] = step.get("tool_name") in self.DEMO_STEP_TOOLS
-        status["demo_notice"] = "标记为「演示」的步骤目前返回模拟结果，未接入真实数据源。"
+            step["unimplemented"] = not engine.has_execution_handler(step.get("tool_name"))
+        status["impl_notice"] = (
+            "内核内置模板的每一步都有真实执行器（含数据采集/清洗/分析/出图与人工审核留痕）；"
+            "若某步被标为「未实现」，说明该模板来自外部配置、其工具内核没有实现，执行会如实失败。"
+        )
         mappable = [(sid, tid) for sid, tid in self._wf_instances.items() if sid == instance_id]
         status["tracked"] = bool(mappable)
         return status

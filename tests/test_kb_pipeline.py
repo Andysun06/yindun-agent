@@ -139,6 +139,39 @@ check("检索路径用同一个正则解析占位符类型（不另写一份）"
 check("重编号时保留 nonce（新格式）",
       "nonce = match.group(3)" in search_src and "_{gidx}_{nonce}" in search_src)
 
+# ── 6) 检索答案的占位符还原：对"编号被模型改写"不敏感（V3.6.0）──
+#   真实缺陷：`deanonymize` 是精确字符串替换，而模型整理答案时常重写占位符编号
+#   （[KB_PHONE_0_a3f9] → [KB_PHONE_1_a3f9]）或丢掉 nonce（→ [KB_PHONE_0]），
+#   于是答案里残留 [KB_…]（开发记忆里挂了两轮的那个"还原不完整"）。
+print("=" * 78)
+print("【6】检索答案占位符还原：编号无关 + 歧义不猜值")
+print("=" * 78)
+from yindun.core.privacy_engine import PrivacyEngine  # noqa: E402
+
+eng = PrivacyEngine()
+_plain = {"[KB_PHONE_0_a3f9]": "13812345678", "[KB_NAME_1_b7c2]": "张伟",
+          "[KB_EMAIL_2_d1e4]": "ops@example.com"}
+_enc = {k: eng._crypto.encrypt(v) for k, v in _plain.items()}
+
+out, miss = eng.restore_kb_placeholders("联系人是 [KB_NAME_1_b7c2]。", dict(_enc))
+check("原样占位符正常还原", "张伟" in out and miss == 0, out)
+out, miss = eng.restore_kb_placeholders("联系人是 [KB_NAME_9_b7c2]。", dict(_enc))
+check("★ 编号被改写但 nonce 保留 → 仍能还原（精确替换会漏）", "张伟" in out and miss == 0, out)
+out, miss = eng.restore_kb_placeholders("联系人是 [KB_NAME_1]。", dict(_enc))
+check("★ nonce 被丢掉但编号在 → 仍能还原", "张伟" in out and miss == 0, out)
+out, miss = eng.restore_kb_placeholders("电话 [KB_PHONE_3_a3f9]，邮箱 [KB_EMAIL_0]。", dict(_enc))
+check("混合改写（重编号 + 丢 nonce）都能还原",
+      "13812345678" in out and "ops@example.com" in out and miss == 0, out)
+_amb = {"[KB_NAME_0_aaaa]": eng._crypto.encrypt("张伟"),
+        "[KB_NAME_1_bbbb]": eng._crypto.encrypt("李娜")}
+out, miss = eng.restore_kb_placeholders("联系人是 [KB_NAME_9_cccc]。", dict(_amb))
+check("★ 多候选且无线索时**保留占位符**、不猜值（宁可少还原也不编造事实）",
+      "张伟" not in out and "李娜" not in out and miss == 1, f"{out} miss={miss}")
+out, miss = eng.restore_kb_placeholders("普通文本没有占位符。", dict(_enc))
+check("没有占位符时原样返回", out == "普通文本没有占位符。" and miss == 0, out)
+check("越界：只处理 [KB_…]，用户输入占位符不受影响",
+      eng.restore_kb_placeholders("手机 [PHONE_0_zzzz]", dict(_enc))[0] == "手机 [PHONE_0_zzzz]")
+
 print("\n" + "=" * 78)
 if failures:
     print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))

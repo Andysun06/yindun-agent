@@ -419,6 +419,24 @@ class ControlReporter:
 
 
 def _iso(ts: str) -> str:
-    """本地审计时间戳（datetime.isoformat()）→ 控制面接受的 ISO-8601。"""
-    text = str(ts or "")
-    return text if len(text) >= 16 else datetime.now().astimezone().isoformat(timespec="seconds")
+    """本地审计时间戳（`datetime.isoformat()`）→ 控制面接受的规范 ISO-8601。
+
+    ★ 这里曾经是**上报链路根本不工作**的根因（V3.6.0 冒烟实测）：
+      审计条目存的是 `datetime.now().isoformat()`，带**微秒**且**不带时区**
+      （`2026-10-16T13:00:24.889339`），而控制面的格式校验只认到秒
+      （`_TS_RE` 没有小数位分支）→ 只要真上报一批带审计条目的数据就必然
+      400「events[].ts 不是 ISO-8601 时间戳」。套件当时只验了 payload 的字段与脱敏，
+      没把 payload 回灌给服务端校验器，所以一路绿灯。
+    现在两头都收：本函数输出**带时区、毫秒精度**的规范形态（naive 时间按本机时区解释），
+    服务端也接受 1~9 位小数（对其它发送端保持宽容）。
+    """
+    text = str(ts or "").strip()
+    if text:
+        try:
+            moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if moment.tzinfo is None:
+                moment = moment.astimezone()          # 本地审计存的是本机时间
+            return moment.isoformat(timespec="milliseconds")
+        except Exception:
+            pass
+    return datetime.now().astimezone().isoformat(timespec="milliseconds")
