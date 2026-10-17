@@ -40,14 +40,34 @@ _ROUTER_LOCK = threading.Lock()
 _ROUTER: Any = None
 _ROUTER_FAILED = False
 
-# noul = P(true)：一次前向回答"是否有破坏性/越权/不可逆风险"
+# ── 问句与阈值：**按实测重新选过**（V3.5.8），不是拍的 ──
+# 实测（本机 laya 0.3.27 + multilingual checkpoint，2026-10-17）：
+#   · 原来那句中文复合问句（"破坏数据、超出请求范围、或不可逆"）语义上要模型同时判三件事，
+#     对"用户只要求看文件、却要删除"这种明显越权只给 0.0019——**方向都是反的**；
+#     且它每次都要走"复合判断"，数值几乎不随动作的危险程度变化。
+#   · 换成"动作本身是否破坏/不可逆"这一句（英文、按 laya 的问句约定用反引号指名状态字段
+#     `action`），可读性明显变好：只读类 ≤0.008（开发集 4 例 + 留出集 4 例全对），
+#     破坏类出现 0.11 / 0.18 / 0.66 / 0.89 这样的高值。
+#   · ★ 但必须如实记录它的**能力边界**：留出集整体判别 5/8——
+#     `del /s /q`、`diskpart clean`、`format D:` 这类**命令行破坏性动作会被判成低危**。
+#     所以 laya 的模型分级只能当"额外一缕线索"，**不能替代**正则规则与人工判断；
+#     正则路径照旧把删除类判高危，两条提示一起显示，来源各自标注。
+#   · 由此确定分工：**"动作危险不危险"问 laya；"是否超出用户请求"交给 decision_hint（LLM）**
+#     ——后者用真实模型实测三条语义用例全部判对，而 laya 这条路测下来是反的。
 _QUESTIONS = {
-    "risk": {
+    "harm": {
         "type": "noul",
-        "instructions": "这个待执行操作是否可能破坏数据、超出用户原话请求的范围，或产生不可逆后果？",
+        "instructions": "Would executing `action` destroy or irreversibly change data?",
     },
 }
-_HIGH, _MID = 0.6, 0.3          # 概率 → 级别阈值
+# 阈值取自开发集分布（只读 0.0004~0.0106 ｜ 破坏性 0.1057~0.6581）：
+#   0.10 分界把只读与"删除文件"分开；0.30 以上是"删整份资料 / drop database"这一档。
+_HIGH, _MID = 0.30, 0.10
+# 固定用多语言 checkpoint：本机**英文 checkpoint 权重没下全**（缺 5 个文件），
+# 而 laya 的路由是按"文本里拉丁字母占比"自动选的——纯 ASCII 状态（例如英文文件名、
+# 或没有用户原话时）会被路由到英文 checkpoint，然后卡在下载上直到超时。
+# 钉死之后行为不再随输入里有没有汉字而变（这是"结果不稳定"的一个真实来源）。
+_LAYA_MODEL = "multilingual"
 _LABEL = {"高危": "warn", "中危": "warn", "低危": "info"}
 
 # ── 正则规则（回退路径）──
@@ -270,14 +290,33 @@ def _grade_with_laya(router: Any, haystack: str, context: Dict[str, Any]) -> Opt
     # 注意：这里**不等**预热。实测（V3.5.7）等待只会白等满本插件的上限、
     # 让这次审批更晚给出结论——剩下的半秒钟谁也没省下。
     # 预热的价值在"之后每一次审批"：等模型热好，一次推理只要 0.2 秒。
-    request = str(context.get("user_request") or "")[:300]
-    state = f"用户请求：{request or '（本轮没有可对照的用户原话）'}\n待执行操作：{haystack}"
+    #
+    # ★ 状态改成**字典**（V3.5.8）：laya 的问句约定是用反引号指名状态字段（`action`），
+    #   状态为 dict 时它会被序列化成 JSON，字段名与问句才能对上。早期把"请求+操作"
+    #   拼成一整段中文字符串，问句里没有任何字段名可指——模型看到的是一个无归属的陈述句。
+    #   用户原话仍然带在状态里（`request`）：虽然实测它对"是否相符"无能为力，
+    #   但动作的危险程度会受请求措辞影响，留着更贴近真实上下文。
+    request = str(context.get("user_request") or "").strip()[:300]
+    state = {
+        "action": haystack,
+        "request": request or "（本轮没有可对照的用户原话）",
+    }
     box: Dict[str, Any] = {}
 
     def _run() -> None:
         try:
-            result = router.predict(state, _QUESTIONS)
-            box["p"] = float(result["answers"]["risk"]["noul"])
+            # 钉死 checkpoint：不钉的话，纯 ASCII 输入会被路由到本机**没下全**的英文权重上，
+            # 然后卡在下载里直到超时（实测），表现成"同样的操作有时快有时慢、有时没结论"。
+            result = router.predict(state, _QUESTIONS, model=_LAYA_MODEL)
+            box["p"] = float(result["answers"]["harm"]["noul"])
+        except TypeError:
+            # 老版本 laya 没有 model 参数：退回不钉路由，但把这件事实说清楚
+            try:
+                result = router.predict(state, _QUESTIONS)
+                box["p"] = float(result["answers"]["harm"]["noul"])
+                box["unpinned"] = True
+            except Exception as exc:
+                box["err"] = f"{type(exc).__name__}: {exc}"
         except Exception as exc:
             box["err"] = f"{type(exc).__name__}: {exc}"
 
@@ -296,8 +335,13 @@ def _grade_with_laya(router: Any, haystack: str, context: Dict[str, Any]) -> Opt
         return None
     p = box["p"]
     level = "高危" if p >= _HIGH else ("中危" if p >= _MID else "低危")
+    # 文案要如实：① 写明这是"动作的危险程度"（不是"是否越权"——那是 decision_hint 的活）；
+    # ② 把概率原样给出来，人能看到它是"一缕线索"而不是判决；
+    # ③ 低危时点明已知边界：命令行破坏性动作本机实测会被判低（留出集 5/8），
+    #    否则"低危"两个字会被当成"安全"——那正是安全产品最不该给的错觉。
+    tail = "（laya 对命令行破坏性动作判别有限，请以正则规则与人工判断为准）" if level == "低危" else ""
     return {"level": _LABEL[level],
-            "text": f"风险分级（laya 模型）：{level} · 破坏性/越权概率 {p:.2f}"}
+            "text": f"风险分级（laya 模型）：{level} · 动作危害概率 {p:.2f}{tail}"}
 
 
 # ── 正则路径 ──
@@ -497,7 +541,7 @@ def preload() -> None:
                 return
             _WARMING.set()
         t0 = time.time()
-        router.predict("预热：待执行操作=read_local_file 目标=示例.txt", _QUESTIONS)
+        router.predict({"action": "read_local_file 示例.txt"}, _QUESTIONS, model=_LAYA_MODEL)
         print(f"[laya_risk] 本机模型预热完成（{time.time() - t0:.1f}s），首次审批即可用模型分级")
     except Exception as exc:
         print(f"[laya_risk] 预热失败（不影响启用，首次审批会回退正则）：{type(exc).__name__}: {exc}")

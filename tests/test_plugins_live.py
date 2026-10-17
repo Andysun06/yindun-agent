@@ -302,8 +302,8 @@ class _StubRouter:
     def __init__(self, prob):
         self.prob = prob
 
-    def predict(self, _state, _questions):
-        return {"answers": {"risk": {"noul": self.prob}}}
+    def predict(self, _state, _questions, model=None):
+        return {"answers": {"harm": {"noul": self.prob}}}
 
 
 _real_loader = layap._load_router

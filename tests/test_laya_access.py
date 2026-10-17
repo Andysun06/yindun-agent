@@ -202,8 +202,10 @@ class _FakeRouter:
     def __init__(self, prob=0.91):
         self.prob = prob
 
-    def predict(self, state, questions):
-        return {"answers": {"risk": {"noul": self.prob}}}
+    def predict(self, state, questions, model=None):
+        # 问句键随生产代码演进（V3.5.8 起问的是 `harm`：动作危害，而不是"是否越权"）；
+        # 桩必须跟着走，否则真实契约变了这里还在"通过"。
+        return {"answers": {"harm": {"noul": self.prob}}}
 
 
 def _with_cfg(cfg, fn, router=None):

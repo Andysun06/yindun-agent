@@ -197,38 +197,61 @@ answers = {"p": 0.85}
 
 
 class FakeRouter:
-    def predict(self, state, questions):
+    """桩只替"模型返回什么"；问句键与 pin 的 checkpoint 也要跟着生产代码走
+    （V3.5.8 起问句键是 harm、并显式传 model=multilingual，桩必须接受该参数，
+    否则真实签名变化会被桩掩盖成"通过"）。"""
+
+    def __init__(self):
+        self.seen_models = []
+
+    def predict(self, state, questions, model=None):
+        self.seen_models.append(model)
+        if "harm" not in questions:
+            raise AssertionError("问句键应为 harm（V3.5.8 起问的是动作危害，不是越权）")
         if answers["p"] < 0:
             raise RuntimeError("模型炸了")
-        return {"answers": {"risk": {"noul": answers["p"]}}, "routing": {"model": "fake"}}
+        return {"answers": {"harm": {"noul": answers["p"]}}, "routing": {"model": model or "auto"}}
 
 
 fake.Router = FakeRouter
+FakeRouter_inst = FakeRouter()
+fake.Router = lambda *a, **k: FakeRouter_inst
 sys.modules["laya"] = fake
 plugin._ROUTER = None          # 清掉"之前探测失败"的缓存，模拟 laya 刚装上
 plugin._ROUTER_FAILED = False
 answers["p"] = 0.85
 out = plugin.advisory_for_approval(dict(CTX_READ))   # 只读操作，但模型说危险 → 信模型
+check("★ 固定使用 multilingual checkpoint（不钉的话纯 ASCII 输入会去用本机没下全的英文权重）",
+      FakeRouter_inst.seen_models and all(m == "multilingual" for m in FakeRouter_inst.seen_models),
+      str(FakeRouter_inst.seen_models))
 check("接入 laya 后走模型、标注来源为 laya",
       out and "laya 模型" in out["text"] and out["level"] == "warn" and "高危" in out["text"], str(out))
 answers["p"] = 0.15
 out = plugin.advisory_for_approval(dict(CTX_DELETE))
-check("模型概率低时给 info 低危（模型说了算，不按正则加戏）",
-      out and out["level"] == "info" and "低危" in out["text"], str(out))
+check("概率落在中危区间（0.10~0.30）→ warn 中危（模型说了算，不按正则加戏）",
+      out and out["level"] == "warn" and "中危" in out["text"], str(out))
+answers["p"] = 0.02
+out = plugin.advisory_for_approval(dict(CTX_DELETE))
+check("概率很低 → info 低危，且文案点明已知边界（低危不等于安全）",
+      out and out["level"] == "info" and "低危" in out["text"] and "判别有限" in out["text"], str(out))
+answers["p"] = 0.55
+out = plugin.advisory_for_approval(dict(CTX_DELETE))
+check("概率 ≥0.30 → 高危（阈值取自开发集分布，不是拍的）",
+      out and out["level"] == "warn" and "高危" in out["text"], str(out))
 answers["p"] = -1.0
 out = plugin.advisory_for_approval(dict(CTX_DELETE))
 check("模型推理异常→回退正则（rm -rf 仍给高危，流程不断）",
       out and "正则规则" in out["text"] and out["level"] == "warn" and "高危" in out["text"], str(out))
-class SlowRouter:   # 模拟首次使用正在下载权重的慢推理
-    def predict(self, state, questions):
+class SlowRouter:   # 模拟首次前向的慢推理（实测本机 20~35s）
+    def predict(self, state, questions, model=None):
         time.sleep(2)
-        return {"answers": {"risk": {"noul": 0.99}}}
+        return {"answers": {"harm": {"noul": 0.99}}}
 plugin._LAYA_WAIT = 0.5          # 测试内把内部等待压短
 plugin._ROUTER = SlowRouter()
 t0 = time.monotonic()
 out = plugin.advisory_for_approval(dict(CTX_READ))
 elapsed = time.monotonic() - t0
-check("推理超时（模拟下载权重）→主动回退正则，弹窗仍有提示、不拖到宿主超时",
+check("推理超时（模拟首次前向的慢）→主动回退正则，弹窗仍有提示、不拖到宿主超时",
       out and "正则规则" in out["text"] and elapsed < 1.5, f"{elapsed:.2f}s {out}")
 plugin._LAYA_WAIT = 25.0
 out2 = plugin.advisory_for_approval({"tool": "", "path": "", "args": {}})
