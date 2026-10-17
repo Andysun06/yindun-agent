@@ -415,49 +415,17 @@ print("【9】真实模型车道（Ollama + 本机 laya，无桩）")
 print("=" * 78)
 
 
-def _loopback_port(host: str):
-    """把 OLLAMA_HOST 解析成端口；**只接受 http 且主机必须是回环地址**，否则返回 None。
+# 复用**生产代码里已审过的探测路径**，测试自己不再写任何 HTTP：
+#   · probe_endpoint：产品探测算力端点用的同一个函数（只读 /models 与 /api/tags、禁重定向、短超时）
+#   · detect_ollama_models：纯**文件系统**读取本地模型清单（不需要网络，也不构造 URL）
+from yindun.app.llm_factory import detect_ollama_models, probe_endpoint  # noqa: E402
 
-    这个辅助函数只干一件事：确认本机 Ollama 在不在线。把协议与主机钉死在这里，
-    它就不可能被改成"随手请求任意 URL"的能力——安全门禁对动态 URL 的告警是合理的，
-    正确的回应是把边界写进代码，而不是把告警绕过去。
-    """
-    from urllib.parse import urlparse
-    parsed = urlparse(host if "://" in host else "http://" + host)
-    if parsed.scheme != "http":
-        return None
-    if (parsed.hostname or "").lower() not in ("127.0.0.1", "localhost", "::1"):
-        return None
-    return int(parsed.port or 11434)
-
-
-def _ollama_tags(host: str, timeout: float = 6.0):
-    """列出本机模型。返回 (是否在线, [模型名...])。离线/非回环都不是错误，是"这一组跳过"。"""
-    import urllib.error
-    import urllib.request
-
-    port = _loopback_port(host)
-    if port is None:
-        print(f"  [跳过] OLLAMA_HOST 不是回环地址（{host}）：真实模型车道只对**本机**运行")
-        return False, []
-    url = f"http://127.0.0.1:{port}/api/tags"      # 主机与协议都在上面钉死，这里只拼端口
-
-    class _NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, req, fp, code, msg, headers, newurl):   # noqa: D102
-            return None                                # 不许被引到别的地址再请求一次
-
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
-    try:
-        with opener.open(url, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8", "replace"))
-        return True, [str(m.get("name") or "") for m in (data.get("models") or [])]
-    except Exception:
-        return False, []
-
-
-_OLLAMA = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
-_online, _models = _ollama_tags(_OLLAMA)
-print(f"  [i] Ollama {'在线' if _online else '未在线'}｜模型：{_models or '—'}")
+_LOCAL_OLLAMA = "http://127.0.0.1:11434"        # 本机默认地址：字面量写死，不接受环境里的主机名
+_probe = probe_endpoint(_LOCAL_OLLAMA, timeout=4.0)
+_online = bool(_probe.get("ok"))
+_models = detect_ollama_models() or []
+_OLLAMA = _LOCAL_OLLAMA
+print(f"  [i] Ollama {'在线' if _online else '未在线'}｜本地模型清单：{_models or '—'}")
 if not _online:
     print("  [跳过] 本机 Ollama 未在线 → **真实模型车道没有运行**（跳过 ≠ 通过）")
     print("        要做真实模型验证：先启动 Ollama（`ollama serve`）再重跑本套件。")
@@ -469,8 +437,8 @@ else:
     svc9.settings.set("model", real_model)
 
     def _advise(tool, filename, request):
-        ctx = {"tool": tool, "args": {"filename": filename}, "path": "D:\\项目\\" + filename,
-               "user_request": request, "model": real_model, "ollama_host": _OLLAMA}
+        ctx = {"tool": tool, "args": {"filename": filename}, "path": "D:\项目\\" + filename,
+               "user_request": request, "model": real_model, "ollama_host": _LOCAL_OLLAMA}
         _t0 = _time.time()
         got = svc9._plugins.call_hook("advisory_for_approval", ctx)
         return got, _time.time() - _t0
