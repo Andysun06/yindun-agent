@@ -581,14 +581,40 @@ def advisory_for_approval(context: Dict[str, Any]) -> Optional[Dict[str, str]]:
 
     if choice in ("local", "lan"):
         router = _load_router() if choice == "local" else None
+        graded = None
         if router is not None:
             graded = _grade_with_laya(router, haystack, context)
             if graded is not None:
                 _remember_source("本机 laya 模型")
-                return graded
-        if cfg.get("endpoint"):
+        if graded is None and cfg.get("endpoint"):
             graded = _grade_with_endpoint(haystack, context, cfg)
-            if graded is not None:
-                return graded
+        if graded is not None:
+            return _merge_with_rules(graded, haystack)
     return _grade_with_rules(haystack)
+
+
+def _merge_with_rules(graded: Dict[str, str], haystack: str) -> Dict[str, str]:
+    """把模型结论与**确定性正则规则**取更严的一侧（V3.5.9）。
+
+    为什么必须合并（这条是实现层的一个反直觉缺陷）：模型可用时，正则规则**根本没跑**——
+    于是"装了 laya"反而把提示放松了：删除文件在正则路径是「高危」，在模型路径可能是「中危」甚至「低危」。
+    对安全产品来说这是反的：**多装一个模型不该让提示变松**。
+    现在的规则很简单、可预测：
+      · 正则判「高危」（破坏性/系统级动作）→ 以它为准，模型结论附在后面当补充；
+      · 其余情况 → 以模型结论为主（它更细，带概率）；
+      · 正则没命中 → 保持模型结论原样。
+    注：两者都只影响**提示文字**，不参与任何放行判定。
+    """
+    rules = _grade_with_rules(haystack) or {}
+    if rules.get("level") == "warn" and "高危" in str(rules.get("text", "")):
+        model_note = ""
+        if graded.get("text"):
+            # 只说"另一路信号"给了什么，不重复整句
+            if "动作危害概率" in graded["text"]:
+                prob = graded["text"].split("动作危害概率", 1)[-1].strip().split("（")[0].strip()
+                model_note = f"；laya 模型：动作危害概率 {prob}"
+            else:
+                model_note = f"；laya 模型：{graded['text'].split('：', 1)[-1][:40]}"
+        return {"level": "warn", "text": rules["text"] + model_note}
+    return graded
 

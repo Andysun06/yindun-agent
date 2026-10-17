@@ -226,16 +226,20 @@ check("★ 固定使用 multilingual checkpoint（不钉的话纯 ASCII 输入�
       str(FakeRouter_inst.seen_models))
 check("接入 laya 后走模型、标注来源为 laya",
       out and "laya 模型" in out["text"] and out["level"] == "warn" and "高危" in out["text"], str(out))
+# ★ 注意：这几条要用**内置规则未覆盖**的工具名（如 analyze_project）。
+#   若还在 delete_local_file 上测，正则规则会判高危并压过模型结论（V3.5.9 的"取更严一侧"），
+#   那测到的就不是"模型阈值"而是"合并规则"了。
+CTX_FREE = {"tool": "analyze_project", "path": "D:\项目", "args": {}}
 answers["p"] = 0.15
-out = plugin.advisory_for_approval(dict(CTX_DELETE))
-check("概率落在中危区间（0.10~0.30）→ warn 中危（模型说了算，不按正则加戏）",
+out = plugin.advisory_for_approval(dict(CTX_FREE))
+check("概率落在中危区间（0.10~0.30）→ warn 中危（规则未覆盖时模型说了算）",
       out and out["level"] == "warn" and "中危" in out["text"], str(out))
 answers["p"] = 0.02
-out = plugin.advisory_for_approval(dict(CTX_DELETE))
+out = plugin.advisory_for_approval(dict(CTX_FREE))
 check("概率很低 → info 低危，且文案点明已知边界（低危不等于安全）",
       out and out["level"] == "info" and "低危" in out["text"] and "判别有限" in out["text"], str(out))
 answers["p"] = 0.55
-out = plugin.advisory_for_approval(dict(CTX_DELETE))
+out = plugin.advisory_for_approval(dict(CTX_FREE))
 check("概率 ≥0.30 → 高危（阈值取自开发集分布，不是拍的）",
       out and out["level"] == "warn" and "高危" in out["text"], str(out))
 answers["p"] = -1.0
@@ -256,6 +260,35 @@ check("推理超时（模拟首次前向的慢）→主动回退正则，弹窗�
 plugin._LAYA_WAIT = 25.0
 out2 = plugin.advisory_for_approval({"tool": "", "path": "", "args": {}})
 check("空上下文安静返回 None", out2 is None, str(out2))
+
+# ── 取更严的一侧（V3.5.9）：模型判低危但正则判高危时，提示**不能变松** ──
+#   反直觉的旧行为：模型可用时正则根本不跑，于是"装了 laya"反而把删除类提示从高危降成中危/低危。
+import tempfile as _tf, json as _json, importlib.util as _ilu  # noqa: E402
+from pathlib import Path as _P  # noqa: E402
+_tmp2 = _P(_tf.mkdtemp(prefix="laya_merge_"))
+_spec2 = _ilu.spec_from_file_location("lp_merge", _P(plugin.__file__).resolve())
+_lp2 = _ilu.module_from_spec(_spec2); _spec2.loader.exec_module(_lp2)
+_lp2.PLUGIN_DATA_DIR = str(_tmp2)
+(_tmp2 / "risk_rules.txt").write_text("高危|delete_local_file|删除本地文件" + chr(10), encoding="utf-8")
+(_tmp2 / "laya_source.json").write_text(_json.dumps({"source": "local", "auto": True}), encoding="utf-8")
+
+
+class _LowRouter:
+    def predict(self, state, questions, model=None):
+        return {"answers": {"harm": {"noul": 0.01}}}          # 模型判低危
+
+
+_lp2._load_router = lambda: _LowRouter()
+merged = _lp2.advisory_for_approval({"tool": "delete_local_file", "path": "D:/项目/说明.txt"})
+check("★ 模型判低危但正则判高危 → 显示高危（装 laya 不让提示变松）",
+      merged and merged["level"] == "warn" and "高危" in merged["text"], str(merged))
+check("合并后的提示同时写明两路来源（正则规则 + 模型概率）",
+      merged and "正则规则" in merged["text"] and "laya 模型" in merged["text"]
+      and "0.01" in merged["text"], str(merged))
+merged_benign = _lp2.advisory_for_approval({"tool": "read_local_file", "path": "D:/项目/说明.txt"})
+check("正则没命中时仍以模型结论为主（只读→低危）",
+      merged_benign and merged_benign["level"] == "info" and "低危" in merged_benign["text"],
+      str(merged_benign))
 
 print("\n" + "=" * 78)
 if failures:

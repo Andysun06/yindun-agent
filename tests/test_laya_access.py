@@ -187,7 +187,9 @@ check("设置页与插件用的是同一个配置文件名（两边不漂移的�
       ls.CONFIG_NAME == "laya_source.json" and "laya_source.json" in
       (ROOT / "yindun/plugins/builtin/laya_risk/manifest.json").read_text(encoding="utf-8"))
 
-ctx = {"tool": "delete_local_file", "path": "D:\\项目\\合同.docx", "user_request": "整理文件"}
+# ★ 工具名刻意用**内置规则未覆盖**的（analyze_project）：V3.5.9 起「正则判高危会压过模型结论」
+#   （取更严的一侧），若这里用 delete_local_file，测到的就是"合并规则"而不是"三级回退顺序"。
+ctx = {"tool": "analyze_project", "path": "D:\\项目", "args": {}, "user_request": "整理文件"}
 
 
 # 本机模型是否可用取决于**跑测试的机器**（本机可能真装了 laya，也可能没有），

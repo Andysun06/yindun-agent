@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from yindun import APP_ROOT
 from yindun.app.attachment import build_attachment_context, parse_attachment
-from yindun.app.llm_factory import (TIER_LABEL, build_llm, detect_chat_models,
+from yindun.app.llm_factory import (TIER_LABEL, build_llm_variants, detect_chat_models,
                                     detect_ollama_models, infer_tier, model_catalog,
                                     probe_endpoint, tier_of)
 from yindun.core.permission import PERMISSION_ENV, resolve_mode
@@ -78,6 +78,9 @@ class AgentService:
         self._busy = False
         self._lock = threading.RLock()
         self._llm = None
+        # 两套算力变体：{False: 关掉模型思考的算力, True: 保持模型默认的算力}（V3.5.9）
+        # 见 llm_factory.reasoning_for_mode：实测思考型模型不关思考要 42~92 秒、关掉 0.7~3.1 秒
+        self._llm_variants: Dict[bool, Any] = {}
         self._tools_map: Dict[str, Any] = {}
         self._llm_error: Optional[str] = None
         self._run_seq = 0
@@ -127,6 +130,20 @@ class AgentService:
 
     def set_listener(self, listener: Optional[Listener]) -> None:
         self._listener = listener
+
+    def _llm_for(self, think_mode: Any = None) -> Any:
+        """按当前「快速 / 深度思考」挑算力变体（V3.5.9）。
+
+        背景（实测）：思考型模型不关思考时，一句简单提问要 42~92 秒，关掉只要 0.7~3.1 秒。
+        两套变体在 `prepare_llm` 时一次建好，这里只做选择——**切模式不必重建算力**，
+        也不会打断正在跑的轮次（worker 在每轮开始时取一次）。
+        取不到变体（例如只有一套可用）时回落到 `_llm`，绝不返回 None 让调用方去猜。
+        """
+        from yindun.app.llm_factory import reasoning_for_mode
+        key = reasoning_for_mode(think_mode if think_mode is not None
+                                 else self.settings.get("think_mode"))
+        variants = self._llm_variants or {}
+        return variants.get(False if key is False else True) or variants.get(False) or self._llm
 
     def apply_runtime_env(self, session_id: Optional[str] = None) -> str:
         """把设置里的「工具层即时生效」开关下发给内核（环境变量是界面与工具层之间的唯一协议）。
@@ -234,7 +251,11 @@ class AgentService:
                     self._emit("status", f"模型 {configured} 本机未安装，已改用 {fallback}")
         except Exception as exc:
             print(f"[AgentService] 模型名对齐失败（按原配置继续）：{exc}")
-        self._llm, self._tools_map, models, err = build_llm(self.settings.data, build_tools())
+        # 一次建好两套算力变体（关思考 / 保持模型默认），每轮按当前模式挑一套用：
+        # 切「快速 / 深度思考」不需要重建算力，也不会打断正在跑的轮次。
+        self._llm_variants, self._tools_map, models, err = build_llm_variants(
+            self.settings.data, build_tools())
+        self._llm = self._llm_for(self.settings.get("think_mode"))
         self._llm_error = err
         if models:
             self.settings.set("ollama_models_cache", models)
@@ -701,6 +722,7 @@ class AgentService:
             fallback = get_first_available_model() or "qwen3.5:4b"
             self.settings.set("model", fallback)
             self._llm = None
+            self._llm_variants = {}
         self.settings.save()
         return {"ok": True, "models": self.custom_models()}
 
@@ -816,6 +838,7 @@ class AgentService:
                 if fallback:
                     self.settings.set("model", fallback)
                     self._llm = None
+                    self._llm_variants = {}
                     effects.append(f"当前模型不在允许集内，已回退到 {fallback}")
                 else:
                     effects.append("允许集为空：所有模型均被禁用（请改用本机或局域网模型）")
@@ -1325,7 +1348,9 @@ class AgentService:
         worker.think_mode = self.settings.get("think_mode") or "快速回答"
         worker.privacy_shield = bool(self.settings.get("privacy", True))
         worker.think_depth = int(self.settings.get("thinking_depth", 3) or 3)
-        worker.llm = self._llm
+        # 思考开关跟着模式走：「快速回答」用关掉思考的算力（实测快 10~30 倍），
+        # 「深度思考」用保持模型默认的算力——两套都在 prepare_llm 时建好了。
+        worker.llm = self._llm_for(self.settings.get("think_mode"))
         worker.tools_map = self._tools_map
         worker.sandbox_path = os.environ.get("SANDBOX_PATH", str(APP_ROOT))
         worker.attachment_fulltext = self.sessions.get_attachment_fulltext(sid)

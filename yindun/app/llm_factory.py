@@ -258,17 +258,58 @@ def probe_endpoint(base_url: str, api_key: str = "", timeout: float = 4.0) -> Di
     return {"ok": False, "error": "端点没有响应 /models 或 /api/tags（请确认是 OpenAI 兼容或 Ollama 服务）"}
 
 
-def build_llm(settings: Dict[str, Any], tools: List[Any]) -> Tuple[Any, Dict[str, Any], List[str], Optional[str]]:
+def reasoning_for_mode(think_mode: str) -> Optional[bool]:
+    """把界面上的「快速 / 深度思考」翻译成**模型的思考开关**。
+
+    为什么必须翻译（V3.5.9 实测，本机 qwen3.5:4b）：同一句"用一句话说明什么是哈希链审计"，
+    不关思考要 **42~92 秒**、关掉只要 **0.7~3.1 秒**，答案质量相当——也就是说
+    **每次回答都在白等模型想几十秒**，而"快速回答"这个模式名本来就该表达"别想那么久"。
+    安全边界也实测过：给**非思考型**模型（qwen2.5:0.5b）传 `reasoning=False` 一切正常；
+    传 `reasoning=True` 会被 Ollama 以 400 拒绝（"does not support thinking"）。
+    所以映射刻意是"单向下压"：
+      · 快速回答 → False（明确关掉思考；对两类模型都安全）
+      · 深度思考 → None（**不传**，保持模型默认：思考型照旧先推理，非思考型不受影响）
+    这样既不用猜"这个模型支不支持 thinking"，也不会把任何模型打成 400。
+    """
+    mode = str(think_mode or "")
+    if "深度" in mode or "思考" in mode:
+        return None
+    return False
+
+
+def build_llm_variants(settings: Dict[str, Any], tools: List[Any]
+                       ) -> Tuple[Dict[bool, Any], Dict[str, Any], List[str], Optional[str]]:
+    """一次构建两个变体：`{False: 关思考的算力, True: 保持默认的算力}`。
+
+    为什么建两套：思考开关只在**创建**算力时生效，而用户随时会切「快速 / 深度思考」；
+    切一次就重建算力既慢又要重连（还可能打断正在跑的轮次）。构造本身不联网、很便宜，
+    因此一次建好两套，每轮按当前模式挑一套用（见 `AgentService._llm_for`）。
+    """
+    fast, tools_map, models, err = build_llm(settings, tools, reasoning=False)
+    if err:
+        return {}, tools_map, models, err
+    default, _, _, err2 = build_llm(settings, tools, reasoning=None)
+    if err2:
+        return {False: fast}, tools_map, models, err2
+    return {False: fast, True: default}, tools_map, models, None
+
+
+def build_llm(settings: Dict[str, Any], tools: List[Any],
+              reasoning: Any = "__from_mode__") -> Tuple[Any, Dict[str, Any], List[str], Optional[str]]:
     """按配置构建算力并绑定工具。
 
     返回 (bound_llm, tools_map, ollama_models, error)：
       · bound_llm 为 None 时 error 说明原因（界面据此提示）
       · tools_map 为 {tool_name: tool}，供 Worker 执行工具时查找
+      · reasoning：模型思考开关。默认（`__from_mode__`）按当前 think_mode 推导；
+        显式传 None 表示**不传该参数**（保持模型默认）。
     """
     model_name = settings.get("model") or "qwen3.5:4b"
     custom_models = settings.get("custom_models", {}) or {}
     ollama_host = settings.get("ollama_host") or DEFAULT_OLLAMA_HOST
     models = detect_ollama_models()
+    if reasoning == "__from_mode__":
+        reasoning = reasoning_for_mode(settings.get("think_mode"))
 
     try:
         if model_name in custom_models:
@@ -281,6 +322,11 @@ def build_llm(settings: Dict[str, Any], tools: List[Any]) -> Tuple[Any, Dict[str
             )
         else:
             from langchain_ollama import ChatOllama
+            extra: Dict[str, Any] = {}
+            if reasoning is not None:
+                # 只在明确要"关掉思考"时传；不传 = 保持模型默认。
+                # ★ 绝不对未知模型传 True：Ollama 会以 400 拒绝非思考型模型（实测）。
+                extra["reasoning"] = reasoning
             base_model = ChatOllama(
                 model=model_name,
                 base_url=ollama_host,
@@ -292,6 +338,7 @@ def build_llm(settings: Dict[str, Any], tools: List[Any]) -> Tuple[Any, Dict[str
                     "top_p": 0.9,
                 },
                 keep_alive=300,
+                **extra,
             )
         bound = base_model.bind_tools(tools)
         return bound, {t.name: t for t in tools}, models, None

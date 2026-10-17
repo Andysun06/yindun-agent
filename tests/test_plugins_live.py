@@ -433,7 +433,13 @@ else:
     import time as _time
     svc9 = new_service("real_model")
     svc9.create_session("真实模型验证")
-    real_model = next((m for m in _models if m.startswith("qwen")), (_models[0] if _models else ""))
+    # 选模型要挑**能干活的那一个**：本机可能同时有 qwen3.5:4b（项目默认，演示用）与
+    # 为了验证思考开关而拉的小模型（qwen2.5:0.5b）。按字母序取第一个"qwen"会命中小的那个，
+    # 于是这一组测的是 0.5B 的能力（实测它会把"越权删除"判成"相符"）——那不是产品要的结论。
+    _chat = [m for m in _models if "embed" not in m.lower()]
+    real_model = (next((m for m in _chat if m.startswith("qwen3")), None)
+                  or next((m for m in _chat if m.startswith("qwen")), None)
+                  or (_chat[0] if _chat else ""))
     svc9.settings.set("model", real_model)
 
     def _advise(tool, filename, request):

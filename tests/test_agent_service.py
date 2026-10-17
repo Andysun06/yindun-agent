@@ -475,6 +475,52 @@ check("★ 落库的消息链不以空助手消息结尾（重启后不会看到
       bool(_persisted) and _persisted[-1].get("role") == "assistant"
       and bool(str(_persisted[-1].get("content") or "").strip()),
       str([(m.get("role"), len(str(m.get("content") or ""))) for m in _persisted[-3:]]))
+
+# ── ①.6 思考开关跟着「快速 / 深度思考」走（V3.5.9，实测 42~92s → 0.7~3.1s）──
+from yindun.app.llm_factory import reasoning_for_mode  # noqa: E402
+check("快速回答 → 明确关掉模型思考（对思考型与非思考型模型都安全）",
+      reasoning_for_mode("快速回答") is False, str(reasoning_for_mode("快速回答")))
+check("深度思考 → 不传该参数（保持模型默认：思考型会推理，非思考型不受影响）",
+      reasoning_for_mode("深度思考") is None, str(reasoning_for_mode("深度思考")))
+check("未知/空模式 → 按「快速」处理（宁可快，也不要让用户白等）",
+      reasoning_for_mode("") is False and reasoning_for_mode(None) is False)
+
+# ── ①.7 小模型"把工具调用写成文字"的两种形态：识别 + 一次重试 ──
+class _ToolMapWorker(_Worker):
+    def __init__(self):
+        self.tools_map = {"search_knowledge_base": 1, "read_local_file": 2}
+
+
+_w = _ToolMapWorker()
+check("识别形态①伪调用行（实测 qwen3.5:4b 有知识库提示时会这么写）",
+      _w._looks_like_text_tool_call('【知识库检索】search_knowledge_base(query="x", top_k=5)') is True)
+check("识别形态②JSON 代码块里的 tool_calls",
+      _w._looks_like_text_tool_call(
+          "```json" + chr(10) + '{"tool_calls": [{"name": "read_local_file"}]}' + chr(10) + "```") is True)
+check("正常回答不误判",
+      _w._looks_like_text_tool_call("哈希链审计是…" + chr(10) + "1. 防篡改" + chr(10) + "2. 可追溯") is False)
+check("长解释里举例不误判（长度上限挡掉）",
+      _w._looks_like_text_tool_call("例如可以调用 read_local_file(a.txt) 读取。" * 30) is False)
+check("只提工具名不误判（必须有调用括号）",
+      _w._looks_like_text_tool_call("这个请求需要用到 search_knowledge_base 工具。") is False)
+
+# ── ①.8 空回复兜底文案按场景分支（没有附件就不该劝人"换更小的 PDF"）──
+worker_noatt = _Worker()
+worker_noatt.llm = _EmptyLLM()
+worker_noatt.tools_map = {}
+worker_noatt.user_input = "用一句话介绍你自己"
+worker_noatt.think_mode = "快速回答"
+worker_noatt.privacy_shield = False
+worker_noatt.sandbox_path = str(_SBX)
+worker_noatt.attachment_fulltext = {}          # 没有附件
+na_done = []
+worker_noatt.bus.subscribe("finished", lambda p: na_done.append(p))
+worker_noatt.run()
+na_reply = str(na_done[-1]) if na_done else ""
+check("无附件时不说「附件/OCR/PDF」那套话术（答非所问修掉了）",
+      na_reply.strip() and "附件" not in na_reply and "PDF" not in na_reply, na_reply[:80])
+check("无附件时如实说明原因（本机小模型偶发空回复）",
+      "空回复" in na_reply or "没有给出回答" in na_reply, na_reply[:80])
 check("★ 落库内容与界面收到的回答一致（库里存的就是屏上看到的）",
       str(_persisted[-1].get("content") or "").strip() == _empty_reply.strip(),
       f"库={str(_persisted[-1].get('content'))[:40]!r} 界面={_empty_reply[:40]!r}")

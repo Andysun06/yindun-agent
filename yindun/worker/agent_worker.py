@@ -733,6 +733,7 @@ class Worker:
         #   （跨轮复用会把"用户让我再读一次这个文件"短路掉——文件可能已经变了）。
         self._tool_fp_cache = {}
         self._deepen_used = False
+        self._text_call_retried = False   # "把工具调用写成了文字"只重试一次，再犯就如实标注
         last_tool_result = ""  # 初始化，防止循环结束时 NameError
 
         while round_count < max_rounds:
@@ -825,6 +826,21 @@ class Worker:
 
                 if content and isinstance(content, str) and content.strip():
                     final_reply = self._clean(content)
+                    # ★ 小模型会把"工具调用"写成普通文字（实测 qwen3.5:4b：有知识库提示时写出
+                    #   `【知识库检索】search_knowledge_base(query=…, top_k=5)` 这类伪调用行），
+                    #   若放任它当回答，用户看到的就是一行假的工具调用。这里给一次重试机会：
+                    #   明确要求它要么用工具调用格式、要么直接作答；再犯就如实标注，不假装已执行。
+                    if self._looks_like_text_tool_call(final_reply):
+                        if not getattr(self, "_text_call_retried", False):
+                            self._text_call_retried = True
+                            self.status.emit("[模型] 把工具调用写成了文字，已要求它改用工具调用格式重试…")
+                            messages.append(HumanMessage(
+                                content="你刚才把工具调用写成了普通文字，系统不会执行这种写法。"
+                                        "如果确实需要调用工具，请使用工具调用（function call）格式；"
+                                        "否则请直接回答用户的问题。"))
+                            continue
+                        final_reply += ("\n\n（提示：模型这一轮把工具调用写成了文字，因此**没有被真正执行**；"
+                                        "可以再发一次，或换用更大的模型。）")
                     # ★ 落地性兜底：模型若无视工具结果（实测 7B 常发生），把真实读取结果一并呈现
                     if forced_tool_result and forced_tool_name:
                         final_reply = self._ensure_grounded(final_reply, forced_tool_name, forced_tool_result)
@@ -838,16 +854,26 @@ class Worker:
                 self.status.emit("[模型] 未给出明确回答，重新生成...")
                 reply_msg = self._direct_answer(ai_input, memory)
                 final_reply = self._clean(reply_msg)
-                # 兜底：如果仍然为空，给用户一个明确提示，避免静默返回空白
+                # 兜底：如果仍然为空，给用户一个明确提示，避免静默返回空白。
+                # ★ 文案按场景分支（V3.5.9 修）：原来只有"附件"那一套话术，
+                #   于是**没挂附件**的时候也会收到"附件过长/扫描件 OCR 失败"的建议——答非所问。
                 if not final_reply.strip():
-                    final_reply = (
-                        "抱歉，模型未能针对该附件生成有效回答。\n"
-                        "可能原因：\n"
-                        "1. 附件文本过长超出模型上下文，请尝试截取片段或换更小的 PDF\n"
-                        "2. 附件为扫描件/图片，且 OCR 未识别到文字（已安装 rapidocr-onnxruntime 仍可能因图片质量过差失败）\n"
-                        "3. 模型当前状态异常，请重试或切换模型\n"
-                        "请尝试：精简提问、切换深度思考模式、或挂载更小的文档。"
-                    )
+                    if self.attachment_fulltext:
+                        final_reply = (
+                            "抱歉，模型未能针对该附件生成有效回答。\n"
+                            "可能原因：\n"
+                            "1. 附件文本过长超出模型上下文，请尝试截取片段或换更小的 PDF\n"
+                            "2. 附件为扫描件/图片，且 OCR 未识别到文字（已安装 rapidocr-onnxruntime 仍可能因图片质量过差失败）\n"
+                            "3. 模型当前状态异常，请重试或切换模型\n"
+                            "请尝试：精简提问、切换深度思考模式、或挂载更小的文档。"
+                        )
+                    else:
+                        final_reply = (
+                            "抱歉，模型这一轮没有给出回答。\n"
+                            "本机小模型偶发空回复（实测约每 5 次出现 1 次，与本机算力负载有关），"
+                            "不是你的操作有问题。\n"
+                            "可以试试：再发一次、把问题问得更具体、切换到「深度思考」模式，或换用更大的模型。"
+                        )
                 chain = messages[round_start_idx:]
                 memory.update_with_full_chain(chain)
                 self.result_messages = memory.to_dict_list()
@@ -1261,6 +1287,38 @@ class Worker:
         except Exception:
             return ""            # 校验本身失败时保持沉默，不影响主流程
         return ""
+
+    def _looks_like_text_tool_call(self, text: str) -> bool:
+        """判断这段"回答"其实是模型**用文字写的工具调用**（而不是真回答）。
+
+        实测依据（V3.5.9，qwen3.5:4b）——小模型会用两种形态把工具调用"写出来"：
+          ① 伪调用行：`【知识库检索】search_knowledge_base(query=…, top_k=5)`
+          ② JSON 代码块：```json {"tool_calls": [{"name": "search_knowledge_base", …}]} ```
+        两种情况的结构化 `tool_calls` 字段都是空的，于是这行文字被当成回答呈现给用户
+        （看起来像工具跑了，其实一次都没执行）。
+
+        判据刻意收紧，宁可漏判也不要误判：
+          · 形态②：文本里出现 JSON 键 `"tool_calls"` **且**同时出现我们真实存在的工具名（≤800 字符）；
+          · 形态①：某一行以可选的中文方括号标记开头，紧接着是真实工具名 + 左括号（≤300 字符）。
+        命中后由调用方决定怎么办（重试一次 → 再犯则如实标注），这里只做识别。
+        """
+        body = (text or "").strip()
+        if not body:
+            return False
+        names = [str(n) for n in (self.tools_map or {}) if n]
+        if not names:
+            return False
+        # 形态②：JSON 代码块里的 tool_calls（模型"写"出结构化调用）
+        if len(body) <= 800 and '"tool_calls"' in body and any(
+                ('"%s"' % n) in body or ("'%s'" % n) in body for n in names):
+            return True
+        # 形态①：伪调用行
+        if len(body) > 300:
+            return False
+        import re as _re
+        pattern = r"(?m)^\s*(?:[【\[][^】\]\n]{0,14}[】\]])?\s*(?:%s)\s*\(" % "|".join(
+            _re.escape(n) for n in names)
+        return _re.search(pattern, body) is not None
 
     def _ensure_reply_persisted(self, final_reply: str) -> None:
         """保证**落库的消息链最后一条助手消息就是用户看到的那段文字**。
