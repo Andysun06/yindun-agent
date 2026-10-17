@@ -402,6 +402,149 @@ else:
     if mismatched:
         print("       ↳ 说明：源码比 exe 新（改了插件但没重建）。请重新打包客户端 exe 后再跑本套件。")
 
+# ══ 9) 真实模型车道（**无桩**）：本机 Ollama / laya 在线时真跑，离线时明确跳过 ══
+#  负责人明确要求："不要用桩替身，直接启动本地 Ollama"。所以这一组的做法是：
+#    · decision_hint / laya_risk 都**用真实模型**，不注入任何替身；
+#    · 走**生产代码的路径**（AgentService.set_plugin_enabled → 宿主 call_hook，
+#      上下文按生产形状构造）——否则只能证明"我构造的入参没问题"；
+#    · 断言只锚在**稳定可知**的东西上（有结论、级别语义正确、来源写明、耗时预算），
+#      不锚具体措辞与具体概率——真实模型的输出不该被测试写死。
+#  离线时整组跳过，并明确打印"跳过 ≠ 通过"，不把没跑说成跑过。
+print("=" * 78)
+print("【9】真实模型车道（Ollama + 本机 laya，无桩）")
+print("=" * 78)
+
+
+def _loopback_port(host: str):
+    """把 OLLAMA_HOST 解析成端口；**只接受 http 且主机必须是回环地址**，否则返回 None。
+
+    这个辅助函数只干一件事：确认本机 Ollama 在不在线。把协议与主机钉死在这里，
+    它就不可能被改成"随手请求任意 URL"的能力——安全门禁对动态 URL 的告警是合理的，
+    正确的回应是把边界写进代码，而不是把告警绕过去。
+    """
+    from urllib.parse import urlparse
+    parsed = urlparse(host if "://" in host else "http://" + host)
+    if parsed.scheme != "http":
+        return None
+    if (parsed.hostname or "").lower() not in ("127.0.0.1", "localhost", "::1"):
+        return None
+    return int(parsed.port or 11434)
+
+
+def _ollama_tags(host: str, timeout: float = 6.0):
+    """列出本机模型。返回 (是否在线, [模型名...])。离线/非回环都不是错误，是"这一组跳过"。"""
+    import urllib.error
+    import urllib.request
+
+    port = _loopback_port(host)
+    if port is None:
+        print(f"  [跳过] OLLAMA_HOST 不是回环地址（{host}）：真实模型车道只对**本机**运行")
+        return False, []
+    url = f"http://127.0.0.1:{port}/api/tags"      # 主机与协议都在上面钉死，这里只拼端口
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):   # noqa: D102
+            return None                                # 不许被引到别的地址再请求一次
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+    try:
+        with opener.open(url, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+        return True, [str(m.get("name") or "") for m in (data.get("models") or [])]
+    except Exception:
+        return False, []
+
+
+_OLLAMA = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+_online, _models = _ollama_tags(_OLLAMA)
+print(f"  [i] Ollama {'在线' if _online else '未在线'}｜模型：{_models or '—'}")
+if not _online:
+    print("  [跳过] 本机 Ollama 未在线 → **真实模型车道没有运行**（跳过 ≠ 通过）")
+    print("        要做真实模型验证：先启动 Ollama（`ollama serve`）再重跑本套件。")
+else:
+    import time as _time
+    svc9 = new_service("real_model")
+    svc9.create_session("真实模型验证")
+    real_model = next((m for m in _models if m.startswith("qwen")), (_models[0] if _models else ""))
+    svc9.settings.set("model", real_model)
+
+    def _advise(tool, filename, request):
+        ctx = {"tool": tool, "args": {"filename": filename}, "path": "D:\\项目\\" + filename,
+               "user_request": request, "model": real_model, "ollama_host": _OLLAMA}
+        _t0 = _time.time()
+        got = svc9._plugins.call_hook("advisory_for_approval", ctx)
+        return got, _time.time() - _t0
+
+    # ── 9.1 decision_hint：真实模型，三条语义用例 ──
+    svc9.set_plugin_enabled("decision_hint", True)
+    for label, request, tool, filename, expect in (
+            ("越权（要看文件却删除）", "帮我看一下说明文件里写了什么", "delete_local_file", "说明.txt", "warn"),
+            ("相符（本来就要求删除）", "说明文件已归档，帮我删掉", "delete_local_file", "说明.txt", "info"),
+            ("只读请求对只读操作", "看一下项目里的配置文件", "read_local_file", "config.json", "info")):
+        got, dt = _advise(tool, filename, request)
+        mine = [r for r in got if "本地模型判断" in str(r.get("text"))]
+        level = mine[0].get("level") if mine else ""
+        text = str(mine[0].get("text")) if mine else ""
+        print(f"      · [{dt:4.1f}s] {label} → {level or '（无）'}｜{text[:66]}")
+        check(f"真实模型（{real_model}）给出与场景相符的判断：{label}",
+              bool(mine) and level == expect, f"level={level} text={text[:80]}")
+        # 关掉思考（reasoning=False）后实测 2~5 秒；10 秒是留了余量的预算线
+        check(f"真实模型在审批可接受时间内返回（{label}，<10s）", dt < 10.0, f"{dt:.1f}s")
+
+    # ── 9.2 laya_risk：真实本机模型（启用即后台预热，之后应快到可忽略）──
+    svc9.plugin_config_write("laya_risk", "laya_source.json",
+                             json.dumps({"source": "local", "auto": True}, ensure_ascii=False))
+    svc9.plugin_config_write("laya_risk", "risk_rules.txt", "高危|delete_local_file|删除本地文件\n")
+    _t0 = _time.time()
+    svc9.set_plugin_enabled("laya_risk", True)
+    check("启用动作立刻返回（预热在后台线程，不卡界面）", _time.time() - _t0 < 3.0,
+          f"{_time.time() - _t0:.2f}s")
+    warmed = False
+    for _ in range(180):                       # 等预热：本机实测约 35 秒，一次性
+        ev = svc9._plugins.module_attr("laya_risk", "_WARMED", None)
+        if ev is not None and ev.is_set():
+            warmed = True
+            break
+        _time.sleep(0.5)
+    print(f"      · laya 本机模型预热{'完成' if warmed else '在 90 秒内未完成'}（一次性成本，发生在启用插件时）")
+    latencies = []
+    for i, tool in enumerate(("delete_local_file", "read_local_file", "run_local_command")):
+        got, dt = _advise(tool, f"文件{i}.txt", "帮我把资料整理一下")
+        latencies.append(dt)
+        text = str(got[0].get("text")) if got else "（无）"
+        print(f"      · [{dt:5.2f}s] {tool} → {text[:64]}")
+    if warmed:
+        # 断言按**实测分布**写，不按理想值写：实测预热后的三个全新操作通常是 2.0~2.2 秒，
+        # 但偶发一次会到 ~20 秒（laya 对"新形态输入"的首次计算，方差真实存在）。
+        # 判据因此是"中位数快到来得及看 + 最坏不超过插件自己的等待上限"——
+        # 把"每个都必须 <3 秒"写死，等于用断言去否认真实模型的方差。
+        # ★ 这里量的是**两个插件合计**的耗时（decision_hint 的真实模型 + laya 分级），
+        #   所以预算按合计给：§9.1 已经单独量过 decision_hint（1.8~5.6s，独立断言 <10s），
+        #   laya 预热后每个新操作 0.1~2.2s。合计中位数 <8s 才是符合实测的判据——
+        #   拿 laya 单插件的 3 秒去卡合计值，是用错口径（本轮真跑就因此假失败了一次）。
+        ordered = sorted(latencies)
+        median = ordered[len(ordered) // 2]
+        check("预热之后，全新操作的「两个插件合计」耗时通常可接受（中位数 <8 秒）",
+              median < 8.0, f"各次={[round(d, 2) for d in latencies]} 中位数={median:.2f}s")
+        check("最坏情况也不超过插件自己的等待上限（不会拖到宿主超时、不会没有结论）",
+              max(latencies) < 30.0, f"最慢={max(latencies):.2f}s")
+    check("每次都给出可读结论（模型或正则回退，不允许静默什么都不发生）",
+          bool(svc9._plugins.call_hook("advisory_for_approval", {
+              "tool": "read_local_file", "args": {"filename": "x.txt"}, "path": "D:\\项目\\x.txt",
+              "user_request": "看一下", "model": real_model, "ollama_host": _OLLAMA})),
+          "无结论")
+    # 9.3 设置页要显示的『最近一次分级』——这条曾经读错模块实例（包导入 vs 宿主导入），
+    #     页面永远是空的；现在必须能读到值。
+    check("设置页的『最近一次分级』能读到值（实测出过读错模块实例的缺陷）",
+          bool(svc9.laya_status().get("last_used")), str(svc9.laya_status().get("last_used")))
+
+    # ── 9.4 字段边界：宿主可以补元信息，但**不允许出现放行/判定类字段** ──
+    got, _ = _advise("read_local_file", "a.txt", "看一下")
+    keys = {k for r in got for k in r.keys()}
+    forbidden = {"approve", "allow", "deny", "decision", "verdict", "bypass", "whitelist"}
+    check("建议里没有任何放行/判定类字段（插件不参与放行，接口层就不给这个口子）",
+          not (keys & forbidden), str(sorted(keys & forbidden)))
+
 print("\n" + "=" * 78)
 if failures:
     print(f"❌ 插件逐个实测失败：{len(failures)} 项")
@@ -409,5 +552,6 @@ if failures:
         print("   ·", item)
     sys.exit(1)
 print("✅ 六个内置插件逐个实测通过：custom_dict / decision_hint / doc_extra / office_wf / export_pack / laya_risk")
-print("   每个都走过：启用 → 真实入口跑一次 → 停用 → 能力收回；模型类插件用桩验证逻辑，真实模型另见 test_e2e_local.py")
+print("   每个都走过：启用 → 真实入口跑一次 → 停用 → 能力收回")
+print("   模型类插件：本机 Ollama 在线时用**真实模型**跑（§9），离线时该组明确标注为跳过（跳过 ≠ 通过）")
 sys.exit(0)

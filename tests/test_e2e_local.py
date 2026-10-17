@@ -61,6 +61,7 @@ from yindun.app.agent_service import AgentService  # noqa: E402
 from yindun.app.session_store import SessionStore  # noqa: E402
 from yindun.app.settings_store import SettingsStore  # noqa: E402
 from yindun.app.webview_app import JsApi, WebApp  # noqa: E402
+from yindun import __display_version__ as EXPECT_VERSION  # noqa: E402
 
 failures = []
 
@@ -123,6 +124,8 @@ RESULTS = {"llm_status": None, "advisories": [], "bubble_ok": None}
 def driver(window):
     try:
         # ── 1) 前端 bootstrap ──
+        # ★ 版本号断言必须与包里的显示版本比对，不能写死（这条曾经写成 "3.4"，
+        #   版本一升就假失败——而它只在 YINDUN_E2E=1 时才跑，更容易长期不被发现）。
         deadline = time.time() + 30
         ver = ""
         while time.time() < deadline:
@@ -130,10 +133,11 @@ def driver(window):
                 ver = window.evaluate_js("document.querySelector('#brand-version')?.textContent || ''") or ""
             except Exception:
                 pass
-            if "3.4" in ver:
+            if EXPECT_VERSION and EXPECT_VERSION in ver:
                 break
             time.sleep(0.3)
-        check("前端 bootstrap 加载（版本号渲染）", "3.4" in ver, str(ver))
+        check(f"前端 bootstrap 加载（版本号与包一致：{EXPECT_VERSION}）",
+              bool(EXPECT_VERSION) and EXPECT_VERSION in ver, str(ver))
 
         # ── 1.5) 等算力就绪（prepare_llm 在后台线程；未就绪时 send 会被拒）──
         llm_ev = app.wait_event("llm_status", pred=lambda p: bool(p) and not p.get("error"), timeout=180)
@@ -147,8 +151,13 @@ def driver(window):
         sid = svc.current_session_id()
         msgs = svc.sessions.get_messages(sid) if sid else []
         assistant = [m for m in msgs if m.get("role") == "assistant"]
-        check("助手消息入库且非空", bool(assistant) and bool(str(assistant[-1].get("content", "")).strip()),
-              str(assistant[-1].get("content", ""))[:80] if assistant else "无")
+        # 失败时把消息序列（角色 + 长度）打出来：本机 4B 模型实测偶发返回空内容（5 次里 1 次），
+        # 没有诊断信息就只能看到"空"这一个字，无法区分"模型空了"还是"入库路径丢了"。
+        _diag = " | ".join(f"{m.get('role')}:{len(str(m.get('content') or ''))}" for m in msgs[-4:])
+        check("助手消息入库且非空",
+              bool(assistant) and bool(str(assistant[-1].get("content", "")).strip()),
+              f"最近消息（角色:长度）={_diag}｜最后一条助手={str(assistant[-1].get('content', ''))[:60]!r}"
+              if assistant else f"没有任何助手消息｜最近消息={_diag}")
         RESULTS["bubble_ok"] = window.evaluate_js(
             "document.querySelectorAll('#chat .entry').length") or 0
         check("前端气泡已渲染（助手 .entry 行）", (RESULTS["bubble_ok"] or 0) >= 1, str(RESULTS["bubble_ok"]))

@@ -832,6 +832,7 @@ class Worker:
                     chain = messages[round_start_idx:]
                     memory.update_with_full_chain(chain)
                     self.result_messages = memory.to_dict_list()
+                    self._ensure_reply_persisted(final_reply)
                     return final_reply
                 # 模型返回空内容，尝试直接回答
                 self.status.emit("[模型] 未给出明确回答，重新生成...")
@@ -850,6 +851,7 @@ class Worker:
                 chain = messages[round_start_idx:]
                 memory.update_with_full_chain(chain)
                 self.result_messages = memory.to_dict_list()
+                self._ensure_reply_persisted(final_reply)
                 return final_reply
 
             # 执行每个工具调用
@@ -1259,6 +1261,28 @@ class Worker:
         except Exception:
             return ""            # 校验本身失败时保持沉默，不影响主流程
         return ""
+
+    def _ensure_reply_persisted(self, final_reply: str) -> None:
+        """保证**落库的消息链最后一条助手消息就是用户看到的那段文字**。
+
+        为什么必须有（实测出来的真缺陷，V3.5.7）：本机 4B 模型偶发返回空内容
+        （实测 5 次里 1 次：50 秒后 content 为空）。此时走"重新生成 → 抱歉提示"这条兜底，
+        提示**只通过 finished 事件送到了界面**，而落库用的是 `result_messages` 里的消息链——
+        链尾还停在那条内容为空的助手消息上。后果：界面上有答复、库里是空的，
+        重启后再看那一轮是空白（E2E 套件正是这样逮到它的：user:89 | assistant:0）。
+        这里做一件小事：若链尾不是这段文字，就把它补上（不覆盖已有的非空内容）。
+        """
+        body = (final_reply or "").strip()
+        if not body or not isinstance(self.result_messages, list) or not self.result_messages:
+            return
+        last = self.result_messages[-1]
+        if not isinstance(last, dict):
+            return
+        if last.get("role") == "assistant" and str(last.get("content") or "").strip():
+            return                                   # 链尾已有内容：不动它（更可能是模型的原始回答）
+        self.result_messages = list(self.result_messages) + [
+            {"role": "assistant", "content": final_reply}
+        ]
 
     @staticmethod
     def _looks_substantive(text: str) -> bool:

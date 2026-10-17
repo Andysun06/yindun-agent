@@ -28,6 +28,7 @@ import hashlib
 import json
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -96,7 +97,20 @@ _cache: Dict[str, Any] = {"hash": None, "rules": None}
 
 
 def _data_dir() -> Path:
-    base = Path(PLUGIN_DATA_DIR) if PLUGIN_DATA_DIR else Path(__file__).resolve().parent
+    """插件数据目录：宿主会注入 PLUGIN_DATA_DIR（生产路径永远走这条）。
+
+    ★ 没有注入时（离机调试、别的模块直接 import 这个文件）**不要**回退到插件所在目录：
+    那会把默认规则写进安装目录 / 源码树——实测踩到过（源码树里冒出一个 risk_rules.txt）。
+    回退到系统临时目录：可写、一次性、不污染仓库与安装位置，功能照常可用。
+    """
+    if PLUGIN_DATA_DIR:
+        return Path(PLUGIN_DATA_DIR)
+    import tempfile
+    base = Path(tempfile.gettempdir()) / "yindun_laya_plugin"
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
     return base
 
 
@@ -228,6 +242,13 @@ def _build_haystack(context: Dict[str, Any]) -> str:
 _LAYA_WAIT = 25.0   # 模型推理的内部等待上限：必须显著小于宿主钩子超时，
                     # 否则首次下载权重会把整次 advisory 拖成超时、弹窗反而一条提示都没有
 
+# 预热协作：宿主在启用插件时会在后台调 preload()，而第一次真实审批可能恰好落在
+# 预热进行中。此时**不要另起一条冷推理**（两条冷推理互相争抢只会更慢），
+# 而是等预热完成后直接用已经热好的模型——所以这里用一个事件把两边串起来。
+_WARM_LOCK = threading.Lock()
+_WARMING = threading.Event()      # 预热正在进行
+_WARMED = threading.Event()       # 预热已完成（无论成功失败，避免重复等）
+
 def _load_router() -> Any:
     """尝试加载一次 laya；没装/失败则永久回退正则（不反复重试重依赖导入）。"""
     global _ROUTER, _ROUTER_FAILED
@@ -246,6 +267,9 @@ def _load_router() -> Any:
 
 
 def _grade_with_laya(router: Any, haystack: str, context: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    # 注意：这里**不等**预热。实测（V3.5.7）等待只会白等满本插件的上限、
+    # 让这次审批更晚给出结论——剩下的半秒钟谁也没省下。
+    # 预热的价值在"之后每一次审批"：等模型热好，一次推理只要 0.2 秒。
     request = str(context.get("user_request") or "")[:300]
     state = f"用户请求：{request or '（本轮没有可对照的用户原话）'}\n待执行操作：{haystack}"
     box: Dict[str, Any] = {}
@@ -261,9 +285,11 @@ def _grade_with_laya(router: Any, haystack: str, context: Dict[str, Any]) -> Opt
     worker.start()
     worker.join(_LAYA_WAIT)
     if worker.is_alive():
-        # 典型场景：首次使用正在下载权重。让它在后台继续，本次主动落正则——
-        # 弹窗仍有提示，且绝不出现"宿主超时、整条 advisory 消失"。
-        print(f"[laya_risk] laya 推理 {_LAYA_WAIT:.0f}s 未完成（首次可能正在下载权重），本次用正则规则分级")
+        # 让它在后台继续，本次主动落正则——弹窗仍有提示，且绝不出现"宿主超时、整条 advisory 消失"。
+        # ★ 提示语要说实测原因（V3.5.7）：本机实测 laya 本机模型对**每个新操作**约需 20~25 秒
+        #   （同一操作第二次会命中插件内部缓存，0.2 秒），不是"正在下载权重"——权重早就下好了，
+        #   把耗时说成下载是给自己找借口，也会让用户以为是临时现象。
+        print(f"[laya_risk] laya 模型推理超过 {_LAYA_WAIT:.0f}s 上限（本机实测每个新操作约 20~25s），本次用正则规则分级")
         return None
     if "err" in box:
         print(f"[laya_risk] laya 推理失败，本次改用正则规则：{box['err']}")
@@ -441,6 +467,43 @@ def rules_overview() -> Tuple[str, int]:
     except Exception:
         count = 0
     return str(path), count
+
+
+def preload() -> None:
+    """宿主在**启用本插件时**（后台线程）调用：把本机 laya 模型先热起来。
+
+    实测（V3.5.7）：laya 的 Router 构造只要 0.1 秒，但**首次前向**要 17~25 秒
+    （之后同一进程内 0.2 秒）。插件自己的等待上限是 25 秒，于是"第一次审批"
+    总是耗满上限、退化成正则规则——用户看到的第一次分级根本没有模型参与。
+    这里先跑一次最小推理把热路径走通，第一次真实审批就能拿到模型结论。
+
+    期间若有真实审批进来，`_grade_with_laya()` 会**等这次预热**而不是另起一条冷推理
+    （两条冷推理互相争抢只会更慢）。
+
+    只在配了本机模型档时预热；预热失败一律吞掉（不影响插件启用），
+    也不做任何对外请求（局域网档的探测是用户显式点「测试连接」才做的事）。
+    """
+    try:
+        cfg = _source_config()
+        if cfg.get("source") not in ("local", "auto"):
+            _WARMED.set()
+            return
+        router = _load_router()
+        if router is None:
+            _WARMED.set()
+            return
+        with _WARM_LOCK:
+            if _WARMED.is_set():
+                return
+            _WARMING.set()
+        t0 = time.time()
+        router.predict("预热：待执行操作=read_local_file 目标=示例.txt", _QUESTIONS)
+        print(f"[laya_risk] 本机模型预热完成（{time.time() - t0:.1f}s），首次审批即可用模型分级")
+    except Exception as exc:
+        print(f"[laya_risk] 预热失败（不影响启用，首次审批会回退正则）：{type(exc).__name__}: {exc}")
+    finally:
+        _WARMING.clear()
+        _WARMED.set()
 
 
 def advisory_for_approval(context: Dict[str, Any]) -> Optional[Dict[str, str]]:

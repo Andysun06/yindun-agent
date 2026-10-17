@@ -592,7 +592,67 @@ class PluginHost:
         self._enabled_setter(plugin_id, bool(enabled))
         if not enabled:
             record._module = None
+        else:
+            self.preload(plugin_id)
         return {"ok": True, "plugins": self.list_plugins()}
+
+    def preload(self, plugin_id: str = "") -> None:
+        """后台预热：插件可选地定义 `preload()`，启用时在**后台线程**里跑一次。
+
+        为什么需要（实测数据说话）：laya 本机模型首次前向要 17~25 秒（之后 0.2 秒），
+        而插件自己的等待上限是 25 秒——于是"第一次审批"总是白白耗满上限、退化成正则规则，
+        用户看到的第一次分级根本没有模型参与。启用时先把模型热起来，
+        第一次真实审批就能拿到模型结论。
+
+        约定（**不是钩子**，不进 HOOK_SPECS，也不参与任何判定）：
+          · 插件定义 `preload()`，无参数、无返回值、失败自己吞；
+          · 没有这个函数的插件完全不受影响（不是必填项）；
+          · 预热只发生在**启用**动作与宿主启动后的能力同步上，绝不主动对外发请求
+            （是否对外由插件自己的数据边界决定，例：laya 预热只碰本机模型）。
+        """
+        record = self.get(plugin_id) if plugin_id else None
+        if record is None or not record.enabled:
+            return
+
+        def _run() -> None:
+            try:
+                module = self._module_for(record)
+                hook = getattr(module, "preload", None)
+                if not callable(hook):
+                    return
+                hook()
+            except Exception as exc:      # 预热失败绝不能影响"插件已启用"这个事实
+                print(f"[PluginHost] 插件 {record.plugin_id} 预热失败（不影响启用）：{type(exc).__name__}: {exc}")
+
+        threading.Thread(target=_run, daemon=True,
+                         name=f"preload-{record.plugin_id}").start()
+
+    def preload_enabled(self) -> None:
+        """启动后给所有**已启用**的插件各预热一次（否则每次重启都要重新吃一次冷启动）。"""
+        for record in self._records.values():
+            if record.enabled and not record.error and not record.missing:
+                self.preload(record.plugin_id)
+
+    def module_attr(self, plugin_id: str, name: str, default: Any = None) -> Any:
+        """读插件模块里的一个属性/函数（宿主导入的那一份）。
+
+        为什么必须由宿主提供：插件可能被以两种方式导入——宿主用 importlib 按**文件路径**
+        导入（模块名 `yindun_plugin_<id>`），而工程里其它地方可能按**包路径**导入
+        （`yindun.plugins.builtin.x.plugin`）。两者是**两个独立的模块对象**，
+        各自持有自己的模块级状态。实测踩到过：设置页显示"最近一次分级来源"读的是包路径那一份，
+        而真正跑推理的是宿主那一份 → 页面上永远是空的。
+        要读运行时状态（如 last_source）就必须走这里，别自己去 import。
+        """
+        record = self.get(plugin_id) if plugin_id else None
+        if record is None or record.error or record.missing:
+            return default
+        try:
+            module = self._module_for(record)
+        except Exception as exc:
+            print(f"[PluginHost] 读取插件 {plugin_id} 模块失败：{type(exc).__name__}: {exc}")
+            return default
+        value = getattr(module, name, default)
+        return value
 
     # ── 插件数据目录 / 可编辑配置 ──────────────────
     def data_dir(self, plugin_id: str) -> Optional[Path]:

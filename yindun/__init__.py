@@ -22,6 +22,6 @@ if getattr(_sys, "frozen", False):
 else:
     APP_ROOT = _Path(__file__).resolve().parents[1]
 
-__version__ = "3.5.6"
-__display_version__ = "V3.5.6"
+__version__ = "3.5.7"
+__display_version__ = "V3.5.7"
 __author__ = "Yindun Team"

@@ -92,7 +92,13 @@ def advisory_for_approval(context: Dict[str, Any]) -> Optional[Dict[str, str]]:
             model=model,
             base_url=str(context.get("ollama_host") or "http://127.0.0.1:11434"),
             temperature=0,
-            timeout=8,
+            timeout=25,
+            # ★ reasoning=False（= Ollama 的 think=false）：对本机实测过的关键开关。
+            #   qwen3.5 这类思考型模型默认会先生成一段推理再回答：实测同一判断
+            #   带思考 19.0 秒、且思考文本会混进 content（要靠解析器去剥）；
+            #   关掉思考后 0.4~0.5 秒，输出就是我们要的那一行 JSON。
+            #   审批提示是"几秒内给人一个判断线索"，让它先想 19 秒等于没有提示。
+            reasoning=False,
             options={"num_predict": 64, "num_ctx": 2048},
         )
         message = llm.invoke(_PROMPT.format(

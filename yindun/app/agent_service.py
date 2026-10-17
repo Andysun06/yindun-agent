@@ -121,6 +121,9 @@ class AgentService:
         self._sync_plugin_capabilities()
         # 启动即下发权限档位与严格模式：界面还没画出来时，工具层也已经按设置行事
         self.apply_runtime_env()
+        # 已启用的插件（如 laya 本机模型）在后台预热：否则每次重启后的第一次审批
+        # 都要重新吃一次冷启动（实测 17~25 秒），第一次分级就永远看不到模型结论
+        self._plugins.preload_enabled()
 
     def set_listener(self, listener: Optional[Listener]) -> None:
         self._listener = listener
@@ -947,10 +950,16 @@ class AgentService:
         return self._laya_service
 
     def _laya_runtime(self) -> Dict[str, Any]:
-        """插件最近一次分级用的来源（模块级记录，供设置页回答"到底有没有在工作"）。"""
+        """插件最近一次分级用的来源（供设置页回答"到底有没有在工作"）。
+
+        ★ 必须从**宿主导入的那份模块**里取：插件被宿主按文件路径导入（`yindun_plugin_<id>`），
+        和 `import yindun.plugins.builtin...` 是**两个独立的模块对象**、各有各的模块级状态。
+        早期实现直接 import 包路径那一份，于是页面上"最近一次分级"永远是空的——真跑推理的是另一份。
+        """
         try:
-            from yindun.plugins.builtin.laya_risk import plugin as laya_plugin
-            return {"last_source": laya_plugin.last_source()}
+            value = self._plugins.module_attr("laya_risk", "last_source", None)
+            text = value() if callable(value) else value      # 插件里它是函数，别当成值读
+            return {"last_source": str(text or "")}
         except Exception:
             return {}
 

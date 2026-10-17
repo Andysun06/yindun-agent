@@ -167,7 +167,7 @@ class LayaService:
         local = self.probe_local()
         lan_cfg = bool(cfg.get("endpoint"))
         runtime = self._runtime() or {}
-        rules_path, rules_count = _rules_info()
+        rules_path, rules_count = _rules_info(self._read)
         active, active_label = _active_backend(cfg, local["available"], lan_cfg)
         return {
             "source": cfg["source"],
@@ -205,13 +205,27 @@ def _probe_local_laya() -> tuple:
     return f"本机已安装 laya（{origin}）", True
 
 
-def _rules_info() -> tuple:
-    """正则规则文件路径与条数（读不到就说读不到，不假装有规则）。"""
-    try:
-        from yindun.plugins.builtin.laya_risk.plugin import rules_overview
-        return rules_overview()
-    except Exception as exc:
-        return f"（规则信息不可用：{type(exc).__name__}）", 0
+def _rules_info(read_config) -> tuple:
+    """正则规则文件的**落盘路径与有效条数**。
+
+    ★ 走宿主给的配置通道读文件、自己数行，**不 import 插件模块**：
+    早期实现 `from yindun.plugins.builtin.laya_risk.plugin import rules_overview` 有两个问题——
+      ① 那是**包路径导入**，与宿主按文件路径导入的那一份是两个模块对象（状态不互通）；
+      ② 插件在"没有注入数据目录"时会把默认规则**写到插件所在目录**，
+         于是源码树里凭空冒出一个 risk_rules.txt（实测踩到，已把回退改成临时目录）。
+    这里只做"读文件 + 数有效行"，属于文件级信息，不碰插件的运行时状态。
+    """
+    res = read_config(PLUGIN_ID, RULES_NAME) or {}
+    if not res.get("ok"):
+        return f"（规则文件不可读：{res.get('error') or '未知原因'}）", 0
+    text = res.get("text") or ""
+    count = sum(1 for line in text.splitlines()
+                if line.strip() and not line.strip().startswith("#"))
+    path = str(res.get("path") or RULES_NAME)
+    if not text.strip():
+        # 文件还没生成（插件首次真正用到规则时才写默认规则）——如实说明，不显示成"0 条规则"让人误以为坏了
+        return f"{path}（首次触发审批分级时写入默认规则）", 0
+    return path, count
 
 
 def _active_backend(cfg: Dict[str, Any], local_ok: bool, lan_ok: bool) -> tuple:

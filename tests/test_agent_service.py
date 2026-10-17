@@ -438,6 +438,47 @@ check("过程轨迹里能看到这次工具调用",
       any(t.get("kind") == "tool" and t.get("status") == "ok" for t in tr1),
       str([t.get("kind") for t in tr1])[:70])
 
+# ── ①.5 模型返回空内容时：落库的消息链必须以"用户看到的那段文字"结尾 ──
+#   真缺陷（V3.5.7，真机 E2E 逮到）：本机 4B 模型偶发返回空内容（实测 5 次里 1 次），
+#   此时走"重新生成 → 抱歉提示"兜底，但提示只经 finished 事件送到界面，
+#   而落库用的是消息链——链尾停在那条空助手消息上。表现：界面上有答复、重启后那一轮是空白。
+class _EmptyLLM:
+    """所有轮次都返回空内容：模拟实测到的"模型什么都没吐"（含 _direct_answer 的重试）。"""
+
+    def __init__(self):
+        self.calls = 0
+
+    def invoke(self, messages):
+        self.calls += 1
+        return _AI(content="")
+
+    def bind_tools(self, tools):
+        return self
+
+
+worker_empty = _Worker()
+worker_empty.llm = _EmptyLLM()
+worker_empty.tools_map = {}
+worker_empty.user_input = "用一句话介绍你自己"
+worker_empty.think_mode = "快速回答"
+worker_empty.privacy_shield = False
+worker_empty.sandbox_path = str(_SBX)
+worker_empty.attachment_fulltext = {}
+_empty_finished = []
+worker_empty.bus.subscribe("finished", lambda p: _empty_finished.append(p))
+worker_empty.run()                                  # 回答经 finished 事件送出（run() 本身不返回文本）
+_empty_reply = str(_empty_finished[-1]) if _empty_finished else ""
+_persisted = worker_empty.result_messages or []
+check("模型全程空内容时仍给出可用回答（不返回空白，回答经 finished 事件送出）",
+      bool(_empty_reply.strip()), repr(_empty_reply[:60]))
+check("★ 落库的消息链不以空助手消息结尾（重启后不会看到空白那一轮）",
+      bool(_persisted) and _persisted[-1].get("role") == "assistant"
+      and bool(str(_persisted[-1].get("content") or "").strip()),
+      str([(m.get("role"), len(str(m.get("content") or ""))) for m in _persisted[-3:]]))
+check("★ 落库内容与界面收到的回答一致（库里存的就是屏上看到的）",
+      str(_persisted[-1].get("content") or "").strip() == _empty_reply.strip(),
+      f"库={str(_persisted[-1].get('content'))[:40]!r} 界面={_empty_reply[:40]!r}")
+
 # ── ② 重复调用短路（只读工具、同参数）──
 exec_count = {"n": 0}
 
