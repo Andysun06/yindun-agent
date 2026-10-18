@@ -121,7 +121,10 @@ leak_script.write_text(
     "print('BOX=' + str(os.environ.get('SANDBOX_PATH')))\n",
     encoding="utf-8")
 
-_ft.SANDBOX = str(sandbox_dir)
+# ★ V3.6.3：沙箱根改为**每次调用都从环境变量解析**（修掉"导入时算一次"导致的
+#   文件工具自判越界）。所以这里不能再改模块常量，改为设置环境变量（退出时还原）。
+_saved_sandbox_env = os.environ.get("SANDBOX_PATH")
+os.environ["SANDBOX_PATH"] = str(sandbox_dir)
 os.environ["PERMISSION_LEVEL"] = "完全控制 (读/写/列表)"
 try:
     # D1 沙箱内脚本正常执行（realpath 替换后仍可运行），且环境已收敛
@@ -198,7 +201,10 @@ try:
     if not ok_kill:
         failures.append(f"容器超时终止失败: rc={rc_t} timed_out={to_t}")
 finally:
-    _ft.SANDBOX = _saved_sandbox
+    if _saved_sandbox_env is None:
+        os.environ.pop("SANDBOX_PATH", None)
+    else:
+        os.environ["SANDBOX_PATH"] = _saved_sandbox_env
     if _saved_perm is None:
         os.environ.pop("PERMISSION_LEVEL", None)
     else:

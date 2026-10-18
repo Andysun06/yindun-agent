@@ -507,6 +507,59 @@ check("原因里给出可执行动作（启动 Ollama / 换模型 / 重新检测
       str(_dead_status.get("error"))[:160])
 
 
+# ── ①.66 "别让 agent 成为短板"：提示词分层 + 反编造兜底（V3.6.3，真机实测驱动）──
+#   实测背景（本机 qwen3.5:4b，A/B 对照）：把大段"附件规范"常驻在提示词里时，
+#   一句"读一下沙箱里的 x.txt"它**一次工具都不调**，还回出"我会严格按照规范使用 function
+#   call 格式"这种自说自话；精简基线后立刻正常调用。另外工具失败时它会**编造文件内容**
+#   （问"读不存在的文件"，它交出一份上一轮文件的汇总报告）。
+from yindun.worker import agent_worker as _aw  # noqa: E402
+
+_base_prompt = _aw._SYSTEM_PROMPT
+_attach_rules = _aw._ATTACHMENT_RULES
+check("常驻提示词足够短（≤2000 字符，小模型的注意力有限）", len(_base_prompt) <= 2000,
+      f"{len(_base_prompt)} 字符")
+check("三条硬规则写在最前面（用历史 / 先调工具 / 失败如实说）",
+      all(k in _base_prompt for k in ("对话历史里已经有的信息，直接用", "必须先调用工具",
+                                      "严禁编造文件内容")), _base_prompt[:120])
+check("附件规范已从常驻提示词移出（只在挂附件时追加）",
+      "题号定位" not in _base_prompt and "长文档分块" not in _base_prompt
+      and "题号定位" in _attach_rules)
+check("附件规范里不再留『请重新挂载』这类可被套用的推脱话术",
+      "请重新挂载《文件名》后再提问" not in _attach_rules
+      and "先用 read_attachment_chunk 再取一次" in _attach_rules)
+
+_guard_worker = _aw.Worker()
+_dir_ok = _guard_worker._with_failure_directive("❌ 读取失败：文件不存在")
+check("工具失败结果会追加『禁止编造』指令", "禁止编造文件内容" in _dir_ok)
+check("失败指令幂等（重复追加不叠加）",
+      _guard_worker._with_failure_directive(_dir_ok) == _dir_ok)
+check("成功结果不加失败指令", "禁止编造" not in _guard_worker._with_failure_directive("✅ 读取成功：内容…"))
+
+# 中文表格曾经因为"长度阈值按英文设"而整类漏判（>=8 字符），这里钉住
+_cjk_table = "姓名        公司             电话\n张三        北京科技集团     138****5678\n李四        上海贸易中心     139****0123"
+check("中文表格被识别为『内容块』（长度阈值按字符算）",
+      _guard_worker._looks_like_content_dump(_cjk_table) is True)
+check("普通叙述不算内容块",
+      _guard_worker._looks_like_content_dump("这个文件里有三条记录。") is False)
+_guard_worker.user_input = "读一下 客户名单.txt 里写了什么"
+_fired = _guard_worker._guard_ungrounded_dump(_cjk_table, tool_success=False,
+                                             tool_names=["read_local_file"])
+check("反编造兜底：没有成功工具结果 + 回答在罗列内容 → 追加『未经核实』",
+      "未经核实" in _fired)
+check("反编造兜底不误伤：工具有成功结果时不加免责",
+      "未经核实" not in _guard_worker._guard_ungrounded_dump(_cjk_table, True, ["read_local_file"]))
+_guard_worker.user_input = "你好，随便聊聊"
+check("反编造兜底不误伤：普通闲聊不加免责",
+      "未经核实" not in _guard_worker._guard_ungrounded_dump(_cjk_table, False, []))
+
+_worker_src = Path(__file__).resolve().parents[1].joinpath(
+    "yindun", "worker", "agent_worker.py").read_text(encoding="utf-8")
+check("宿主有『读文件』强制兜底（模型不调工具时由宿主真读，不让用户拿不到数据）",
+      "_read_verb" in _worker_src and '"read_local_file" in self.tools_map' in _worker_src)
+check("强制结果也会带失败指令（否则模型会拿上一轮内容顶包）",
+      "_forced_failed" in _worker_src and "_forced_content" in _worker_src)
+
+
 # ── ①.7 小模型"把工具调用写成文字"的两种形态：识别 + 一次重试 ──
 class _ToolMapWorker(_Worker):
     def __init__(self):

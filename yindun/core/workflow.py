@@ -1258,6 +1258,44 @@ def init_workflow_integration(engine: WorkflowEngine):
 
     engine.register_execution_handler("analyze_project", _h_analyze_project)
 
+    # 3.35 结构化输出的宿主兜底（V3.6.3）：解析不出 JSON 数组就**收紧要求重试一次**
+    def _as_item_list(data) -> list:
+        """把模型给的 JSON 收敛成"条目列表"：数组直接用；包了一层的对象取其中的数组。"""
+        if isinstance(data, list):
+            return [item for item in data if item]
+        if isinstance(data, dict):
+            for key in ("items", "key_clauses", "clauses", "risks", "data", "result", "list"):
+                value = data.get(key)
+                if isinstance(value, list) and value:
+                    return [item for item in value if item]
+            lists = [v for v in data.values() if isinstance(v, list) and v]
+            if len(lists) == 1:
+                return lists[0]
+        return []
+
+    def _llm_json_items(prompt: str, tighten: str) -> list:
+        """让模型产出 JSON 数组；解析不出来就收紧要求再试一次，两次都拿不到才认输。
+
+        为什么宿主必须做这件事（真机实测，V3.6.3）：4B 这类小模型偶尔不按格式来——
+        会拿解释性文字、Markdown 代码块，甚至 `{"risks": [...]}` 这种包一层的对象作答。
+        旧实现一次解析不出来就把**整条工作流步骤判失败**（实测撞到"风险点分析:failed"）。
+        "模型格式不稳"是宿主该兜的事，不该变成用户看到的失败。
+        """
+        llm = _get_workflow_llm()
+        tightened = prompt + "\n\n" + tighten
+        for idx, text_prompt in enumerate((prompt, tightened), 1):
+            try:
+                raw = llm.invoke(text_prompt)
+            except Exception:
+                if idx == 2:
+                    raise
+                continue
+            items = _as_item_list(_parse_json_from_llm(
+                raw.content if hasattr(raw, "content") else raw))
+            if items:
+                return items
+        return []
+
     # 3.4 analyze_contract（合同模板 步骤2/3）—— 调用 LLM 真实提取/分析
     def _h_analyze_contract(args: dict, prev_results: list) -> dict:
         focus = str(args.get("focus") or "key_clauses")
@@ -1286,12 +1324,13 @@ def init_workflow_integration(engine: WorkflowEngine):
                     '{"type": "条款类型", "value": "条款内容"}，不要输出任何其他解释。\n\n'
                     "合同文本：\n" + content
                 )
-                raw = llm.invoke(prompt)
-                data = _parse_json_from_llm(raw.content if hasattr(raw, "content") else raw)
-                clauses = data if isinstance(data, list) else []
+                clauses = _llm_json_items(
+                    prompt,
+                    "注意：上一次的输出不是合法的 JSON 数组。请**只**输出 JSON 数组本身，"
+                    "不要解释文字、不要 Markdown 代码块标记、不要包在对象里。")
                 if not clauses:
                     return {"ok": False, "tool": "analyze_contract", "focus": focus,
-                            "error": "LLM 未能从中提取到有效条款（返回格式异常）"}
+                            "error": "LLM 未能从中提取到有效条款（两次尝试后仍非合法 JSON 数组）"}
                 return {"ok": True, "tool": "analyze_contract", "focus": focus,
                         "key_clauses": clauses,
                         "summary": f"成功提取 {len(clauses)} 项关键条款"}
@@ -1302,12 +1341,13 @@ def init_workflow_integration(engine: WorkflowEngine):
                     '{"level": "高/中/低风险", "item": "风险项", "detail": "详细说明"}，'
                     "不要输出任何其他解释。\n\n合同文本：\n" + content
                 )
-                raw = llm.invoke(prompt)
-                data = _parse_json_from_llm(raw.content if hasattr(raw, "content") else raw)
-                risks = data if isinstance(data, list) else []
+                risks = _llm_json_items(
+                    prompt,
+                    "注意：上一次的输出不是合法的 JSON 数组。请**只**输出 JSON 数组本身，"
+                    "不要解释文字、不要 Markdown 代码块标记、不要包在对象里。")
                 if not risks:
                     return {"ok": False, "tool": "analyze_contract", "focus": focus,
-                            "error": "LLM 未能识别到风险（返回格式异常）"}
+                            "error": "LLM 未能识别到风险（两次尝试后仍非合法 JSON 数组）"}
                 return {"ok": True, "tool": "analyze_contract", "focus": focus,
                         "risks": risks,
                         "summary": f"识别出 {len(risks)} 项风险点"}
@@ -1579,7 +1619,7 @@ def init_workflow_integration(engine: WorkflowEngine):
         """沙箱根目录：与 file_tools 取**同一个**来源，避免"落点目录"与"判定目录"不一致。"""
         try:
             from yindun.core import file_tools as _ft
-            return _ft.SANDBOX
+            return _ft.sandbox_root()      # ★ 动态解析：与文件工具同一判定根（V3.6.3）
         except Exception:
             return _os.path.abspath(_os.environ.get("SANDBOX_PATH", "."))
 

@@ -162,10 +162,60 @@ def driver(window):
             "document.querySelectorAll('#chat .entry').length") or 0
         check("前端气泡已渲染（助手 .entry 行）", (RESULTS["bubble_ok"] or 0) >= 1, str(RESULTS["bubble_ok"]))
 
-        # ── 3) 工具 + 审批 + 插件 advisory（深度思考）──
-        svc.settings.set("think_mode", "深度思考")
+        # ★ 等服务空闲再发下一条：`finished` 事件到达时线程可能还在收尾（写库/清 busy），
+        #   紧接着 send 会被"忙碌"拒掉——这几轮实测踩到过（send 返回 False 引发连环失败）。
+        def wait_service_idle(timeout=60):
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                try:
+                    if not svc.busy:
+                        return True
+                except Exception:
+                    return True
+                time.sleep(0.2)
+            return False
+
+        # ── 2.5) 基础对话三件套（V3.6.3 补）：上下文记忆 / 工具真的读文件 / 失败不编造 ──
+        #   这三条是"最基础的对话功能"，此前只有机制层测试，没有真机断言——
+        #   实测就漏掉了"模型看到历史却回'我没有记忆'""不调工具反而说要上传文件"这两类问题。
+        sample = SANDBOX / "e2e_名单.txt"
+        # 落点受控：SANDBOX 是本套件的临时沙箱，文件名固定
+        sample.write_text("张伟 13812345678\n", encoding="utf-8")
+        mark2 = app.mark()
+        svc.settings.set("think_mode", "快速回答")
+        svc.send("请记住：我的项目代号是「蓝鲸七号」。只回复「已记住」。")
+        app.wait_event("finished", timeout=300, since=mark2)
+        mark3 = app.mark()
+        svc.send("我的项目代号是什么？直接告诉我。")
+        _recall, _ = app.wait_event("finished", timeout=300, since=mark3)
+        recall_text = str(_recall or "")
+        wait_service_idle()
+        check("★ 上下文记忆：追问上一轮告知的信息必须答得出（不许说'我没有记忆'）",
+              "蓝鲸七号" in recall_text, recall_text[:120])
+
+        mark4 = app.mark()
+        svc.send("沙箱里的「e2e_名单.txt」里写了什么？")
+        _read_reply, _ = app.wait_event("finished", timeout=300, since=mark4)
+        read_text = str(_read_reply or "")
+        wait_service_idle()
+        check("★ 工具真的读了文件：回答里必须出现文件里的真实内容",
+              "张伟" in read_text or "13812345678" in read_text, read_text[:160])
+
+        mark5 = app.mark()
+        svc.send("请读一下「e2e_不存在的文件_甲乙丙.txt」，然后告诉我里面写了什么。")
+        _fail_reply, _ = app.wait_event("finished", timeout=300, since=mark5)
+        fail_text = str(_fail_reply or "")
+        _honest = any(w in fail_text for w in ("不存在", "找不到", "未找到", "读取失败", "无法读取"))
+        check("★ 失败不编造：文件不存在时如实说明，而不是编一份内容",
+              _honest and "13812345678" not in fail_text, fail_text[:200])
+        wait_service_idle()
+        sample.unlink(missing_ok=True)
+
+
+        # ── 3) 工具 + 审批 + 插件 advisory（深度思考）──        svc.settings.set("think_mode", "深度思考")
         target = SANDBOX / "e2e_ok.txt"
         mark1 = app.mark()
+        wait_service_idle()
         check("发送工具请求被接受",
               svc.send("请调用工具在沙箱目录创建文件 e2e_ok.txt，文件内容为 hello") is True)
         confirm, _c1 = app.wait_event("need_confirm", timeout=300, since=mark1)
@@ -214,6 +264,7 @@ def driver(window):
         check("知识库分块就绪", total >= 1, f"stats={str(st.get('stats'))[:100]} docs={len(st.get('docs') or [])}")
         svc.send("请先调用 search_knowledge_base 工具检索知识库，再回答：电子沙箱的维护窗口是什么时候？")
         fin3, _c4 = app.wait_event("finished", timeout=300, since=mark1)
+        wait_service_idle()
         check("知识库问答完成", bool(fin3), str(fin3)[:80])
         msgs = svc.sessions.get_messages(svc.current_session_id()) or []
         used_rag = any("search_knowledge_base" in json.dumps(m, ensure_ascii=False) for m in msgs)
@@ -232,7 +283,14 @@ def driver(window):
         tpls = svc.workflow_templates()
         check("工作流模板列表可用", len(tpls) >= 1, str([t.get("id") for t in tpls])[:120])
         tpl = next((t for t in tpls if t.get("source", "builtin") != "plugin"), tpls[0])
-        started = svc.workflow_start(tpl["id"], path=str(ROOT / "assets" / "demo_contract.txt"), name="E2E")
+        # 合同文件要放进**本套件配置的沙箱**里再交给工作流：沙箱判定按"当前生效根"解析
+        # （V3.6.3 修了"沙箱根只在导入时算一次"的缺陷），仓库里的文件不在这个沙箱内，
+        # 直接当输入会被如实拒绝——所以先复制一份进沙箱。
+        contract = SANDBOX / "e2e_demo_contract.txt"
+        # 落点受控：SANDBOX 是本套件的临时沙箱目录
+        contract.write_text((ROOT / "assets" / "demo_contract.txt").read_text(encoding="utf-8"),
+                            encoding="utf-8")
+        started = svc.workflow_start(tpl["id"], path=str(contract), name="E2E")
         inst = started.get("instance_id") or started.get("id")
         check("工作流实例启动", bool(inst), str(started)[:120])
         ok_flow, steps_done = True, 0
@@ -300,21 +358,33 @@ def driver(window):
         check("审计导出可用", bool(exp_json), str(exp_json)[:60])
 
         # ── 7) 窗口边缘改尺寸（单次 resize(fix_point)）──
+        # ★ 先确保窗口不是最小化状态：最小化时 Windows 返回哨兵几何 (x=-16000, w=157, h=25)，
+        #   此时"改尺寸"本来就不会生效——那是环境条件，不是产品缺陷。
+        #   恢复不了就**明确跳过**这条（跳过 ≠ 通过），不让环境把车道染红。
+        _restored = True
+        b_probe = api.window_bounds()
+        if b_probe.get("ok") and int(b_probe.get("x", 0)) <= -10000:
+            api.window_action("restore_window")
+            time.sleep(1.0)
         b0 = api.window_bounds()
+        if b0.get("ok") and int(b0.get("x", 0)) <= -10000:
+            _restored = False
+            print("  [ℹ️] 窗口处于最小化/不可见状态且未能恢复，跳过窗口几何断言（跳过 ≠ 通过）")
         check("window_bounds 就绪", bool(b0.get("ok")), str(b0))
-        api.window_resize_edge("e", 80, 0, b0["x"], b0["y"], b0["w"], b0["h"])
-        time.sleep(0.6)
-        b1 = api.window_bounds()
-        check("右缘拖宽 80：宽度生效、左边界不动",
-              abs(b1["w"] - (b0["w"] + 80)) <= 2 and abs(b1["x"] - b0["x"]) <= 2,
-              f"{b0} -> {b1}")
-        api.window_resize_edge("w", -60, 0, b1["x"], b1["y"], b1["w"], b1["h"])
-        time.sleep(0.6)
-        b2 = api.window_bounds()
-        check("左缘拖宽 60：右边界钉住（对侧锚定，抖动根因已除）",
-              abs(b2["w"] - (b1["w"] + 60)) <= 2
-              and abs((b2["x"] + b2["w"]) - (b1["x"] + b1["w"])) <= 2,
-              f"{b1} -> {b2}")
+        if _restored:
+            api.window_resize_edge("e", 80, 0, b0["x"], b0["y"], b0["w"], b0["h"])
+            time.sleep(0.6)
+            b1 = api.window_bounds()
+            check("右缘拖宽 80：宽度生效、左边界不动",
+                  abs(b1["w"] - (b0["w"] + 80)) <= 2 and abs(b1["x"] - b0["x"]) <= 2,
+                  f"{b0} -> {b1}")
+            api.window_resize_edge("w", -60, 0, b1["x"], b1["y"], b1["w"], b1["h"])
+            time.sleep(0.6)
+            b2 = api.window_bounds()
+            check("左缘拖宽 60：右边界钉住（对侧锚定，抖动根因已除）",
+                  abs(b2["w"] - (b1["w"] + 60)) <= 2
+                  and abs((b2["x"] + b2["w"]) - (b1["x"] + b1["w"])) <= 2,
+                  f"{b1} -> {b2}")
 
         # ── 8) 插件运行状态（可见化闭环；仅在高危工具被真实调用时有 advisory 调用）──
         plist = {p["id"]: p for p in api.plugins_list()}

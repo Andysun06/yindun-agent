@@ -21,10 +21,21 @@ log = get_logger("tools")
 # 防止绕过沙箱读取/写入系统任意目录。
 # ──────────────────────────────────────────
 
-# 沙箱根目录：优先读环境变量 SANDBOX_PATH，否则回退到应用根目录（打包后= exe 所在目录）
-SANDBOX = os.path.abspath(
-    os.environ.get("SANDBOX_PATH", str(APP_ROOT))
-)
+def sandbox_root() -> str:
+    """沙箱根目录：**每次调用都从环境变量解析**（优先 SANDBOX_PATH，否则应用根目录）。
+
+    ★ 为什么必须"每次解析"（V3.6.3 真机实测出来的缺陷）：
+      服务层会在**运行时**把设置里的沙箱目录写进 `SANDBOX_PATH`（用户可以在设置里改沙箱），
+      而模块级的 `SANDBOX` 常量只在**导入时**算一次。两者一旦不一致，就会出现
+      "工具默认目录指向新沙箱、沙箱判定仍按旧根" → **自己的文件被自己的沙箱判定拒掉**
+      （报"路径超出安全沙箱"）。真机 E2E 就是这么撞上的。
+      沙箱边界本身没变松：判定仍然要求 realpath 落在 root 内，只是 root 取"当前生效值"。
+    """
+    return os.path.abspath(os.environ.get("SANDBOX_PATH", str(APP_ROOT)))
+
+
+# 兼容旧引用：保留导入时快照（仅供老代码读取），新代码一律用 sandbox_root()
+SANDBOX = sandbox_root()
 
 
 def _enforce_sandbox(path: str):
@@ -34,7 +45,7 @@ def _enforce_sandbox(path: str):
     within 布尔值表示是否在沙箱内（用 commonpath 归一化比较，先破解符号链接/junction）。
     """
     real = os.path.realpath(path)
-    base = os.path.realpath(SANDBOX)
+    base = os.path.realpath(sandbox_root())
     try:
         within = os.path.commonpath([os.path.normcase(base), os.path.normcase(real)]) == os.path.normcase(base)
     except ValueError:
@@ -74,7 +85,7 @@ def _resolve_target_dir(target_directory: str, default_dir=None) -> str:
     支持："当前沙箱目录"、"桌面"、"系统物理桌面"、"E盘"、"D盘文档"、绝对路径等。
     """
     if default_dir is None:
-        default_dir = SANDBOX
+        default_dir = sandbox_root()
     if not target_directory or target_directory == "当前沙箱目录":
         return default_dir
     
@@ -130,7 +141,7 @@ def preview_command_script(command: str, sandbox: str = "") -> str:
         script = next((a for a in parts[1:] if not a.startswith("-")), "")
         if not script or not script.lower().endswith(".py"):
             return ""
-        base = os.path.realpath(sandbox or SANDBOX)
+        base = os.path.realpath(sandbox or sandbox_root())
         real = os.path.realpath(os.path.join(base, script))
         try:
             within = os.path.commonpath([os.path.normcase(base), os.path.normcase(real)]) == os.path.normcase(base)

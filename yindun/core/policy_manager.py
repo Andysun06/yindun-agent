@@ -104,13 +104,15 @@ APPROVE_READ_WHITELIST = {
     "analyze_project",
 }
 
-# 沙箱根目录：优先读环境变量 SANDBOX_PATH，否则回退到项目根目录
-SANDBOX_ROOT = os.path.abspath(
-    os.environ.get(
-        "SANDBOX_PATH",
-        str(APP_ROOT),
-    )
-)
+# 沙箱根目录：优先读环境变量 SANDBOX_PATH，否则回退到项目根目录。
+# ★ V3.6.3：必须**每次判定时解析**——服务层会在运行时按设置写入 SANDBOX_PATH，
+#   模块级常量只算一次会让"策略判定"与"用户实际沙箱"错位（真机 E2E 实测撞到）。
+def sandbox_root() -> str:
+    return os.path.abspath(os.environ.get("SANDBOX_PATH", str(APP_ROOT)))
+
+
+# 兼容旧引用：保留导入时快照
+SANDBOX_ROOT = sandbox_root()
 
 
 class PolicyManager:
@@ -426,7 +428,7 @@ class PolicyManager:
     def _within_sandbox(path: str) -> bool:
         """判定路径是否位于沙箱根目录内（先解析符号链接/junction，再做 commonpath 归一化比较）"""
         try:
-            base = os.path.normcase(os.path.realpath(SANDBOX_ROOT))
+            base = os.path.normcase(os.path.realpath(sandbox_root()))
             real = os.path.normcase(os.path.realpath(path))
             return os.path.commonpath([base, real]) == base
         except (ValueError, TypeError):

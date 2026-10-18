@@ -44,103 +44,84 @@ WORKER_EVENTS = (
 
 # ──────────────────────────────────────────────
 # Agent 系统提示词：告诉模型它能做什么，以及工具使用规范
+#
+# ★ 结构（V3.6.3 重构，目标是"别让 agent 拖累模型能力"）：
+#   · `_SYSTEM_PROMPT` = **常驻基线**，必须短、必须把三条硬规则放在最前面；
+#   · `_ATTACHMENT_RULES` = 附件规范（题号定位 / 长文档分块 / OCR 话术等），
+#     **只在真的挂了附件时**追加。
+#   为什么这么拆：实测（本机 qwen3.5:4b，A/B 对照）——把附件规范常驻在提示词里时，
+#   一句"读一下沙箱里的 x.txt"它**一次工具都不调**，还回出"我会严格按照规范使用
+#   function call 格式"这种自说自话；换成精简基线后**立刻正常调用工具**。
+#   小模型的注意力就这么点，常驻的长规则会把"现在该干什么"淹没。
 # ──────────────────────────────────────────────
 _SYSTEM_PROMPT = (
-    "你是「隐盾」，一个专注于本地文件操作与代码分析的中文智能助手。\n\n"
-    "【你的能力】\n"
-    "你可以通过调用工具完成以下任务：\n"
-    "1. 列出目录下的文件和子目录（list_local_files）\n"
-    "2. 创建新文件并写入内容（create_local_file）\n"
-    "3. 读取已有文件的内容（read_local_file）\n"
-    "4. 修改已有文件的内容（modify_local_file）\n"
-    "5. 删除指定文件（delete_local_file）\n"
-    "6. 执行系统命令（run_local_command）\n"
-    "7. 递归分析整个项目的结构和关键代码（analyze_project）\n"
-    "8. 在文件中搜索特定内容（search_in_files）\n"
-    "9. ★★★ 读取长附件文档的指定片段（read_attachment_chunk）——按题号/关键词/字符区间检索附件原文，详见下方【长文档分块检索规范】\n"
-    "10. ★★★ 知识库语义检索（search_knowledge_base）——在已入库的本地知识库中进行语义检索，详见下方【知识库检索规范】\n\n"
-    "【工具使用规范】\n"
-    "1. 当用户请求涉及文件操作、目录查询、项目分析、命令执行等任务时，优先调用工具，不要凭空回答。\n"
-    "2. 工具参数中的 target_directory 表示目标路径，可以是绝对路径（如 E:\\qwen、C:\\Users\\test），也可以是中文描述（如桌面、E盘、D盘的文档目录）。\n"
-    "3. ★★★ 关键规则：如果用户消息中包含完整的绝对路径（如 E:\\xxx\\yyy），你必须把完整路径原样填入 target_directory，绝对不要留空或填'当前沙箱目录'，否则系统会分析错位置！\n"
-    "4. 如果用户提到文件名但没指定目录，target_directory 留空表示使用当前工作目录。\n"
-    "5. 支持多步推理：例如「先列出文件，再读取关键文件，最后分析项目结构」，可以连续调用多个工具。\n"
-    "6. 工具返回结果后，请根据结果和用户的原始需求给出清晰、专业、易懂的中文总结。\n\n"
-    "【附件文档处理规范】\n"
-    "当用户消息中出现 [离线附件环境上下文：xxx] 标记时，说明已挂载离线文档/音频转写文本。你必须按以下流程处理：\n"
-    "1. 类型识别：先判断附件类型（PDF/Word/Excel/TXT/音频转写），并推断文档主题。\n"
-    "2. 结构化提取（非音频）：\n"
-    "   - 提取标题、章节层级、关键术语表\n"
-    "   - 表格数据用 Markdown 表格还原，保留行列对应关系\n"
-    "   - 列表/编号项保持原序\n"
-    "3. 音频转写处理：\n"
-    "   - 推断说话人角色（如'会议主持/参会者A/参会者B'），用 [说话人]: 文本 格式重组\n"
-    "   - 识别问答环节、决议结论、待办事项\n"
-    "   - 如转写文本无标点或断句混乱，先做句子边界恢复再分析\n"
-    "4. 多维度分析（按用户提问意图选择）：\n"
-    "   - 摘要：3句话核心 + 要点列表\n"
-    "   - 关键信息抽取：人名/机构/日期/金额/条款编号/数据指标\n"
-    "   - 风险扫描：标注敏感数据（手机号/身份证/财务数字/密钥）出现位置\n"
-    "   - 对比问答：基于文档内容回答，引用原文片段为证，标注'见第X段'\n"
-    "5. 输出格式：先给【附件概览】（类型/主题/字数/敏感项计数），再给用户问题的回答。\n"
-    "6. 局限告知：若文档含表格/图片/公式导致解析缺失，明确告知用户'该部分未解析到，建议补充原文'，不要编造内容。\n"
-    "   ★★★ OCR 相关规则（禁止编造'OCR 失败'话术）：\n"
-    "   - 若附件开头出现 [本文档部分页面通过 OCR 识别，可能存在识别误差] 标记，说明 OCR 已成功执行并提取到文字，可以正常引用 OCR 识别出的内容作答，必要时在引用处提示'（OCR 识别，可能存在误差）'。\n"
-    "   - 仅当某页明确标注 [本页为扫描图片/空白页，OCR 未识别到文字内容] 时，才说明该页 OCR 确实未识别到文字；此时应说'该页未识别到文字内容'，不要说'OCR 技术失败/未通过 OCR 识别/OCR 未能识别'等夸大话术。\n"
-    "   - 严禁把 [本文档部分页面通过 OCR 识别] 这一成功标记曲解为失败信号，严禁在附件概览中写'主题：未知（因前 N 页均未通过 OCR 识别出文字）'。\n"
-    "   - 若附件标注 [OCR 引擎未安装]，提示用户运行 `pip install rapidocr-onnxruntime` 后重新挂载。\n"
-    "7. ★★★ 跨轮次附件上下文联系（关键规则）：\n"
-    "   - 当本轮用户消息中没有 [离线附件环境上下文：xxx] 标记，但用户提问明显是在追问上一篇文档的内容时（例如出现'上面''刚才''这个文档''那个文件''文中''上文''文档里''它''这份'等指代词，或问题主题与上一轮附件主题高度相关），你必须主动回溯对话历史中的 [离线附件环境上下文：xxx] 标记块，从中提取附件原文作为本轮回答依据。\n"
-    "   - 回答时无需再次输出【附件概览】，直接基于历史附件原文作答，并在结尾用一行注明'（参考：历史挂载文档《文件名》）'。\n"
-    "   - 如果历史附件原文已不在上下文窗口内（被摘要压缩），需明确告知用户：'该文档原文已超出记忆窗口，请重新挂载《文件名》后再提问'，不要凭空编造文档内容。\n"
-    "   - 如果用户追问涉及历史多个附件，需指明本次回答引用的是哪一份文档。\n"
-    "   - 禁止以'您没有上传文件''请上传文件后再提问'为由拒绝基于历史附件的追问。\n"
-    "8. ★★★ 题号定位规范（试卷/题库场景强制执行）：\n"
-    "   当附件为试卷/题库/练习册/考试文档，且用户问的是某一道具体题目时（如'第5题''题目12''第3题选什么'），你必须按以下流程回答，禁止跳过定位步骤直接作答：\n"
-    "   步骤 A：在当前上下文中查找 [Q<题号>] 锚点标记（系统会在每道题前自动注入 [Q5]、[Q12] 等锚点）。\n"
-    "   步骤 B：若找到 [Q<题号>] 锚点，先输出一行定位标记：\n"
-    "     【定位】Q<题号> 原文：「此处粘贴该题完整题干原文，含选项」\n"
-    "   步骤 C：再输出答案与解析：\n"
-    "     【答案】<选项或答案>\n"
-    "     【解析】<详细解析>\n"
-    "   步骤 D：若上下文中没有 [Q<题号>] 锚点（可能题目在截断之外，或文档未自动识别到题号），必须调用 read_attachment_chunk 工具检索：\n"
-    "     read_attachment_chunk(file='附件文件名', question='题号')\n"
-    "     工具返回该题完整原文后，再按步骤 B、C 输出。\n"
-    "   步骤 E：若工具也未找到该题号（返回未命中提示），明确告知用户'未在文档中定位到第 N 题，请确认题号或文档是否正确'，禁止凭空编造题干和答案。\n"
-    "   补充说明：\n"
-    "   - 若用户问的是'第5题到第8题'，需对每道题分别执行定位流程，不能只答第一题。\n"
-    "   - 若用户问的是'含某关键词的题目'（如'三角函数那道题'），用 keyword 参数调用工具：\n"
-    "     read_attachment_chunk(file='附件文件名', keyword='三角函数')\n"
-    "   - 禁止仅凭题号数字猜测题干内容，必须以原文片段为准。\n"
-    "9. ★★★ 长文档分块检索规范：\n"
-    "   当附件上下文末尾出现【长文档分块提示】时，说明文档已截断，后续内容需通过工具检索：\n"
-    "   - 工具 read_attachment_chunk 支持三种检索方式（按需任选）：\n"
-    "     a. 题号检索：read_attachment_chunk(file='文件名', question='5')  → 返回第5题完整题干+前后各1道题\n"
-    "     b. 关键词检索：read_attachment_chunk(file='文件名', keyword='三角函数')  → 返回首次出现该词的片段（前后各3000字符）\n"
-    "     c. 字符区间检索：read_attachment_chunk(file='文件名', char_start=30000)  → 从第30000字符继续读取6000字符\n"
-    "   - 当用户问的题目/内容不在已展示的前30000字符中，必须主动调用工具检索，不要回答'文档中未找到'。\n"
-    "   - 工具可多次调用：例如用户问'第35题和第60题'，需分别调用两次工具检索两道题。\n"
-    "   - char_length 参数可调整单次读取长度（500~12000），默认6000。\n\n"
-    "【知识库检索规范】\n"
-    "当用户询问的内容可能来自已入库的文档（如合同、报表、员工信息、规章等），优先使用 search_knowledge_base 工具进行语义检索。\n"
-    "1. 适用场景：\n"
-    "   - 用户问及合同条款、金额、当事人、日期等信息\n"
-    "   - 用户问及员工联系方式、薪资、部门等信息\n"
-    "   - 跨多份文档对比信息（如'哪份合同金额最高'）\n"
-    "   - 语义近似检索（如问'提前终止'，文档写的是'解除协议'）\n"
-    "2. 调用方式：search_knowledge_base(query='用户的实际问题', top_k=4)\n"
-    "   - query 用自然语言描述，不要只填关键词\n"
-    "   - top_k 默认4，问题复杂时可增至6~8\n"
-    "3. 与 read_attachment_chunk 的区别：\n"
-    "   - search_knowledge_base：跨所有入库文档的语义检索，适合'找相关内容'\n"
-    "   - read_attachment_chunk：单文档精确字符定位，适合'读某文档第N段'\n"
-    "   - 若不确定用哪个，优先用 search_knowledge_base\n"
-    "4. 返回内容已脱敏（敏感信息以 [KB_NAME_0]/[KB_PHONE_0] 等占位符显示，前缀 KB_ 表示来自知识库），你应基于占位符文本正常作答，占位符会在最终展示时自动还原给用户，无需你处理。\n\n"
+    "你是「隐盾」，一个在**本机沙箱内**工作的中文智能助手。\n\n"
+    "【三条硬规则（最高优先级，任何情况下都要遵守）】\n"
+    "1. **对话历史里已经有的信息，直接用**——用户上一轮告诉过你、或你上一轮答过的内容，"
+    "直接回答，禁止说'请上传文件 / 请提供资料 / 我没有记忆'。\n"
+    "2. **涉及文件、目录、项目、命令的任务，必须先调用工具再回答**，不要凭猜测或常识作答。\n"
+    "3. **工具失败或返回警告/错误时，如实告诉用户失败原因和下一步建议**，"
+    "严禁编造文件内容、数据或执行结果。读不到就说读不到。\n\n"
+    "【你能调用的工具】\n"
+    "1. list_local_files(target_directory) —— 列出目录下的文件\n"
+    "2. read_local_file(filename, target_directory) —— 读取文件内容\n"
+    "3. create_local_file(filename, content, target_directory) —— 新建文件\n"
+    "4. modify_local_file(filename, content, target_directory) —— 修改文件\n"
+    "5. delete_local_file(filename, target_directory) —— 删除文件\n"
+    "6. run_local_command(command) —— 执行白名单内的本地命令\n"
+    "7. analyze_project(target) —— 递归分析项目结构与关键代码\n"
+    "8. search_in_files(keyword, target_directory) —— 在文件中搜索内容\n"
+    "9. search_knowledge_base(query, top_k=4) —— 在本地知识库做语义检索（合同/报表/规章等）\n"
+    "10. read_attachment_chunk(file, question/keyword/char_start) —— 读取长附件的指定片段\n\n"
+    "【工具使用要点】\n"
+    "1. 用户给了**完整绝对路径**（如 E:\\qwen\\a.txt）就原样填进 target_directory；"
+    "只给文件名时 target_directory 留空（默认当前工作目录）。\n"
+    "2. 可以连续调用多个工具（例如先列目录、再读文件、最后总结）；拿到结果后再给结论。\n"
+    "3. 知识库检索用 search_knowledge_base(query='用户的原话问题')；"
+    "它返回的内容已脱敏（形如 [KB_PHONE_0]），你照常作答即可，占位符会自动还原给用户。\n\n"
     "【回答要求】\n"
-    "1. 使用中文回答\n"
-    "2. 不要输出工具调用过程的内部细节，只输出最终给用户的结果\n"
-    "3. 如果需要调用工具，请直接在 tool_calls 中生成调用，不要在文本中描述\n"
-    "4. 如果工具执行失败或返回错误信息，将错误信息友好地翻译给用户并给出建议\n"
+    "1. 用中文回答，直接给结论；不要描述工具调用过程，也不要把工具调用写成文字（要用真正的工具调用格式）。\n"
+    "2. 工具结果与你的推测冲突时，**以工具结果为准**。\n"
+    "3. 工具失败时，把错误翻译成人话并给出可执行的下一步（换路径、换文件名、先列目录等）。\n"
+    "4. 不确定的地方如实说'不确定'，不要编。\n"
+)
+
+# 附件相关规范：仅在"本轮或历史确实挂了附件"时追加（见下方拼装处）。
+# 这里保留完整规则（题号定位 / 长文档分块 / OCR 话术 / 跨轮附件），因为挂附件时它们确实是必需的；
+# 但**不再常驻**——常驻会把小模型的注意力从"该调工具了"上引开（实测见文件头注释）。
+_ATTACHMENT_RULES = (
+    "\n【附件文档处理规范】（当前会话挂有附件，按此执行）\n"
+    "1. 类型识别：先判断附件类型（PDF/Word/Excel/TXT/音频转写），并推断文档主题。\n"
+    "2. 结构化提取（非音频）：提取标题与章节层级；表格用 Markdown 表格还原（保留行列对应）；"
+    "列表/编号项保持原序。\n"
+    "3. 音频转写：推断说话人角色并用 [说话人]: 文本 重组；识别问答、决议、待办；"
+    "转写无标点或断句混乱时先恢复句子边界。\n"
+    "4. 多维度分析（按用户意图选择）：摘要（3 句核心 + 要点）；关键信息抽取（人名/机构/日期/金额/"
+    "条款编号/数据指标）；风险扫描（标注敏感数据出现位置）；对比问答（引用原文片段为证，标注'见第X段'）。\n"
+    "5. 输出格式：先给【附件概览】（类型/主题/字数/敏感项计数），再回答用户问题。\n"
+    "6. 局限告知：若表格/图片/公式导致解析缺失，明确说明'该部分未解析到'，不要编造内容。\n"
+    "   OCR 话术规则（禁止编造失败）：\n"
+    "   - 出现 [本文档部分页面通过 OCR 识别，可能存在识别误差] = OCR **成功**，可正常引用，"
+    "必要时标注'（OCR 识别，可能存在误差）'。\n"
+    "   - 只有明确标注 [本页为扫描图片/空白页，OCR 未识别到文字内容] 的页，才说'该页未识别到文字'；"
+    "不要写成'OCR 技术失败/未通过 OCR 识别'。\n"
+    "   - 附件标注 [OCR 引擎未安装] 时，提示用户运行 `pip install rapidocr-onnxruntime` 后重新挂载。\n"
+    "7. 跨轮附件追问：用户用'上面/刚才/这个文档/文中/它/这份'追问时，**回溯对话历史里的附件内容作答**；"
+    "不要输出【附件概览】，结尾用一行注明'（参考：历史挂载文档《文件名》）'。\n"
+    "   - 禁止以'您没有上传文件''请上传文件后再提问'为由拒绝。\n"
+    "   - 若确实取不到（历史被压缩），**先用 read_attachment_chunk 再取一次**；"
+    "仍取不到才如实说明'未能取到《文件名》的原文，请重新挂载'。\n"
+    "8. 题号定位（试卷/题库场景，禁止跳过定位直接作答）：\n"
+    "   A. 先在上下文找 [Q<题号>] 锚点；找到就输出一行【定位】Q<题号> 原文：「该题完整题干（含选项）」。\n"
+    "   B. 再输出【答案】与【解析】。\n"
+    "   C. 上下文里没有锚点时，必须调用 read_attachment_chunk(file='文件名', question='题号') 检索后再作答。\n"
+    "   D. 工具也没找到该题号时，如实说明'未在文档中定位到第 N 题'，禁止编造题干与答案。\n"
+    "   E. 问'第5题到第8题'要逐题执行；问关键词题用 read_attachment_chunk(file=…, keyword=…)。\n"
+    "9. 长文档分块：附件末尾出现【长文档分块提示】时说明已截断，需要的内容不在已展示部分就必须调用工具：\n"
+    "   a. 题号：read_attachment_chunk(file='文件名', question='5')\n"
+    "   b. 关键词：read_attachment_chunk(file='文件名', keyword='三角函数')\n"
+    "   c. 字符区间：read_attachment_chunk(file='文件名', char_start=30000)（char_length 500~12000，默认 6000）\n"
+    "   不要回答'文档中未找到'就结束，也不要凭题号猜题干。\n"
 )
 
 
@@ -619,6 +600,31 @@ class Worker:
                         forced_tool_result = f"[工具执行出错] {_e}"
                     self.tool_call_count += 1
 
+            # ★ 第三个强制分支（V3.6.3，"别让 agent 成为短板"）：**问某个具体文件的内容**
+            #   但没有给绝对路径时（"读一下沙箱里的 客户名单.txt""demo_contract.txt 里写了什么"），
+            #   由宿主直接把文件读出来喂给模型。实测：4B 模型这类请求**经常不调工具**，
+            #   而是回一句"请上传文件/我没看到附件"——工具明明在手边，用户却拿不到数据。
+            #   触发条件收紧为"读类动词 + 带扩展名的文件名"，避免劫持普通问答。
+            _read_verb = any(w in self.user_input for w in
+                             ["读取", "读一下", "读读", "看看", "查看", "打开", "内容",
+                              "写了什么", "里面是什么", "有什么内容"])
+            _file_name = re.search(
+                r'([\w\u4e00-\u9fa5\-. ]{1,60}?\.(?:txt|csv|md|json|log|py|html?|xlsx?|docx?|pdf))',
+                self.user_input, re.I)
+            if (forced_tool_result is None and _file_name and _read_verb
+                    and "read_local_file" in self.tools_map):
+                _name = _file_name.group(1).strip()
+                try:
+                    self.status.emit(f"[工具执行] 读取文件: {_name}")
+                    _args = {"filename": _name, "target_directory": self.sandbox_path}
+                    _raw = self._execute_with_approval("read_local_file", _args)
+                    forced_tool_result, _ = self._anonymize_tool_output(_raw, "read_local_file")
+                    forced_tool_name = "read_local_file"
+                    forced_tool_args = dict(_args)
+                except Exception as _e:
+                    forced_tool_result = f"[工具执行出错] {_e}"
+                self.tool_call_count += 1
+
             # 进入 ReAct 循环（快速模式和深度模式都走这个循环，区别在于最大轮次）
             # 如果已经强制执行了工具，把结果作为上下文注入，让 LLM 做总结
             if "深度" in self.think_mode:
@@ -670,6 +676,13 @@ class Worker:
                     # 不静默：告诉用户有几处没能还原，以及为什么（宁可少还原，也不猜错值）
                     final_reply += (f"\n\n（提示：有 {_kb_unresolved} 处知识库占位符未能还原——"
                                     "模型改动了占位符编号，无法唯一确定对应实体。可在知识库面板按来源核对。）")
+            # ★ 反编造兜底（V3.6.3）：本轮没有任何成功的工具结果、回答却在罗列"文件内容"时，
+            #   如实加一句"未经核实"。放在还原之后、播报之前——用户看到的就是最终文本。
+            final_reply = self._guard_ungrounded_dump(
+                final_reply,
+                bool(getattr(self, "_turn_tool_success", False)),
+                list(getattr(self, "_turn_tool_names", []) or []),
+            )
             # ★ 审计：记录最终还原后的 LLM 输出（展示给用户的版本）
             try:
                 AuditLog().log_llm_output(_reply_before_restore, preview=_reply_before_restore[:200])
@@ -807,10 +820,14 @@ class Worker:
         # 初始消息列表：系统提示 + 历史上下文 + 当前用户输入
         # ★★★ 把附件全局索引注入 SystemMessage，让 LLM 每轮对话都能看到所有附件的题号列表
         # 这样挂载文件成为整个 session 的全局资源，无需用户每轮重复挂载
+        # ★ V3.6.3：附件规范也**只在真挂了附件时**才追加——常驻会把小模型的注意力
+        #   从"该调工具了"上引开（同一问题：常驻时长规则 → 一次工具都不调；精简后 → 正常调用）。
         _attachment_index = self._build_attachment_index()
         _system_content = _SYSTEM_PROMPT
+        if _attachment_index or getattr(self, "attachment_fulltext", None):
+            _system_content = _SYSTEM_PROMPT + _ATTACHMENT_RULES
         if _attachment_index:
-            _system_content = _SYSTEM_PROMPT + "\n" + _attachment_index
+            _system_content = _system_content + "\n" + _attachment_index
         messages = [SystemMessage(content=_system_content)]
         context_msgs = memory.get_context_messages(self.llm)
         messages.extend(context_msgs)
@@ -822,10 +839,26 @@ class Worker:
         #     这是修复：快速模式下 LLM 不肯调用工具时，在这里直接注入真实结果
         # ──────────────────────────────────────────
         has_executed_tool = False  # 追踪是否执行过工具，用于决定是否强制总结
+        # ★ V3.6.3：本轮是否存在"成功的工具结果" + 本轮调用过哪些工具（反编造兜底要用）
+        self._turn_tool_success = False
+        self._turn_tool_names = []
         if forced_tool_result and forced_tool_name:
             # ★ 协议要求：ToolMessage 必须回应一条"声明了对应 tool_call 的 AIMessage"。
             #   旧实现注入的是无 tool_calls 的 AIMessage + 孤立 ToolMessage —— 对模型属非法序列，
             #   实测 7B 模型会因此完全忽略工具结果、答非所问（"请提供文件名或目录"）。
+            # ★ V3.6.3 两处补强（真机实测暴露）：
+            #   ① 失败的强制结果也要带"禁止编造"指令——否则模型会拿**历史里上一轮**的文件内容
+            #      当成本轮答案（实测：问"读不存在的文件"，它交出一份上一轮文件的汇总报告）；
+            #   ② 成功的强制结果要记进 `_turn_tool_success`，否则反编造兜底会把正常回答误判成"未核实"。
+            _forced_failed = any(mark in str(forced_tool_result)[:200] for mark in self._FAILURE_MARKS)
+            _forced_content = self._with_failure_directive(forced_tool_result)
+            if _forced_failed:
+                _forced_content += ("\n（注意：**上面这份失败结果才是本轮的工具结果**；"
+                                    "不要引用历史对话里其它文件的内容来回答本轮问题。）")
+                self._turn_tool_names.append(forced_tool_name)
+            else:
+                self._turn_tool_success = True
+                self._turn_tool_names.append(forced_tool_name)
             messages.append(AIMessage(
                 content="",
                 tool_calls=[{
@@ -835,14 +868,14 @@ class Worker:
                 }],
             ))
             messages.append(ToolMessage(
-                content=f"[{forced_tool_name} 执行结果]\n{forced_tool_result}",
+                content=f"[{forced_tool_name} 执行结果]\n{_forced_content}",
                 tool_call_id="forced_tool_001"
             ))
-            last_tool_result = forced_tool_result[:2000]
+            last_tool_result = str(forced_tool_result)[:2000]
             has_executed_tool = True
-            self.status.emit(f"[工具执行完成] 已扫描目录，准备总结...")
-            # 渐进输出：把工具扫描结果先发给用户看
-            self.intermediate_result.emit("正在为您整理扫描到的项目结构和关键文件...")
+            self.status.emit("[工具执行完成] 已读取/扫描，准备总结…")
+            # 渐进输出：把工具结果先发给用户看
+            self.intermediate_result.emit("正在为您整理工具返回的内容…")
         else:
             last_tool_result = ""
 
@@ -1024,7 +1057,8 @@ class Worker:
                         f"⚠️ [快速模式限制] 当前为快速模式，不支持写操作（{display}）。"
                         f"请切换到『深度思考』模式后重试。"
                     )
-                    tool_msg = ToolMessage(content=tool_result, tool_call_id=tool_call_id)
+                    tool_msg = ToolMessage(content=self._with_failure_directive(tool_result),
+                                           tool_call_id=tool_call_id)
                     messages.append(tool_msg)
                     round_had_failure = True
                     all_success = False
@@ -1048,7 +1082,8 @@ class Worker:
                 if policy_result == "deny":
                     # ★ 策略直接拒绝：不询问用户，直接驳回
                     tool_result = f"已拦截：安全策略禁止在 {target_path} 执行 {tool_display_name}"
-                    tool_msg = ToolMessage(content=tool_result, tool_call_id=tool_call_id)
+                    tool_msg = ToolMessage(content=self._with_failure_directive(tool_result),
+                                           tool_call_id=tool_call_id)
                     messages.append(tool_msg)
                     all_success = False
                     self.status.emit(
@@ -1069,7 +1104,8 @@ class Worker:
                     if not self._request_approval(tool_display_name, tool_args, target_path):
                         # 用户驳回 / 取消 / 超时
                         tool_result = f"已驳回：敏感操作被人工拦截（尝试在 {target_path} 执行 {tool_display_name}）"
-                        tool_msg = ToolMessage(content=tool_result, tool_call_id=tool_call_id)
+                        tool_msg = ToolMessage(content=self._with_failure_directive(tool_result),
+                                               tool_call_id=tool_call_id)
                         messages.append(tool_msg)
                         all_success = False
                         # ★ 审计：记录访问控制驳回
@@ -1145,7 +1181,14 @@ class Worker:
                                 ms=int((time.time() - _t_tool) * 1000))
 
                 # 4. 将工具执行结果追加到消息列表
-                tool_msg = ToolMessage(content=str(tool_result), tool_call_id=tool_call_id)
+                #    成功/失败分流：成功过就记下来（反编造兜底据此判断），
+                #    失败形态统一追加"禁止编造"指令（模型实测会无视 ⚠️ 直接编内容）。
+                _failed_result = any(mark in str(tool_result)[:200] for mark in self._FAILURE_MARKS)
+                if not _failed_result:
+                    self._turn_tool_success = True
+                self._turn_tool_names.append(tool_name)
+                tool_msg = ToolMessage(content=self._with_failure_directive(tool_result),
+                                       tool_call_id=tool_call_id)
                 messages.append(tool_msg)
 
             # 连续失败检测
@@ -2078,6 +2121,82 @@ class Worker:
             trimmed = trimmed[:1500] + "\n…（内容较长，已截断）"
         return (reply.rstrip() + "\n\n"
                 f"—— 以下为本地工具（{tool_name}）实际读取到的内容，供你核对 ——\n{trimmed}")
+
+    # 失败指令：任何"没成功"的工具结果后面都追加这一句，逼模型如实转述而不是编内容。
+    # 实测依据（V3.6.3）：工具因沙箱越界返回警告时，4B 模型**没有**如实说"读不到"，
+    # 而是编了一张"张三/北京科技集团/138****5678"的表格——对以"实事求是"为卖点的产品是硬伤。
+    _FAILURE_MARKS = ("❌", "⚠️", "🚫", "工具执行出错", "已拦截：", "已驳回：", "失败：", "无法")
+    _FAILURE_DIRECTIVE = (
+        "\n\n❗系统提示：本次工具调用**未成功**。回答时必须如实说明失败原因与下一步建议"
+        "（例如先列目录确认文件名），**禁止编造文件内容、数据或执行结果**。"
+    )
+
+    @classmethod
+    def _with_failure_directive(cls, tool_result) -> str:
+        """工具结果是失败/警告形态时，追加"禁止编造"的明确指令（幂等）。"""
+        text = str(tool_result)
+        if cls._FAILURE_DIRECTIVE in text:
+            return text
+        if any(mark in text[:200] for mark in cls._FAILURE_MARKS):
+            return text + cls._FAILURE_DIRECTIVE
+        return text
+
+    @staticmethod
+    def _looks_like_content_dump(reply: str) -> bool:
+        """回答里是否"像在罗列内容"（代码块 / Markdown 表格 / 连续的空格对齐表格）。
+
+        只用于"本轮没有任何成功工具结果"时的兜底判断——正常聊天很少出现这些形态，
+        所以触发面窄，不会动不动给用户加免责话。
+        """
+        text = str(reply or "")
+        if "```" in text:
+            return True
+        lines = text.splitlines()
+        tableish = sum(1 for ln in lines if ln.count("|") >= 2)
+        if tableish >= 2:
+            return True
+        spaced = 0
+        for ln in lines:
+            stripped = ln.strip()
+            # 长度阈值按**字符**而不是字节：中文表格一行可能只有 6 个字
+            # （"姓名  电话"）——之前用 >=8 会让中文表格整类漏判（实测踩到）。
+            if len(stripped) >= 5 and re.search(r"\S\s{2,}\S", stripped):
+                spaced += 1
+                if spaced >= 3:
+                    return True
+            else:
+                spaced = 0
+        return False
+
+    @staticmethod
+    def _asks_for_content(user_text: str) -> bool:
+        """用户是否在要"文件/目录里的内容"（决定要不要给它加"未经核实"提示）。"""
+        text = str(user_text or "")
+        if re.search(r"[\w\u4e00-\u9fa5-]{1,60}\.(?:txt|csv|md|json|log|py|html?|xlsx?|docx?|pdf)", text, re.I):
+            return True
+        return any(w in text for w in
+                   ["文件", "文档", "目录", "内容", "表格", "名单", "清单", "列表",
+                    "读", "查看", "看看", "搜索", "找出", "列出"])
+
+    def _guard_ungrounded_dump(self, reply: str, tool_success: bool,
+                               tool_names: list) -> str:
+        """反编造兜底：本轮**没有任何成功的工具结果**，回答却在罗列内容时，如实加一句提示。
+
+        这是"提示词硬规则 + 失败指令"之后的最后一道网：模型可能仍然编内容，
+        而编出来的"文件内容"对用户来说与真实内容无法区分。宁可加一句机器核验过的提示，
+        也不让用户把编造的内容当成文件事实。
+        """
+        if tool_success or not reply:
+            return reply
+        if not self._asks_for_content(self.user_input):
+            return reply
+        if not self._looks_like_content_dump(reply):
+            return reply
+        detail = ("本轮没有调用任何工具" if not tool_names
+                  else f"本轮工具调用（{'、'.join(tool_names[:3])}）没有成功返回内容")
+        return (str(reply).rstrip() +
+                f"\n\n⚠️ 提示：{detail}，**以上内容未经核实**（可能是模型自行生成的示例），"
+                "请先让我读取文件后再确认。")
 
     @staticmethod
     def _clean(text):
