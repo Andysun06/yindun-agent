@@ -47,6 +47,8 @@ CLIENT_SYMBOLS: Dict[str, Sequence[str]] = {
     "yindun.core.permission": ["permission_mode", "base_decision", "stricter"],
     "yindun.app.agent_service": ["_warmup_llm", "impl_notice", "set_session_permission"],
     "yindun.app.laya_service": ["probe_lan", "probe_local"],
+    # 公网模型接入（V3.6.4）：地址归一化与多候选探测必须真的在包里
+    "yindun.app.llm_factory": ["normalize_base_url", "probe_candidates", "probe_endpoint"],
     "yindun.plugins.host": ["module_attr", "preload"],
     "yindun.utils.logger": ["setup_logging"],
 }
