@@ -220,6 +220,32 @@ def main() -> int:
         nav_items = page.eval_on_selector_all("#setnav-plugins .setnav__item",
                                              "els => els.map(e => e.textContent.trim())")
         check("分组里有「laya 风险分级」设置入口", any("laya" in t.lower() for t in nav_items), str(nav_items))
+        # ★ 再测"没有任何插件带设置时，整栏必须隐藏"（V3.6.5 修的真实缺陷，用户截图实测）：
+        #   `.setnav__group` 声明了 display:flex，盖掉了 UA 的 [hidden]{display:none} →
+        #   空栏目照样显示一个孤零零的「插件」标题。
+        #   做法：把**所有带设置的插件**都停掉（mock 里默认启用的是 custom_dict，带 1 个配置项），
+        #   然后要求整栏彻底不可见、且没有残留条目；再复原状态供后续组使用。
+        def _group_state():
+            return page.evaluate(
+                "() => { const g = document.querySelector('#setnav-plugins'); if (!g) return [false, 0];"
+                " const st = getComputedStyle(g);"
+                " const visible = st.display !== 'none' && g.getBoundingClientRect().height > 0;"
+                " return [visible, g.querySelectorAll('.setnav__item').length]; }")
+
+        # 把"所有带设置的插件"都停掉（此前列里 mock 默认启用的是 custom_dict，另外我刚启用了 laya），
+        # 只剩确定没有设置项的插件在启用状态 → 栏目必须完全消失。
+        page.click('.pcard[data-card="custom_dict"] .switch__track')
+        page.wait_for_timeout(300)
+        page.click('.pcard[data-card="laya_risk"] .switch__track')
+        page.wait_for_timeout(400)
+        _visible, _items = _group_state()
+        check("停掉所有带设置的插件后，插件专属设置栏彻底隐藏（不留空标题、不残留条目）",
+              not _visible and _items == 0, f"visible={_visible} items={_items}")
+        # 复原：custom_dict 回到 mock 默认的启用态；laya 重新启用，供第 6 组（专属设置页）使用
+        page.click('.pcard[data-card="custom_dict"] .switch__track')
+        page.wait_for_timeout(300)
+        page.click('.pcard[data-card="laya_risk"] .switch__track')
+        page.wait_for_timeout(400)
 
         # ── 6) 插件专属设置页渲染（laya 三级接入）──
         print("\n" + "=" * 78)

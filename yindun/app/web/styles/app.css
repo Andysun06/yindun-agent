@@ -809,6 +809,11 @@ html[data-theme="dark"] .plugin-item__runtime.is-bad { background: rgba(196, 54,
 .plugin-cfg { display: flex; flex-direction: column; gap: var(--sp-2); border: 1px solid var(--border-1); border-radius: var(--r-ctrl); padding: var(--sp-3); background: var(--bg-2); }
 /* 显式 display 会盖掉 UA 的 [hidden]{display:none}，必须自己补一条，否则折叠态永远显示 */
 .plugin-cfg[hidden] { display: none; }
+/* ★ 同一类坑（V3.6.5 修，用户截图实测）：`.setnav__group` 声明了 display:flex，
+   于是"没有启用任何带设置的插件"时，即使 JS 把该分组设成 hidden，左侧仍会显示一个
+   孤零零的「插件」标题（空栏目）。这里补上补偿规则；同理给 .edge-zone 补一条
+   （它在无边框模式下是 display:contents，属显式显示，被隐藏时也必须真的消失）。 */
+.setnav__group[hidden], .edge-zone[hidden] { display: none; }
 .plugin-cfg__head { display: flex; align-items: center; justify-content: space-between; font-size: var(--fs-sm); }
 .plugin-cfg__text { width: 100%; resize: vertical; font-family: var(--font-mono); font-size: var(--fs-meta); line-height: 1.6; }
 .plugin-cfg__ops { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
