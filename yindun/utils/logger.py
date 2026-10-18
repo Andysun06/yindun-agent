@@ -197,8 +197,8 @@ def install_print_bridge() -> bool:
     """把内置 `print` 接到日志出口（**窗口模式专用**）。
 
     为什么还需要它：打包成窗口程序（PyInstaller windowed）时 `sys.stdout` / `sys.stderr` 是 **None**，
-    `print` 什么都不做——`install_std_streams_redirect()` 那种"接管流"的写法也就无从下手，
-    于是 170+ 处 print 在现场依然不可见（实测打包后的客户端 `logs/yindun.log` 只有启动那两行）。
+    `print` 什么都不做，于是 170+ 处 print 在现场依然不可见
+    （实测打包后的客户端 `logs/yindun.log` 只有启动那两行）。
     这里改成替换 `builtins.print` 本身：有可用流就照原样输出（不改变开发体验），
     没有流（窗口模式）就按关键词分级写进日志。
     ★ 这是一条**跨模块的数据流**（任何模块的 print 都会进日志文件）：文本统一过掩码、单行限长，
@@ -234,84 +234,6 @@ def install_print_bridge() -> bool:
     return True
 
 
-def install_std_streams_redirect() -> bool:
-    """把 `print` 的散装输出也收进日志文件（打包后最需要这一步）。
-
-    做法是**替换** `sys.stdout/sys.stderr` 为写入同一 logger 的包装对象：
-      · 现场排障时"有 print 的地方"也能在 logs/yindun.log 里看到（不必逐个改成 log.*）；
-      · 已改成 `log.*` 的模块走正常链路，两边不会重复。
-    只在打包（frozen）或显式调用时启用：交互式开发时保留终端原样输出更方便。
-    返回是否启用成功。
-    """
-    global _log_dir_used
-    if _log_dir_used is None:
-        return False
-    if sys.stdout is None and sys.stderr is None:
-        return False        # 窗口模式且无控制台：没有可接管的流（日志文件本身照常工作）
-    try:
-        logger = get_logger("console")
-
-        class _Tee:
-            """把写往 stdout/stderr 的内容按行转成日志，同时保留原始输出。
-
-            **级别怎么定**：历史代码里有 170+ 处 `print`，逐个改写成 `log.*` 风险大、收益小
-            （安全关键路径——审计/沙箱/插件宿主/控制面——已经显式改成 `log.*`）。
-            对剩下的散装 print，这里按**内容关键词**给它一个合理级别（见模块级 `_ERROR_HINT`）：
-              · 像出错的（失败/异常/超时/拒绝…）→ WARNING
-              · 其余按流区分（stdout=INFO、stderr=WARNING）
-            这是个启发式，写在这里而不是散进业务代码里：**想精确分级的模块就用 `log.*`**，
-            没改的也至少能在 `logs/yindun.log` 里按级别筛出来。
-            """
-
-            def __init__(self, original, level):
-                self._original = original
-                self._level = level
-                self._buffer = ""
-
-            def _flush_line(self, line: str) -> None:
-                text = line.rstrip()
-                if not text:
-                    return
-                level = logging.WARNING if _ERROR_HINT.search(text) else self._level
-                # ★ 这里是**跨文件的落点**：任何模块的 print 都会流进这个 sink。
-                #   掩码在写出前就地做一遍，而不是只依赖 `_MaskingFilter`——理由是这条链路
-                #   跨了文件（业务模块 print → 本模块落盘），一旦将来有人给某个 handler 少装一次
-                #   过滤器，或者把日志接到别处，掩码就会**静默失效**。就地过一次，
-                #   保证"进 sink 的已经是净化值"，与 handler 配置无关（重复掩码是幂等的）。
-                logger.log(level, "%s", mask_log_text(text))
-
-            def write(self, text):
-                try:
-                    self._original.write(text)
-                except Exception:
-                    pass
-                self._buffer += str(text)
-                while "\n" in self._buffer:
-                    line, self._buffer = self._buffer.split("\n", 1)
-                    self._flush_line(line)
-                return len(text)
-
-            def flush(self):
-                try:
-                    self._original.flush()
-                except Exception:
-                    pass
-                if self._buffer:
-                    self._flush_line(self._buffer)
-                    self._buffer = ""
-
-            def __getattr__(self, item):        # isatty/encoding/fileno 等透传
-                return getattr(self._original, item)
-
-        if sys.stdout is not None:
-            sys.stdout = _Tee(sys.stdout, logging.INFO)
-        if sys.stderr is not None:
-            sys.stderr = _Tee(sys.stderr, logging.WARNING)
-        return True
-    except Exception:
-        return False
-
-
 def _level_from_argv(argv) -> tuple:
     """从命令行解析 `--log-level` / `--log-dir` / `--log-capture-prints`（不引 argparse，保持轻量）。"""
     level = log_dir = ""
@@ -332,11 +254,17 @@ def _level_from_argv(argv) -> tuple:
 
 
 def setup_from_argv(argv=None, console: bool = True) -> Path:
-    """入口统一调用：解析命令行/环境变量 → 配好日志 → 打包态顺带接管 print。"""
+    """入口统一调用：解析命令行/环境变量 → 配好日志 → 打包态顺带把散装 print 接进日志。
+
+    只剩一条路（V3.6.7）：**打包态替换 builtins.print**。原先还并行养着一套"接管
+    sys.stdout/sys.stderr"的 Tee，但它只在**有控制台**时才有流可接管——而交付的两个 exe
+    都是无控制台形态（窗口态 sys.stdout 就是 None），那套代码在交付形态下永不生效；
+    开发时从源码跑又本来就能在终端看见输出。删掉它以后边界更清楚：
+      · 有控制台 → print 进终端（不重复落盘，日志里不出现两套口径）；
+      · 无控制台 → 桥接按关键词分级写进日志（掩码与限长由日志层统一负责）。
+    """
     level, log_dir = _level_from_argv(sys.argv[1:] if argv is None else argv)
     path = setup_logging(level=level, log_dir=log_dir, console=console)
     if getattr(sys, "frozen", False):
-        # 两条路都要装：有控制台时接管流；窗口模式（流为 None）时替换 builtins.print
-        install_std_streams_redirect()
         install_print_bridge()
     return path

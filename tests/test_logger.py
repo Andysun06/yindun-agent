@@ -38,7 +38,7 @@ os.environ["YINDUN_LOG_DIR"] = str(TMP)
 
 import yindun.utils.logger as logger_mod  # noqa: E402
 from yindun.utils.logger import (  # noqa: E402
-    LOG_FILE_NAME, current_log_file, get_logger, install_std_streams_redirect,
+    LOG_FILE_NAME, current_log_file, get_logger,
     mask_log_text, resolve_level, setup_logging)
 
 print("=" * 78)
@@ -104,18 +104,23 @@ check("可用环境变量整条关闭打印采集（涉密环境按需收紧）"
       and os.environ.get("YINDUN_LOG_CAPTURE_PRINTS") is None)
 
 print("\n" + "=" * 78)
-print("【4】散装 print 桥接：按关键词给级别")
+print("【4】散装 print：职责边界（有控制台就看控制台，没控制台才进日志）")
 print("=" * 78)
-check("能装上桥接（有流且日志可用）", install_std_streams_redirect())
-print("[SomeModule] 这是一条普通信息")
-print("[SomeModule] 读取配置失败：FileNotFoundError: 配置不存在")
+# 这里原本测的是"接管 sys.stdout/stderr 的 Tee"。那个机制已删除（V3.6.7）：
+# 正式交付的两个 exe 都是**无控制台**形态（PyInstaller windowed，sys.stdout 就是 None），
+# 于是那套"接管流"的代码在交付形态下永远不会生效——它只在**开发时从源码启动**才有流可接管，
+# 而那时终端本来就看得见。留着它等于多养一条跨模块落盘通路，收益为零。
+# 现在的边界很清楚：
+#   · 有控制台（源码运行 / 手动接了终端）→ print 照旧进终端，**不重复落盘**；
+#   · 无控制台（打包窗口态）→ 由 builtins.print 桥接按关键词分级写进日志（见【5.5】）。
+check("print 不再被「接管流」改写（Tee 机制已删除）",
+      not hasattr(logger_mod, "install_std_streams_redirect"))
+before = log_file.read_text(encoding="utf-8")
+print("[SomeModule] 这是一条普通信息（有控制台时不该进日志）")
 sys.stdout.flush()
-text = log_file.read_text(encoding="utf-8")
-check("普通 print 落进日志（INFO）", "这是一条普通信息" in text)
-check("含「失败」的 print 被抬成 WARNING", "读取配置失败" in text)
-warn_lines = [ln for ln in text.splitlines() if "读取配置失败" in ln]
-check("抬级确实生效（该行是 WARNING）", warn_lines and "WARNING" in warn_lines[-1],
-      str(warn_lines[-1:]))
+after = log_file.read_text(encoding="utf-8")
+check("有控制台时不重复落盘（终端可见即可，避免日志里两套口径）",
+      "这是一条普通信息（有控制台时不该进日志）" not in after, f"新增 {len(after)-len(before)} 字节")
 
 print("\n" + "=" * 78)
 print("【5】轮转：不无限长")
@@ -129,8 +134,8 @@ check("文件 handler 带轮转配置", handlers and handlers[0].maxBytes == log
 print("\n" + "=" * 78)
 print("【5.5】窗口模式：print 采集（默认关闭，需显式开启）")
 print("=" * 78)
-# 打包成窗口程序时 sys.stdout/stderr 是 None，`install_std_streams_redirect()` 无从下手，
-# 170+ 处 print 在现场不可见 → 用 builtins.print 桥接。但**默认不开**：
+# 打包成窗口程序时 sys.stdout/stderr 是 None，print 什么都不做，170+ 处 print 在现场不可见
+# → 用 builtins.print 桥接。但**默认不开**：
 # 接管 print 等于让任何模块的输出都流进日志文件（跨模块落盘面），隐私产品不该默认多这一条。
 import builtins  # noqa: E402
 check("默认不采集散装 print（避免默认多一条明文落盘面）",

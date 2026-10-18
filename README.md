@@ -24,7 +24,7 @@
 
 | 交付物 | 位置 |
 |---|---|
-| 📦 **免安装单文件 exe**（双击即用，无需安装与脚本） | [Release](https://github.com/Andysun06/yindun-agent/releases) → `Yindun-Portable-v3.6.7.exe`（GitHub 资产名不支持中文，会净化成下划线，故用英文名；本地构建产物名为 `隐盾安全智能体_V3.6.7_便携版.exe`，`python tools/packaging/build_portable.py`） |
+| 📦 **免安装单文件 exe**（双击即用，无需安装与脚本） | [Release](https://github.com/Andysun06/yindun-agent/releases) → `Yindun-Portable-v3.6.7.exe`（GitHub 资产名不支持中文，会净化成下划线，故用英文名；本地构建产物名为 `隐盾安全智能体_V3.6.7_便携版.exe`，`python tools/packaging/build_portable.py`；**每次修复批次都会重建并同步到该 Release**） |
 | 🏢 **企业控制端 exe**（集中管理服务 + 控制台，零依赖十几 MB，**无命令行黑窗**） | `python tools/packaging/build_control.py` → `dist/隐盾控制端_V3.6.7_便携版.exe`（拷到管理机**双击直接开控制台窗口**、自动登录、无黑命令行；启动信息在 `logs/yindun.log`，启动失败弹系统对话框说明原因；重复双击会提示「已经在运行」而不是抢端口。也可源码跑 `python -m yindun.control`） |
 | 🎬 **项目演示视频**（1080p，3分28秒） | [Release v3.3.0](https://github.com/Andysun06/yindun-agent/releases/tag/v3.3.0) → `Yindun-Demo-v3.3.0.mp4` |
 | 📄 **技术报告**（含隐私算法形式化 / 威胁模型 / 攻击实验 / 企业部署形态 · V3.5.0） | [docs/隐盾安全智能体_技术报告.pdf](docs/隐盾安全智能体_技术报告.pdf) |
