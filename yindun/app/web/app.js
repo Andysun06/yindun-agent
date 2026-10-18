@@ -2109,11 +2109,38 @@
     // 拿不到时按"跟随默认"显示（新会话的初始状态）。
     paintPermPill(state.sessionPermission);
 
-    document.documentElement.dataset.theme = s.dark_mode ? "dark" : "light";
+    applyTheme(!!s.dark_mode);   // ★ 明暗切换带过渡（首次加载不动画，见 applyTheme）
     // 注意：无边框模式的窗口控制按钮必须在"设置已加载后"决定是否显示，
     // 因此绑定放在这里（fillSettings 由 bootstrap / 保存设置 / 打开设置页触发），
     // 而不是 DOMContentLoaded —— 那时 settings 还是空的。
     bindWindowControls();
+  }
+
+  /** 应用明暗主题。**切换时做页级交叉淡入淡出**，而不是"啪一下"闪一下（负责人反馈"太闪了"）。
+
+  为什么用 View Transitions：主题是 CSS 变量整体切换，逐元素加 transition 既贵又容易和
+  hover/动画打架；页级交叉淡入淡出只需一行 API，且是浏览器原生合成（不掉帧）。
+  边界：① 首次加载（还没画出来）**不动画**，只在用户主动切换时过渡；
+        ② 用户开了"减少动态效果"（prefers-reduced-motion）直接切，不做动画；
+        ③ WebView2 老版本没有这个 API → 直接切（功能不受影响）。 */
+  let _themeApplied = false;
+  function applyTheme(dark, animate = true) {
+    const html = document.documentElement;
+    const next = dark ? "dark" : "light";
+    const run = () => { html.dataset.theme = next; };
+    const reduce = !!(window.matchMedia
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    if (!animate || !_themeApplied || reduce || typeof document.startViewTransition !== "function") {
+      run();
+      _themeApplied = true;
+      return;
+    }
+    try {
+      document.startViewTransition(run);
+    } catch (err) {
+      run();          // 过渡被拒（例：已有过渡在跑）→ 至少把主题切成对的
+    }
+    _themeApplied = true;
   }
 
   async function persist(patch) {

@@ -1,6 +1,6 @@
-# 🛡️ 隐盾安全智能体 (Yindun Security Agent) - V3.6.5
+# 🛡️ 隐盾安全智能体 (Yindun Security Agent) - V3.6.6
 
-欢迎来到 **隐盾安全智能体 (V3.6.5)** 官方代码库。
+欢迎来到 **隐盾安全智能体 (V3.6.6)** 官方代码库。
 
 本应用是一款常驻系统桌面最上层的原生半透明悬浮智能体客户端。项目经历多轮工业级深度解耦重构，视图层已整体迁移到 Web 前端（原生 ES + 设计 token，无构建步骤）。
 
@@ -24,12 +24,12 @@
 
 | 交付物 | 位置 |
 |---|---|
-| 📦 **免安装单文件 exe**（双击即用，无需安装与脚本） | [Release](https://github.com/Andysun06/yindun-agent/releases) → `Yindun-Portable-v3.6.5.exe`（GitHub 资产名不支持中文，会净化成下划线，故用英文名；本地构建产物名为 `隐盾安全智能体_V3.6.5_便携版.exe`，`python tools/packaging/build_portable.py`） |
-| 🏢 **企业控制端 exe**（集中管理服务 + 控制台，零依赖十几 MB） | `python tools/packaging/build_control.py` → `dist/隐盾控制端_V3.6.5_便携版.exe`（拷到管理机双击即用；也可源码跑 `python -m yindun.control`） |
+| 📦 **免安装单文件 exe**（双击即用，无需安装与脚本） | [Release](https://github.com/Andysun06/yindun-agent/releases) → `Yindun-Portable-v3.6.6.exe`（GitHub 资产名不支持中文，会净化成下划线，故用英文名；本地构建产物名为 `隐盾安全智能体_V3.6.6_便携版.exe`，`python tools/packaging/build_portable.py`） |
+| 🏢 **企业控制端 exe**（集中管理服务 + 控制台，零依赖十几 MB） | `python tools/packaging/build_control.py` → `dist/隐盾控制端_V3.6.6_便携版.exe`（拷到管理机双击即用；也可源码跑 `python -m yindun.control`） |
 | 🎬 **项目演示视频**（1080p，3分28秒） | [Release v3.3.0](https://github.com/Andysun06/yindun-agent/releases/tag/v3.3.0) → `Yindun-Demo-v3.3.0.mp4` |
 | 📄 **技术报告**（含隐私算法形式化 / 威胁模型 / 攻击实验 / 企业部署形态 · V3.5.0） | [docs/隐盾安全智能体_技术报告.pdf](docs/隐盾安全智能体_技术报告.pdf) |
 | 📽 **汇报 PPT**（21 页 · V3.5.0） | [docs/隐盾安全智能体_项目汇报.pptx](docs/隐盾安全智能体_项目汇报.pptx) |
-| 📖 **使用说明**（安装/配置算力/功能演示 + 控制面 · V3.6.5） | [docs/使用说明.md](docs/使用说明.md) · [docs/使用说明.pdf](docs/使用说明.pdf) |
+| 📖 **使用说明**（安装/配置算力/功能演示 + 控制面 · V3.6.6） | [docs/使用说明.md](docs/使用说明.md) · [docs/使用说明.pdf](docs/使用说明.pdf) |
 | 🧩 **插件开发指南**（钩子契约 / 安全边界 / 最小示例） | [docs/插件开发.md](docs/插件开发.md) |
 | 🧪 **隐私攻防评测**（黑盒/白盒/劫持/注入，可复现） | [tests/privacy_eval.py](tests/privacy_eval.py)（`python tests/privacy_eval.py` 一键复现） |
 | 🎯 **留出集覆盖率评测**（随机化语料 / 冻结规则一次性运行 / 含评测日志） | [tests/privacy_holdout_eval.py](tests/privacy_holdout_eval.py)（`python tests/privacy_holdout_eval.py` 一键复现） |
@@ -411,6 +411,7 @@ yindun-agent/
 
 | 版本 | 发布日期 | 主要变更 |
 |------|----------|----------|
+| **V3.6.6** | 2026-10 | **明暗切换过渡动画**：切主题从「啪一下」改为页级交叉淡入淡出（`startViewTransition` + 0.32s 缓入缓出）；首次加载不动画、系统「减少动态效果」时直接切、老 WebView2 无该 API 时自动降级。界面回归新增两条断言（走过渡 / reduce-motion 下不走）| 套件全绿 |
 | **V3.6.5** | 2026-10 | **插件设置栏「空栏目」修复**：`.setnav__group` 的 `display:flex` 盖掉了 `[hidden]{display:none}`，导致没有启用任何带设置的插件时，左侧仍显示孤零零的「插件」标题；补 `[hidden]` 补偿规则（同类隐患 `.edge-zone` 一并查全）。界面回归新增「停掉所有带设置的插件 → 整栏彻底隐藏」断言（先在旧代码上复现 visible=True / items=1，修后通过）；6 套件全绿 |
 | **V3.6.4** | 2026-10 | **公网模型接入修复 + 拖动只认顶栏**：① ★ 接 GLM-4-Flash 一直失败的真实根因是**把完整端点当基础地址填**（`…/v4/chat/completions`）——探测拼 `/models` 变 404，保存后 chat 又拼成`…/chat/completions/chat/completions`。现在**探测前/保存前/建客户端前**都做地址归一化（去掉 `/chat/completions`、`/models` 等端点后缀，不猜测不乱补），老配置自动修复，探测成功会把基础地址回填输入框；② 探测**多候选**（`/models` → `/api/tags` → 真实最小 chat 请求），只提供 chat 的服务也能判连通，401/403/404/超时分开说人话；③ ★ **修掉「在输入框里拖动会拖走整个窗口」**：pywebview 的 `easy_drag` 是全局无筛选的 mousedown 监听，改为官方拖动区域机制——只有顶栏/闪发浮条/设置页顶部栏能拖窗口。实测：真机跑通 GLM-4-Flash，老配置自动修复后也可用；10 套件全绿 |
 | **V3.6.3** | 2026-10 | **基础对话可用性（不让 agent 成为短板）**：① ★ **提示词分层**——常驻基线从 ~5100 字压到 **1245 字**并把三条硬规则放在最前（历史里有就直接答 / 涉及文件必须先调工具 / 工具失败必须如实说），大段附件规范（题号定位 / 长文档分块 / OCR 话术）改为**仅挂附件时追加**。实测依据：同一句「读一下沙箱里的 x.txt」，常驻长规则时 4B **一次工具都不调**，精简后立刻正常调用。② **反编造三层护栏**：工具失败结果统一追加「禁止编造」指令；本轮无成功工具结果却在罗列内容时如实追加「未经核实」提示；宿主新增**读文件强制兜底**（模型不调工具时由宿主真读）。实测：问「读不存在的文件」，改前交出一份**上一轮文件的汇总报告**（编造），改后如实答「文件不存在、无内容可读取」。③ ★ 修掉真实缺陷：**沙箱根只在导入时解析一次**——改过沙箱目录后文件工具会把自己的文件判成「超出安全沙箱」拒掉（真机 E2E 撞到）；现改为每次调用解析当前生效值，越界判定照旧严格。④ 合同工作流的 JSON 抽取改为**宿主收紧重试一次**（4B 偶发拿解释文字 / 包一层对象作答，旧实现直接把步骤判失败）。验证：真机 E2E 全绿（新增「记忆追问 / 工具真读 / 失败不编造」三条断言）、30 套件全绿 |

@@ -467,6 +467,16 @@ html[data-frameless="1"] .win-ctrls { display: inline-flex; }
 .model-opt__tick { color: var(--accent-600); font-weight: 700; }
 
 /* ══ 设置视图（独立视图：左设置导航 + 右内容，参考主流 agent 设置页范式）═══ */
+/* 明暗切换过渡（V3.6.6）：View Transitions 的页级交叉淡入淡出时长与缓动。
+   默认 0.25s 偏快、观感像"闪一下"；这里放到 0.32s 并用缓入缓出，切换更柔和。 */
+::view-transition-old(root), ::view-transition-new(root) {
+  animation-duration: .32s;
+  animation-timing-function: cubic-bezier(.4, 0, .2, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root), ::view-transition-new(root) { animation-duration: .01s; }
+}
+
 /* [hidden] 补偿：.sheet/.setview 都声明了显式 display，会盖掉 UA 的 [hidden]{display:none} */
 .sheet[hidden], .setview[hidden] { display: none; }
 

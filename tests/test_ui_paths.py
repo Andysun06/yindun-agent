@@ -356,10 +356,28 @@ def main() -> int:
         print("【10】明暗切换 / 右栏折叠 / 窗口按钮归位")
         print("=" * 78)
         theme_before = page.evaluate("() => document.documentElement.getAttribute('data-theme')")
+        # ★ 明暗切换要有过渡动画（负责人反馈"太闪了"）：装个计数器，证明真的走了
+        #   View Transitions 这条路径，而不是"啪一下"直接换主题。
+        page.evaluate("() => { window.__vtCount = 0;"
+                      " const orig = document.startViewTransition;"
+                      " if (typeof orig === 'function') {"
+                      "   document.startViewTransition = function (...a) {"
+                      "     window.__vtCount += 1; return orig.apply(this, a); }; } }")
         page.click("#btn-theme")
-        page.wait_for_timeout(200)
+        page.wait_for_timeout(500)
         theme_after = page.evaluate("() => document.documentElement.getAttribute('data-theme')")
         check("切主题后 data-theme 改变", theme_before != theme_after, f"{theme_before} → {theme_after}")
+        _vt = page.evaluate("() => window.__vtCount || 0")
+        check("切主题走了页级过渡动画（startViewTransition 被调用，不再是一下闪过去）",
+              _vt >= 1, str(_vt))
+        # 无障碍：系统开了"减少动态效果"时**不应**做过渡（直接切）
+        page.emulate_media(reduced_motion="reduce")
+        page.evaluate("() => { window.__vtCount = 0; }")
+        page.click("#btn-theme")
+        page.wait_for_timeout(300)
+        _vt_reduced = page.evaluate("() => window.__vtCount || 0")
+        check("开了「减少动态效果」时不做过渡动画（尊重系统设置）", _vt_reduced == 0, str(_vt_reduced))
+        page.emulate_media(reduced_motion="no-preference")
         page.click("#btn-toggle-right")
         page.wait_for_timeout(250)
         collapsed = page.evaluate("() => document.querySelector('.app').classList.contains('is-right-collapsed')")
