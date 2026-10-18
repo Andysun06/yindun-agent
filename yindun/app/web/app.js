@@ -197,9 +197,14 @@
     $("stat-model").textContent = model.length > 24 ? model.slice(0, 22) + "…" : model;
     $("stat-tools").textContent = `工具 ${(payload && payload.tool_calls) || 0}`;
     const tokens = (payload && payload.context_tokens) || 0;
+    // 阈值与说明都来自后端预算表（core/context_budget.py）——界面不再自己写数，
+    // 也就不会出现"界面说 5000、实际按 8192 压缩"这种对不上账的情况（C-13）。
     const limit = (payload && payload.context_limit) || 5000;
     $("stat-tokens").textContent = `上下文 ${tokens >= 1000 ? (tokens / 1000).toFixed(1) + "k" : tokens}/${limit >= 1000 ? (limit / 1000).toFixed(0) + "k" : limit}`;
-    $("stat-tokens").title = `按中英文分权重估算的上下文占用；超过 ${limit} 会触发历史摘要压缩（估算口径与摘要压缩一致）`;
+    const nearLimit = limit > 0 && tokens / limit >= 0.8;
+    $("stat-tokens").classList.toggle("is-warn", nearLimit);
+    $("stat-tokens").title = (payload && payload.context_note)
+      || `按中英文分权重估算的上下文占用；超过 ${limit} 会触发历史摘要压缩（估算口径与摘要压缩一致）`;
     renderPosture(payload);
   }
 
@@ -1087,6 +1092,14 @@
         ...caps.map((c) => `<span class="plugin-badge">${esc(KIND_LABEL[c.kind] || c.kind)}</span>`),
         p.permissions && p.permissions.network ? `<span class="plugin-badge">${esc(PERM_LABEL[p.permissions.network] || p.permissions.network)}</span>` : "",
         (p.missing && p.missing.length) ? `<span class="plugin-badge plugin-badge--warn">依赖未满足</span>` : "",
+        // 来源校验（本轮 C-15）：只对**用户安装**的插件显示签名状态——
+        // 内核自带的随产品发布，"已签名"没有信息量；未签名的用户插件要能被一眼看出来。
+        p.source === "user" && p.signature_status === "verified"
+          ? `<span class="plugin-badge plugin-badge--ok" title="${esc(p.signature_detail || "")}">已签名（${esc(p.signer || "可信公钥")}）</span>` : "",
+        p.source === "user" && p.signature_status === "unsigned"
+          ? `<span class="plugin-badge plugin-badge--warn" title="未签名：来源无法校验。开启「仅加载签名插件」后将被拒绝加载">未签名</span>` : "",
+        p.source === "user" && p.signature_status === "untrusted"
+          ? `<span class="plugin-badge plugin-badge--warn" title="${esc(p.signature_detail || "")}">签名不受信</span>` : "",
         p.error ? `<span class="plugin-badge plugin-badge--warn">${esc(p.error)}</span>` : "",
       ].filter(Boolean).join("");
       const disabled = !p.usable || !!p.error;
@@ -2115,7 +2128,16 @@
       case "intermediate_result":
         // 注意：助手回答现在是"编号记录条目"（.entry__body），不再是 .bubble。
         // 旧选择器会返回 null，导致流式中间结果更新静默失败（界面长时间只显示等待点）。
-        ensureStreamBubble().querySelector(".entry__body").innerHTML = md(payload || ""); scrollToEnd(); break;
+        // 本轮起这条通道也承载**真流式**（模型逐块生成、后端还原占位符后推全文），
+        // 所以首次收到内容时要摘掉"等待点"标记（is-thinking），否则会一边出字一边转圈。
+        {
+          const row = ensureStreamBubble();
+          const body = row.querySelector(".entry__body");
+          body.classList.remove("is-thinking");
+          body.innerHTML = md(payload || "");
+          scrollToEnd();
+        }
+        break;
       case "finished": {
         const tag = (state.settings.think_mode || "").includes("深度") ? "思考" : "快速";
         finalizeBubble(payload || "", tag); setStatus(""); break;

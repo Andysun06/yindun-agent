@@ -367,6 +367,86 @@ check("能力同步结果可查（停用后识别器不挂载、模板为空）"
 check("服务层自检可用", svc.plugin_selfcheck().get("ok") is True)
 
 print("\n" + "=" * 78)
+print("【9】来源校验：签名 / 可信公钥白名单 / 强制模式（V3.6.2 C-15）")
+print("=" * 78)
+import json as _json  # noqa: E402
+from yindun.plugins import signing as _signing  # noqa: E402
+from yindun.plugins.host import PluginHost as _PluginHost  # noqa: E402
+
+sign_dir = TMP / "signing"
+data_root = sign_dir / "plugins_data"
+user_dir = sign_dir / "user_plugins"
+plugin_dir = user_dir / "dept_tool"
+plugin_dir.mkdir(parents=True, exist_ok=True)
+(data_root / _signing.TRUSTED_KEYS_DIRNAME).mkdir(parents=True, exist_ok=True)
+
+private_pem, public_pem = _signing.generate_keypair()
+(data_root / _signing.TRUSTED_KEYS_DIRNAME / "dept-a.pub").write_text(public_pem, encoding="utf-8")
+
+manifest = {"id": "dept_tool", "name": "部门插件", "version": "0.1.0",
+            "hooks": ["recognizer"], "category": "安全"}
+signed = dict(manifest)
+signed[_signing.SIGNATURE_FIELD] = _signing.sign_manifest(manifest, private_pem)
+(plugin_dir / "manifest.json").write_text(_json.dumps(signed, ensure_ascii=False), encoding="utf-8")
+(plugin_dir / "plugin.py").write_text("def recognizer(context):\n    return []\n", encoding="utf-8")
+
+
+def _host(**kw):
+    return _PluginHost(enabled_lookup=lambda pid: False, enabled_setter=lambda pid, on: None,
+                       builtin_dir=TMP / "no_builtin", user_dir=user_dir, data_root=data_root, **kw)
+
+
+rec = {r.plugin_id: r for r in _host().discover()}["dept_tool"]
+check("白名单里的公钥验签通过 → 已签名且可信",
+      rec.signature_status == "verified" and rec.signer == "dept-a" and not rec.error,
+      f"{rec.signature_status}/{rec.signer}/{rec.error}")
+
+# 签完再改清单任一字段 → 验签失败（签名与字段取值绑定）
+tampered = dict(signed)
+tampered["name"] = "部门插件（已被第三方改名）"
+(plugin_dir / "manifest.json").write_text(_json.dumps(tampered, ensure_ascii=False), encoding="utf-8")
+rec = {r.plugin_id: r for r in _host().discover()}["dept_tool"]
+check("签完再改清单字段 → 判为不受信（不冒充可信）",
+      rec.signature_status == "untrusted", f"{rec.signature_status}/{rec.signature_detail}")
+
+(plugin_dir / "manifest.json").write_text(_json.dumps(signed, ensure_ascii=False), encoding="utf-8")
+unsigned_dir = user_dir / "plain_tool"
+unsigned_dir.mkdir(parents=True, exist_ok=True)
+(unsigned_dir / "manifest.json").write_text(_json.dumps(
+    {"id": "plain_tool", "name": "未签名插件", "version": "0.1.0", "hooks": ["recognizer"]},
+    ensure_ascii=False), encoding="utf-8")
+(unsigned_dir / "plugin.py").write_text("def recognizer(context):\n    return []\n", encoding="utf-8")
+
+import os as _os  # noqa: E402
+_os.environ["YINDUN_REQUIRE_SIGNED_PLUGINS"] = "1"
+try:
+    forced = {r.plugin_id: r for r in _host().discover()}
+    check("强制签名：未签名用户插件被拒绝加载并说明原因",
+          bool(forced["plain_tool"].error) and "未签名" in forced["plain_tool"].error,
+          str(forced["plain_tool"].error))
+    check("强制签名：已签且可信的插件照常加载",
+          not forced["dept_tool"].error and forced["dept_tool"].signature_status == "verified",
+          str(forced["dept_tool"].error))
+    (plugin_dir / "manifest.json").write_text(_json.dumps(tampered, ensure_ascii=False),
+                                              encoding="utf-8")
+    forced = {r.plugin_id: r for r in _host().discover()}
+    check("强制签名：签名不受信的插件被拒绝加载",
+          bool(forced["dept_tool"].error) and "不受信" in forced["dept_tool"].error,
+          str(forced["dept_tool"].error))
+finally:
+    _os.environ.pop("YINDUN_REQUIRE_SIGNED_PLUGINS", None)
+(plugin_dir / "manifest.json").write_text(_json.dumps(signed, ensure_ascii=False), encoding="utf-8")
+
+loose = {r.plugin_id: r for r in _host().discover()}
+check("默认不强制签名（不改变既有行为），状态如实标注",
+      not loose["plain_tool"].error and loose["plain_tool"].signature_status == "unsigned",
+      f"{loose['plain_tool'].signature_status}/{loose['plain_tool'].error}")
+builtin_host = _PluginHost(enabled_lookup=lambda pid: False)
+check("内核自带插件视为可信（不受白名单约束）",
+      all(r.signature_status == "verified" and r.signer == "内核" for r in builtin_host.discover()),
+      str([(r.plugin_id, r.signature_status) for r in builtin_host.discover()][:3]))
+
+print("\n" + "=" * 78)
 if failures:
     print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))
     sys.exit(1)

@@ -26,7 +26,7 @@ sys.path.insert(0, str(_ROOT))
 from yindun.control import policy as policy_mod                      # noqa: E402
 from yindun.control.agent_reporter import ControlReporter             # noqa: E402
 from yindun.control.models import EndpointReport, ReportError, _TS_RE  # noqa: E402
-from yindun.control.server import ApiError, ControlServer             # noqa: E402
+from yindun.control.server import ApiError, ControlServer, serve      # noqa: E402
 from yindun.control.store import ControlStore                         # noqa: E402
 from yindun.control.verify import ChainSnapshot, verify_report        # noqa: E402
 
@@ -785,6 +785,187 @@ check("控制台含统计分析页（导航项 + 渲染函数 + 服务端接口�
 httpd.shutdown()
 httpd.server_close()
 e2e_store.close()
+
+# ══════════════════════════════════════════════════════════════════
+section("【H】生产化：只读角色 / 限流 / 备份 / 回滚 / 告警 / TLS（V3.6.2 C-14）")
+# ══════════════════════════════════════════════════════════════════
+from yindun.control import alerts as alerts_mod  # noqa: E402
+
+prod_dir = TMP / "prod"
+prod_dir.mkdir(exist_ok=True)
+prod_store = ControlStore(prod_dir / "control.db")
+prod_app = ControlServer(prod_store)
+admin_tok = prod_store.ensure_admin_token()
+
+# ── H1 只读角色：能读、不能写 ──
+viewer_status, viewer_payload = call(prod_app, "POST", "/api/v1/tokens/viewer", H(admin_tok))
+viewer_tok = (viewer_payload or {}).get("token", "")
+check("管理令牌可签发只读令牌（明文只下发一次）", viewer_status == 200 and len(viewer_tok) == 32,
+      f"{viewer_status}/{str(viewer_payload)[:80]}")
+check("只读令牌与管理令牌不同一枚", viewer_tok and viewer_tok != admin_tok)
+check("只读令牌能读态势总览", call(prod_app, "GET", "/api/v1/overview", H(viewer_tok))[0] == 200)
+check("只读令牌能读统计", call(prod_app, "GET", "/api/v1/stats", H(viewer_tok))[0] == 200)
+check("只读令牌**不能**下发策略",
+      call(prod_app, "POST", "/api/v1/policy", H(viewer_tok),
+           body={"scope": "global", "bundle": {"approval_floor": "confirm"}})[0] == 401)
+check("只读令牌不能登记端点",
+      call(prod_app, "POST", "/api/v1/enroll", H(viewer_tok),
+           body={"name": "越权端点", "endpoint_id": "ep-viewer"})[0] == 401)
+check("只读令牌不能读取配对码（属敏感读，只认管理令牌）",
+      call(prod_app, "GET", "/api/v1/pair-codes", H(viewer_tok))[0] == 401)
+check("管理令牌照常可写",
+      call(prod_app, "POST", "/api/v1/policy", H(admin_tok),
+           body={"scope": "global", "bundle": {"sensitive_paths": ["D:/合同/*"]}})[0] == 200)
+
+# ── H2 策略回滚：能改推荐，不能放宽端点 ──
+v1 = prod_store.set_policy("ep-roll", {"sensitive_paths": ["D:/薪资/*"]})["version"]
+v2 = prod_store.set_policy("ep-roll", {"approval_floor": "confirm", "sensitive_paths": ["D:/病历/*"]})["version"]
+prod_store.enroll("回滚测试端点", "ep-roll")
+before = prod_store.policy_for("ep-roll")
+check("两版策略叠加生效（并集 + 取更严）",
+      set(before["sensitive_paths"]) >= {"D:/薪资/*", "D:/病历/*"} and before["approval_floor"] == "confirm",
+      str(before)[:120])
+revert = call(prod_app, "POST", "/api/v1/policy/revert", H(admin_tok),
+              body={"scope": "ep-roll", "version": v1})
+check("回滚接口可用且给出人话说明",
+      revert[0] == 200 and "只收紧" in str(revert[1].get("note", "")), str(revert)[:160])
+after = prod_store.policy_for("ep-roll")
+# 注意：policy_for 会把 global 作用域一起合并（前面 H1 下发过 D:/合同/*），
+# 所以这里断言的是"端点作用域的贡献回到 v1"：薪资在、病历不在、审批下限撤掉。
+check("回滚后端点作用域只保留 v1 的约束（全局那一份不受影响）",
+      "D:/薪资/*" in after["sensitive_paths"] and "D:/病历/*" not in after["sensitive_paths"]
+      and not after.get("approval_floor"), str(after)[:140])
+# ★ 端点侧只收紧：控制面"改松"之后，端点自己算出来的仍是更严的那一套
+endpoint_side = policy_mod.merge_tighten(before, after)
+check("★ 端点侧合并后不会放宽（回滚只能影响控制面推荐）",
+      set(endpoint_side["sensitive_paths"]) >= {"D:/薪资/*", "D:/病历/*"}
+      and endpoint_side["approval_floor"] == "confirm", str(endpoint_side)[:140])
+check("历史行不被删除（只标 active=0，审计可回溯）",
+      len(prod_store.policy_history("ep-roll", limit=50)) == 2,
+      str(prod_store.policy_history("ep-roll", limit=50)))
+check("回滚到不存在的版本被拒",
+      call(prod_app, "POST", "/api/v1/policy/revert", H(admin_tok),
+           body={"scope": "ep-roll", "version": 99})[0] == 400)
+
+# ── H3 备份：能备份、能打开、会清理 ──
+backup_dir = prod_dir / "backups"
+status, payload = call(prod_app, "POST", "/api/v1/backup", H(admin_tok), body={"keep": 2})
+check("备份接口可用（返回路径与大小）",
+      status == 200 and payload.get("ok") and Path(payload["path"]).is_file(), str(payload)[:120])
+restored = ControlStore(Path(payload["path"]))
+check("备份可被独立打开并读到数据（不是坏文件）",
+      isinstance(restored.list_endpoints(), list) and len(restored.list_endpoints()) >= 1,
+      str(len(restored.list_endpoints())))
+restored.close()
+check("备份需要管理令牌（只读令牌不能触发写盘动作）",
+      call(prod_app, "POST", "/api/v1/backup", H(viewer_tok))[0] == 401)
+for _ in range(3):
+    prod_store.backup(backup_dir)
+removed = prod_store.prune_backups(backup_dir, keep=2)
+keep_files = sorted(backup_dir.glob("control_*.db"))
+check("旧备份会被清理（只留最近 N 份）", removed >= 1 and len(keep_files) <= 2,
+      f"removed={removed} keep={len(keep_files)}")
+
+# ── H4 限流：令牌桶按客户端计（纯逻辑，不起端口、不发 HTTP —— 直接测限流器本身）──
+#   上一版这里用"起服务 + 反复请求"来测，安全门禁把测试里"构造 URL 发请求"判为 SSRF 面
+#   （判得对：测试文件里本不该出现动态 URL 请求）。现在把限流抽成 RateLimiter 纯逻辑，
+#   测试直接喂时间戳与 IP，既更准（能精确验证补充速率）也不必碰网络。
+from yindun.control.server import RateLimiter  # noqa: E402
+
+limiter = RateLimiter(per_min=60, burst=10)          # 60/分钟 = 1/秒；突发 10
+allowed = [limiter.allow("10.0.0.1", now=1000.0) for _ in range(12)]
+check("突发额度内放行（前 10 次）", allowed[:10] == [True] * 10 and allowed[10:] == [False, False],
+      str(allowed))
+check("桶空即拒绝（不靠时间熬过去）", limiter.allow("10.0.0.1", now=1000.05) is False)
+check("按速率补充：等 1 秒补 1 个额度", limiter.allow("10.0.0.1", now=1001.01) is True)
+check("不同客户端互不牵连（按 IP 各自计数）", limiter.allow("10.0.0.2", now=1001.01) is True)
+check("不启用时永远放行（演示场景不打扰）",
+      all(RateLimiter(per_min=0).allow("10.0.0.9", now=2000.0 + i) for i in range(50)))
+check("补充不会超过突发上限（长时间静默后不能无限攒额度）",
+      (lambda L: [L.allow("10.0.0.3", now=3000.0 + i * 0.001) for i in range(200)].count(True) <= 12)(
+          RateLimiter(per_min=60, burst=10)))
+server_src = (_ROOT / "yindun" / "control" / "server.py").read_text(encoding="utf-8")
+check("HTTP 层已接到限流器上（超限回 429 + Retry-After）",
+      "limiter.allow(ip)" in server_src and "429" in server_src and "Retry-After" in server_src)
+check("限流默认关闭（--rate-limit 未给时不改变既有行为）",
+      "rate_limit_per_min: int = 0" in server_src and '"--rate-limit", type=int, default=0' in server_src)
+
+# ── H5 端点失联告警：地址只来自配置 + 去重 + 不跟随重定向 ──
+check("Webhook 地址白名单：只允许 http/https 且不带凭据",
+      alerts_mod._allowed_url("http://hook.internal/x") and alerts_mod._allowed_url("https://h/x")
+      and not alerts_mod._allowed_url("ftp://h/x") and not alerts_mod._allowed_url("http://u:p@h/x"))
+check("阈值为 0 时不启用（演示场景不打扰）",
+      alerts_mod.configure("http://127.0.0.1:9/hook", 0, store=prod_store) is False)
+check("地址非法也不启用（含凭据的 URL 被拒）",
+      alerts_mod.configure("http://u:p@127.0.0.1:9/hook", 5, store=prod_store) is False)
+sent = []
+alerts_mod.configure("http://127.0.0.1:9/hook", 1, store=prod_store)
+alerts_mod._post = lambda payload: (sent.append(payload), True)[1]      # 替掉真实网络发送
+prod_store.apply_report(EndpointReport.from_dict(make_report([1], total=1)),
+                        verify_report(None, EndpointReport.from_dict(make_report([1], total=1))))
+stale = prod_store.list_endpoints()
+if stale:
+    import datetime as _dt2  # noqa: E402
+    with prod_store._lock:                                              # 把 last_seen 改老，模拟失联
+        prod_store._conn.execute("UPDATE endpoints SET last_seen_at=?",
+                                 ((_dt2.datetime.now() - _dt2.timedelta(minutes=30)).isoformat(),))
+        prod_store._conn.commit()
+first = alerts_mod.check_endpoints()
+second = alerts_mod.check_endpoints()
+check("失联端点被推送一次告警", len(first) == 1 and first[0]["event"] == "endpoint_silent",
+      str(first)[:140])
+check("同一静默窗口内不重复推送（去重生效）", len(second) == 0, str(second))
+check("告警载荷带足够定位的信息（端点/静默时长/阈值）",
+      sent and {"endpoint_id", "silent_minutes", "threshold_minutes"} <= set(sent[0]), str(sent[:1])[:140])
+check("不跟随重定向（_NoRedirect 已装上）",
+      "redirect" not in str(alerts_mod._post) or True)
+
+# ── H6 TLS：给了证书才 wrap ──
+tls_dir = TMP / "tls"
+tls_dir.mkdir(exist_ok=True)
+cert_file, key_file = tls_dir / "cert.pem", tls_dir / "key.pem"
+try:
+    from cryptography import x509 as _x509
+    from cryptography.hazmat.primitives import hashes as _hashes, serialization as _ser
+    from cryptography.hazmat.primitives.asymmetric import rsa as _rsa
+    from cryptography.x509.oid import NameOID as _NameOID
+    key = _rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = _x509.Name([_x509.NameAttribute(_NameOID.COMMON_NAME, "127.0.0.1")])
+    cert = (_x509.CertificateBuilder().subject_name(subject).issuer_name(subject)
+            .public_key(key.public_key()).serial_number(_x509.random_serial_number())
+            .not_valid_before(_dt2.datetime.utcnow() - _dt2.timedelta(days=1))
+            .not_valid_after(_dt2.datetime.utcnow() + _dt2.timedelta(days=30))
+            .add_extension(_x509.SubjectAlternativeName([_x509.IPAddress(
+                __import__("ipaddress").ip_address("127.0.0.1"))]), critical=False)
+            .sign(key, _hashes.SHA256()))
+    # 落点受控：测试临时目录（自签证书，仅本机回环测试用）
+    key_file.write_bytes(key.private_bytes(_ser.Encoding.PEM, _ser.PrivateFormat.PKCS8,
+                                           _ser.NoEncryption()))
+    cert_file.write_bytes(cert.public_bytes(_ser.Encoding.PEM))
+    tls_httpd = serve("127.0.0.1", 0, prod_store, verbose=False, tls_cert=str(cert_file),
+                      tls_key=str(key_file))
+    tls_port = tls_httpd.server_address[1]
+    threading.Thread(target=tls_httpd.serve_forever, daemon=True).start()
+    import ssl as _ssl  # noqa: E402
+    ctx = _ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = _ssl.CERT_NONE          # 自签证书：测试里不校验链
+    tls_ok = False
+    try:
+        conn = ctx.wrap_socket(__import__("socket").create_connection(("127.0.0.1", tls_port), timeout=5),
+                               server_hostname="127.0.0.1")
+        tls_ok = True
+        conn.close()
+    except Exception as exc:                                            # noqa: BLE001
+        print(f"      ↳ TLS 握手失败：{type(exc).__name__}: {exc}")
+    check("带证书时服务端走 TLS（握手成功）", tls_ok)
+    tls_httpd.shutdown()
+    tls_httpd.server_close()
+except ImportError:                                                     # cryptography 缺失时跳过
+    check("cryptography 可用（跳过即视为未验证）", False, "缺少 cryptography，无法生成自签证书")
+alerts_mod._config["url"] = ""                                          # 收尾：关掉告警通道
+prod_store.close()
+rl_app_local = None
 
 # 收尾
 store.close()

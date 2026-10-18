@@ -40,9 +40,10 @@ def estimate_tokens(text: str) -> int:
     return _estimate_tokens(text)
 
 
-# 触发历史摘要压缩的默认阈值。agent_worker 的构建参数与界面的说明文字都引用这一个常量，
-# 避免"阈值 5000 / 说明 8192 / 上下文窗口 16384"各写一个数、彼此对不上。
-DEFAULT_MAX_HISTORY_TOKENS = 5000
+# 触发历史摘要压缩的默认阈值。★ V3.6.2 起**唯一来源是 core/context_budget.py**：
+# agent_worker 的构建参数、界面说明文字、自检全部从这里取，
+# 避免"阈值 5000 / 说明 8192 / 上下文窗口 16384"各写一个数、彼此对不上（路线图 C-13）。
+from yindun.core.context_budget import HISTORY_COMPRESS_TOKENS as DEFAULT_MAX_HISTORY_TOKENS
 
 
 def _count_message_tokens(msg: BaseMessage) -> int:

@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from yindun.core.context_budget import MODEL_WINDOW_TOKENS
+
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
 
 
@@ -332,7 +334,7 @@ def build_llm(settings: Dict[str, Any], tools: List[Any],
                 base_url=ollama_host,
                 timeout=60,
                 options={
-                    "num_ctx": 16384,
+                    "num_ctx": MODEL_WINDOW_TOKENS,   # 预算表唯一来源（C-13）
                     "num_predict": 4096,
                     "temperature": 0.7,
                     "top_p": 0.9,

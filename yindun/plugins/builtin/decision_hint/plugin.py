@@ -14,6 +14,9 @@
 """
 from __future__ import annotations
 
+from yindun.core.context_budget import (
+    PLUGIN_SMALL_MAX_NEW, PLUGIN_SMALL_TOKENS)
+
 import json
 import re
 from typing import Any, Dict, Optional
@@ -99,7 +102,7 @@ def advisory_for_approval(context: Dict[str, Any]) -> Optional[Dict[str, str]]:
             #   关掉思考后 0.4~0.5 秒，输出就是我们要的那一行 JSON。
             #   审批提示是"几秒内给人一个判断线索"，让它先想 19 秒等于没有提示。
             reasoning=False,
-            options={"num_predict": 64, "num_ctx": 2048},
+            options={"num_predict": PLUGIN_SMALL_MAX_NEW, "num_ctx": PLUGIN_SMALL_TOKENS},  # 预算表（C-13）
         )
         message = llm.invoke(_PROMPT.format(
             request=request,

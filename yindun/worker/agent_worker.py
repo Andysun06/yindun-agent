@@ -16,6 +16,7 @@
   后续 Web 界面直接订阅）。
 """
 import os
+import queue
 import re
 import threading
 import json
@@ -300,6 +301,121 @@ class Worker:
             return _result
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
+
+    def _invoke_llm_streaming(self, messages, check_interval=0.5, throttle_ms=80):
+        """流式调用 LLM：生成中的文本**边生成边推送**，首字延迟从"整段生成完"降到"第一个字"。
+
+        为什么值得做（V3.6.2，路线图 C-12）：此前是 `llm.invoke` 一次性拿整段——4B 模型一段
+        百来字的回答要等十几秒，界面只有等待点；"它在想还是卡住了"的体感差异极大。
+
+        做法与边界：
+          · 用 `self.llm.stream()` 逐块消费，块内容**先还原占位符再推送**（模型看到的是占位符，
+            用户该看到真值；跨块的半个占位符先扣住不推，避免界面闪现 `[NAME_0_a`）；
+          · 推送走既有 `intermediate_result` 事件（语义就是"渐进展示"），前端已有渲染分支，
+            **不新增事件类型**；`finished` 仍是"收尾一次性完整文本"，语义不变；
+          · 合并后的消息（工具调用参数也在块里）交给后续 ReAct 逻辑——流式不会漏掉工具调用；
+          · 取消语义与 `_invoke_llm_with_cancel_check` 一致：0.5 秒内响应，不等模型生成完；
+          · `stream()` 不可用（某些自定义算力端点）时自动回落整段 invoke。
+        """
+        if self._cancel_requested.is_set():
+            raise KeyboardInterrupt("用户取消")
+        if not hasattr(self.llm, "stream"):
+            return self._invoke_llm_with_cancel_check(messages, check_interval)
+
+        chunk_queue: "queue.Queue" = queue.Queue()
+        _t0 = time.time()
+        merged = None
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+        def _producer():
+            try:
+                for chunk in self.llm.stream(messages):
+                    chunk_queue.put(("chunk", chunk))
+                chunk_queue.put(("done", None))
+            except Exception as exc:                     # noqa: BLE001 —— 翻译成人话交给主线程
+                chunk_queue.put(("error", exc))
+
+        try:
+            executor.submit(_producer)
+            raw_so_far = ""
+            last_push = 0.0
+            while True:
+                try:
+                    kind, payload = chunk_queue.get(timeout=check_interval)
+                except queue.Empty:
+                    if self._cancel_requested.is_set():
+                        self.status.emit("[已取消] 推理已被用户中断")
+                        raise KeyboardInterrupt("用户取消")
+                    continue
+                if kind == "error":
+                    raise payload
+                if kind == "done":
+                    break
+                merged = payload if merged is None else (merged + payload)
+                piece = getattr(payload, "content", "") or ""
+                if piece:
+                    raw_so_far += piece
+                    now = time.time()
+                    if (now - last_push) * 1000 >= throttle_ms:
+                        last_push = now
+                        self._push_partial(raw_so_far)
+                if self._cancel_requested.is_set():
+                    self.status.emit("[已取消] 推理已被用户中断")
+                    raise KeyboardInterrupt("用户取消")
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+        if merged is None:
+            return self._invoke_llm_with_cancel_check(messages, check_interval)
+        self._push_partial(raw_so_far, final=True)
+        self._trace("thinking", "思考", f"{len(messages)} 条上下文", "ok",
+                    ms=int((time.time() - _t0) * 1000))
+        return merged
+
+    def _push_partial(self, raw_text: str, final: bool = False) -> None:
+        """把"生成中的原文"还原占位符后推给界面（跨块的半个占位符先扣住不推）。"""
+        try:
+            visible = self._clean(self._restore_for_display(raw_text, final=final))
+        except Exception:
+            return                      # 渐进展示是附加能力，出错绝不影响推理
+        if visible:
+            self.intermediate_result.emit(visible)
+
+    @staticmethod
+    def _restore_partial(raw_text: str, hold_tail: bool = True) -> str:
+        """把流式原文里的占位符长回来，并（默认）扣住结尾可能是"半个占位符"的部分。
+
+        例：结尾是 `…[NAME_0_a` 时先不推——否则界面会短暂闪出半截占位符；
+        等后续块补齐再一起推，用户看到的永远是完整占位符或完整真值。
+        """
+        text = raw_text
+        if hold_tail:
+            bracket = text.rfind("[")
+            if bracket >= 0 and "]" not in text[bracket:]:
+                text = text[:bracket]
+        return text
+
+    def _restore_for_display(self, raw_text: str, final: bool = False) -> str:
+        """流式文本 → 界面可见文本：先扣半个占位符，再用本轮映射还原真值。"""
+        text = self._restore_partial(raw_text, hold_tail=not final)
+        kb_map = getattr(self, "_kb_mapping", None) or {}
+        box_map = getattr(self, "_box_mapping", None) or {}
+        mapping = dict(kb_map)
+        mapping.update(box_map)
+        if not mapping:
+            return text
+        try:
+            engine = getattr(self, "_partial_engine", None)
+            if engine is None:
+                from yindun.core.privacy_engine import PrivacyEngine as _PE
+                engine = _PE()
+                self._partial_engine = engine
+            return engine.deanonymize(text, mapping, strict=False)
+        except Exception:
+            for placeholder, value in mapping.items():
+                if placeholder in text:
+                    text = text.replace(placeholder, str(value))
+            return text
 
     def _trace(self, kind: str, name: str, detail: str = "", status: str = "",
                ms: int = 0) -> None:
@@ -752,7 +868,7 @@ class Worker:
             self.status.emit(f"[思考 {round_count}/{max_rounds}] 模型判断中...")
 
             # 让模型决定：回答或调用工具
-            ai_msg = self._invoke_llm_with_cancel_check(messages)
+            ai_msg = self._invoke_llm_streaming(messages)
             messages.append(ai_msg)
             # ★ 审计：记录本轮 LLM 输入(脱敏态)与输出
             try:
@@ -815,7 +931,7 @@ class Worker:
                     summary_prompt = "\n\n请基于以上工具执行结果，给用户提供一个详细的总结报告。"
                     messages.append(HumanMessage(content=summary_prompt,
                                                 additional_kwargs={"internal": True}))
-                    final_msg = self._invoke_llm_with_cancel_check(messages)
+                    final_msg = self._invoke_llm_streaming(messages)
                     content = getattr(final_msg, "content", "")
                     # 渐进输出：把总结也先发给用户
                     if content and isinstance(content, str) and content.strip():

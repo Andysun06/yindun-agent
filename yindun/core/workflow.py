@@ -1,4 +1,5 @@
 from yindun import APP_ROOT
+from yindun.core.context_budget import MODEL_WINDOW_TOKENS
 # -*- coding: utf-8 -*-
 """
 隐盾 V3.2 - 协同工作流编排引擎 (Workflow Engine)
@@ -985,7 +986,7 @@ def _get_workflow_llm():
         base_url=host,
         timeout=180,
         reasoning=False,
-        options={"num_ctx": 16384, "num_predict": 2048, "temperature": 0.2},
+        options={"num_ctx": MODEL_WINDOW_TOKENS, "num_predict": 2048, "temperature": 0.2},
         keep_alive=300,
     )
     _wf_llm_signature = sig

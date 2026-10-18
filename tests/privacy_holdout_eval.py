@@ -408,7 +408,7 @@ def tpl_csv(rng, n):
         rows.append(f"{name},{mail},{phone_lit},{addr}")
         items += [_item(mail, "EMAIL"), _item(phone_lit, "PHONE", phone_can),
                   _item(addr, "ADDRESS"),
-                  _item(name, "NAME_TABLE_CELL", scope="declared_gap")]
+                  _item(name, "NAME_TABLE_CELL")]
     text = f"姓名,邮箱,手机,地址\n" + "\n".join(rows) + "\n"
     return text, items
 
@@ -466,8 +466,8 @@ def tpl_idlist(rng, n):
             f"参会人：{names[0]}、{names[1]}、{names[2]}，随行车辆 {plate}，"
             f"行程 2026-09-2{rng.randint(0, 8)} 出发。\n")
     items = [_item(names[0], "NAME"), _item(plate, "PLATE"),
-             _item(names[1], "NAME", scope="declared_gap"),
-             _item(names[2], "NAME", scope="declared_gap")]
+             _item(names[1], "NAME"),
+             _item(names[2], "NAME")]
     return text, items
 
 
@@ -534,7 +534,7 @@ def tpl_money_cn(rng, n):
     text = (f"付款条款（第 {n} 条）\n"
             f"合同价款：人民币{cn}元整，签署后 30 日内支付。\n"
             f"（小写：¥{rng.randint(100, 999)},{_rand_digits(rng, 3)},000.00）\n")
-    items = [_item(cn + "元", "MONEY_CN", scope="declared_gap")]
+    items = [_item(cn + "元", "MONEY_CN")]
     return text, items
 
 
@@ -550,9 +550,9 @@ def tpl_sep_variants(rng, n):
     text = (f"系统导出记录（第 {n} 批）\n"
             f"联系人号码 {dotted}，结算卡号 {card_dotted}。\n"
             f"证件编号 {slashed}（历史系统格式）。\n")
-    items = [_item(dotted, "PHONE_DOTTED", scope="declared_gap"),
-             _item(card_dotted, "BANKCARD_DOTTED", scope="declared_gap"),
-             _item(slashed, "IDCARD_SLASH", scope="declared_gap")]
+    items = [_item(dotted, "PHONE_DOTTED"),
+             _item(card_dotted, "BANKCARD_DOTTED"),
+             _item(slashed, "IDCARD_SLASH")]
     return text, items
 
 

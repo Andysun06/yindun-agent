@@ -722,6 +722,8 @@ html[data-theme="dark"] .plugin-item__runtime.is-bad { background: rgba(196, 54,
 .plugin-item__meta { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
 .plugin-badge { font-size: var(--fs-meta); padding: 0 5px; border-radius: var(--r-chip); border: 1px solid var(--border-2); color: var(--text-3); font-family: var(--font-mono); }
 .plugin-badge--warn { color: var(--warn-500); border-color: var(--warn-500); }
+/* 来源校验通过（本轮 C-15）：绿色表示"已签名且可信"，与告警黄区分开 */
+.plugin-badge--ok { color: var(--accent-600); border-color: var(--accent-500); }
 .plugin-badge--src { color: var(--accent-600); border-color: var(--accent-300); }
 /* 能力清单：逐条写清"这个插件提供了什么"，而不是让人猜 */
 .plugin-caps { display: flex; flex-direction: column; gap: 2px; border-left: 2px solid var(--border-2); padding-left: var(--sp-3); }

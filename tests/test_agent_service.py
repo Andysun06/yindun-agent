@@ -485,6 +485,28 @@ check("深度思考 → 不传该参数（保持模型默认：思考型会推�
 check("未知/空模式 → 按「快速」处理（宁可快，也不要让用户白等）",
       reasoning_for_mode("") is False and reasoning_for_mode(None) is False)
 
+# ── ①.65 算力不可用时必须说清"为什么"（V3.6.2，路线图 A-1 演示预案的第一号风险）──
+#   旧实现只回 ready=false / error=null：界面上就"未就绪"三个字，用户不知道该检查什么。
+_diag = service._diagnose_llm_unavailable()
+check("算力未就绪时给出可照做的说明（而不是空白）", bool(str(_diag).strip()), _diag)
+check("说明里指出该去检查算力端点或模型",
+      any(word in _diag for word in ("Ollama", "算力", "模型")), _diag)
+
+_dead = AgentService(settings=SettingsStore(path=TMP / "dead_cfg.json"),
+                     sessions=SessionStore(path=TMP / "dead_sess.json"))
+_dead.settings.set("model", "qwen3.5:4b")
+_dead.settings.set("ollama_host", "http://127.0.0.1:59999")     # 该端口没人监听
+_dead.settings.save()
+_dead.initialize()
+_dead_status = _dead.llm_status()
+check("端点连不上时 llm_status 带出原因（不是 null）",
+      _dead_status["ready"] is False and bool(_dead_status.get("error")), str(_dead_status)[:200])
+check("原因里给出可执行动作（启动 Ollama / 换模型 / 重新检测）",
+      any(word in str(_dead_status.get("error"))
+          for word in ("ollama serve", "Ollama 已启动", "换成本机已装", "重新检测")),
+      str(_dead_status.get("error"))[:160])
+
+
 # ── ①.7 小模型"把工具调用写成文字"的两种形态：识别 + 一次重试 ──
 class _ToolMapWorker(_Worker):
     def __init__(self):

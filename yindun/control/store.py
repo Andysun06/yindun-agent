@@ -137,6 +137,13 @@ class ControlStore:
         with self._lock:
             conn = self._conn
             conn.executescript(SCHEMA)
+            # ★ 迁移：策略行加 active 列（V3.6.2 C-14 策略回滚用）。
+            #   历史行永不删除（审计可回溯），回滚只把"更新的那几版"标为 inactive；
+            #   小库就地 ALTER，报错说明列已存在。
+            try:
+                conn.execute("ALTER TABLE policies ADD COLUMN active INTEGER DEFAULT 1")
+            except sqlite3.OperationalError:
+                pass
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
             conn.commit()
@@ -180,7 +187,7 @@ class ControlStore:
                 encoding="utf-8")
             return token
 
-    def _read_token_file(self, expected_hash: str) -> str:
+    def _read_token_file(self, expected_hash: str, name: str = "admin_token.txt") -> str:
         """从令牌文件里取回明文令牌：**只认第一个非注释行**，并与库里的哈希核对。
 
         ★ 这里曾经出过一个真事故（V3.5.5 修复）：旧实现直接 `read_text().strip()`，
@@ -192,7 +199,7 @@ class ControlStore:
         现在的行为：取不到合法令牌就返回空串（调用方会提示"文件被删/被改，请重置"），
         绝不把一个"注定鉴权失败"的字符串交出去。
         """
-        token_file = self.dir / "admin_token.txt"
+        token_file = self.dir / name       # 管理令牌 / 只读令牌共用这套取回逻辑
         if not token_file.exists():
             return ""      # 已存在哈希但明文文件被删：只能重置
         try:
@@ -573,7 +580,8 @@ class ControlStore:
         merged = policy_mod.empty_local()
         for scope in ("global", endpoint_id):
             rows = self._conn.execute(
-                "SELECT bundle_json FROM policies WHERE scope=? ORDER BY version ASC",
+                "SELECT bundle_json FROM policies WHERE scope=? AND COALESCE(active,1)=1 "
+                "ORDER BY version ASC",
                 (scope,)).fetchall()
             for row in rows:
                 try:
@@ -598,12 +606,113 @@ class ControlStore:
         return out
 
     def policy_history(self, scope: str = "", limit: int = 30) -> List[Dict[str, Any]]:
-        sql = "SELECT scope,version,updated_at FROM policies"
+        sql = ("SELECT scope,version,updated_at,COALESCE(active,1) AS active FROM policies")
         params: List[Any] = []
         if scope:
             sql += " WHERE scope=?"; params.append(scope)
         sql += " ORDER BY id DESC LIMIT ?"; params.append(max(1, min(int(limit), 100)))
         return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
+
+    # ── 策略回滚（V3.6.2，C-14）─────────────────────────────
+    def revert_scope(self, scope: str, version: int) -> Dict[str, Any]:
+        """把某个 scope 的生效集合回滚到 `version`（含）之前的下发。
+
+        ★ 语义与边界（别把它当成"放宽"的按钮）：
+          · **不删任何历史行**，只把 version > target 的行标为 `active=0` —— 审计仍可回溯
+            "谁都下发过什么"；
+          · 端点侧收到的是 `merge_tighten(本地, 远程)` 的**单调合并**，所以即便控制面把推荐
+            改回更松的版本，端点**不会跟着放宽**——回滚只能影响"控制面推荐什么"。
+            这条性质由 `tests/test_control_plane.py` 钉住。
+        返回 `{"ok", "scope", "active_versions": [...], "inactive_versions": [...]}`。
+        """
+        scope = str(scope or "").strip() or "global"
+        try:
+            target = int(version)
+        except Exception:
+            return {"ok": False, "error": "version 必须是整数"}
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT version FROM policies WHERE scope=? ORDER BY version ASC", (scope,)
+            ).fetchall()
+            versions = [int(r["version"]) for r in rows]
+            if not versions:
+                return {"ok": False, "error": f"scope={scope} 没有任何策略版本"}
+            if target not in versions:
+                return {"ok": False, "error": f"版本不存在：{scope} v{target}（现有 {versions}）"}
+            self._conn.execute(
+                "UPDATE policies SET active = CASE WHEN version<=? THEN 1 ELSE 0 END WHERE scope=?",
+                (target, scope))
+            self._conn.commit()
+        return {"ok": True, "scope": scope, "reverted_to": target,
+                "active_versions": [v for v in versions if v <= target],
+                "inactive_versions": [v for v in versions if v > target]}
+
+    # ── 备份（V3.6.2，C-14）────────────────────────────────
+    def backup(self, dest_dir) -> Dict[str, Any]:
+        """把控制面数据库与令牌文件备份到指定目录（SQLite 在线备份 API，读一致性有保证）。
+
+        便携单文件形态下"数据库就是一个文件"，出问题没有回退手段——这条是生产化前提之一。
+        备份文件名带时间戳；同时返回可读的路径与大小，便于纳入运维流程。
+        """
+        dest = Path(dest_dir)
+        dest.mkdir(parents=True, exist_ok=True)
+        # ★ 文件名带微秒 + 短随机后缀（V3.6.2）：只用"秒级时间戳"时，同一秒内的两次备份
+        #   会**互相覆盖**——运维脚本连续备份会静默丢份，等于备份形同虚设（本套件实测踩到）。
+        stamp = _now().replace(":", "").replace("-", "").replace("T", "_")[:21]
+        target = dest / f"control_{stamp}_{secrets.token_hex(2)}.db"
+        src = sqlite3.connect(str(self.path))
+        try:
+            dst = sqlite3.connect(str(target))
+            try:
+                with dst:
+                    src.backup(dst)          # 在线备份：不阻塞读、不受 WAL 影响
+            finally:
+                dst.close()
+        finally:
+            src.close()
+        token_src = self.dir / "admin_token.txt"
+        if token_src.is_file():
+            # 落点受控：备份目录由调用方指定（运维自己的备份盘/目录）
+            (dest / f"admin_token_{stamp}.txt").write_text(
+                token_src.read_text(encoding="utf-8"), encoding="utf-8")
+        return {"ok": True, "path": str(target), "bytes": target.stat().st_size,
+                "note": "数据库与令牌文件已备份（令牌文件里是明文令牌，请与备份同等保护）"}
+
+    @staticmethod
+    def prune_backups(dest_dir, keep: int = 5) -> int:
+        """只保留最近 N 份备份（避免备份目录无限膨胀）。返回删除的份数。"""
+        dest = Path(dest_dir)
+        if not dest.is_dir():
+            return 0
+        files = sorted(dest.glob("control_*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
+        removed = 0
+        for item in files[max(1, int(keep)):]:
+            try:
+                item.unlink()
+                removed += 1
+            except Exception:
+                continue
+        return removed
+
+    # ── 只读令牌（V3.6.2，C-14 多角色）────────────────────────
+    def ensure_viewer_token(self) -> str:
+        """生成/取回**只读**账号令牌（控制台只读巡检用）：读写分离，写操作一律要管理令牌。"""
+        with self._lock:
+            existing = self._get_setting("viewer_token_hash")
+            if existing:
+                return self._read_token_file(existing, name="viewer_token.txt")
+            token = secrets.token_urlsafe(24)
+            self._set_setting("viewer_token_hash", _sha256(token))
+            (self.dir / "viewer_token.txt").write_text(
+                "# 隐盾控制面**只读**令牌（可查看态势/台账/资产/统计，不能下发策略或登记端点）\n"
+                + token + "\n", encoding="utf-8")
+            return token
+
+    def verify_viewer(self, token: str) -> bool:
+        if not token:
+            return False
+        expected = self._get_setting("viewer_token_hash")
+        return bool(expected) and _sha256(token) == expected
 
     def close(self) -> None:
         conn = getattr(self._local, "conn", None)

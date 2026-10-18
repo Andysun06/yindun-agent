@@ -315,6 +315,10 @@ class PluginRecord:
     config_files: List[Dict[str, str]] = field(default_factory=list)
     provides: List[str] = field(default_factory=list)
     error: Optional[str] = None      # manifest 校验失败的原因
+    # ★ 来源校验（V3.6.2，路线图 C-15）：verified（已签名且可信）/ untrusted / unsigned
+    signature_status: str = "unsigned"
+    signer: str = ""
+    signature_detail: str = ""
     missing: List[str] = field(default_factory=list)   # 未满足的依赖（人类可读）
     enabled: bool = False
     runtime: Dict[str, Any] = field(default_factory=dict)  # 最近一次被调用的运行状态（界面用）
@@ -359,6 +363,11 @@ class PluginRecord:
             "provides": list(self.provides),
             "runtime": dict(self.runtime),
             "capabilities": self.capabilities(),
+            # 来源校验状态（V3.6.2 C-15）：界面据此显示"已签名/未签名/签名不受信"，
+            # 用户在有第三方插件时能一眼看出"这份是谁给的、动过没有"
+            "signature_status": self.signature_status,
+            "signer": self.signer,
+            "signature_detail": self.signature_detail,
         }
 
 
@@ -371,7 +380,11 @@ class PluginHost:
                  builtin_dir: Optional[Path] = None,
                  user_dir: Optional[Path] = None,
                  model_lister: Optional[Callable[[], List[str]]] = None,
-                 data_root: Optional[Path] = None) -> None:
+                 data_root: Optional[Path] = None,
+                 settings: Any = None) -> None:
+        # settings：可选。只有"强制签名插件"这一个判定会读它（V3.6.2 C-15），
+        # 不传就只看环境变量 —— 宿主在没有配置对象的场景（测试/自检）也能工作。
+        self._settings = settings
         self._builtin_dir = Path(builtin_dir) if builtin_dir else Path(__file__).resolve().parent / "builtin"
         self._user_dir = Path(user_dir) if user_dir else APP_ROOT / "plugins"
         self._data_root = Path(data_root) if data_root else APP_ROOT / "plugins_data"
@@ -436,6 +449,14 @@ class PluginHost:
         except Exception:
             declared = _HOOK_TIMEOUT
         record.timeout_seconds = max(1.0, min(declared, 120.0))
+        # ★ 来源校验（V3.6.2，C-15）：**先判定、后校验**——这样即使这份清单随后因为
+        #   别的理由被拒（钩子非法、缺入口…），界面看到的签名状态也是真的，
+        #   而不是"因为提前 return 了所以显示未签名"（那种假信息比没有信息更糟）。
+        from yindun.plugins import signing as _signing
+        source_state = _signing.evaluate_manifest(data, self._data_root, source=source)
+        record.signature_status = source_state["status"]
+        record.signer = source_state["signer"]
+        record.signature_detail = source_state["detail"]
         if missing_fields:
             record.error = f"manifest 缺少必填字段：{', '.join(missing_fields)}"
             return record
@@ -467,6 +488,18 @@ class PluginHost:
                 record.error = (f"导出格式名被内核保留：{', '.join(reserved)}"
                                 f"（内核格式始终可用，插件请用自己的格式名，"
                                 f"可在 format_labels 里给中文标签）")
+                return record
+
+        # ★ 强制签名模式（V3.6.2，C-15）：**用户插件**必须"已签名且可信"才允许加载；
+        #   内核自带插件随产品发布，不受此限。默认关闭（不改变既有行为）。
+        if source == "user" and _signing.require_signed_plugins(self._settings):
+            if source_state["status"] == "unsigned":
+                record.error = ("已开启「仅加载签名插件」：该插件未签名，已拒绝加载"
+                                "（签名流程见 docs/插件开发.md；内核自带插件不受此限）")
+                return record
+            if source_state["status"] == "untrusted":
+                record.error = ("已开启「仅加载签名插件」：该插件签名不受信——"
+                                "没有任何一份可信公钥（plugins_data/trusted_keys/*.pub）能验过它")
                 return record
         if not (directory / record.entry).is_file():
             record.error = f"找不到入口模块：{record.entry}"

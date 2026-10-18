@@ -21,7 +21,7 @@ tr:nth-child(even) td{background:#fafcfa;} hr{border:none;border-top:1px solid v
 strong{color:#0a5c3b;} @page{size:A4;margin:16mm 12mm;} h2{page-break-after:avoid;} table,pre,blockquote{page-break-inside:avoid;}
 </style></head><body><div class="page"><h1>隐盾安全智能体 · 使用说明</h1>
 <blockquote>
-<p>面向涉密办公场景的本地化隐私防护桌面智能体 · V3.6.1
+<p>面向涉密办公场景的本地化隐私防护桌面智能体 · V3.6.2
 Yindun Security Agent — 让本地 AI 更安全、更智能、更可控</p>
 </blockquote>
 <hr />
@@ -175,6 +175,8 @@ python run.py
   数据源在沙箱之外会直接拒绝，读不到就如实报错，不会假装成功。</li>
 <li><strong>周报数据真实</strong>："收集工作记录"步骤读的是<strong>真实审计日志</strong>，审计为空就如实说为空，
   不再编造示例记录凑内容。</li>
+<li><strong>回答是流式出来的</strong>：模型一边生成一边显示（首个字出来就开始渲染），不用等整段生成完；
+  显示内容里的敏感值同样是<strong>已还原的真值</strong>（占位符在推送前就还原好了）。</li>
 <li><strong>人工审核留痕</strong>："人工审核"步骤记录<strong>真实的审核人与意见</strong>（谁批的、批了什么会写进步骤结果与报告）。</li>
 <li><strong>导出格式如实</strong>：工作流报告可导出 Markdown / HTML / Word（兼容格式）/ JSON，
   以及插件提供的格式；不支持的格式（如 PDF）会明确报错并说明支持哪些，
@@ -401,7 +403,7 @@ python -m yindun.control --host 0.0.0.0 --window yes   # 对外监听（默认�
 <hr />
 <h2>八、版本与声明</h2>
 <ul>
-<li>当前版本：<strong>V3.6.1</strong>（技术栈 Python · LangChain · pywebview/WebView2 · Chroma · Ollama；Qt 已移除）</li>
+<li>当前版本：<strong>V3.6.2</strong>（技术栈 Python · LangChain · pywebview/WebView2 · Chroma · Ollama；Qt 已移除）</li>
 <li>插件体系：内核不可插件化（脱敏 / 审批 / 审计 / 沙箱），能力可插件化（识别 / 解析 / 模板 / 导出），
   插件只能"做加法"；详见 <a href="插件开发.md">插件开发.md</a>。</li>
 <li>本文档中出现的个人信息（张伟 / 13812345678 等）均为虚构测试样例，不涉及任何真实个人数据。</li>

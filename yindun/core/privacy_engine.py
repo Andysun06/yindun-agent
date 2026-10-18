@@ -202,11 +202,19 @@ class PrivacyEngine:
         # === 原有 3 类（保持兼容） ===
         # (P1 加固) IDCARD：加 lookaround 边界，避免从更长数字串中截取 18 位误检
         # (A6) 允许 4 位分组的空格/连字符（如 "110101 19900307 2316"）
-        "IDCARD": r"(?<![\dXx])[1-9]\d{5}[\s\-]?(?:19|20)\d{2}[\s\-]?(?:0[1-9]|1[0-2])[\s\-]?(?:0[1-9]|[12]\d|3[01])[\s\-]?\d{3}[\dXx](?![\dXx])",
+        "IDCARD": r"(?<![\dXx])[1-9]\d{5}[ \-]?(?:19|20)\d{2}[ \-]?(?:0[1-9]|1[0-2])[ \-]?(?:0[1-9]|[12]\d|3[01])[ \-]?\d{3}[\dXx](?![\dXx])"
+                  # (C10-d) 斜杠/点分隔身份证（历史系统格式）：110101/19900307/2316
+                  #   与手机号同理：格式先卡住（6-8-4 分组），再交给校验位精验——两道关都过才脱敏。
+                  r"|(?<![\dXx])([1-9]\d{5}[/.]\d{8}[/.]\d{3}[\dXx])(?![\dXx])",
         # (P1 加固) PHONE：加边界；支持 '-'/空格/全角'-' 分隔符分支与全角数字（１３８...）。
         # (A4) 支持 +86 / 0086 国际前缀（捕获组1 = 纯号码，前缀 +86 保留只脱敏号码）。
         # 命中后由 _normalize_digits + _is_valid_phone 程序化校验（精确 11 位），避免截取/漏检。
-        "PHONE": r"(?<![\d])(?:\+?86[-\s]?|0086[-\s]?)?((?:1|１)[3-9３-９][\d０-９\s\-－]{2,13}[\d０-９])(?![\d])",
+        "PHONE": r"(?<![\d])(?:\+?86[-\s]?|0086[-\s]?)?((?:1|１)[3-9３-９][\d０-９\s\-－]{2,13}[\d０-９])(?![\d])"
+                 # (C10-d) 点分隔手机（历史系统导出格式）：138.1234.5678。
+                 #   ★ 与 IPv4 的歧义这样消解：① 只接 3-4-4 分组（IPv4 是 4 段）；
+                 #   ② 交给 _is_valid_phone 复核（精确 11 位 + 1[3-9] 前缀）——两关都过才脱敏，
+                 #   宁可漏一个怪格式，也不把 IP 地址当手机号（"多拦"变"误伤"更贵）。
+                 r"|(?<![\d.])((?:1|１)[3-9３-９][\d０-９]\.\d{4}\.\d{4})(?![\d.])",
         # (A5) EMAIL 支持中文/国际化域名（如 li_si@公司.cn）
         "EMAIL": r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]*[a-zA-Z\u4e00-\u9fa5]{2,}",
 
@@ -218,12 +226,12 @@ class PrivacyEngine:
         # (A7) 号段**内部**仍允许空白分组，但尾部可选分组用 [ \t\-]（不含换行）：
         #      原先尾部的 [\s\-]?\d{0,3} 会把卡号后的换行整体吞进匹配，
         #      导致脱敏文本行被合并、行长/坐标变化（正文结构被破坏）。
-        "BANKCARD": r"(?<![\d])(?:62\d{2}(?:[\s\-]?\d{4}){3}[ \t\-]?\d{0,3}"
-                    r"|4\d{3}(?:[\s\-]?\d{4}){3}[ \t\-]?\d{0,3}"
-                    r"|5\d{3}(?:[\s\-]?\d{4}){3}[ \t\-]?\d{0,3}"
-                    r"|35\d{2}(?:[\s\-]?\d{4}){3}[ \t\-]?\d{0,3}"
-                    r"|37\d{2}(?:[\s\-]?\d{4}){3}[ \t\-]?\d{0,3}"
-                    r"|3[0-8]\d{2}(?:[\s\-]?\d{4}){2,3}[ \t\-]?\d{0,3})(?![\d])",
+        "BANKCARD": r"(?<![\d])(?:62\d{2}(?:[\s\-./]?\d{4}){3}[ \t\-]?\d{0,3}"
+                    r"|4\d{3}(?:[\s\-./]?\d{4}){3}[ \t\-]?\d{0,3}"
+                    r"|5\d{3}(?:[\s\-./]?\d{4}){3}[ \t\-]?\d{0,3}"
+                    r"|35\d{2}(?:[\s\-./]?\d{4}){3}[ \t\-]?\d{0,3}"
+                    r"|37\d{2}(?:[\s\-./]?\d{4}){3}[ \t\-]?\d{0,3}"
+                    r"|3[0-8]\d{2}(?:[\s\-./]?\d{4}){2,3}[ \t\-]?\d{0,3})(?![\d])",
         # (D1 留出集评测修复) 两处改动，都针对"19 位卡号"这一真实形态（JCB/万事达等）：
         #   ① 定长分支（5xxx / 35xx / 37xx / 通用 3xxx）补可选尾段 → 覆盖 16-19 位；
         #   ② 通用 3xxx 分支的组数由 {2} 改为 {2,3}，否则 19 位卡会**先匹配前 16 位**、
@@ -268,7 +276,13 @@ class PrivacyEngine:
                  #   带捕获组，仅替换数字、保留"转账金额"等业务标签。
                  r"|(?<![\d.,])(?:转账金额|合同金额|订单金额|应付金额|实付金额|收款金额|付款金额|"
                  r"结算金额|总金额|金额|价款|报价|总价|单价|薪资|工资|月薪|年薪|报酬|费用|预算)"
-                 r"\s*[:：]?\s*(\d{4,12})(?![\d.,])",
+                 r"\s*[:：]?\s*(\d{4,12})(?![\d.,])"
+                 # (C10-e) 汉字大写金额（合同高频写法）：人民币壹佰贰拾万元整 / 叁拾万元。
+                 #   ★ 误伤防线：至少 2 个"数字类"字（零壹贰叁肆伍陆柒捌玖拾佰仟）——
+                 #     单独一个"拾/万"在普通词里常见（拾取、万元户），两个以上才判为金额；
+                 #     单位必须是 元/万元/亿元，且前面可选"人民币/大写"，后面可选"整"。
+                 r"|(?:人民币|大写)?((?:[零壹贰叁肆伍陆柒捌玖][拾佰仟万亿]*){2,}[元]"
+                 r"|[零壹贰叁肆伍陆柒捌玖][拾佰仟万亿]+[元])",
 
         # API 密钥：sk-xxx / api_key=xxx / APIKEY: xxx
         # 用 lookaround 替代 \b，适配中文前缀场景（如"密钥sk-xxx"）
@@ -433,13 +447,20 @@ class PrivacyEngine:
     def _idcard_valid(idcard: str) -> bool:
         """GB11643-1999 18 位身份证校验位校验（可选增强，默认不启用）。"""
         digits = PrivacyEngine._normalize_digits(idcard)
+        # 归一化会去掉 X/x 之外的字母与分隔符，但丢掉校验位字符就无从校验
+        body = "".join(ch for ch in str(idcard) if ch.isdigit() or ch.upper() == "X")
+        if len(digits) == 18 and len(digits) != len(body):
+            # 含字母 X 的号码：_normalize_digits 不保留 X，改用 body 校验
+            digits = body[:17]
+        elif len(digits) == 18:
+            digits = digits[:17]
         if len(digits) != 17:
             return False
         weights = (7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2)
         check_codes = "10X98765432"
         s = sum(int(d) * w for d, w in zip(digits, weights))
         expect = check_codes[s % 11]
-        last = idcard[-1].upper() if idcard else ""
+        last = body[-1].upper() if body else ""
         return expect == last
 
     @staticmethod
@@ -456,8 +477,13 @@ class PrivacyEngine:
             return PrivacyEngine._is_valid_phone(match)
         if key == "BANKCARD":
             return PrivacyEngine._luhn_valid(PrivacyEngine._normalize_digits(match))
-        if key == "IDCARD" and PrivacyEngine.IDCARD_CHECKSUM:
-            return PrivacyEngine._idcard_valid(match)
+        if key == "IDCARD":
+            # (C10-d) 斜杠/点分隔的身份证**必须过校验位**才脱敏：这两种分隔符在别处很常见
+            #   （路径、日期、版本号），放宽匹配面就得靠校验位把"形状像"的串挡回去。
+            #   空格/横线分组是既有已支持形态（对抗集里有"必须命中"的门禁用例），保持原判定。
+            if any(sep in match for sep in ("/", ".")):
+                return PrivacyEngine._idcard_valid(match)
+            return PrivacyEngine._idcard_valid(match) if PrivacyEngine.IDCARD_CHECKSUM else True
         if key == "IDCARD15":
             if context and pos >= 0:
                 pre = context[max(0, pos - 20):pos]
@@ -496,6 +522,18 @@ class PrivacyEngine:
         "陆", "汪", "石", "廖", "贾", "夏", "白", "熊", "邱", "江",
         "闫", "段", "侯", "龙", "邵", "黎", "毛", "龚", "万",
     }
+
+    # (C10-a) 复姓表（V3.6.2）：留出集实测"复姓人名"整类 0 命中——原因很直接：
+    #   复姓的首字（欧/司/上/诸/东/慕/皇…）不在单字姓氏表里，规则第一步就放弃了。
+    #   这里先按**复姓**匹配（2 字姓 + 1~2 字名），再回落到单字姓氏表。
+    COMPOUND_SURNAMES = (
+        "欧阳", "太史", "端木", "上官", "司马", "东方", "独孤", "南宫", "万俟", "闻人",
+        "夏侯", "诸葛", "尉迟", "公羊", "赫连", "澹台", "皇甫", "宗政", "濮阳", "公冶",
+        "太叔", "申屠", "公孙", "慕容", "仲孙", "钟离", "长孙", "宇文", "司徒", "鲜于",
+        "司空", "闾丘", "子车", "亓官", "司寇", "巫马", "公西", "颛孙", "壤驷", "公良",
+        "漆雕", "乐正", "宰父", "谷梁", "拓跋", "夹谷", "轩辕", "令狐", "段干", "百里",
+        "呼延", "东郭", "南门", "羊舌", "微生", "梁丘", "左丘", "东门", "西门", "南宫",
+    )
 
     # 人名触发词：前文出现这些词时，才在后续窗口内匹配"姓+名"
     NAME_TRIGGERS = (
@@ -648,6 +686,14 @@ class PrivacyEngine:
             anonymized, mapping, counts, value_to_placeholder, used_nonces
         )
 
+        # === 阶段 0.5：表格 / CSV 单元格里的人名（C10-c，必须在正则阶段之前）===
+        #   为什么必须抢在正则前面：ADDRESS 这类规则会把逗号一并吃掉（"…,北京市朝阳区…"
+        #   里的分隔逗号被算作地址的一部分），表格结构一旦被破坏，"按列取人名"就无从下手——
+        #   留出集里这一类整块 0 命中就是这么来的。这里在**原始正文**上先认表头、按列取人名。
+        anonymized = self._apply_table_cell_names(
+            anonymized, mapping, counts, value_to_placeholder, used_nonces
+        )
+
         # === 阶段 1：正则实体脱敏 ===
         # 按固定顺序处理，避免相互干扰（D4）
         # 说明：
@@ -758,22 +804,24 @@ class PrivacyEngine:
                 counts["NAME"] = idx + 1
                 text = text.replace(name, placeholder)
 
-        # 再做触发词 + 姓氏匹配
-        # 扫描文本，找到每个触发词的位置，在其后窗口内找人名
-        result = text
-        # 记录已识别的人名起始位置，避免重复匹配
-        matched_spans = []
+        # 再做触发词 + 姓氏匹配。
+        # ★ 在一份**稳定的基底文本**上收集匹配，最后**从后往前**替换（V3.6.2 重构）：
+        #   旧实现在扫描过程中就地替换，替换后长度变化让后续窗口里的绝对偏移全错位，
+        #   所以"顿号列举第 2 个起"根本命中不了（窗口里出现占位符就 break 了）。
+        #   现在：基底不动 → 收集 (起点, 终点, 人名) → 降序替换，坐标自洽。
+        base = text
+        spans = []                     # [(abs_start, abs_end, name)]
+        claimed = []                   # 已被占用的区间（防重叠）
 
         for trigger in self.NAME_TRIGGERS:
             start = 0
             while True:
-                pos = result.find(trigger, start)
+                pos = base.find(trigger, start)
                 if pos < 0:
                     break
                 # 在触发词后 20 字符窗口内扫描
                 window_start = pos + len(trigger)
-                window_end = min(len(result), window_start + 20)
-                window = result[window_start:window_end]
+                window = base[window_start:window_start + 20]
 
                 # 跳过触发词后的标点/空白，以及"（采购方）"这类括号注释。
                 # (D3 留出集评测修复) "甲方（采购方）：张伟"是合同最常见写法，原实现停在
@@ -796,30 +844,158 @@ class PrivacyEngine:
                             continue
                     break
 
-                # 检查窗口内是否以姓氏开头
-                if offset < len(window) and window[offset] in self.SURNAMES:
-                    # 尝试匹配 2-3 字人名
-                    name_candidate = self._extract_name(window, offset)
-                    if name_candidate:
-                        abs_start = window_start + offset
-                        abs_end = abs_start + len(name_candidate)
-                        # 检查是否与已匹配区间重叠
-                        if not any(s <= abs_start < e or s < abs_end <= e for s, e in matched_spans):
-                            if name_candidate not in value_to_placeholder:
-                                idx = counts.get("NAME", 0)
-                                placeholder = f"[NAME_{idx}_{_generate_nonce(used_nonces)}]"
-                                mapping[placeholder] = self._crypto.encrypt(name_candidate)
-                                value_to_placeholder[name_candidate] = placeholder
-                                counts["NAME"] = idx + 1
-                            else:
-                                placeholder = value_to_placeholder[name_candidate]
-                            # 执行替换
-                            result = result[:abs_start] + placeholder + result[abs_end:]
-                            # 调整后续匹配位置（替换后长度变化）
-                            matched_spans.append((abs_start, abs_start + len(placeholder)))
+                # 从触发词后一路往里找：中间允许有标点/空白/枚举分隔符，
+                # 于是 `参会人：张伟、李娜、王芳` 这种顿号列举能连续命中（C10-b）。
+                cursor = offset
+                hops = 0
+                while cursor < len(window) and hops < 6:
+                    while cursor < len(window) and window[cursor] in " ：:，,、;;；的\n\t":
+                        cursor += 1
+                    if cursor >= len(window):
+                        break
+                    name_candidate = self._match_name_at(window, cursor)
+                    if not name_candidate:
+                        break
+                    abs_start = window_start + cursor
+                    abs_end = abs_start + len(name_candidate)
+                    if any(s <= abs_start < e or s < abs_end <= e for s, e in claimed):
+                        break
+                    claimed.append((abs_start, abs_end))
+                    spans.append((abs_start, abs_end, name_candidate))
+                    cursor += len(name_candidate)
+                    hops += 1
                 start = pos + 1
 
+        # 降序替换（后面的先替换，前面的坐标不受影响）
+        result = base
+        for abs_start, abs_end, name_candidate in sorted(spans, key=lambda item: -item[0]):
+            if name_candidate not in value_to_placeholder:
+                idx = counts.get("NAME", 0)
+                placeholder = f"[NAME_{idx}_{_generate_nonce(used_nonces)}]"
+                mapping[placeholder] = self._crypto.encrypt(name_candidate)
+                value_to_placeholder[name_candidate] = placeholder
+                counts["NAME"] = idx + 1
+            else:
+                placeholder = value_to_placeholder[name_candidate]
+            result = result[:abs_start] + placeholder + result[abs_end:]
+
         return result
+
+    def _apply_table_cell_names(self, text, mapping, counts, value_to_placeholder, used_nonces):
+        """表格 / CSV 里的人名（C10-c）：表头是触发词，人名在**表格体的单元格**里。
+
+        留出集实测这一类整块 0 命中（`姓名,邮箱,手机,地址` + `张伟,a@b.com,138…`）：
+        触发词窗口只有 20 字，跨不到下一行。
+
+        做法（保守、可解释）：
+          · 表头行按 , / TAB / | / ; 切分，单元格**整体等于**姓名类触发词才算"姓名列"；
+          · 之后**列数一致**的连续行按列取该格，整格内容必须是"姓氏+名"（复姓也认）才脱敏；
+          · 列数一变（表格结束/换了一张表）立刻停止 —— 不做跨表猜测；
+          · 整行含句末标点（。？！）的行不按表格处理：那是散文，不是表格。
+
+        必须在正则阶段之前调用：ADDRESS 之类规则会把分隔逗号一起吃掉，表格结构被破坏后
+        "按列取人"就无从下手（这就是原来那一类 0 命中的直接原因）。
+        """
+        if not text or "\n" not in text:
+            return text
+
+        lines = text.split("\n")
+        offsets, cursor = [], 0
+        for line in lines:
+            offsets.append(cursor)
+            cursor += len(line) + 1
+
+        spans, claimed = [], []
+        name_columns, table_width = [], 0
+        for line_idx, line in enumerate(lines):
+            cells = self._split_table_row(line)
+            if len(cells) < 2:
+                if name_columns and line.strip():
+                    break                     # 表格块里出现非表格行 → 结束
+                continue
+            if not name_columns:
+                hits = [i for i, cell in enumerate(cells) if cell.strip() in self.NAME_TRIGGERS]
+                if hits:
+                    name_columns, table_width = hits, len(cells)
+                continue
+            if len(cells) != table_width:
+                break                         # 列数变了：表格结束
+            for col in name_columns:
+                if col >= len(cells):
+                    continue
+                cell = cells[col]
+                stripped = cell.strip().strip('"\'')
+                if not stripped:
+                    continue
+                candidate = self._match_name_at(stripped, 0)
+                if not candidate or candidate != stripped:
+                    continue                  # 整格必须就是一个人名，混排不猜
+                abs_start = offsets[line_idx] + cell.find(stripped)
+                abs_end = abs_start + len(stripped)
+                if any(s <= abs_start < e or s < abs_end <= e for s, e in claimed):
+                    continue
+                claimed.append((abs_start, abs_end))
+                spans.append((abs_start, abs_end, candidate))
+
+        if not spans:
+            return text
+        result = text
+        for abs_start, abs_end, name_candidate in sorted(spans, key=lambda item: -item[0]):
+            if name_candidate not in value_to_placeholder:
+                idx = counts.get("NAME", 0)
+                placeholder = f"[NAME_{idx}_{_generate_nonce(used_nonces)}]"
+                mapping[placeholder] = self._crypto.encrypt(name_candidate)
+                value_to_placeholder[name_candidate] = placeholder
+                counts["NAME"] = idx + 1
+            else:
+                placeholder = value_to_placeholder[name_candidate]
+            result = result[:abs_start] + placeholder + result[abs_end:]
+        return result
+
+    def _split_table_row(self, line: str) -> list:
+        """把一行按表格分隔符切开（CSV 逗号 / TSV 制表符 / 竖线 / 分号）。
+
+        只在**整行都是"干净单元格"**时才算表格行：任一段里出现句号、问号这类句子标点，
+        说明这是散文而不是表格——宁可不按表格处理，也不要把普通句子切碎去误伤人名列。
+        """
+        text = str(line or "").rstrip("\r")
+        if not text.strip():
+            return []
+        for sep in (",", "\t", "|", ";"):
+            if sep in text:
+                cells = text.split(sep)
+                if len(cells) < 2:
+                    continue
+                if any(ch in text for ch in "。？！"):
+                    return []
+                if sum(1 for c in cells if c.strip()) < 2:
+                    return []
+                return cells
+        return []
+
+    def _match_name_at(self, window: str, offset: int):
+        """在 window[offset] 处尝试匹配一个人名：先复姓（2 字姓），再单字姓氏表。
+
+        (C10-a) 复姓是独立分支而不是往姓氏表里塞"欧/司/上"——那会把"司机/上班/欧洲"
+        这类普通词的开头当成姓氏（误伤比漏检更贵）。复姓名长度 3~4 字。
+        """
+        for compound in self.COMPOUND_SURNAMES:
+            if not window.startswith(compound, offset):
+                continue
+            rest = window[offset + len(compound):]
+            given = []
+            for ch in rest:
+                if not ('\u4e00' <= ch <= '\u9fa5'):
+                    break
+                given.append(ch)
+                if len(given) == 2:
+                    break
+            # 复姓后至少 1 个字；末字不能是虚词/动词/字段标签首字（复用 _extract_name 的收口）
+            candidate = compound + "".join(given)
+            return self._trim_name(candidate, base_len=len(compound))
+        if offset < len(window) and window[offset] in self.SURNAMES:
+            return self._extract_name(window, offset)
+        return None
 
     def _extract_name(self, window: str, offset: int):
         """
@@ -841,25 +1017,35 @@ class PrivacyEngine:
                 break
         if len(chars) < 2 or len(chars) > 3:
             return None
-        # 过滤明显不是人名的组合（如"李明签约"中的"李明签" -> 应只取"李明"）
-        # 只收录虚词和办公场景高频动词，避免误伤含这些字的合法人名
-        stop_chars = {
-            # 虚词
-            "的", "是", "了", "和", "与", "在", "有", "为", "及", "或",
-            "着", "过", "吗", "呢", "吧", "啊", "也", "都",
-            # 合同/办公高频动作动词（避免"李明签""张伟约"等误识别）
-            "签", "约", "见", "审", "批",
-            "到", "去", "来", "说", "做", "写", "看", "听", "给", "请",
-            "让", "被", "把", "对", "跟", "由", "向", "从", "往",
-            # (A10) 紧随人名出现的"字段标签首字"（避免"联系人张伟电话138…"被切成
-            #   "张伟电"并生成错误占位符）。仅在人名末尾字符命中时裁剪，不影响
-            #   "张信哲"这类名字中间含标签字的合法人名。
-            "电", "话", "手", "机", "邮", "箱", "址", "座", "传", "微",
-            "账", "银", "卡", "证", "单", "部", "司", "职", "务", "位", "系",
-        }
-        while chars and chars[-1] in stop_chars:
+        return self._trim_name("".join(chars), base_len=1)
+
+    # 人名末尾的收口字：虚词 + 办公高频动词 + 紧随人名的字段标签首字。
+    # 抽成类属性是为了让单字姓氏与复姓名共用同一套收口（V3.6.2 复姓分支接入时抽出来的）。
+    NAME_STOP_CHARS = {
+        # 虚词
+        "的", "是", "了", "和", "与", "在", "有", "为", "及", "或",
+        "着", "过", "吗", "呢", "吧", "啊", "也", "都",
+        # 合同/办公高频动作动词（避免"李明签""张伟约"等误识别）
+        "签", "约", "见", "审", "批",
+        "到", "去", "来", "说", "做", "写", "看", "听", "给", "请",
+        "让", "被", "把", "对", "跟", "由", "向", "从", "往",
+        # (A10) 紧随人名出现的"字段标签首字"（避免"联系人张伟电话138…"被切成
+        #   "张伟电"并生成错误占位符）。仅在人名末尾字符命中时裁剪，不影响
+        #   "张信哲"这类名字中间含标签字的合法人名。
+        "电", "话", "手", "机", "邮", "箱", "址", "座", "传", "微",
+        "账", "银", "卡", "证", "单", "部", "司", "职", "务", "位", "系",
+    }
+
+    def _trim_name(self, candidate: str, base_len: int):
+        """裁掉人名末尾的收口字（虚词/动词/字段标签首字），不足最短长度就放弃。
+
+        `base_len` 是姓氏的字数（单字姓氏 1、复姓 2）：收口后必须仍长于姓氏
+        （"欧阳"后面没有名就不是人名，不能把复姓本身当名字）。
+        """
+        chars = list(candidate)
+        while len(chars) > base_len and chars[-1] in self.NAME_STOP_CHARS:
             chars.pop()
-        if len(chars) < 2:
+        if len(chars) <= base_len:
             return None
         return "".join(chars)
 

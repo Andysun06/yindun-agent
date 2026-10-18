@@ -260,7 +260,11 @@ check("估算器对中文按字计数（不再是 len//2）",
       estimate_tokens(cjk_text) > len(cjk_text) // 2,
       f"{estimate_tokens(cjk_text)} vs {len(cjk_text) // 2}")
 svc_src = Path(__file__).resolve().parents[1].joinpath("yindun", "app", "agent_service.py").read_text(encoding="utf-8")
-check("看板的上下文数字改用共享估算器", "estimate_tokens(" in svc_src and "// 2\n" not in svc_src)
+budget_src = Path(__file__).resolve().parents[1].joinpath("yindun", "core", "context_budget.py").read_text(encoding="utf-8")
+# V3.6.2（C-13）起看板的数字走"预算表 → history_usage"这条链，预算表内部才调共享估算器；
+# 关键不变量没变：**全项目只有一个估算器、一个阈值来源**，且不许再出现 len//2 这种野口径。
+check("看板的上下文数字走预算表（内部用共享估算器）",
+      "history_usage(" in svc_src and "estimate_tokens" in budget_src and "// 2\n" not in svc_src)
 
 # ── 9) 数据处理流水线（内置模板）端到端 ──────────────
 print("\n" + "=" * 78)

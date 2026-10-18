@@ -334,13 +334,44 @@ class AgentService:
             return False
 
     def llm_status(self) -> Dict[str, Any]:
+        """算力状态：就绪与否 + **为什么不可用**（V3.6.2，路线图 A-1）。
+
+        为什么补这条说明：把算力端点指到一个没人监听的端口时，旧实现只回 `ready:false`、
+        `error:null`——界面上就是"未就绪"三个字，用户无从判断该去检查什么。
+        演示现场第一号风险就是"Ollama 没起"，产品必须自己把话说明白。
+        """
+        detail = self._llm_error
+        if self._llm is None and not detail:
+            detail = self._diagnose_llm_unavailable()
         return {
             "ready": self._llm is not None,
             "model": self.settings.get("model"),
             "models": detect_ollama_models(),
             "chat_models": detect_chat_models(),
-            "error": self._llm_error,
+            "error": detail,
         }
+
+    def _diagnose_llm_unavailable(self) -> str:
+        """算力没就绪时给一句**能照着做**的说明（而不是空白）。"""
+        model = str(self.settings.get("model") or "").strip()
+        host = str(self.settings.get("ollama_host") or "").strip()
+        local_host = host.startswith(("http://127.0.0.1", "http://localhost", "http://[::1]", "http://0.0.0.0"))
+        installed = []
+        try:
+            installed = detect_chat_models()
+        except Exception:
+            installed = []
+        if not model:
+            return "没有选择模型：请在「设置 → 模型接入」里选一个模型（本机已安装：%s）" % (
+                "、".join(installed[:3]) or "（暂无）")
+        if local_host:
+            if installed and model not in installed:
+                return (f"本机没有这个模型：{model}（本机已装：{'、'.join(installed[:3])}）。"
+                        f"在设置里换成本机已装的模型，或先 `ollama pull {model}`")
+            return (f"连不上本机算力（{host or '默认地址'}）：请确认 Ollama 已启动"
+                    f"（命令行执行 `ollama serve`，或双击托盘图标）后点「重新检测」")
+        return (f"连不上算力端点（{host}）：请检查网络、地址与密钥是否正确；"
+                f"云端模型还需确认服务可用")
 
     # ── 会话 ─────────────────────────────────────
     def list_sessions(self) -> List[Dict[str, Any]]:
@@ -1544,14 +1575,19 @@ class AgentService:
         messages = getattr(worker, "result_messages", []) if worker else []
         # ★ 用记忆模块的中英文感知估算器（全项目唯一口径）：
         #   旧实现 len//2 与触发摘要压缩的估算器不是一套，看板数字和"何时压缩"对不上。
-        from yindun.core.memory_manager import DEFAULT_MAX_HISTORY_TOKENS, estimate_tokens
-        context_tokens = sum(estimate_tokens(str(m.get("content", ""))) for m in messages)
+        # ★ V3.6.2（C-13）：阈值与"什么时候压缩"的说明都来自 core/context_budget.py，
+        #   界面直接显示后端给的 note，不再自己拼数字。
+        from yindun.core.context_budget import history_usage
+        usage = history_usage(messages)
         return {
             "busy": self.busy,
             "session_id": session_id,
             "tool_calls": tool_calls,
-            "context_tokens": context_tokens,
-            "context_limit": DEFAULT_MAX_HISTORY_TOKENS,
+            "context_tokens": usage["used"],
+            "context_limit": usage["limit"],
+            "context_ratio": usage["ratio"],
+            "context_will_compress": usage["will_compress"],
+            "context_note": usage["note"],
             "message_count": len(messages),
             "model": self.settings.get("model"),
             "privacy": bool(self.settings.get("privacy", True)),

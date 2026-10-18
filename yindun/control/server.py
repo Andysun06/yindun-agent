@@ -96,6 +96,17 @@ class ControlServer:
         if not self.store.verify_admin(self._bearer(headers.get("authorization", ""))):
             raise ApiError(401, "管理令牌无效")
 
+    def require_read(self, headers: Dict[str, str]) -> None:
+        """**读**操作鉴权：管理令牌或只读令牌都行（V3.6.2，C-14 多角色）。
+
+        为什么要有只读令牌：巡检 / 看板 / 对接监控系统只需要读；给它们管理令牌等于把
+        "下发策略、登记端点"的权限一起给出去。**写操作一律仍只认管理令牌。**
+        """
+        token = self._bearer(headers.get("authorization", ""))
+        if self.store.verify_admin(token) or self.store.verify_viewer(token):
+            return
+        raise ApiError(401, "令牌无效（读操作可用管理令牌或只读令牌）")
+
     def require_endpoint(self, headers: Dict[str, str], endpoint_id: str) -> None:
         if not self.store.verify_endpoint(endpoint_id, self._bearer(headers.get("authorization", ""))):
             raise ApiError(401, "端点令牌无效或端点未登记")
@@ -117,33 +128,63 @@ class ControlServer:
         if method == "GET" and path == "/api/v1/policy":
             return self.h_policy(headers, query)
         if method == "GET" and path == "/api/v1/overview":
-            self.require_admin(headers)
+            self.require_read(headers)
+            self._check_silent_endpoints()
             return 200, self.store.overview()
         if method == "GET" and path == "/api/v1/endpoints":
-            self.require_admin(headers)
+            self.require_read(headers)
+            self._check_silent_endpoints()
             return 200, {"endpoints": self.store.list_endpoints()}
         if method == "GET" and path == "/api/v1/events":
-            self.require_admin(headers)
+            self.require_read(headers)
             return self.h_events(query)
         if method == "GET" and path == "/api/v1/usage":
-            self.require_admin(headers)
+            self.require_read(headers)
             return 200, {"usage": self.store.usage_summary()}
         if method == "GET" and path == "/api/v1/stats":
             # 统计分析页用：趋势 / 类型 / 级别 / 端点活跃度（全部服务端聚合，界面只画）
-            self.require_admin(headers)
+            self.require_read(headers)
             days = (query.get("days") or ["14"])[0]
             return 200, self.store.stats(int(days) if str(days).isdigit() else 14)
         if method == "GET" and path == "/api/v1/alerts":
-            self.require_admin(headers)
+            self.require_read(headers)
             ep = (query.get("endpoint_id") or [""])[0]
             return 200, {"alerts": self.store.list_alerts(ep), "labels": {
                 code: {"text": text, "high": high} for code, (text, high) in ALERT_CODES.items()}}
         if method == "POST" and path == "/api/v1/policy":
             return self.h_set_policy(headers, body)
+        if method == "POST" and path == "/api/v1/policy/revert":
+            return self.h_revert_policy(headers, body)
+        if method == "POST" and path == "/api/v1/tokens/viewer":
+            self.require_admin(headers)
+            token = self.store.ensure_viewer_token()
+            return 200, {"ok": True, "token": token,
+                         "note": "只读令牌：可看态势/台账/资产/统计，不能下发策略或登记端点；"
+                                 "同一份明文也在 <数据目录>/viewer_token.txt"}
+        if method == "POST" and path == "/api/v1/backup":
+            self.require_admin(headers)
+            payload = _json_body(body) if body else {}
+            dest = str(payload.get("dir") or (self.store.dir / "backups"))
+            result = self.store.backup(dest)
+            result["pruned"] = self.store.prune_backups(dest, keep=int(payload.get("keep") or 5))
+            return 200, result
         if method == "GET" and path == "/api/v1/self-test":
             self.require_admin(headers)
             return 200, self.h_self_test()
         raise ApiError(404, f"未知接口：{method} {path}")
+
+    @staticmethod
+    def _check_silent_endpoints() -> None:
+        """读接口顺手做一次"端点失联"检查（V3.6.2，C-14）。
+
+        为什么不用后台定时器：没人看控制台时反而更该安静；有人看的时候顺手检查，
+        既不引入常驻线程，也让"告警"和"有人在看"这两件事自然对齐。
+        """
+        try:
+            from yindun.control import alerts as _alerts
+            _alerts.check_endpoints()
+        except Exception:
+            pass          # 告警通道故障绝不能影响读接口
 
     # ── 处理函数 ──────────────────────────────────────────
     def h_enroll(self, headers: Dict[str, str], body: bytes) -> Tuple[int, Any]:
@@ -267,6 +308,31 @@ class ControlServer:
         return 200, {"scope": scope, "version": stored.get("version"), "sig": stored.get("sig", "")[:16],
                      "summary": policy_mod.describe(stored)}
 
+    def h_revert_policy(self, headers: Dict[str, str], body: bytes) -> Tuple[int, Any]:
+        """策略回滚（V3.6.2，C-14）：把某个 scope 的生效集合回到历史某一版。
+
+        ★ 这里要说清楚"回滚能做什么、不能做什么"：
+          · 能：把控制面**推荐给该 scope 的约束集合**恢复成历史上某一版（例如误下发了
+            一批只读冻结、想退回上一版）；
+          · 不能：**放宽端点**。端点侧收到的是 `merge_tighten(本地, 远程)` 的单调合并，
+            即便控制面把推荐改松，端点仍保留它此前已收紧的约束（这条性质有回归用例钉住）。
+          · 历史行**永不删除**，只标 active=0 —— 审计仍然能回答"谁都下发过什么"。
+        """
+        self.require_admin(headers)
+        data = _json_body(body)
+        scope = str(data.get("scope", "global")).strip() or "global"
+        if scope != "global" and not self.store.has_endpoint(scope):
+            raise ApiError(400, f"未知端点：{scope}")
+        if data.get("version") is None:
+            raise ApiError(400, "缺少 version（要回滚到哪一版）")
+        result = self.store.revert_scope(scope, data.get("version"))
+        if not result.get("ok"):
+            raise ApiError(400, str(result.get("error") or "回滚失败"))
+        result["effective"] = self.store.policy_for(scope if scope != "global" else "")
+        result["note"] = ("已把该范围回滚到 v%s；端点侧只收紧，回滚不会放宽任何既有约束"
+                          % result.get("reverted_to"))
+        return 200, result
+
     def h_events(self, query: Dict[str, list]) -> Tuple[int, Any]:
         get = lambda key, default="": (query.get(key) or [default])[0]     # noqa: E731
         try:
@@ -333,7 +399,46 @@ def _json_body(body: bytes) -> Dict[str, Any]:
 #  HTTP 层
 # ══════════════════════════════════════════════════════════════════
 
-def make_handler(app: ControlServer, verbose: bool = True):
+class RateLimiter:
+    """按客户端令牌桶限流（V3.6.2，C-14）。
+
+    **抽成独立类是为了可测**：限流逻辑不碰网络、不碰请求对象，测试直接喂 IP 就能验
+    （`tests/test_control_plane.py` §H4）——比"起个端口猛打一遍"更准，也不必在测试里
+    写"构造 URL 发请求"那种既慢又容易被安全门禁合理拦下的代码。
+
+    语义：容量 = burst（突发额度），按 `per_min/60` 每秒补充；桶空即拒绝。
+    `per_min <= 0` 表示不启用（限流关闭时 `allow()` 永远返回 True）。
+    """
+
+    def __init__(self, per_min: int = 0, burst: Optional[int] = None) -> None:
+        self.per_min = max(0, int(per_min or 0))
+        self.burst = int(burst) if burst is not None else max(10, self.per_min // 6)
+        self._buckets: Dict[str, Tuple[float, float]] = {}      # ip -> (令牌数, 上次补充时刻)
+        self._lock = threading.Lock()
+
+    def allow(self, key: str, now: Optional[float] = None) -> bool:
+        """记一次访问：返回 True = 放行，False = 应拒绝（调用方回 429）。"""
+        if not self.per_min:
+            return True
+        moment = time.monotonic() if now is None else float(now)
+        with self._lock:
+            tokens, last = self._buckets.get(key, (float(self.burst), moment))
+            tokens = min(float(self.burst), tokens + (moment - last) * (self.per_min / 60.0))
+            if tokens < 1.0:
+                self._buckets[key] = (tokens, moment)
+                return False
+            self._buckets[key] = (tokens - 1.0, moment)
+        return True
+
+
+def make_handler(app: ControlServer, verbose: bool = True, rate_limit_per_min: int = 0):
+    """构造 HTTP 处理器。
+
+    `rate_limit_per_min`（V3.6.2，C-14）：每客户端 IP 每分钟的请求上限，0 = 关闭（默认）。
+    为什么默认关：单机/回环演示场景加限流只会添乱；一旦对外监听，就该显式打开。
+    """
+    limiter = RateLimiter(rate_limit_per_min)
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "YindunControl/" + CONTROL_VERSION
         sys_version = ""            # 不暴露 Python 版本
@@ -341,6 +446,12 @@ def make_handler(app: ControlServer, verbose: bool = True):
         def log_message(self, fmt: str, *args) -> None:      # noqa: A003
             if verbose:
                 sys.stdout.write("[控制面] %s - %s\n" % (self.address_string(), fmt % args))
+
+        # ── 限流 ──
+        def _rate_limited(self) -> bool:
+            """返回 True 表示这次请求应被拒绝（429）。按客户端 IP 计，令牌桶平滑。"""
+            ip = str(self.client_address[0]) if self.client_address else "?"
+            return not limiter.allow(ip)
 
         # ── 工具 ──
         def _send(self, status: int, payload: Any, ctype: str = "application/json; charset=utf-8") -> None:
@@ -398,6 +509,17 @@ def make_handler(app: ControlServer, verbose: bool = True):
             try:
                 if not path.startswith("/api/"):
                     return self._static(path)
+                if self._rate_limited():
+                    self.send_response(429)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Retry-After", "5")
+                    self.send_header("Cache-Control", "no-store")
+                    body = json.dumps({"error": "请求过于频繁（已触发控制面限流）"},
+                                      ensure_ascii=False).encode("utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 body = self._read_body() if method == "POST" else b""
                 status, payload = app.route(method, path, parse_qs(parsed.query),
                                             self._headers(), body)
@@ -428,10 +550,20 @@ def make_handler(app: ControlServer, verbose: bool = True):
 
 
 def serve(host: str = "127.0.0.1", port: int = 8787, store: Optional[ControlStore] = None,
-          verbose: bool = True) -> ThreadingHTTPServer:
+          verbose: bool = True, rate_limit_per_min: int = 0,
+          tls_cert: str = "", tls_key: str = "") -> ThreadingHTTPServer:
     app = ControlServer(store)
-    httpd = ThreadingHTTPServer((host, port), make_handler(app, verbose))
+    httpd = ThreadingHTTPServer((host, port), make_handler(app, verbose, rate_limit_per_min))
     httpd.daemon_threads = True
+    if tls_cert and tls_key:
+        # ★ TLS（V3.6.2，C-14）：对外监听时的最低要求。证书/私钥路径由运维在命令行给出
+        #   （不读请求里的任何东西——控制面自己不去"发现"证书位置）。
+        #   自签证书也接受：内网场景常见，但对客户端而言需要显式信任。
+        import ssl
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_cert_chain(certfile=tls_cert, keyfile=tls_key)
+        httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
     return httpd
 
 
@@ -445,6 +577,17 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--log-dir", default="", help="日志落点（默认 <APP_ROOT>/logs）")
     parser.add_argument("--log-capture-prints", action="store_true",
                         help="把散装 print 也收进日志（默认不采：避免默认多一条明文落盘面）")
+    # ── 生产化开关（V3.6.2，C-14）：默认值都保持"演示友好"，一旦对外监听就显式打开 ──
+    parser.add_argument("--rate-limit", type=int, default=0,
+                        help="每客户端 IP 每分钟请求上限（0=关闭；对外监听建议 600 左右）")
+    parser.add_argument("--tls-cert", default="", help="TLS 证书路径（与 --tls-key 同时给才生效）")
+    parser.add_argument("--tls-key", default="", help="TLS 私钥路径")
+    parser.add_argument("--backup-dir", default="", help="启动时备份数据库到该目录（顺带清理旧备份）")
+    parser.add_argument("--backup-keep", type=int, default=5, help="保留最近几份备份（默认 5）")
+    parser.add_argument("--alert-webhook", default="",
+                        help="端点失联告警的 Webhook 地址（http/https；留空=不发）")
+    parser.add_argument("--alert-silence-minutes", type=int, default=0,
+                        help="多久没上报算失联（分钟；0=不判定失联）")
     parser.add_argument("--window", dest="window", nargs="?", const="yes", default="auto",
                         choices=["auto", "yes", "no", "browser"],
                         help="承载方式：auto（默认，回环监听时开桌面窗口）/ yes / no（纯服务）/ browser（用默认浏览器打开）")
@@ -470,7 +613,26 @@ def main(argv: Optional[list] = None) -> int:
 
     store = ControlStore(Path(args.data) / "control.db") if args.data else ControlStore()
     token = store.ensure_admin_token()
-    httpd = serve(args.host, args.port, store, verbose=not args.quiet)
+    if args.backup_dir:
+        # ★ 启动即备份（V3.6.2，C-14）：便携单文件形态下"库就是一个文件"，
+        #   出问题没有回退手段。给了 --backup-dir 就每次启动留一份，并只保留最近 N 份。
+        try:
+            result = store.backup(args.backup_dir)
+            removed = store.prune_backups(args.backup_dir, keep=args.backup_keep)
+            log.info("启动备份完成：%s（%s 字节，清理旧备份 %s 份）",
+                     result["path"], result["bytes"], removed)
+        except Exception as exc:                     # 备份失败不能拦启动，但要留痕
+            log.warning("启动备份失败：%s: %s", type(exc).__name__, exc)
+    if args.alert_webhook:
+        # ★ 端点失联告警路由（V3.6.2，C-14）：Webhook 地址**只来自命令行/配置**，
+        #   绝不从请求体里取（那是 SSRF 面）。只在阈值 > 0 时启用。
+        from yindun.control import alerts as _alerts
+        _alerts.configure(url=args.alert_webhook,
+                          silence_minutes=max(0, int(args.alert_silence_minutes)),
+                          store=store, logger=log)
+    httpd = serve(args.host, args.port, store, verbose=not args.quiet,
+                  rate_limit_per_min=max(0, int(args.rate_limit)),
+                  tls_cert=args.tls_cert, tls_key=args.tls_key)
     external = args.host not in ("127.0.0.1", "localhost", "::1", "")
 
     mode, why = desktop.plan_launch(args.host, args.window)
