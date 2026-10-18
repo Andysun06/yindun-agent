@@ -42,6 +42,7 @@
   ];
 
   const noop = () => Promise.resolve(true);
+  let mockPicked = 1;
   const attachments = [
     { name: "供应商服务合同_示例.pdf", chars: 18422, error: null, via: "内核解析",
       report: "【隐私风险报告】\n第 2 行  手机号：138****5678（已脱敏后仅供核对）" },
@@ -74,6 +75,93 @@
     "锚点缺失但审计链非空 —— 审计目录可能被整体替换、锚点被删除，或这是首次升级" +
     "（可在审计面板点「重建锚点」确认接受当前链）";
   const auditData = () => Promise.resolve(location.hash.indexOf("chainbad") >= 0 ? auditBad : audit);
+
+  // 安全工具结构化样例：健康体检（4 条 findings / 3 档 severity）与行为画像
+  // （37 次工具调用 + 3 条不同 severity 的 anomaly）。summary 故意保留 `======`
+  // 报告文本，用来在回归里证明"默认视图不再贴纯文本，原文只在折叠项里"。
+  const healthReport = {
+    scan_root: "E:/yindun-agent/workspace",
+    scan_time: "2026-10-16 10:24:08",
+    total_files: 128,
+    scanned_files: 121,
+    findings_count: 4,
+    risk_score: 43,
+    findings: [
+      { file: "E:/yindun-agent/workspace/keys/id_rsa", severity: "绝密", category: "sensitive_file",
+        description: "发现 SSH 私钥文件，凭据可能被直接读取", matches: [], line: null },
+      { file: "E:/yindun-agent/workspace/.env", severity: "机密", category: "sensitive_file",
+        description: "发现环境变量配置，可能含明文密钥", matches: [], line: null },
+      { file: "E:/yindun-agent/workspace/客户资料_2026Q3.csv", severity: "机密", category: "sensitive_content",
+        description: "检测到手机号 3 处、身份证号 1 处（已按脱敏规则打码展示）",
+        matches: ["138****5678", "139****9012", "110***********1234"], line: 12 },
+      { file: "E:/yindun-agent/workspace/logs/agent.log", severity: "内部", category: "permission",
+        description: "文件权限过宽：其他用户可读", matches: ["rw-rw-r--"], line: null },
+    ],
+  };
+  const healthSummary = [
+    "=".repeat(60),
+    "隐盾隐私健康体检报告",
+    "扫描路径: E:/yindun-agent/workspace",
+    "扫描时间: 2026-10-16 10:24:08",
+    "扫描文件: 121 / 128",
+    "发现问题: 4 项",
+    "风险评分: 43/100",
+    "=".repeat(60),
+    "",
+    "[绝密] 1 项:",
+    "  ⚠ 发现 SSH 私钥文件，凭据可能被直接读取",
+    "     → E:/yindun-agent/workspace/keys/id_rsa",
+    "[机密] 2 项:",
+    "  ⚠ 发现环境变量配置，可能含明文密钥",
+    "     → E:/yindun-agent/workspace/.env",
+  ].join("\n");
+
+  const behaviorProfile = {
+    session_id: "sess_20261016_demo",
+    model_name: "qwen2.5:7b",
+    time_range: ["2026-10-16T09:12:00", "2026-10-16T10:24:08"],
+    total_tool_calls: 37,
+    tool_call_breakdown: {
+      read_local_file: 18, search_in_files: 8, create_local_file: 6,
+      run_local_command: 3, delete_local_file: 2,
+    },
+    operation_breakdown: { read: 26, write: 6, delete: 2, execute: 3 },
+    unique_paths: 14,
+    accessed_paths: [
+      "E:/yindun-agent/workspace/合同/供应商服务合同_示例.md",
+      "E:/yindun-agent/workspace/客户资料_2026Q3.csv",
+    ],
+    sensitive_paths_accessed: ["C:/Users/demo/.ssh/id_rsa", "E:/yindun-agent/workspace/.env"],
+    path_jumps: 7,
+    risk_score: 62,
+    risk_factors: ["访问了 2 个敏感路径 (+20)", "路径跳跃 7 次 (+20)", "存在删除类操作 (+10)"],
+    total_llm_calls: 16,
+    avg_input_length: 328,
+    avg_output_length: 612,
+  };
+  const behaviorAnomalies = [
+    { session_id: "sess_20261016_demo", timestamp: "2026-10-16T10:02:11",
+      anomaly_type: "path_hopping", severity: "medium",
+      description: "跨 7 个不相关目录操作，可能存在遍历风险",
+      details: { directories: ["合同", "客户", "日志", "导出", "脚本", "缓存", "临时"] } },
+    { session_id: "sess_20261016_demo", timestamp: "2026-10-16T09:58:40",
+      anomaly_type: "sensitive_access", severity: "high",
+      description: "访问敏感路径: C:/Users/demo/.ssh/id_rsa",
+      details: { tool: "read_local_file", path: "C:/Users/demo/.ssh/id_rsa" } },
+    { session_id: "sess_20261016_demo", timestamp: "2026-10-16T09:14:05",
+      anomaly_type: "off_hours", severity: "low",
+      description: "非工作时间操作（0:00）", details: { hour: 0 } },
+  ];
+  const behaviorSummary = [
+    "=".repeat(50),
+    "模型行为画像: sess_20261016_demo",
+    "模型: qwen2.5:7b",
+    "工具调用: 37 次",
+    "访问路径: 14 个",
+    "敏感路径: 2 个",
+    "风险评估: 62/100",
+    "=".repeat(50),
+  ].join("\n");
 
   const kb = {
     available: true,
@@ -207,6 +295,9 @@
     ],
   };
 
+  // 沙盘里的自定义模型（预览用状态）：保存/删除会真的改它，三档列表跟着变
+  const mockCustomModels = new Map();
+
   const api = {
     bootstrap: () => Promise.resolve({
       // 预览模式不写死版本号：这份 mock 只在本地看界面用（`index.html#mock`），
@@ -228,7 +319,13 @@
     list_sessions: () => Promise.resolve(sessions),
     open_session: (id) => Promise.resolve({ id, messages, box_mapping: {} }),
     new_session: () => Promise.resolve("s-new"),
-    pick_files: () => Promise.resolve([]),
+    // 预览模式模拟"用户选了一份文档"：真实运行时由系统对话框返回解析摘要。
+    // 早先这里固定返回 []，点「＋」既不弹窗也不出提示，在沙盘里看起来就是"按钮点不了"。
+    pick_files: () => {
+      const item = { name: `新增附件_${mockPicked++}_示例.md`, chars: 2048, error: null, via: "内核解析" };
+      attachments.push(item);
+      return Promise.resolve([item]);
+    },
     list_attachments: () => Promise.resolve(attachments),
     clear_attachments: () => Promise.resolve(true),
     kb_status: () => Promise.resolve(kb),
@@ -248,6 +345,8 @@
         lan: "数据出这台电脑，但不出企业内网",
         wan: "数据出企业内网；送出前内容已在本机脱敏",
       },
+      // ★ 沙盘里的自定义模型是**有状态的**（V3.6.7）：保存/删除要能真的反映到三档列表上，
+      //   否则预览里点「保存」看不到结果、"密钥留空＝不改动"这条语义也无从验证。
       tiers: {
         local: [
           { name: "qwen2.5:7b-instruct", model_id: "qwen2.5:7b-instruct", tier: "local",
@@ -262,9 +361,31 @@
         wan: [
           { name: "云端GLM", model_id: "glm-4-flash", tier: "wan", source: "custom",
             base_url: "https://open.bigmodel.cn/api/paas/v4", kind: "openai", has_key: true, key_invalid: false, note: "" },
+          ...[...mockCustomModels.entries()].map(([name, m]) => ({
+            name, model_id: m.model_id, tier: m.tier, source: "custom",
+            base_url: m.base_url, kind: "openai", has_key: !!m.has_key, key_invalid: false, note: "",
+          })),
         ],
       },
     }),
+    // 保存/删除自来模型（预览沙盘）：与真实后端**同一套契约**——
+    // 密钥留空＝沿用已存的那把（回报 kept_key），新建时留空就是空。
+    add_custom_model: (name, model_id, base_url, api_key, tier) => {
+      const key = String(api_key || "").trim();
+      const before = mockCustomModels.get(name);
+      const kept = !key && !!(before && before.has_key);
+      mockCustomModels.set(name, { model_id, base_url, tier: tier || "wan",
+                                   has_key: kept || !!key });
+      return Promise.resolve({ ok: true, tier: tier || "wan",
+        tier_label: { local: "本机模型", lan: "局域网模型", wan: "公网模型" }[tier || "wan"],
+        kept_key: kept, models: [...mockCustomModels.keys()] });
+    },
+    remove_custom_model: (name) => Promise.resolve({ ok: mockCustomModels.delete(name), models: [] }),
+    // 探测回报"收到的参数"，这样界面有没有把条目名捎上（好让后端回落已存密钥）在预览里就能验
+    probe_model_endpoint: (url, api_key, name) => Promise.resolve(
+      { ok: true, style: "openai", models: ["qwen2.5:14b", "qwen2.5:32b"], count: 2,
+        endpoint: "http://10.0.0.8:8000/v1", note: "已连通，发现 2 个模型",
+        params: { url, key_empty: !String(api_key || "").trim(), entry: name || "" } }),
     control_status: () => Promise.resolve({
       configured: true, enabled: true, url: "http://10.0.0.9:8787", endpoint_id: "ep-e2e-01",
       last_sent_count: 32, last_report_at: "2026-10-16T10:12:33", last_error: "",
@@ -281,9 +402,6 @@
     control_sync: () => Promise.resolve({ ok: true, report: { events: 4 }, policy: { applied: { policy_version: 4 } } }),
     control_clear_rules: () => Promise.resolve({ ok: true, removed: 2 }),
     control_auto: () => Promise.resolve({ ok: true, interval: 300 }),
-    probe_model_endpoint: () => Promise.resolve(
-      { ok: true, style: "openai", models: ["qwen2.5:14b", "qwen2.5:32b"], count: 2,
-        endpoint: "http://10.0.0.8:8000/v1", note: "已连通，发现 2 个模型" }),
     kb_pick_and_add: () => Promise.resolve({ ok: true, status: kb }),
     kb_add_paths: () => Promise.resolve({ ok: true, status: kb }),
     kb_remove: () => Promise.resolve({ ok: true, status: kb }),
@@ -323,6 +441,15 @@
     window_bounds: () => Promise.resolve({ ok: true, x: 80, y: 60, w: 1180, h: 780 }),
     window_resize_edge: noop,
     audit_snapshot: () => auditData(),
+    // 安全工具：返回结构与后端保持同形（health_scan.json 是 JSON 文本）
+    health_scan: () => Promise.resolve({
+      ok: true, target: healthReport.scan_root, summary: healthSummary,
+      json: JSON.stringify(healthReport, null, 2),
+    }),
+    behavior_profile: () => Promise.resolve({
+      ok: true, summary: behaviorSummary,
+      profile: behaviorProfile, anomalies: behaviorAnomalies,
+    }),
     audit_reanchor: () => Promise.resolve({ ok: true, count: 128 }),
     audit_export: () => Promise.resolve("（预览模式）audit_report_demo.json"),
     audit_export_formats: () => Promise.resolve([

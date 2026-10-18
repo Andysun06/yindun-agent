@@ -66,8 +66,14 @@ svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.6;
 [hidden] { display:none !important; }
 
 /* ── 鉴权面板 ─────────────────────────────────────────── */
-.auth { position:fixed; inset:0; display:grid; place-items:center; background:var(--bg-canvas); }
-.auth__box { width:392px; padding:var(--sp-7); border:1px solid var(--border-1);
+/* 登录前的整屏也要能拖、能关：无边框窗口没有系统标题栏，若登录页不给拖动区与按钮，
+   用户在第一屏就既挪不动也关不掉（这正是"无边框"最容易漏掉的一步）。 */
+.auth { position:fixed; inset:0; display:flex; flex-direction:column; background:var(--bg-canvas); }
+.auth__bar { display:flex; align-items:center; justify-content:space-between; height:38px;
+  padding-left:var(--sp-5); color:var(--text-3); font-size:var(--fs-meta); user-select:none; }
+.auth__bar-t { font-family:var(--font-mono); }
+.auth__bar .winctrl { margin:0; }
+.auth__box { margin:auto; width:392px; padding:var(--sp-7); border:1px solid var(--border-1);
   border-radius:var(--r-block); background:var(--bg-canvas); }
 .auth__brand { display:flex; gap:var(--sp-4); align-items:center; margin-bottom:var(--sp-7); }
 .auth__brand h1 { font-size:var(--fs-lg); font-weight:600; }
@@ -106,7 +112,12 @@ svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.6;
 .switch { display:inline-flex; align-items:center; gap:var(--sp-2); cursor:pointer;
   color:var(--text-2); font-size:var(--fs-sm); user-select:none; }
 .switch input { position:absolute; opacity:0; pointer-events:none; }
-.switch span { width:32px; height:18px; border-radius:9px; background:var(--gray-300);
+/* ★ `display:inline-block` 不能省（V3.6.7 修真实缺陷）：策略页的严格模式写成
+   `<label class="switch"><input><span></span><em>…</em></label>`，而 `.form-row > label{display:block}`
+   的权重压过 `.switch{display:inline-flex}` —— 容器一变成 block，里面的 `<span>` 就是**行内**盒子，
+   而 width/height 对行内盒子无效 ⇒ 开关被渲染成 0 宽、16px 高的一条灰边（实测 trackW=0），
+   用户根本看不出那里有个开关。显式给轨道一个块级显示，两种父容器下都成立。 */
+.switch span { display:inline-block; width:32px; height:18px; border-radius:9px; background:var(--gray-300);
   position:relative; transition:background var(--dur) var(--ease); flex:0 0 auto; }
 .switch span::after { content:""; position:absolute; top:2px; left:2px; width:14px; height:14px;
   border-radius:50%; background:#fff; transition:transform var(--dur) var(--ease); }
@@ -132,15 +143,24 @@ svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.6;
 .status.is-err i { background:var(--danger-500); box-shadow:0 0 0 3px var(--danger-50); }
 
 /* ── 骨架 ─────────────────────────────────────────────── */
-.shell { display:grid; grid-template-columns:var(--rail-w) 1fr; height:100vh; }
+/* grid-template-rows 必须显式给：隐式行是 auto，会按内容长高，
+   于是 rail 长到 1074px、整页跟着 body 滚，而"桌面窗口"里看起来就是侧栏底部被切掉
+   （V3.6.7 修，实测 700/800/860/1000 四种窗口高度下 rail 都是 1074）。
+   minmax(0,1fr) 让这一行**就是**容器高度，超出的部分由各栏自己滚。 */
+.shell { display:grid; grid-template-columns:var(--rail-w) 1fr; grid-template-rows:minmax(0,1fr);
+  height:100vh; }
+/* 侧栏整体可滚：窗口不高时（笔记本 768/800 高）"数据边界"段会被挤到视口外，
+   早先 rail 是 overflow 默认值 + 各段默认可收缩 → 内容被**裁掉且无法滚动**，
+   管理员根本看不到那段边界说明（V3.6.7 修）。各段设 flex:0 0 auto 让"装不下"真的变成溢出，
+   溢出再由 rail 自己滚（滚动条是我们自制的那套）。 */
 .rail { display:flex; flex-direction:column; border-right:1px solid var(--border-1);
-  background:var(--bg-side); padding:var(--sp-5) var(--sp-4); }
-.rail__brand { display:flex; align-items:center; gap:var(--sp-3); padding:0 var(--sp-3) var(--sp-6); }
+  background:var(--bg-side); padding:var(--sp-5) var(--sp-4); overflow-y:auto; }
+.rail__brand { flex:0 0 auto; display:flex; align-items:center; gap:var(--sp-3); padding:0 var(--sp-3) var(--sp-6); }
 .rail__title { display:flex; flex-direction:column; line-height:1.35; }
 .rail__title b { font-size:var(--fs-base); font-weight:600; }
 .rail__title span { color:var(--text-3); font-family:var(--font-mono); font-size:var(--fs-meta); }
 
-.nav { display:flex; flex-direction:column; gap:2px; }
+.nav { display:flex; flex-direction:column; gap:2px; flex:0 0 auto; }
 .nav__item { display:flex; align-items:center; gap:var(--sp-4); padding:8px 10px; border:0;
   border-radius:var(--r-ctrl); background:transparent; color:var(--text-2); cursor:pointer;
   text-align:left; transition:background var(--dur) var(--ease), color var(--dur) var(--ease); }
@@ -151,13 +171,32 @@ svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.6;
 .nav__item kbd { color:var(--text-3); font-family:var(--font-mono); font-size:10.5px;
   border:1px solid var(--border-1); border-radius:3px; padding:0 4px; }
 
-.rail__foot { margin-top:auto; }
+.rail__foot { margin-top:auto; flex:0 0 auto; }
+/* 数据边界（V3.6.7 重排）：早先把四段声明整段塞进 212px 宽的侧栏，密不透风、
+   负责人直接问"这是干嘛的"。现在只露**一句醒目标题 + 一句主结论**，
+   其余细节收进默认收起的 <details>（展开后仍是短句列表，不是长段落）。
+   声明一条都没删，只是分了两层。 */
 .boundary { border-top:1px solid var(--border-1); padding-top:var(--sp-5); }
-.boundary b { display:block; font-size:var(--fs-meta); color:var(--text-2);
-  letter-spacing:.06em; margin-bottom:var(--sp-3); }
-.boundary p { color:var(--text-3); font-size:var(--fs-meta); line-height:1.75; margin-bottom:var(--sp-3); }
-.boundary p:last-child { margin-bottom:0; }
-.boundary b b, .boundary p b { color:var(--text-2); }
+.boundary__head { display:flex; align-items:center; gap:var(--sp-2); }
+/* "?" 气泡：提示"这里可以展开"，不占地方 */
+.boundary__mark { flex:0 0 auto; width:15px; height:15px; border:1px solid var(--border-2);
+  border-radius:50%; color:var(--text-3); font-family:var(--font-mono); font-size:10px;
+  line-height:13px; text-align:center; }
+.boundary__head b { font-size:var(--fs-meta); color:var(--text-2); letter-spacing:.06em; }
+.boundary__lead { margin-top:var(--sp-3); color:var(--text-2); font-size:var(--fs-meta); line-height:1.7; }
+.boundary__more { margin-top:var(--sp-3); }
+.boundary__more > summary { display:flex; align-items:center; gap:4px; cursor:pointer;
+  color:var(--text-3); font-size:var(--fs-meta); list-style:none; }
+.boundary__more > summary::-webkit-details-marker { display:none; }
+.boundary__more > summary:hover { color:var(--text-1); }
+.boundary__more > summary svg { width:12px; height:12px; transition:transform var(--dur) var(--ease); }
+.boundary__more[open] > summary svg { transform:rotate(180deg); }
+.boundary__list { margin:var(--sp-3) 0 0; padding-left:15px; color:var(--text-3);
+  font-size:var(--fs-meta); line-height:1.75; }
+.boundary__list li { margin-bottom:5px; }
+.boundary__list li:last-child { margin-bottom:0; }
+/* 段落/列表里的 <b> 仍是行内强调（"只能收紧""无法还原明文"），不做块级 */
+.boundary__lead b, .boundary__list b { color:var(--text-2); font-weight:600; }
 
 .main { display:flex; flex-direction:column; min-width:0; }
 .topbar { display:flex; align-items:center; justify-content:space-between; gap:var(--sp-5);
@@ -166,14 +205,21 @@ svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.6;
 .topbar__title p { color:var(--text-3); font-size:var(--fs-meta); }
 .topbar__tools { display:flex; align-items:center; gap:var(--sp-4); }
 
+/* 内容用满可用宽度（V3.6.7 修）：早先 `.content > section{max-width:1180px}` 把内容钉死在
+   1180px，窗口一宽右半边整片空白——而控制台最常看的是**台账/表格**，越宽越好读。
+   这里不再设上限，只用 min-width:0 允许栅格子项真正收缩（否则宽表会把栏撑破、
+   窄窗口下变成整页横向溢出）。窄窗口的自适应在文件末尾的媒体查询里收口。 */
 .content { flex:1; overflow:auto; padding:var(--sp-7); }
-.content > section { max-width:1180px; }
+.content > section { width:100%; min-width:0; }
 .foot { display:flex; align-items:center; gap:var(--sp-3); padding:var(--sp-3) var(--sp-7);
   border-top:1px solid var(--border-1); color:var(--text-3); font-size:var(--fs-meta); flex:0 0 auto; }
 .foot .dot { width:3px; height:3px; border-radius:50%; background:var(--border-2); }
 
 /* ── 指标条 ───────────────────────────────────────────── */
-.metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--border-1);
+/* 指标条：列数由媒体查询显式给（4 → 2 → 1），不用 auto-fit——
+   auto-fit 在中间宽度会出现"3+1"（第 4 张卡单独占满一整行），比留白更难看；
+   minmax(0,1fr) 让长数字把卡片压窄而不是把整行顶宽。 */
+.metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:1px; background:var(--border-1);
   border:1px solid var(--border-1); border-radius:var(--r-block); overflow:hidden; margin-bottom:var(--sp-7); }
 .metric { background:var(--bg-canvas); padding:var(--sp-5) var(--sp-6); }
 .metric__label { color:var(--text-3); font-family:var(--font-mono); font-size:var(--fs-meta);
@@ -229,14 +275,133 @@ table.grid tr.is-high:hover td { background:var(--danger-50); }
 .ep dd { margin:0; font-family:var(--font-mono); font-variant-numeric:tabular-nums; word-break:break-all; }
 .ep__tags { margin-top:var(--sp-4); display:flex; flex-wrap:wrap; gap:var(--sp-2); }
 
-/* ── 策略页 ───────────────────────────────────────────── */
+/* ── 策略页（V3.6.8 起点选式）───────────────────────────
+   为什么改：自由文本控件要求管理员先学会 glob 语法，还要担心"少写一个字符下发了别的策略"。
+   现在把常用写法做成预设、把枚举做成三档、把范围做成多选——语义一个都没变
+   （预设展开成同样的字符串数组，走同一条下发通路），只是不再需要自己拼字符串。
+   控件全部是原生 input（checkbox/radio/textarea），零第三方依赖、离线可用。 */
 .cols { display:grid; grid-template-columns:1fr 380px; gap:var(--sp-7); align-items:start; }
 .form-row { margin-bottom:var(--sp-5); }
 .form-row > label { display:block; margin-bottom:var(--sp-2); font-size:var(--fs-sm); color:var(--text-2); }
 .form-row .hint { margin-top:var(--sp-2); color:var(--text-3); font-size:var(--fs-meta); line-height:1.7; }
 .inline { display:flex; gap:var(--sp-3); align-items:center; }
+code { font-family:var(--font-mono); font-size:var(--fs-meta); }
+/* 原生勾选/单选统一强调色（默认蓝与这套设计语言不符） */
+input[type="checkbox"], input[type="radio"] { accent-color:var(--accent-500); }
+
+/* 状态点旁的常显说明；窄窗口收起（顶栏放不下时优先保住按钮） */
+.status { white-space:nowrap; }
+.status__note { color:var(--text-3); }
+@media (max-width:1279px) { .status__note { display:none; } }
+
+/* 敏感路径预设库：按业务场景分组，每组一张小表 */
+.presets { display:flex; flex-direction:column; gap:var(--sp-4); margin-top:var(--sp-3); }
+.presets__group { border:1px solid var(--border-1); border-radius:var(--r-block); overflow:hidden; }
+.presets__gt { display:flex; align-items:baseline; gap:var(--sp-3); padding:8px var(--sp-4);
+  background:var(--bg-subtle); color:var(--text-2); font-size:var(--fs-sm); font-weight:600; }
+.presets__gt em { font-style:normal; font-weight:400; color:var(--text-3); font-size:var(--fs-meta); }
+.preset { display:flex; gap:var(--sp-4); padding:10px var(--sp-4); cursor:pointer;
+  border-top:1px solid var(--border-1); }
+.preset:hover { background:var(--bg-hover); }
+.preset > input { flex:0 0 auto; margin-top:3px; width:15px; height:15px; cursor:pointer; }
+.preset__body { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.preset__body b { font-size:var(--fs-sm); font-weight:600; }
+.preset__effect { color:var(--text-2); font-size:var(--fs-meta); line-height:1.7; }
+.preset__globs { display:flex; flex-wrap:wrap; gap:4px var(--sp-3); }
+.preset__globs code, .preview code { font-family:var(--font-mono); font-size:var(--fs-meta);
+  color:var(--text-2); background:var(--bg-subtle); border-radius:var(--r-chip); padding:1px 6px; }
+/* 选中态：整行淡淡地亮一下（:has 由 Chromium 105+ / WebView2 提供，控制台只跑这两种内核） */
+.preset:has(input:checked) { background:var(--accent-50); }
+.preset:has(input:checked) b { color:var(--accent-600); }
+
+/* 折叠区（自定义路径 / 无法下发的项）：摘要一行说清"这里面是什么" */
+.fold { margin-top:var(--sp-4); border:1px dashed var(--border-2); border-radius:var(--r-block);
+  padding:var(--sp-4); }
+.fold > summary, .denied-fold > summary { display:flex; align-items:center; gap:var(--sp-3);
+  cursor:pointer; list-style:none; }
+.fold > summary { color:var(--text-2); font-size:var(--fs-sm); }
+.fold > summary::-webkit-details-marker, .denied-fold > summary::-webkit-details-marker { display:none; }
+.fold > summary:hover, .denied-fold > summary:hover { color:var(--text-1); }
+.fold > summary svg, .denied-fold > summary svg { flex:0 0 auto; width:12px; height:12px;
+  transition:transform var(--dur) var(--ease); }
+.fold[open] > summary svg, .denied-fold[open] > summary svg { transform:rotate(180deg); }
+.fold .textarea { margin-top:var(--sp-4); }
+.fold > .hint { margin-top:var(--sp-3); color:var(--text-3); font-size:var(--fs-meta); line-height:1.7; }
+
+/* 审批下限：三档分段控件（值域与原下拉框逐字相同） */
+.seg { display:inline-flex; border:1px solid var(--border-2); border-radius:var(--r-ctrl);
+  overflow:hidden; background:var(--bg-input); }
+.seg__opt { display:inline-flex; align-items:center; padding:7px 13px; cursor:pointer;
+  font-size:var(--fs-sm); color:var(--text-2); border-left:1px solid var(--border-1); }
+.seg__opt:first-child { border-left:0; }
+.seg__opt:hover { background:var(--bg-hover); }
+.seg__opt input { position:absolute; opacity:0; pointer-events:none; }
+.seg__opt:has(input:checked) { background:var(--accent-50); color:var(--accent-600); font-weight:600; }
+.seg__opt:has(input:focus-visible) { box-shadow:inset 0 0 0 2px var(--accent-500); }
+
+/* 模型 / 插件多选：候选 chip（点选）+ 已选集（可移除）+ 手动补一个 */
+.pick-host { margin-top:var(--sp-3); }
+.picks { display:flex; flex-wrap:wrap; gap:var(--sp-2); }
+.pick { display:inline-flex; align-items:center; gap:var(--sp-2); padding:5px 10px; cursor:pointer;
+  border:1px solid var(--border-2); border-radius:999px; background:var(--bg-canvas);
+  color:var(--text-1); font-family:var(--font-mono); font-size:var(--fs-sm); }
+.pick:hover { border-color:var(--text-3); background:var(--bg-hover); }
+.pick em { font-style:normal; color:var(--text-3); font-size:var(--fs-meta); }
+.pick[aria-pressed="true"] { border-color:var(--accent-500); background:var(--accent-50);
+  color:var(--accent-600); font-weight:600; }
+.pick[aria-pressed="true"]::before { content:"✓"; font-size:11px; }
+.pick[aria-pressed="true"] em { color:var(--accent-600); }
+.pick em.pick__tag { color:var(--warn-500); border:1px solid currentColor; border-radius:var(--r-chip);
+  padding:0 4px; }
+.picked { display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-2); margin-top:var(--sp-3);
+  padding-top:var(--sp-3); border-top:1px dashed var(--border-1); }
+.picked__lead { color:var(--text-2); font-size:var(--fs-meta); }
+.picked__item { display:inline-flex; align-items:center; gap:5px; padding:2px 4px 2px 8px;
+  border-radius:999px; background:var(--accent-50); color:var(--accent-600);
+  font-family:var(--font-mono); font-size:var(--fs-meta); }
+.picked__x { border:0; background:transparent; color:inherit; cursor:pointer; font-size:13px;
+  line-height:1; padding:0 3px; border-radius:50%; }
+.picked__x:hover { background:var(--accent-500); color:#fff; }
+.manual { margin-top:var(--sp-3); }
+.manual .input { flex:1 1 220px; min-width:0; }
+
+/* 下发范围：全局 / 逐台多选 */
+.scope { display:flex; align-items:flex-start; gap:var(--sp-3); padding:8px 10px; cursor:pointer;
+  border:1px solid var(--border-1); border-radius:var(--r-ctrl); font-size:var(--fs-sm); }
+.scope:hover { background:var(--bg-hover); }
+.scope input { flex:0 0 auto; margin-top:2px; width:15px; height:15px; cursor:pointer; }
+.scope span { display:flex; flex-direction:column; gap:2px; min-width:0; color:var(--text-2); }
+.scope span b { color:var(--text-1); }
+.scope em { font-style:normal; font-family:var(--font-mono); color:var(--text-3); font-size:var(--fs-meta); }
+.scope--all { margin-bottom:var(--sp-3); }
+.scope__sep { color:var(--text-3); font-size:var(--fs-meta); margin-bottom:var(--sp-3); }
+.scope__grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:var(--sp-3); }
+.scope:has(input:checked) { border-color:var(--accent-500); background:var(--accent-50); }
+
+/* 提交行 + 「本次将下发」预览（屏幕上写的＝真正发出去的） */
+.submit-row { display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-4); margin-bottom:var(--sp-4); }
+.submit-row .hint { color:var(--text-3); font-size:var(--fs-meta); }
+.preview { border:1px solid var(--border-1); border-radius:var(--r-block); padding:var(--sp-4) var(--sp-5);
+  background:var(--bg-subtle); max-height:280px; overflow:auto; }
+.preview__row { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px var(--sp-3);
+  font-size:var(--fs-sm); color:var(--text-2); }
+.preview__row + .preview__row { margin-top:7px; }
+.preview__row > b { flex:0 0 76px; color:var(--text-3); font-weight:600; font-size:var(--fs-meta); }
+.preview__row em { font-style:normal; color:var(--text-3); }
+
+/* 逐台下发的结果清单：成功与失败都要看得见（失败项不会被写成"已下发"） */
+.res-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:5px;
+  font-family:var(--font-mono); font-size:var(--fs-meta); }
+.res-list__ok { color:var(--accent-600); }
+.res-list__bad { color:var(--danger-500); }
+
+/* 「控制面无法下发的项」：内容留着，收进默认收起的折叠区（它是边界说明，不是表单） */
+.denied-fold { border:1px solid var(--border-1); border-radius:var(--r-block); overflow:hidden; }
+.denied-fold > summary { padding:var(--sp-4) var(--sp-5); color:var(--text-2); font-size:var(--fs-meta);
+  line-height:1.6; }
+.denied-fold > summary svg { margin-left:auto; }
 .denied { border:1px solid var(--border-1); border-radius:var(--r-block); padding:var(--sp-5); }
-.denied h4 { font-size:var(--fs-sm); font-weight:600; margin-bottom:var(--sp-3); }
+.denied-fold .denied { border:0; border-top:1px solid var(--border-1); border-radius:0; }
 .denied ul { list-style:none; margin:0; padding:0; display:flex; flex-wrap:wrap; gap:var(--sp-2); }
 .denied li { font-family:var(--font-mono); font-size:var(--fs-meta); color:var(--text-3);
   background:var(--bg-subtle); border-radius:var(--r-chip); padding:2px 7px; text-decoration:line-through; }
@@ -286,6 +451,110 @@ i.sev-info { background:var(--gray-400); }
 i.sev-warning { background:var(--warn-500); }
 i.sev-critical, i.sev-security { background:var(--danger-500); }
 
+/* ── 自制滚动条（V3.6.7）────────────────────────────────
+   为什么自制：控制台在**无边框桌面窗口**里跑，系统滚动条是唯一还带 Windows 原生外观的部件，
+   留着它整扇窗就"半原生半自制"。这里与主产品（app/web/styles/app.css）同一套参数，
+   两端滚动手感一致：轨道透明、滑块 = border-2 色、内缩 3px 圆头、悬停加深。 */
+::-webkit-scrollbar { width:10px; height:10px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:var(--border-2); border-radius:999px;
+  border:3px solid transparent; background-clip:content-box; }
+::-webkit-scrollbar-thumb:hover { background:var(--text-3); background-clip:content-box; }
+::-webkit-scrollbar-corner { background:transparent; }
+/* 表格容器与内容区都不显示"上下箭头按钮"（Windows 默认有，最显原生） */
+::-webkit-scrollbar-button { display:none; }
+* { scrollbar-width:thin; scrollbar-color:var(--border-2) transparent; }
+
+/* ── 自制窗口按钮（仅无边框桌面窗口里可见）───────────────
+   真实能力由 pywebview 的窗口动作桥提供（yindun/control/desktop.py · WindowBridge）；
+   拿不到桥（浏览器/纯服务形态）时按钮整组隐藏——**不做假按钮**：点了没反应比没有更糟。 */
+.winctrl { display:flex; align-items:stretch; align-self:stretch; margin:-1px calc(-1 * var(--sp-3)) -1px 0; }
+.winctrl[hidden] { display:none !important; }
+.winctrl__btn { width:42px; border:0; background:transparent; color:var(--text-2);
+  display:inline-flex; align-items:center; justify-content:center; cursor:pointer;
+  transition:background var(--dur) var(--ease), color var(--dur) var(--ease); }
+.winctrl__btn:hover { background:var(--bg-hover); color:var(--text-1); }
+.winctrl__btn:active { background:var(--bg-active); }
+.winctrl__btn svg { width:14px; height:14px; stroke-width:1.5; }
+.winctrl__btn--close:hover { background:var(--danger-500); color:#fff; }
+.winctrl__btn.is-max svg path { d:path("M9.5 6.5h8v8h-8z"); }
+
+/* 拖动区域：pywebview **只认 `.pywebview-drag-region` 这一个类名**
+   （DRAG_REGION_SELECTOR 默认值，见 yindun/app/webview_app.py 的同类用法）。
+   早先这里叫 `.pwdrag`——自造类名不在 pywebview 的选择器里，于是"顶栏看着像标题栏、
+   实际一点也拖不动"（负责人实测）。类名必须与官方一致，样式只做补充。
+   -webkit-app-region 在 WebView2 里是空操作，留着只为将来换 Electron 式外壳时语义正确。 */
+.pywebview-drag-region { -webkit-app-region:drag; }
+.pywebview-drag-region .winctrl, .pywebview-drag-region button, .pywebview-drag-region input,
+.pywebview-drag-region .switch, .pywebview-drag-region a { -webkit-app-region:no-drag; }
+
+/* ── 自制下拉框（select 只做值容器，外观全自绘）──────────
+   做法：保留原生 <select> 用于取值/派发 change（无障碍与"表单语义"不能丢），
+   把它视觉隐藏，旁边渲染一个同尺寸的按钮 + 自绘弹层；键盘 ↑↓/Enter/Esc 照旧可用。
+   选值后仍然派发原生 change 事件，页面逻辑（app.js 的筛选器）一行都不用改。 */
+/* 原生 select 退居"值容器"：铺满 .dd 但完全透明、不接鼠标。
+   用 inset:0 而非固定 1px 尺寸，是为了不被 .filters .select{width:auto} 这类
+   容器尺寸规则改回来（绝对定位元素同时给了左右两个 inset 时，width:auto 就是撑满）。 */
+.dd > select.selectnative { position:absolute; inset:0; width:auto; height:auto; margin:0;
+  padding:0; border:0; opacity:0; pointer-events:none; }
+.dd { position:relative; display:inline-block; }
+.dd__btn { display:inline-flex; align-items:center; gap:var(--sp-3); width:100%;
+  padding:6px 10px; border:1px solid var(--border-2); border-radius:var(--r-ctrl);
+  background:var(--bg-input); color:var(--text-1); font-size:var(--fs-sm); cursor:pointer;
+  transition:border-color var(--dur) var(--ease), background var(--dur) var(--ease); }
+.dd__btn:hover { border-color:var(--text-3); }
+.dd__btn[aria-expanded="true"] { border-color:var(--accent-600); }
+.dd__btn > span { flex:1; text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dd__btn svg { width:12px; height:12px; color:var(--text-3); transition:transform var(--dur) var(--ease); }
+.dd__btn[aria-expanded="true"] svg { transform:rotate(180deg); }
+.dd__list { position:absolute; z-index:8; top:calc(100% + 4px); left:0; min-width:100%;
+  max-height:264px; overflow:auto; margin:0; padding:var(--sp-2); list-style:none;
+  border:1px solid var(--border-2); border-radius:var(--r-ctrl); background:var(--bg-canvas);
+  box-shadow:var(--shadow-pop); }
+.dd__list[hidden] { display:none !important; }
+.dd__opt { display:flex; align-items:center; gap:var(--sp-3); padding:6px 9px; border-radius:var(--r-chip);
+  font-size:var(--fs-sm); cursor:pointer; white-space:nowrap; }
+.dd__opt:hover, .dd__opt.is-active { background:var(--bg-hover); }
+.dd__opt[aria-selected="true"] { color:var(--accent-600); font-weight:600; }
+.dd__opt[aria-selected="true"]::after { content:"✓"; margin-left:auto; font-size:11px; }
+
+/* ── 模态浮窗（配对码 / V3.6.7）───────────────────────────
+   为什么不再用 toast：配对码要**转述给别人**（念、拍照、复制地址），一条 9 秒后消失的
+   提示条既不便于抄写，也容不下"怎么用"的三步说明。浮窗把码放大、把有效期、局域网地址、
+   开关与安全提示放在同一屏，复制按钮有明确的成功/降级反馈。 */
+.modal { position:fixed; inset:0; z-index:12; display:flex; align-items:center; justify-content:center; }
+.modal__scrim { position:absolute; inset:0; background:rgba(14,18,22,.44); }
+.modal__box { position:relative; width:min(560px, calc(100vw - 40px)); max-height:calc(100vh - 56px);
+  overflow:auto; padding:var(--sp-6) var(--sp-7) var(--sp-7); background:var(--bg-canvas);
+  border:1px solid var(--border-2); border-radius:var(--r-block); box-shadow:var(--shadow-pop); }
+.modal__head { display:flex; align-items:center; gap:var(--sp-4); margin-bottom:var(--sp-5); }
+.modal__head h3 { flex:1; font-size:var(--fs-lg); font-weight:600; }
+.modal__x { border:0; background:transparent; color:var(--text-3); cursor:pointer; padding:2px 6px;
+  border-radius:var(--r-chip); font-size:18px; line-height:1; }
+.modal__x:hover { background:var(--bg-hover); color:var(--text-1); }
+
+.pair__box { border:1px solid var(--border-1); border-radius:var(--r-block); background:var(--bg-subtle);
+  padding:var(--sp-5) var(--sp-6); margin-bottom:var(--sp-4); }
+.pair__code { font-family:var(--font-mono); font-size:38px; font-weight:600; letter-spacing:.16em;
+  line-height:1.25; font-variant-numeric:tabular-nums; }
+.pair__meta { margin-top:var(--sp-3); color:var(--text-3); font-size:var(--fs-meta);
+  font-family:var(--font-mono); }
+.pair__actions { display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-3); margin-bottom:var(--sp-5); }
+.pair__form { display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-3);
+  margin:calc(-1 * var(--sp-2)) 0 var(--sp-5); }
+.pair__form .input { flex:1 1 160px; min-width:0; }
+.pair__sec { border-top:1px solid var(--border-1); padding-top:var(--sp-5); margin-bottom:var(--sp-5); }
+.pair__sec h4 { font-size:var(--fs-sm); font-weight:600; margin-bottom:var(--sp-3); }
+.pair__url { display:flex; align-items:center; gap:var(--sp-3); }
+.pair__url code { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  padding:7px 10px; border-radius:var(--r-ctrl); background:var(--bg-subtle);
+  font-family:var(--font-mono); font-size:var(--fs-sm); }
+.pair__row { display:flex; align-items:center; gap:var(--sp-4); margin-top:var(--sp-4); }
+.pair__note { margin-top:var(--sp-3); color:var(--text-3); font-size:var(--fs-meta); line-height:1.75; }
+.pair__note--warn { color:var(--warn-500); }
+.pair__note--bad { color:var(--danger-500); }
+.pair__steps { margin:0; padding-left:18px; color:var(--text-2); font-size:var(--fs-sm); line-height:1.95; }
+
 /* ── 提示条 ───────────────────────────────────────────── */
 .toast { position:fixed; bottom:22px; left:50%; transform:translateX(-50%);
   padding:10px 18px; border-radius:var(--r-ctrl); background:var(--gray-900); color:#fff;
@@ -295,6 +564,24 @@ html[data-theme="dark"] .toast { background:var(--gray-100); color:var(--gray-90
 @media (max-width:1080px) {
   .shell { grid-template-columns:1fr; }
   .rail { display:none; }
-  .metrics { grid-template-columns:repeat(2,1fr); }
+  .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .cols { grid-template-columns:1fr; }
+  /* 筛选行里的搜索框原本 min-width:240px，窄窗口下和三个下拉挤一行会把行顶宽 */
+  .filters .input { min-width:180px; flex:1 1 180px; }
+}
+
+/* 极窄窗口：指标改单列，端点卡也不再吃 360px 下限（否则卡片比容器宽，页面横向溢出） */
+@media (max-width:560px) {
+  .metrics { grid-template-columns:minmax(0,1fr); }
+  .eps { grid-template-columns:minmax(0,1fr); }
+  .content { padding:var(--sp-5); }
+}
+
+/* 宽窗口（≥1680px）：四张指标卡各被拉到 400px 以上，只剩左上角一小撮字，比例失真。
+   不给单卡封顶——封顶会在指标条右侧重新留出空白（正是本次要消掉的东西），
+   用 space-between 拉开则会把 1px 发丝分隔撑成粗灰条；改为按比例抬一档内边距与
+   数字字号（30→34px），让卡内留白比例与笔记本窗口上一致。 */
+@media (min-width:1680px) {
+  .metric { padding:var(--sp-6) var(--sp-7); }
+  .metric__value { font-size:34px; }
 }

@@ -368,9 +368,14 @@ class JsApi:
         """本机 / 局域网 / 公网三档算力清单（设置页分区 + 模型下拉分组）。"""
         return self._svc.model_catalog()
 
-    def probe_model_endpoint(self, base_url, api_key=""):
-        """连通性探测（用户点「测试连接」才发起；地址来自输入框）。"""
-        return self._svc.probe_model_endpoint(base_url, api_key)
+    def probe_model_endpoint(self, base_url, api_key="", name=""):
+        """连通性探测（用户点「测试连接」才发起；地址来自输入框）。
+
+        `name` 是从设置页捎来的**条目名**：密钥不回显，所以存过密钥之后输入框是空的，
+        服务端据此回落到该条目已存的密钥去测（V3.6.7）——否则会拿空密钥撞 401，
+        看起来像"保存后密钥丢了"。少了这个参数，pywebview 会因为多传一个位置参数直接抛错。
+        """
+        return self._svc.probe_model_endpoint(base_url, api_key, name)
 
     def add_custom_model(self, name: str, model_id: str, base_url: str, api_key: str,
                          tier: str = ""):

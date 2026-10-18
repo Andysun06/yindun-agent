@@ -273,7 +273,12 @@ def install_std_streams_redirect() -> bool:
                 if not text:
                     return
                 level = logging.WARNING if _ERROR_HINT.search(text) else self._level
-                logger.log(level, "%s", text)
+                # ★ 这里是**跨文件的落点**：任何模块的 print 都会流进这个 sink。
+                #   掩码在写出前就地做一遍，而不是只依赖 `_MaskingFilter`——理由是这条链路
+                #   跨了文件（业务模块 print → 本模块落盘），一旦将来有人给某个 handler 少装一次
+                #   过滤器，或者把日志接到别处，掩码就会**静默失效**。就地过一次，
+                #   保证"进 sink 的已经是净化值"，与 handler 配置无关（重复掩码是幂等的）。
+                logger.log(level, "%s", mask_log_text(text))
 
             def write(self, text):
                 try:

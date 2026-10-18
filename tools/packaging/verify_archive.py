@@ -45,7 +45,10 @@ CLIENT_SYMBOLS: Dict[str, Sequence[str]] = {
                              "has_execution_handler", "wf_data_pipeline", "workflow_outputs"],
     "yindun.core.privacy_engine": ["restore_kb_placeholders"],
     "yindun.core.permission": ["permission_mode", "base_decision", "stricter"],
-    "yindun.app.agent_service": ["_warmup_llm", "impl_notice", "set_session_permission"],
+    "yindun.app.agent_service": ["_warmup_llm", "impl_notice", "set_session_permission",
+                                 # 密钥「留空＝沿用已存」（V3.6.7）：这两个符号缺任何一个，
+                                  # 说明打进包里的还是"空串覆盖密钥"的旧逻辑
+                                 "_stored_api_key", "kept_key"],
     "yindun.app.laya_service": ["probe_lan", "probe_local"],
     # 公网模型接入（V3.6.4）：地址归一化与多候选探测必须真的在包里
     "yindun.app.llm_factory": ["normalize_base_url", "probe_candidates", "probe_endpoint"],

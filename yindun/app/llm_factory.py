@@ -435,6 +435,13 @@ def build_llm(settings: Dict[str, Any], tools: List[Any],
                 #   这里兜底修好，用户不必删了重建。
                 openai_api_base=normalize_base_url(info.get("base_url", "")),
                 openai_api_key=info.get("api_key", ""),
+                # ★ 必须显式给超时（V3.6.7）：不给就会落到 openai SDK 默认的 600 秒 × 重试，
+                #   端点挂死时用户要干等十几分钟，界面看起来就是「发出去了没反应」
+                #   （负责人实测的那次"等了好久没回复"里，这条是最坏情况的放大器）。
+                #   90 秒对一次完整生成偏宽（慢的公网模型不至于被误杀）；重试只留 1 次，
+                #   免得多轮重试把等待叠成几倍。
+                timeout=90,
+                max_retries=1,
             )
         else:
             from langchain_ollama import ChatOllama

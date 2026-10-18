@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import sqlite3
+import sys
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -23,6 +25,23 @@ from typing import Any, Dict, List, Optional, Tuple
 from . import policy as policy_mod
 from .models import EndpointReport, is_high_severity
 from .verify import ChainSnapshot, VerifyResult, snapshot_verdict
+
+
+def _say(message: str) -> None:
+    """控制端的"说给人听"出口：有控制台就打印，没有（窗口化 exe）就落日志。
+
+    不直接复用 desktop.say() 是为了避免模块间互相依赖（store 是纯数据层）；
+    两处判据完全一致：`sys.stdout` 与 `sys.stderr` 都为 None 就是无控制台。
+    """
+    text = str(message)
+    if sys.stdout is not None or sys.stderr is not None:
+        print(text)
+        return
+    try:
+        from yindun.utils.logger import get_logger
+        get_logger("control").info("%s", text)
+    except Exception:                       # 日志未就绪也不能抛（令牌读取不该因此失败）
+        pass
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS endpoints (
@@ -205,7 +224,7 @@ class ControlStore:
         try:
             lines = token_file.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception as exc:
-            print(f"[ControlStore] 读取令牌文件失败：{exc}")
+            _say(f"[ControlStore] 读取令牌文件失败：{exc}")
             return ""
         for line in lines:
             text = line.strip().lstrip("\ufeff")
@@ -213,7 +232,7 @@ class ControlStore:
                 continue
             if secrets.compare_digest(_sha256(text), expected_hash):
                 return text
-            print("[ControlStore] 令牌文件里的明文与库中哈希不一致——请重置管理令牌")
+            _say("[ControlStore] 令牌文件里的明文与库中哈希不一致——请重置管理令牌")
             return ""
         return ""
 
@@ -252,20 +271,54 @@ class ControlStore:
         return token, self.policy_signing_key()
 
     # ── 配对码（IT 发码 → 员工机自助接入，无需把管理令牌发给员工）──
-    def create_pair_code(self, ttl_minutes: int = 30, note: str = "") -> Dict[str, Any]:
-        """生成一次性配对码。默认 30 分钟有效、用后作废。"""
-        code = secrets.token_hex(3).upper()          # 6 位十六进制，便于口头/截图传达
+    # ★ 自定义码的字符集与长度（V3.6.7）：要能"口头念给对面的同学"，所以只收 ASCII 字母数字与连字符，
+    #   4–12 位。放宽到中文/符号会让"念出来"变成猜谜，也会在多端输入法之间产生同形字歧义。
+    PAIR_CODE_RE = re.compile(r"^[A-Za-z0-9-]{4,12}$")
+
+    def create_pair_code(self, ttl_minutes: int = 30, note: str = "",
+                         code: str = "") -> Dict[str, Any]:
+        """生成一张一次性配对码（默认 30 分钟有效、用后作废）。
+
+        传 `code` 即**自定义**：适合"口头/手写在纸上转述"的场景（自动码是 6 位十六进制，
+        念起来容易混）。自定义码同样受一次性 + 有效期约束，且**不允许覆盖已存在且仍可用的码**——
+        否则两个同学拿着同一串码会互相踩（后生成的那张把前一张的状态盖掉）。
+        """
+        want = str(code or "").strip().upper()
+        custom = bool(want)
+        if custom and not self.PAIR_CODE_RE.match(want):
+            return {"ok": False, "error": "自定义配对码只能是 4–12 位字母、数字或连字符"}
         ttl = max(5, min(int(ttl_minutes or 30), 24 * 60))
         created = datetime.now(timezone.utc).astimezone()
         expires = created + timedelta(minutes=ttl)
         with self._lock:
+            if custom:
+                row = self._conn.execute("SELECT * FROM pair_codes WHERE code=?", (want,)).fetchone()
+                if row is not None and not row["used_at"] and _now() <= row["expires_at"]:
+                    return {"ok": False, "error": f"配对码 {want} 还在有效期内，换一个或等它过期"}
+            code_now = want or secrets.token_hex(3).upper()   # 6 位十六进制，便于口头/截图传达
             self._conn.execute(
-                "INSERT INTO pair_codes(code,note,created_at,expires_at) VALUES(?,?,?,?)",
-                (code, str(note)[:120], created.strftime("%Y-%m-%dT%H:%M:%S"),
+                "INSERT OR REPLACE INTO pair_codes(code,note,created_at,expires_at,used_at,endpoint_id)"
+                " VALUES(?,?,?,?,'','')",
+                (code_now, str(note)[:120], created.strftime("%Y-%m-%dT%H:%M:%S"),
                  expires.strftime("%Y-%m-%dT%H:%M:%S")))
             self._conn.commit()
-        return {"code": code, "expires_at": expires.strftime("%Y-%m-%dT%H:%M:%S"),
-                "ttl_minutes": ttl, "note": str(note)[:120]}
+        return {"ok": True, "code": code_now, "expires_at": expires.strftime("%Y-%m-%dT%H:%M:%S"),
+                "ttl_minutes": ttl, "note": str(note)[:120], "custom": custom}
+
+    def current_pair_code(self) -> Dict[str, Any]:
+        """当前**还没用过、还没过期**的那张码（界面上要一直看得见，而不是弹一次 toast 就没了）。"""
+        row = self._conn.execute(
+            "SELECT * FROM pair_codes WHERE used_at='' AND expires_at>=? ORDER BY created_at DESC LIMIT 1",
+            (_now(),)).fetchone()
+        if row is None:
+            return {"code": "", "expires_at": "", "state": "无可用配对码",
+                    "ttl_minutes": 0, "custom": False}
+        return {"code": row["code"], "expires_at": row["expires_at"], "state": "可用",
+                "note": row["note"] or "", "ttl_minutes": 0,
+                # 自动码是 6 位十六进制大写；与之不同就说明是自定义的（界面据此显示"自定义"标记）
+                "custom": not (len(row["code"]) == 6 and all(
+                    c in "0123456789ABCDEF" for c in row["code"]))}
+
 
     def consume_pair_code(self, code: str, endpoint_id: str) -> Tuple[bool, str]:
         """核销配对码。返回 (是否可用, 原因)。一次性 + 有效期双重约束。"""

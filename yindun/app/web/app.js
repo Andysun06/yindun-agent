@@ -20,14 +20,52 @@
     settingsPlugin: null,    // 当前打开的插件设置页属于哪个插件
     sessionPermission: null, // 本对话的权限覆盖（null = 跟随设置默认）
     laya: null,              // laya 接入状态（本机 / 局域网 / 正则回退）
+    toolBusy: false,         // 安全工具同一时间只跑一个（避免结果互相覆盖）
   };
 
   /* ── 工具 ─────────────────────────────────────────── */
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+  /** 行内标记 → 受控标签（入参必须是**已经 esc() 过**的文本）。
+   *  为什么强调"已转义"：模型输出是不可信内容，这里只做"把已转义的标记换回白名单标签"，
+   *  绝不二次解码 HTML 实体；链接只放行 http(s)/mailto，javascript:/data: 等一律按普通文字显示。
+   *  行内代码先占位、最后回填，避免代码内容里的 ** / 链接被继续改写。 */
+  function inlineFormat(escapedText) {
+    const codes = [];
+    let out = escapedText.replace(/`([^`\n]+)`/g, (_m, code) => {
+      codes.push(code);
+      return `\u0000C${codes.length - 1}\u0000`;
+    });
+    out = out
+      .replace(/\[([^\[\]\n]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/gi,
+        (_m, label, href) =>
+          `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`)
+      .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+    return out.replace(/\u0000C(\d+)\u0000/g, (_m, i) => `<code>${codes[Number(i)]}</code>`);
+  }
+
+  /** 表格单元格渲染：行内标记 + 把转义后的换行标记还原成真正的 <br>。
+   *  安全边界（这条路径最终进 innerHTML）：只认 esc() 产出的 `&lt;br&gt;` /
+   *  `&lt;br/&gt;` / `&lt;br /&gt;` 形态；带属性的 <br on…> 与其它任何标签
+   *  （<img>、<b>、<script> …）都不会命中，仍是转义文本，浏览器只显示不解析。
+   *  顺序也必须是"先 esc() 再替换"：直接对原文替换 <br> 会把整条注入通道打开。 */
+  function tableCell(escapedCell) {
+    // 先把行内代码整体占位：代码里的 "<br>" 是**要原样显示的内容**，不能被下面的换行替换拆开。
+    const codes = [];
+    const protectedCell = escapedCell.replace(/`([^`\n]+)`/g, (_m, code) => {
+      codes.push(code);
+      return `\u0000K${codes.length - 1}\u0000`;
+    });
+    const html = protectedCell
+      .split(/&lt;br\s*\/?&gt;/i)
+      .map((line) => inlineFormat(line.replace(/^\s*[-*]\s+/, "• ")))
+      .join("<br>");
+    return html.replace(/\u0000K(\d+)\u0000/g, (_m, i) => `<code>${codes[Number(i)]}</code>`);
+  }
+
   /** 极简 Markdown 渲染（先转义再套标签，保证不引入 HTML 注入）
-   *  支持：代码块、表格、行内代码、粗体、标题、列表、换行 */
+   *  支持：代码块、表格（单元格内行内标记/安全链接/<br> 换行）、行内代码、粗体、标题、列表、换行 */
   function md(text) {
     const blocks = [];
     const stash = (html) => { blocks.push(html); return `\u0000B${blocks.length - 1}\u0000`; };
@@ -50,9 +88,10 @@
         i += 2;
         while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) { body.push(cells(lines[i])); i++; }
         i--;
+        // 单元格内容同样走"先转义再套标签"：这里传入的 head/cells 已是 esc() 后的文本
         kept.push(stash(
-          `<table><thead><tr>${head.map((h) => `<th>${h}</th>`).join("")}</tr></thead>` +
-          `<tbody>${body.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table>`));
+          `<table><thead><tr>${head.map((h) => `<th>${tableCell(h)}</th>`).join("")}</tr></thead>` +
+          `<tbody>${body.map((r) => `<tr>${r.map((c) => `<td>${tableCell(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`));
       } else {
         kept.push(lines[i]);
       }
@@ -246,6 +285,9 @@
     if (!entry) return;
     const body = entry.querySelector(".entry__body");
     if (!body) return;
+    // 升级：等待指示让位给具体动作（状态文字本身就是"在动"的证据），
+    // 否则"正在思考…"会与工具行同时挂着，看起来像两条并存的提示
+    clearWaiting(entry);
     let box = entry.querySelector(".entry__tools");
     if (!box) {
       box = document.createElement("div");
@@ -294,8 +336,12 @@
   /** 实时追加：优先就地更新"进行中"的同一动作，避免"调用中/完成"刷成两行 */
   function appendTrace(item) {
     if (!item) return;
-    const box = ensureTraceBox(state.streamBubble);
+    // 落点：当前流式气泡 → 没有就现建一条（发送时已建好，这里是"事件早到/页面中途重载"的兜底）。
+    // 旧实现在没有气泡时直接丢帧——"它在想还是在卡住"就完全看不出来了（本次事故的观感之一）。
+    const entry = state.streamBubble || (state.busy ? ensureStreamBubble() : null);
+    const box = ensureTraceBox(entry);
     if (!box) return;
+    clearWaiting(entry);   // 轨迹本身就是活动证据：等待指示让位，避免"转圈 + 轨迹"双重提示
     if (item.status && item.status !== "running") {
       const pending = [...box.querySelectorAll(`.trace[data-kind="${item.kind}"][data-name="${String(item.name || "").replace(/"/g, "")}"].is-running`)].pop();
       if (pending) {
@@ -339,6 +385,9 @@
 
   function renderMessages() {
     const chat = $("chat");
+    // 整屏重绘（切会话 / 看门狗自愈重载）后旧气泡节点已脱离画布：必须丢掉引用，
+    // 否则后续 append 会写进一个不在文档里的节点——用户看到的就是"回复没出现"（同族事故）
+    state.streamBubble = null;
     chat.innerHTML = "";
     if (!state.messages.length) { chat.innerHTML = emptyState(); bindStarters(); return; }
     let index = 0, traceBlock = null;
@@ -350,9 +399,13 @@
       }
       traceBlock = null;                     // 非轨迹消息打断分组
       if (m.role === "user") { chat.appendChild(slipEl(md(m.content || ""))); }
-      else if (m.role === "assistant" && m.content) {
+      else if (m.role === "assistant") {
         index += 1;
-        chat.appendChild(entryEl(md(m.content), "", index));
+        // 空的助手记录（旧数据/中断留下）也要如实呈现：直接跳过会让人以为"那一轮没发生过"
+        // （事故重启后的观感就是如此），与 finalizeBubble 的空回复口径保持一致。
+        const empty = !String(m.content || "").trim();
+        chat.appendChild(entryEl(md(empty ? EMPTY_REPLY_NOTE : m.content),
+          empty ? `<span class="bubble__tag">无内容</span>` : "", index));
       }
     }
     scrollToEnd();
@@ -375,13 +428,26 @@
     chat.appendChild(slipEl(md(text))); scrollToEnd();
   }
 
-  /** 思考中的临时条目（中间结果/等待态都写进它） */
+  /** 空终稿兜底文案。为什么必须有：真机事故里后端在"直答快路径吞掉工具调用"后回了空串，
+   *  界面照画一个**空气泡**——用户既没有回答、也没有任何解释，重启后那轮还消失了。
+   *  宁可给一句如实说明，也不让这轮在界面上变成空白。 */
+  const EMPTY_REPLY_NOTE =
+    "模型这一轮没有给出内容（可能被中断或调用工具后没有总结），可以再问一次或换个说法";
+
+  /** 思考中的临时条目。**发送时立刻建**（不依赖后端第一条事件）：
+   *  按下发送到模型吐出第一个字之间有实打实的空窗期，此前这段对话区毫无变化，
+   *  用户只能盯着顶栏的"已就绪"猜有没有点上（负责人实测反馈）。
+   *  它同时是 status（→ 工具行）/ trace（→ 轨迹行）/ intermediate_result（→ 流式正文）
+   *  的同一个落点，因此不会出现"等待气泡 + 正文气泡"两条并存。
+   *  升级由 clearWaiting() 完成：摘掉脉动指示，条目本身留下、内容写进同一个 .entry__body。 */
   function ensureStreamBubble() {
     if (state.streamBubble) return state.streamBubble;
     const chat = $("chat");
     if (chat.querySelector(".chat__empty")) chat.innerHTML = "";
     const index = chat.querySelectorAll(".entry").length + 1;
-    const row = entryEl(`<span class="typing"><i></i><i></i><i></i></span>`, "", index);
+    const row = entryEl(
+      `<span class="waiting"><span class="typing"><i></i><i></i><i></i></span>` +
+      `<span class="waiting__text">正在思考…</span></span>`, "", index);
     row.querySelector(".entry__body").classList.add("is-thinking");
     chat.appendChild(row);
     state.streamBubble = row;
@@ -389,20 +455,73 @@
     return row;
   }
 
+  /** 等待态 → 有活动/有内容：摘掉脉动指示（条目留下，正文与工具行写进同一个条目）。
+   *  为什么不是"删掉等待条目再建一条"：那会出现气泡闪烁、编号跳号，
+   *  也会破坏"trace 落到当前气泡里"这条约定。 */
+  function clearWaiting(entry) {
+    const row = entry || state.streamBubble;
+    if (!row) return;
+    const body = row.querySelector(".entry__body");
+    if (body) body.classList.remove("is-thinking");
+    const wait = row.querySelector(".waiting");
+    if (wait) wait.remove();
+  }
+
+  /** 发送被拒（算力未就绪/正在推理）时撤掉刚建的等待气泡：它一条内容都没有，
+   *  留着就是事故里那种"空气泡"。已有内容则一律保留在画布上（内容不能丢）。 */
+  function dropWaitingBubble() {
+    const row = state.streamBubble;
+    if (!row) return;
+    const body = row.querySelector(".entry__body");
+    const wait = row.querySelector(".waiting");
+    // "纯等待"＝气泡里只有那个脉动指示（没有工具行/轨迹/正文）
+    const pureWaiting = !!wait && !!body && body.children.length === 1
+      && body.firstElementChild === wait
+      && !row.querySelector(".entry__tools") && !row.querySelector(".entry__trace");
+    if (pureWaiting) { state.streamBubble = null; row.remove(); }
+  }
+
+  /** 本轮已空闲（state.busy=false）但气泡还开着：说明 finished/error 这条终止事件没送到
+   *  （桥接抖动、渲染异常）。必须收口——两份代价都真实:
+   *    ① 继续显示"正在思考…"→ 看起来永远卡住；
+   *    ② 引用留着 → 下一轮的工具行/正文会写进**上一轮**的条目里（回复挂到错的问题下面）。
+   *  收口口径与空回复一致：有内容就保留内容（只补状态标记），没内容才给兜底文案。
+   *  正常路径走不到这里：后端在同一线程里先发 finished/error、再由 _finalize 发 state，
+   *  到达前端时引用已被 finalizeBubble 清掉。 */
+  function closeStaleBubble() {
+    if (state.streamBubble) finalizeBubble("", "无内容");
+  }
+
+  /** 结束本轮：把等待气泡固定成最终回复。空回复防御见 EMPTY_REPLY_NOTE。 */
   function finalizeBubble(text, tagText) {
     const row = state.streamBubble;
     state.streamBubble = null;
+    const content = String(text == null ? "" : text);
+    const isEmpty = !content.trim();
     if (!row) {
       const chat = $("chat");
-      chat.appendChild(entryEl(md(text), "", chat.querySelectorAll(".entry").length + 1));
+      // 没有可落的条目（终止事件先到/页面刚重载）：空串也要留下如实说明，不能什么都不显示
+      chat.appendChild(entryEl(md(isEmpty ? EMPTY_REPLY_NOTE : content),
+        isEmpty ? `<span class="bubble__tag">无内容</span>` : "",
+        chat.querySelectorAll(".entry").length + 1));
       scrollToEnd();
       return;
     }
+    clearWaiting(row);
     const body = row.querySelector(".entry__body");
-    body.classList.remove("is-thinking");
-    const secs = Math.max(1, Math.round((Date.now() - state.startedAt) / 1000));
-    body.innerHTML = md(text) + `<div class="bubble__meta">
-        <span class="bubble__tag">${esc(tagText || "快速")}</span><span>${secs}s</span></div>`;
+    if (!body) { scrollToEnd(); return; }
+    const secs = state.startedAt
+      ? Math.max(1, Math.round((Date.now() - state.startedAt) / 1000)) : 0;
+    const metaHtml = (tag) => `<div class="bubble__meta">
+        <span class="bubble__tag">${esc(tag)}</span>${secs ? `<span>${secs}s</span>` : ""}</div>`;
+    if (isEmpty && body.textContent.trim()) {
+      // 空终稿，但气泡里已有流式正文：正文优先——只补状态标记，绝不把已收到的内容抹掉
+      body.insertAdjacentHTML("beforeend", metaHtml("无内容"));
+      scrollToEnd();
+      return;
+    }
+    body.classList.toggle("is-empty-reply", isEmpty);
+    body.innerHTML = md(isEmpty ? EMPTY_REPLY_NOTE : content) + metaHtml(isEmpty ? "无内容" : (tagText || "快速"));
     scrollToEnd();
   }
 
@@ -527,9 +646,16 @@
     appendUser(text);
     state.startedAt = Date.now();
     setBusy(true);
+    // ★ 发送即建"等在那儿"的等待气泡：不等后端第一条事件（直答快路径以前一条都不发，
+    //   整段生成期对话区毫无变化——用户看到的正是"点了没反应、也没有思考动画"）。
+    ensureStreamBubble();
     const ok = await call("send", text);
-    if (!ok) { setBusy(false); toast("发送失败：算力未就绪或正在推理"); }
-    else await refreshSessions();
+    if (!ok) {
+      setBusy(false);
+      // 根本没开始推理：把刚建的空等待气泡撤掉（留着就是一条空气泡），提示语保持不变
+      dropWaitingBubble();
+      toast("发送失败：算力未就绪或正在推理");
+    } else await refreshSessions();
   }
 
   /** 浮条闪发：展开 → 发送（顺序与旧实现一致，避免在浮条里发送后看不到结果） */
@@ -767,7 +893,13 @@
     box.innerHTML = ["local", "lan", "wan"].map((tier) => {
       const meta = TIER_META[tier];
       const rows = items(tier).map((m) => {
-        const active = sel.tier === tier && (tier === "local" || sel.name === m.name);
+        // ★ 本机档的"选中"＝**使用中**那一项（本机档没有"每模型详情"，右栏永远是同一个
+        //   本机 Ollama 面板）；局域网/公网档的"选中"＝右侧正在显示其配置表单的那一项。
+        //   早先写成 `sel.tier === tier && (tier === "local" || …)`，结果本机档**两项都高亮**
+        //   （谁在用完全看不出来），且点哪一项都没有任何变化（用户实测反馈"点击逻辑有问题"）。
+        const active = tier === "local"
+          ? (m.name === cur)
+          : (sel.tier === tier && sel.name === m.name);
         const meta = tier === "local" ? "本机已安装" : (m.base_url || "");
         return `<button class="prov__item${active ? " is-active" : ""}" type="button"
           data-t="${tier}" data-n="${esc(m.name)}">
@@ -830,9 +962,11 @@
           <div class="setrow"><div class="setrow__text"><b>接口地址</b><span>OpenAI 兼容端点</span></div>
             <div class="setrow__ctrl"><input type="text" id="p-url" value="${esc(m.base_url || "")}"
               placeholder="${sel.tier === "lan" ? "http://10.0.0.8:8000/v1" : "https://…/v1"}"></div></div>
-          <div class="setrow"><div class="setrow__text"><b>API Key</b><span>${sel.tier === "lan" ? "内网通常可留空" : "只在本机加密保存"}</span></div>
+          <div class="setrow"><div class="setrow__text"><b>API Key</b><span>${m.has_key
+            ? "已在本机加密保存（不回显；留空＝不改动，不会清空）"
+            : (sel.tier === "lan" ? "内网通常可留空" : "只在本机加密保存")}</span></div>
             <div class="setrow__ctrl"><input type="text" id="p-key" value=""
-              placeholder="${m.has_key ? "已配置（留空则不改动）" : "未配置"}"></div></div>
+              placeholder="${m.has_key ? "已配置（留空则沿用已存密钥）" : "未配置"}"></div></div>
           <div class="setrow"><div class="setrow__text"><b>连通性</b><span id="probe-detail">尚未测试</span></div>
             <div class="setrow__ctrl">
               <button class="btn" type="button" data-probe="detail">测试连接</button>
@@ -848,8 +982,18 @@
   function bindProvEvents(cat) {
     const box = $("prov-list"), detail = $("prov-detail");
     if (!box || !detail) return;
+    const cur = (state.settings && state.settings.model) || "";
     box.querySelectorAll("[data-t]").forEach((el) => {
-      el.onclick = () => { state.prov = { tier: el.dataset.t, name: el.dataset.n }; renderProv(cat); };
+      el.onclick = () => {
+        const tier = el.dataset.t, name = el.dataset.n || "";
+        state.prov = { tier, name };
+        // ★ 本机档的条目没有"单独的配置表单"可看（右栏就是本机 Ollama 面板），所以点模型名
+        //   ＝切换使用中的模型——这正是文档里的口径「点模型名即切换」。点**已经在用**的那一项
+        //   只是回到面板（不做多余的保存，也避免"只想看看本机档却把模型换了"）。
+        //   局域网/公网档点条目仍是"看它的配置"：那才是那里唯一有意义的动作。
+        if (tier === "local" && name && name !== cur) persist({ model: name });
+        else renderProv(cat);
+      };
     });
     box.querySelectorAll("[data-addt]").forEach((el) => {
       el.onclick = () => { state.prov = { tier: el.dataset.addt, name: "" }; renderProv(cat); };
@@ -877,9 +1021,12 @@
         const isLocal = el.dataset.probe === "local";
         const url = isLocal ? ($("ollama-host").value || "").trim() : ($("p-url").value || "").trim();
         const key = isLocal ? "" : ($("p-key").value || "").trim();
+        // ★ 把条目名一起交给后端（V3.6.7 修）：密钥不回显，所以存过之后输入框是空的——
+        //   后端据此**回落到该条目已存的密钥**去探，否则会拿空密钥撞 401，看起来像"密钥丢了"。
+        const entryName = isLocal ? "" : String((state.prov && state.prov.name) || "");
         const note = isLocal ? $("probe-local") : $("probe-detail");
         note.textContent = "正在测试连接…"; note.className = "";
-        const res = await call("probe_model_endpoint", url, key);
+        const res = await call("probe_model_endpoint", url, key, entryName);
         if (res && res.ok) {
           note.textContent = "✅ " + (res.note || "已连通")
             + (res.models && res.models.length ? "：" + res.models.slice(0, 3).join("、") : "");
@@ -914,7 +1061,8 @@
         }
         const res = await call("add_custom_model", name, modelId, url, key, tier);
         if (res && res.ok) {
-          toast(`已保存到「${res.tier_label || tier}」`);
+          // 留空保存时后端会沿用已存密钥——把这件事说出来，用户才知道密钥没有丢
+          toast(`已保存到「${res.tier_label || tier}」` + (res.kept_key ? "（密钥沿用已存）" : ""));
           state.prov = { tier, name };
           renderProv(await call("model_catalog"));
           fillSettings();
@@ -952,22 +1100,224 @@
     dot.title = tier ? `${TIER_META[tier].label} · ${TIER_META[tier].boundary}` : "未在清单中（可能已手动指定）";
   }
 
-  /* ── 安全工具 ─────────────────────────────────── */
-  async function runTool(which) {
+  /* ── 安全工具（隐私健康体检 / 模型行为画像）────────────
+     后端把两件事都整理成了结构化数据：health_scan 的 json 是 JSON 文本，
+     behavior_profile 直接给 profile 对象 + anomalies 数组。界面按字段渲染，
+     不再把 summary 的等宽文本贴出来——`======` 一类分隔线只属于原始报告，
+     默认视图里出现就说明又退回了"贴文本"。 */
+  const HEALTH_SEV = {
+    "绝密": { cls: "critical", rank: 0 },
+    "机密": { cls: "critical", rank: 1 },
+    "内部": { cls: "warn", rank: 2 },
+    "公开": { cls: "muted", rank: 3 },
+  };
+  const HEALTH_CAT = { sensitive_file: "敏感文件", sensitive_content: "敏感内容", permission: "权限异常" };
+  const ANOMALY_TYPE = {
+    high_frequency: "高频操作", sensitive_access: "敏感路径访问",
+    path_hopping: "路径跳跃", off_hours: "非工作时间",
+  };
+  const ANOMALY_SEV = {
+    critical: { label: "严重", cls: "critical", rank: 0 },
+    high: { label: "高", cls: "critical", rank: 1 },
+    medium: { label: "中", cls: "warn", rank: 2 },
+    low: { label: "低", cls: "muted", rank: 3 },
+  };
+  const OP_LABEL = { read: "读取", write: "写入", delete: "删除", execute: "执行" };
+  const TOOL_LABEL = {
+    read_local_file: "读取文件", list_local_files: "列出文件", search_in_files: "搜索文件",
+    analyze_project: "分析项目", create_local_file: "创建文件", modify_local_file: "修改文件",
+    replace_in_file: "替换内容", delete_local_file: "删除文件", run_local_command: "执行命令",
+  };
+
+  const riskInfo = (score) => {
+    const n = Number(score) || 0;
+    if (n >= 60) return { label: "高风险", cls: "critical" };
+    if (n >= 30) return { label: "中风险", cls: "warn" };
+    return { label: "低风险", cls: "ok" };
+  };
+
+  function toolMetric(num, label, cls, sub) {
+    return `<div class="tool-metric${cls ? " tool-metric--" + cls : ""}">
+      <span class="tool-metric__num">${esc(num)}</span>
+      <span class="tool-metric__label">${esc(label)}${sub ? `<i>${esc(sub)}</i>` : ""}</span>
+    </div>`;
+  }
+
+  function rawReport(text) {
+    if (!text) return "";
+    return `<details class="tool-raw"><summary>查看原始报告</summary><pre>${esc(text)}</pre></details>`;
+  }
+
+  function healthFinding(f) {
+    const sev = HEALTH_SEV[f.severity] ? f.severity : "公开";
+    const file = String(f.file || "");
+    const name = file.split(/[\\/]/).filter(Boolean).pop() || "—";
+    const all = Array.isArray(f.matches) ? f.matches : [];
+    const shown = all.slice(0, 3);
+    const rest = all.length - shown.length;
+    const line = (f.line === null || f.line === undefined || f.line === "")
+      ? "" : `<span class="health-finding__line">第 ${esc(f.line)} 行</span>`;
+    return `<li class="health-finding" data-severity="${esc(sev)}">
+      <div class="health-finding__head">
+        <span class="health-finding__name" title="${esc(file)}">${esc(name)}</span>
+        <span class="health-finding__cat">${esc(HEALTH_CAT[f.category] || f.category || "其他")}</span>
+        ${line}
+      </div>
+      <div class="health-finding__desc">${esc(f.description || "—")}</div>
+      <div class="health-finding__path">${esc(file || "—")}</div>
+      ${shown.length ? `<div class="health-finding__matches">${
+        shown.map((m) => `<code>${esc(m)}</code>`).join("")
+      }${rest > 0 ? `<span class="health-finding__more">+${rest}</span>` : ""}</div>` : ""}
+    </li>`;
+  }
+
+  function renderHealthTool(res) {
     const box = $("tool-result");
+    let report = null;
+    try { report = JSON.parse(res.json || ""); } catch (err) { report = null; }
+    if (!report || typeof report !== "object") {
+      box.innerHTML = `<div class="tool-fail" role="alert"><b>体检结果解析失败</b>
+        <span>${esc(res.error || "后端返回的报告不是合法 JSON")}</span></div>` + rawReport(res.summary || res.json || "");
+      return;
+    }
+    const findings = Array.isArray(report.findings) ? report.findings : [];
+    const risk = riskInfo(report.risk_score);
+    const groups = Object.keys(HEALTH_SEV)
+      .sort((a, b) => HEALTH_SEV[a].rank - HEALTH_SEV[b].rank)
+      .map((sev) => {
+        const items = findings.filter((f) => f.severity === sev);
+        if (!items.length) return "";
+        return `<div class="health-group health-group--${HEALTH_SEV[sev].cls}" data-severity="${esc(sev)}">
+          <div class="health-group__head">
+            <span class="sev-badge sev-badge--${HEALTH_SEV[sev].cls}">${esc(sev)}</span>
+            <span class="health-group__count">${items.length} 项</span>
+          </div>
+          <ul class="health-list">${items.map(healthFinding).join("")}</ul>
+        </div>`;
+      }).join("");
+    // 其余未登记分级（后端将来扩档）也如实展示，不能静默吞掉
+    const known = new Set(Object.keys(HEALTH_SEV));
+    const other = findings.filter((f) => !known.has(f.severity));
+    const otherGroup = other.length ? `<div class="health-group health-group--muted" data-severity="其他">
+      <div class="health-group__head"><span class="sev-badge sev-badge--muted">其他</span>
+      <span class="health-group__count">${other.length} 项</span></div>
+      <ul class="health-list">${other.map(healthFinding).join("")}</ul></div>` : "";
+    const empty = findings.length ? "" : `<div class="tool-empty tool-empty--ok">
+      <span class="tool-empty__mark">✓</span>
+      <b>未发现隐私风险</b>
+      <span>已扫描 ${esc(report.scanned_files ?? 0)} 个文件，没有命中敏感文件、敏感内容或权限异常。</span>
+    </div>`;
+    box.innerHTML = `
+      <div class="tool-metrics">
+        ${toolMetric(report.scanned_files ?? 0, "扫描文件", "", `共 ${report.total_files ?? 0} 个`)}
+        ${toolMetric(report.findings_count ?? findings.length, "发现问题", findings.length ? "bad" : "ok")}
+        ${toolMetric(report.risk_score ?? 0, "风险评分", risk.cls, risk.label)}
+      </div>
+      <div class="tool-target" title="${esc(report.scan_root || "")}">扫描范围：${esc(report.scan_root || "—")}</div>
+      ${empty || `<div class="health-groups">${groups}${otherGroup}</div>`}
+      ${rawReport(res.summary)}`;
+  }
+
+  function renderBehaviorTool(res) {
+    const box = $("tool-result");
+    const p = res.profile || {};
+    const anomalies = (Array.isArray(res.anomalies) ? res.anomalies : []).slice()
+      .sort((a, b) => ((ANOMALY_SEV[a.severity] || {}).rank ?? 9) - ((ANOMALY_SEV[b.severity] || {}).rank ?? 9));
+    const risk = riskInfo(p.risk_score);
+    const tools = Object.entries(p.tool_call_breakdown || {})
+      .map(([name, count]) => [name, Number(count) || 0])
+      .filter(([, count]) => count > 0)
+      .sort((a, b) => b[1] - a[1]);
+    const maxCalls = Math.max(1, ...tools.map(([, count]) => count));
+    const total = tools.reduce((sum, [, count]) => sum + count, 0) || Number(p.total_tool_calls) || 0;
+    const ops = ["read", "write", "delete", "execute"]
+      .map((key) => [key, Number((p.operation_breakdown || {})[key]) || 0]);
+    const sensitive = Array.isArray(p.sensitive_paths_accessed) ? p.sensitive_paths_accessed : [];
+    const range = Array.isArray(p.time_range) ? p.time_range : [];
+    const toolBars = tools.length
+      ? `<div class="hbars">${tools.map(([name, count]) => `
+          <div class="hbar">
+            <span class="hbar__name" title="${esc(name)}">${esc(TOOL_LABEL[name] || name)}</span>
+            <span class="hbar__track"><i style="width:${Math.round((count / maxCalls) * 100)}%"></i></span>
+            <span class="hbar__num">${count}${total ? `<em>${Math.round((count / total) * 100)}%</em>` : ""}</span>
+          </div>`).join("")}</div>`
+      : `<div class="tool-section__hint">最近记录里没有工具调用</div>`;
+    const anomalyItems = anomalies.map((a) => {
+      const sev = ANOMALY_SEV[a.severity] || { label: a.severity || "提示", cls: "muted" };
+      return `<div class="anomaly anomaly--${sev.cls}" data-severity="${esc(a.severity || "")}">
+        <span class="sev-badge sev-badge--${sev.cls}">${esc(sev.label)}</span>
+        <div class="anomaly__body">
+          <div class="anomaly__head">
+            <b>${esc(ANOMALY_TYPE[a.anomaly_type] || a.anomaly_type || "异常")}</b>
+            ${a.timestamp ? `<span class="anomaly__time">${esc(String(a.timestamp).replace("T", " ").slice(0, 19))}</span>` : ""}
+          </div>
+          <div class="anomaly__desc">${esc(a.description || "—")}</div>
+        </div>
+      </div>`;
+    }).join("");
+    const factors = Array.isArray(p.risk_factors) ? p.risk_factors.filter(Boolean) : [];
+    box.innerHTML = `
+      <div class="tool-metrics">
+        ${toolMetric(p.total_tool_calls ?? 0, "工具调用")}
+        ${toolMetric(p.unique_paths ?? 0, "唯一路径")}
+        ${toolMetric(p.path_jumps ?? 0, "路径跳跃")}
+        ${toolMetric(p.risk_score ?? 0, "风险评分", risk.cls, risk.label)}
+      </div>
+      <div class="tool-target" title="${esc((range[0] || "") + " ~ " + (range[1] || ""))}">
+        ${esc(p.model_name || "模型未标记")} · ${esc(range[0] || "—")} ~ ${esc(range[1] || "—")}
+      </div>
+      <div class="tool-section">
+        <div class="tool-section__title">工具调用分布 <span>共 ${esc(p.total_tool_calls ?? total)} 次</span></div>
+        ${toolBars}
+      </div>
+      <div class="tool-section">
+        <div class="tool-section__title">操作类型分布</div>
+        <div class="tool-ops">${ops.map(([key, count]) => `
+          <span class="tool-op${count ? "" : " is-zero"}"><b>${count}</b>${OP_LABEL[key]}</span>`).join("")}</div>
+      </div>
+      <div class="tool-section">
+        <div class="tool-section__title">被访问的敏感路径 <span>${sensitive.length} 个</span></div>
+        ${sensitive.length
+          ? `<ul class="tool-paths">${sensitive.map((path) => `<li title="${esc(path)}">${esc(path)}</li>`).join("")}</ul>`
+          : `<div class="tool-section__hint">未访问敏感路径</div>`}
+      </div>
+      ${factors.length ? `<div class="tool-section">
+        <div class="tool-section__title">风险因子</div>
+        <ul class="tool-paths tool-paths--factors">${factors.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>
+      </div>` : ""}
+      <div class="tool-section">
+        <div class="tool-section__title">异常检测 <span>${anomalies.length} 条</span></div>
+        ${anomalies.length ? `<div class="anomaly-list">${anomalyItems}</div>` : `<div class="tool-empty tool-empty--ok">
+          <span class="tool-empty__mark">✓</span>
+          <b>未发现异常行为</b>
+          <span>最近审计记录未命中高频操作、敏感路径访问、路径跳跃或非工作时间规则。</span>
+        </div>`}
+      </div>
+      ${rawReport(res.summary)}`;
+  }
+
+  async function runTool(which) {
+    if (state.toolBusy) return;
+    state.toolBusy = true;
+    const box = $("tool-result");
+    const buttons = [$("btn-health"), $("btn-behavior")].filter(Boolean);
+    buttons.forEach((b) => { b.disabled = true; b.classList.add("is-busy"); });
     box.style.display = "";
-    box.textContent = which === "health" ? "正在扫描…" : "正在分析…";
-    const res = which === "health" ? await call("health_scan", "")
-                                   : await call("behavior_profile");
-    if (!res || !res.ok) { box.textContent = "失败：" + ((res && res.error) || "未知原因"); return; }
-    if (which === "health") {
-      box.textContent = res.summary || "(无内容)";
-    } else {
-      const lines = (res.anomalies || []).map((a) =>
-        `· [${a.severity || a.level || "提示"}] ${a.description || a.message || JSON.stringify(a)}`);
-      const parts = [res.summary || ""];
-      if (lines.length) { parts.push("", "【异常检测】"); parts.push(...lines); }
-      box.textContent = parts.join(NL);
+    box.innerHTML = `<div class="tool-loading" role="status" aria-live="polite">
+      <span class="tool-loading__mark"></span>${which === "health" ? "正在扫描敏感文件与内容…" : "正在分析审计日志…"}
+    </div>`;
+    try {
+      const res = which === "health" ? await call("health_scan", "") : await call("behavior_profile");
+      if (!res || !res.ok) {
+        // error 是后端原文：排障时逐字可查，不要在前端改写或截断
+        box.innerHTML = `<div class="tool-fail" role="alert"><b>执行失败</b>
+          <span>${esc((res && res.error) || "未知原因")}</span></div>`;
+        return;
+      }
+      if (which === "health") renderHealthTool(res); else renderBehaviorTool(res);
+    } finally {
+      state.toolBusy = false;
+      buttons.forEach((b) => { b.disabled = false; b.classList.remove("is-busy"); });
     }
   }
 
@@ -2147,6 +2497,14 @@
     Object.assign(state.settings, patch);
     fillSettings();
     await call("save_settings", patch);
+    // ★ 切换模型后必须**重绘本页**（V3.6.7 修）：`fillSettings()` 只同步输入区胶囊等少量状态，
+    //   模型接入页的"使用中 / 选中"标记全在 `renderProv` 里。不重绘的后果是——用户点「点一下即切换」
+    //   的胶囊（或左栏模型名），后端**确实换了**，但页面上"使用中"还挂在旧模型上，
+    //   看起来就像点了没反应。只在"正在看本机档"时重绘：那里的面板没有未保存的输入，
+    //   重绘不会吞掉用户在局域网/公网页填了一半的表单。
+    if ("model" in patch && state.prov && state.prov.tier === "local" && state.catalog) {
+      renderProv(state.catalog);
+    }
   }
 
   /* ── 事件：来自 Python ───────────────────────────── */
@@ -2167,10 +2525,14 @@
         // 本轮起这条通道也承载**真流式**（模型逐块生成、后端还原占位符后推全文），
         // 所以首次收到内容时要摘掉"等待点"标记（is-thinking），否则会一边出字一边转圈。
         {
+          // 空白中间结果（流式首块还没到）不摘等待指示：否则气泡会先空一下，
+          // 又一次变成"没有任何内容"的观感
+          const chunk = String(payload == null ? "" : payload);
+          if (!chunk.trim()) break;
           const row = ensureStreamBubble();
+          clearWaiting(row);                 // 升级成流式正文：同一个条目，不是再开一条
           const body = row.querySelector(".entry__body");
-          body.classList.remove("is-thinking");
-          body.innerHTML = md(payload || "");
+          body.innerHTML = md(chunk);
           scrollToEnd();
         }
         break;
@@ -2180,12 +2542,20 @@
       }
       case "error":
         if (state.streamBubble) finalizeBubble(payload || "出错了", "错误");
-        else { const chat = $("chat"); chat.appendChild(bubbleEl("assistant", md("⚠︎ " + (payload || "出错了")))); scrollToEnd(); }
+        // 没有流式气泡时也要落到画布上（entryEl：原先这里调的是一个不存在的 bubbleEl，
+        // 一旦走到这条分支就是 JS ReferenceError，错误提示会被整个吞掉）
+        else {
+          const chat = $("chat");
+          chat.appendChild(entryEl(md("⚠︎ " + (payload || "出错了")), "", chat.querySelectorAll(".entry").length + 1));
+          scrollToEnd();
+        }
         setStatus(""); break;
       case "need_confirm": showApproval(payload || {}); break;
       case "attachments": state.attachments = Array.isArray(payload) ? payload : []; renderChips(); break;
       case "trace":
-        // 结构化过程轨迹：思考耗时 / 工具动作 / 关键判定（隐私网关、laya 风险等）
+        // 结构化过程轨迹：思考耗时 / 工具动作 / 关键判定（隐私网关、laya 风险等）。
+        // 没有流式气泡时也要有可见落点——落到当前等待气泡里（appendTrace 会兜底现建），
+        // 旧实现直接丢帧，"它在想还是在卡住"就完全看不出来。
         if (state.busy) appendTrace(payload || {});
         break;
       case "advisories": renderAdvisories(payload); break;
@@ -2212,6 +2582,9 @@
         }
         if (!payload.busy) {
           hideApproval();
+          // 本轮已结束：还开着的气泡说明终止事件没送到，按空回复口径收口
+          // （避免"永远转圈"与"下一轮写进上一条气泡"两种症状）
+          closeStaleBubble();
           const sid = payload.session_id;
           if (sid) { state.currentId = sid; }
         }
@@ -2348,14 +2721,18 @@
     bindWindowControls();
     $("btn-attach").onclick = async () => {
       const added = await call("pick_files");
-      if (Array.isArray(added)) {
-        const bad = added.filter((x) => x.error);
-        if (bad.length) toast(`有 ${bad.length} 个附件解析失败：${bad[0].name}`);
-        else if (added.length) toast(`已挂载 ${added.length} 个附件（本地解析，不联网）`);
-        const list = await call("list_attachments");
-        state.attachments = Array.isArray(list) ? list : state.attachments;
-        renderChips();
-      }
+      // null = 桥接不存在或调用抛错，call() 已经 toast 过「桥接未就绪 / 调用失败」，别叠第二条
+      if (added === null) return;
+      if (!Array.isArray(added)) { toast("附件接口返回异常，请重试"); return; }
+      // 空数组有两种可能：用户取消，或后端打开文件对话框失败（webview_app 捕获异常后返回 []）。
+      // 以前这里直接落空，界面看起来就是"点了没反应"——空结果也必须给出可读反馈。
+      if (!added.length) { toast("未添加附件（已取消，或文件选择器不可用）"); return; }
+      const bad = added.filter((x) => x.error);
+      if (bad.length) toast(`有 ${bad.length} 个附件解析失败：${bad[0].name}`);
+      else toast(`已挂载 ${added.length} 个附件（本地解析，不联网）`);
+      const list = await call("list_attachments");
+      state.attachments = Array.isArray(list) ? list : state.attachments;
+      renderChips();
     };
     $("btn-workflow").onclick = () => openPane("workflow");
     $("btn-wf-exec").onclick = async () => {

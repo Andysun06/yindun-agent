@@ -765,9 +765,17 @@ class AgentService:
         """本机 / 局域网 / 公网三档算力清单（供设置页分区与模型下拉分组）。"""
         return model_catalog(self.settings.data)
 
-    def probe_model_endpoint(self, base_url: str, api_key: str = "") -> Dict[str, Any]:
-        """探测端点是否可用并列出模型（用户在设置页显式发起；地址只来自输入框）。"""
-        result = probe_endpoint(base_url, api_key)
+    def probe_model_endpoint(self, base_url: str, api_key: str = "",
+                             name: str = "") -> Dict[str, Any]:
+        """探测端点是否可用并列出模型（用户在设置页显式发起；地址只来自输入框）。
+
+        ★ api_key 留空且 `name` 指向已有条目时，用**该条目已存的密钥**去探（V3.6.7 修真实缺陷）：
+          页面在存过密钥后会把输入框留空（密钥不回显），用户此时点「测试连接」若拿空密钥去发，
+          云服务必然回 401「密钥不被接受」——看着就像"保存之后密钥丢了"。
+          密钥只从本机加密存储读取，来源与地址无关（地址仍只来自输入框），也不写进审计。
+        """
+        key = (api_key or "").strip() or self._stored_api_key(name)
+        result = probe_endpoint(base_url, key)
         try:
             from yindun.core.audit_log import AuditEventType, AuditLog, AuditSeverity
             AuditLog().add_entry(
@@ -780,6 +788,16 @@ class AgentService:
         except Exception:
             pass
         return result
+
+    def _stored_api_key(self, name: str) -> str:
+        """取某个已配置模型已存的密钥（内存里是明文，落盘时由设置层加密）。取不到就返回空串。"""
+        if not name:
+            return ""
+        try:
+            entry = (self.settings.get("custom_models") or {}).get(str(name))
+            return str((entry or {}).get("api_key") or "")
+        except Exception:
+            return ""
 
     def add_custom_model(self, name: str, model_id: str, base_url: str, api_key: str,
                          tier: str = "") -> Dict[str, Any]:
@@ -813,8 +831,21 @@ class AgentService:
         if tier not in ("local", "lan", "wan"):
             tier = infer_tier(base_url)
         models = dict(self.settings.get("custom_models") or {})
+        prev = models.get(name)
+        # 配置是本地文件，可能被手工改过：坏条目（不是 dict）一律当"没有已存密钥"，别在这里崩
+        prev_key = str((prev or {}).get("api_key") or "") if isinstance(prev, dict) else ""
+        key = (api_key or "").strip()
+        kept_key = False
+        if not key and prev_key:
+            # ★ 留空＝**沿用已存密钥**（V3.6.7 修真实缺陷）：密钥不回显，所以页面在存过之后把输入框
+            #   留空、并写明「留空则不改动」。但这里原先无条件用空串覆盖 → 用户每按一次保存就把密钥
+            #   清掉一次，紧接着「测试连接」用的是空密钥 → 云服务回 401「密钥不被接受」。
+            #   表现正是用户报的"点击保存后密钥就消失了、不能再保存或测试"。
+            #   行为必须与界面承诺一致：留空＝不改动。（要真正清空密钥＝删除该条目后重新添加。）
+            key = prev_key
+            kept_key = True
         models[name] = {"model_id": model_id, "base_url": base_url,
-                        "api_key": (api_key or "").strip(), "tier": tier}
+                        "api_key": key, "tier": tier}
         self.settings.set("custom_models", models)
         self.settings.save()
         try:
@@ -823,12 +854,12 @@ class AgentService:
                 AuditEventType.ACCESS_CONTROL, AuditSeverity.WARNING,
                 f"新增外部算力配置：{name}（{TIER_LABEL.get(tier, tier)}）",
                 {"name": name, "model_id": model_id, "base_url": base_url,
-                 "tier": tier, "has_key": bool(api_key)},
+                 "tier": tier, "has_key": bool(key), "kept_key": kept_key},
             )
         except Exception:
             pass
         return {"ok": True, "models": self.custom_models(), "tier": tier,
-                "tier_label": TIER_LABEL.get(tier, tier)}
+                "tier_label": TIER_LABEL.get(tier, tier), "kept_key": kept_key}
 
     def remove_custom_model(self, name: str) -> Dict[str, Any]:
         models = dict(self.settings.get("custom_models") or {})
@@ -1410,6 +1441,11 @@ class AgentService:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     # ── 推理 ─────────────────────────────────────
+    # 推理结束但没有任何产出时的兜底说明（见 _finalize）。文案必须如实：
+    # 只说明"没拿到结果"，不猜原因、不假装完成。
+    _NO_OUTPUT_NOTICE = ("抱歉，这一轮没有产出回答（推理已结束或被取消，但没有返回内容）。"
+                         "可以再发一次；如果反复出现，请在设置里换一个模型重试。")
+
     @property
     def busy(self) -> bool:
         with self._lock:
@@ -1554,6 +1590,18 @@ class AgentService:
                 result = getattr(worker, "result_messages", None)
                 if result:
                     self.sessions.set_messages(session_id, self._restore_display_text(result))
+                else:
+                    # ★ 兜底（V3.6.7 真机事故）：worker 一条消息链都没留下（线程意外结束/被杀的
+                    #   极端情况）时，send() 写下的那条用户提问会孤零零留在会话里——界面上是空气泡、
+                    #   刷新后那一轮像没发生过。这里补一条如实说明，保证"有提问就有一条回复记录"。
+                    #   （常规的失败/取消路径由 Worker._persist_terminal_reply 自己写，不会走到这里。）
+                    self.sessions.set_messages(
+                        session_id,
+                        self._restore_display_text(
+                            list(self.sessions.get_messages(session_id))
+                            + [{"role": "assistant", "content": self._NO_OUTPUT_NOTICE}]
+                        ),
+                    )
                 box = getattr(worker, "_box_mapping", None)
                 if box:
                     self.sessions.set_box_mapping(session_id, box)

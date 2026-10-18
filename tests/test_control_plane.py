@@ -790,6 +790,7 @@ e2e_store.close()
 section("【H】生产化：只读角色 / 限流 / 备份 / 回滚 / 告警 / TLS（V3.6.2 C-14）")
 # ══════════════════════════════════════════════════════════════════
 from yindun.control import alerts as alerts_mod  # noqa: E402
+from yindun.control import server as server_mod  # noqa: E402  （【J】局域网接入：真实起服务/切监听）
 
 prod_dir = TMP / "prod"
 prod_dir.mkdir(exist_ok=True)
@@ -966,6 +967,151 @@ except ImportError:                                                     # crypto
 alerts_mod._config["url"] = ""                                          # 收尾：关掉告警通道
 prod_store.close()
 rl_app_local = None
+
+# ══════════════════════════════════════════════════════════════════════
+# 【J】配对码与局域网接入（V3.6.7）
+#  背景（负责人实测）：「我用手机热点和同学组局域网，我这边启动控制端，同学输入我的局域网 IP
+#  和配对码，连不上」。查下来是两件事：控制端**默认只监听 127.0.0.1**（外面根本进不来），
+#  而配对码只在点的时候弹一句 toast、拿不到也没法自定义。这组钉住修好的行为：
+#    · 配对码可自定义、可查询当前码、重复/非法要拒绝、核销大小写不敏感；
+#    · 监听地址能在运行期于"仅本机 ↔ 允许局域网"之间切换，切完**真的**能从局域网地址访问；
+#    · 切回仅本机后，局域网地址必须真的连不上（否则"关掉对外"是假动作）。
+# ══════════════════════════════════════════════════════════════════════
+print("\n" + "=" * 78)
+print("【J】配对码自定义 + 局域网接入（运行期切换监听）")
+print("=" * 78)
+import time  # noqa: E402  （【J】切监听有约 1 秒宽限期，断言前要等过去）
+lan_store = ControlStore(TMP / "lan.db")
+_lan_code = "REGRESS-2026"                       # 自定义码：4–12 位字母数字连字符
+_made = lan_store.create_pair_code(ttl_minutes=30, code=_lan_code.lower())   # 小写输入也应接受
+check("自定义配对码可创建且统一成大写（大小写输入都能念）",
+      _made.get("ok") and _made.get("code") == _lan_code and _made.get("custom") is True, str(_made))
+check("当前配对码查询返回刚创建的那张（界面要一直看得见，而不是弹一次就没了）",
+      lan_store.current_pair_code().get("code") == _lan_code, str(lan_store.current_pair_code()))
+_dup = lan_store.create_pair_code(ttl_minutes=30, code=_lan_code)
+check("同一张自定义码在有效期内不许被顶掉（两人拿同一串码会互相踩）",
+      _dup.get("ok") is False and "有效期" in str(_dup.get("error")), str(_dup))
+_bad = lan_store.create_pair_code(ttl_minutes=30, code="中文码")
+check("非法自定义码被拒（只收 4–12 位字母数字连字符：要能口头念）",
+      _bad.get("ok") is False and "4–12" in str(_bad.get("error")), str(_bad))
+_ok_use, _why_use = lan_store.consume_pair_code(_lan_code.lower(), "ep-lan-01")
+check("配对码核销支持小写输入（同学手输不会因为大小写失败）", _ok_use, _why_use)
+check("核销后当前码自动落到下一张可用码（不会显示已用过的）",
+      lan_store.current_pair_code().get("code") != _lan_code, str(lan_store.current_pair_code()))
+
+_lan_ips = server_mod.lan_ipv4_addresses()
+check("局域网地址发现：非回环、非 APIPA、形态合法",
+      all(not ip.startswith(("127.", "169.254.")) and ip.count(".") == 3 for ip in _lan_ips),
+      str(_lan_ips))
+_info_local = server_mod.lan_access_info()
+check("默认（仅本机）时 lan_urls 为空、但会预告「切过去就能用」的地址",
+      _info_local["external"] is False and _info_local["lan_urls"] == []
+      and isinstance(_info_local["available_lan_urls"], list), str(_info_local))
+check("提示齐备：防火墙 / 无 TLS / 多网卡该抄哪个地址",
+      bool(_info_local.get("firewall_hint")) and bool(_info_local.get("tls_note")),
+      str(sorted(_info_local)))
+
+# 真起一个服务，切到对外监听，再从**局域网地址**访问一次（这才是"同学能不能连上"的判据）
+lan_httpd = server_mod.serve("127.0.0.1", 0, lan_store, verbose=False)
+server_mod._LISTEN_SERVER = lan_httpd
+_port = lan_httpd.server_address[1]
+threading.Thread(target=lan_httpd.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True).start()
+_lan_token = lan_store.ensure_admin_token()
+
+
+def _lan_tcp(host: str, port: int, timeout: float = 2.0) -> str:
+    """判断"这个地址:端口上有没有人在听"——**TCP 连通性**，不发任何应用层请求。
+
+    为什么用连通性而不是发 HTTP：① "同学能不能连上"在网络层就是这个判断；
+      ② 发请求需要把**变量拼成的 URL** 交给请求库，那正是 SSRF 的形态，静态门禁会（也应该）拦下来
+         ——测试没必要为此在网络层做手脚。HTTP 层的正确性由 `tests/test_control_ui.py`
+         对着真实服务跑（登录 → 六页 → 配对浮窗 → 开关）覆盖。
+    """
+    import socket as _socket
+    sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    try:
+        sock.settimeout(timeout)
+        sock.connect((host, int(port)))
+        return "open"
+    except OSError as exc:
+        return type(exc).__name__
+    finally:
+        sock.close()
+
+
+def _own_lan_ip(port: int) -> str:
+    """本机某个"局域网地址"（用于验证对外监听是否真的打开）。拿不到就跳过相关断言。"""
+    ips = server_mod.lan_ipv4_addresses()
+    return ips[0] if ips else ""
+
+
+_switched = server_mod.rebind_listen("0.0.0.0")
+check("运行期切到「允许局域网」（不重启进程）",
+      _switched.get("ok") is True and _switched.get("external") is True, str(_switched)[:200])
+check("切完端口不变（别人抄走的地址不会因为开关而失效）",
+      _switched.get("listen_port") == _port, f"{_switched.get('listen_port')} vs {_port}")
+_lan_urls = _switched.get("lan_urls") or []
+check("给出了可用于局域网的完整地址（含端口）",
+      bool(_lan_urls) and all(u.startswith("http://") and u.endswith(f":{_port}/") for u in _lan_urls),
+      str(_lan_urls))
+_lan_ip = _own_lan_ip(_port)
+if _lan_urls and _lan_ip:
+    check("★ 切到对外监听后，局域网地址上**真的有人在听**（负责人那个「同学连不上」的直接判据）",
+          _lan_tcp(_lan_ip, _port) == "open", _lan_tcp(_lan_ip, _port))
+    check("回环地址同时仍然可用（本机窗口不受影响）", _lan_tcp("127.0.0.1", _port) == "open")
+_back = server_mod.rebind_listen("127.0.0.1")
+check("能切回「仅本机」", _back.get("ok") is True and _back.get("external") is False, str(_back)[:160])
+if _lan_urls and _lan_ip:
+    # 旧监听是**宽限期后**才关的（0.8s 宽限 + 等 serve_forever 退出 ≤0.3s + 0.2s 收尾，最坏约 1.4s；
+    # 见 _retire_old 的注释：界面切完会紧接着再请求一次，那个连接不能因为 socket 刚被关掉而 reset）。
+    # 这里等 3 秒留足余量——实测 1.6 秒会偶发还没关完（属于设计内的宽限，不是缺陷）。
+    time.sleep(3.0)
+    after = _lan_tcp(_lan_ip, _port)
+    check("切回后局域网地址真的连不上（「关掉对外」不是假动作）", after != "open", after)
+    check("切回后本机仍然可用", _lan_tcp("127.0.0.1", _port) == "open")
+_bad_host = server_mod.rebind_listen("8.8.8.8")
+check("只认 127.0.0.1 / 0.0.0.0 两种监听（不接受任意地址）",
+      _bad_host.get("ok") is False and "0.0.0.0" in str(_bad_host.get("error")), str(_bad_host)[:160])
+# 切换必须**带着原有配置**重建服务：一开关就把限流悄悄丢掉，等于"打开局域网"顺手拆了防线
+_rl_httpd = server_mod.serve("127.0.0.1", 0, lan_store, verbose=False, rate_limit_per_min=3)
+server_mod._LISTEN_SERVER = _rl_httpd
+_rl_port = _rl_httpd.server_address[1]
+threading.Thread(target=_rl_httpd.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True).start()
+_sw = server_mod.rebind_listen("0.0.0.0")
+try:
+    # 限流器挂在 app 上（`serve()` 记录的 `_LISTEN_STATE["app"]`）：切完监听后新服务必须带着
+    # 同一份限流配置——一开关就把限流丢掉，等于"打开局域网"顺手拆了一层防线。
+    _rl_served = int(getattr(server_mod._LISTEN_STATE.get("app"), "rate_limiter").per_min)
+    check("切监听后限流仍在（新服务沿用原配置，不会一开关就把限流丢了）",
+          _sw.get("ok") is True and _rl_served == 3, f"新服务限流 per_min={_rl_served}")
+finally:
+    server_mod.rebind_listen("127.0.0.1")
+    time.sleep(1.6)
+    try:
+        server_mod._LISTEN_SERVER.shutdown()
+        server_mod._LISTEN_SERVER.server_close()
+    except Exception:
+        pass
+
+# 切监听＝改变"谁能访问控制面"，属管理动作：只读（viewer）令牌必须被拒。
+# 断言要**两段**：先证明这把只读令牌本身是有效的（否则"被拒"不能说明任何事），再证明它切不动监听。
+_viewer_tok = lan_store.ensure_viewer_token()
+check("只读令牌本身有效（下面那条断言才有意义）",
+      bool(_viewer_tok) and lan_store.verify_viewer(_viewer_tok) is True, repr(_viewer_tok)[:8])
+_lan_app = server_mod.ControlServer(lan_store)
+try:
+    _lan_app.h_listen({"authorization": f"Bearer {_viewer_tok}"}, b'{"host":"0.0.0.0"}')
+    _viewer_rejected = False
+except server_mod.ApiError:
+    _viewer_rejected = True
+check("只读令牌不能切换监听（读写分离不被这个新接口破口）", _viewer_rejected is True)
+try:
+    server_mod._LISTEN_SERVER.shutdown()
+    server_mod._LISTEN_SERVER.server_close()
+except Exception:
+    pass
+server_mod._LISTEN_SERVER = None
+lan_store.close()
 
 # 收尾
 store.close()

@@ -21,7 +21,7 @@ tr:nth-child(even) td{background:#fafcfa;} hr{border:none;border-top:1px solid v
 strong{color:#0a5c3b;} @page{size:A4;margin:16mm 12mm;} h2{page-break-after:avoid;} table,pre,blockquote{page-break-inside:avoid;}
 </style></head><body><div class="page"><h1>隐盾安全智能体 · 使用说明</h1>
 <blockquote>
-<p>面向涉密办公场景的本地化隐私防护桌面智能体 · V3.6.2
+<p>面向涉密办公场景的本地化隐私防护桌面智能体 · V3.6.7
 Yindun Security Agent — 让本地 AI 更安全、更智能、更可控</p>
 </blockquote>
 <hr />
@@ -113,7 +113,8 @@ python run.py
    <code>bash
    ollama pull qwen3.5:4b
    ollama pull nomic-embed-text</code></li>
-<li>回到「模型接入 → 本机模型」，点「重新检测」——检测到的模型会列出来，<strong>点一下就切换</strong>。</li>
+<li>回到「模型接入 → 本机模型」，点「重新检测」——检测到的模型会列出来，<strong>点一下就切换</strong>：
+   左栏列出的本机模型（当前在用的那个带「使用中」标记）<strong>点模型名即切换</strong>，右侧「已检测到的模型」胶囊同样一点即切；两处的「使用中」会当场一起变。</li>
 </ol>
 <h3>方式 B：局域网模型（公司内网的推理服务）</h3>
 <ol>
@@ -132,6 +133,10 @@ python run.py
 <li>保存后在输入框下方的<strong>模型胶囊</strong>里选择它。</li>
 </ol>
 <blockquote>
+<p><strong>密钥怎么改、会不会丢</strong>：密钥存下之后<strong>不再回显</strong>（界面只显示「已配置」），输入框留空即
+<strong>不动已存的密钥</strong>——改地址、改模型名后直接再点保存即可；只有你<strong>填了新密钥</strong>才会替换。
+「测试连接」在留空时也会用<strong>已存的那把密钥</strong>去测，不会因为输入框空着就报「密钥不被接受」。
+想彻底清除密钥：删掉这个条目再重新添加。</p>
 <p><strong>隐私提示</strong>：开启"隐私隔离网关"（默认开启）时，发往公网的内容已在本机替换为占位符，
 真实敏感数据不出机器；密钥加密存本机、界面不回显。</p>
 </blockquote>
@@ -246,7 +251,11 @@ python run.py
 <ul>
 <li><strong>便携版（推荐）</strong>：双击 <code>dist/隐盾控制端_&lt;版本&gt;_便携版.exe</code> → <strong>直接打开一个控制台窗口并自动登录</strong>，
   不需要抄地址、也不需要手输令牌（令牌仍保护远程访问；窗口只在本机回环打开，且页面会立刻把它从地址栏抹掉）。
-  关掉窗口即停服；启动信息（监听地址、数据目录、对外监听告警）同时打印在控制台窗口里。</li>
+  关掉窗口即停服。<strong>exe 不再带命令行黑窗</strong>（V3.6.7 起）：启动信息（监听地址、数据目录、令牌文件路径）
+  写在 exe 同目录的 <code>logs/yindun.log</code>；若启动失败（例如端口被占），会弹一个系统对话框写明原因与日志路径——
+  不会出现"双击了却什么都没发生"。已经有一个控制台在跑时，再双击会<strong>明确提示「已经在运行」并退出</strong>
+  （避免两个实例抢同一端口，让你看到旧版本的界面）：请用已经打开的那个窗口，或先在任务管理器里
+  结束旧的 <code>隐盾控制端…便携版.exe</code> 进程。</li>
 <li><strong>源码/服务器</strong>：</li>
 </ul>
 <pre><code class="language-bash">python -m yindun.control              # 起服务 + 开桌面窗口（默认）
@@ -256,6 +265,26 @@ python -m yindun.control --host 0.0.0.0 --window yes   # 对外监听（默认�
 </code></pre>
 <p><strong>管理令牌</strong>在 <code>control_data/admin_token.txt</code>（数据库里只存哈希）。远程用户用浏览器打开
 <code>http://&lt;控制面&gt;:8787/</code>，粘贴令牌即可进入（令牌只留在当前标签页，关闭即清除）。</p>
+<p><strong>让别人的机器连进来（例如和同学组局域网一起看）：</strong></p>
+<ol>
+<li>控制台右上角点「<strong>配对码</strong>」→ 打开浮窗。里面有三件事：当前配对码（可<strong>自定义</strong>成好念的串，如
+   <code>BANJI-2026</code>；也可一键重新生成）、有效期、以及<strong>局域网地址</strong>（如 <code>http://192.168.96.148:8787/</code>）。</li>
+<li>浮窗里打开「<strong>允许局域网访问</strong>」开关。控制端默认只监听本机（<code>127.0.0.1</code>），<strong>不打开这个开关，
+   别人一定连不上</strong>——这不是网络问题、也不是配对码问题。打开后监听立刻切换，<strong>不用重启程序</strong>，
+   端口不变（别人抄走的地址不会失效）。</li>
+<li>如果 Windows 防火墙弹出询问，<strong>必须选「允许访问」</strong>；没弹或之前拒绝过，需要到防火墙里放行
+   （否则地址对、码对，照样连不上）。</li>
+<li>把「地址 + 配对码」发给对方：对方浏览器打开地址 → 输入配对码即可进入（配对码<strong>用后即作废</strong>，
+   一张码给一个人）。装隐盾客户端的机器则在「设置 → 企业控制面」里填地址与配对码自助接入。</li>
+<li>不用了就关掉开关（切回仅本机）；局域网地址随即可连不上——这是真关，不是只改显示。</li>
+</ol>
+<blockquote>
+<p>装着 VMware/VirtualBox 或内网穿透的机器会列出多个地址，<strong>优先用第一个</strong>（通常是 WiFi/热点的），
+<code>192.168.x.1</code> 这类多为虚拟网卡，别人连不上。
+<strong>安全边界</strong>：对外监听形态<strong>不带 TLS</strong>，只在你自己可信的局域网里用（手机热点、宿舍网这类），
+不要在公共 WiFi 上长期开着；配对码一次性、管理令牌不要外发。要长期对外提供服务，
+请按 §4.6 的命令行方式挂在 TLS 反向代理之后。</p>
+</blockquote>
 <p>控制台六页：<strong>态势总览</strong>（在管端点 / 事件总量 / 高危事件 / 链告警 + 链锚定状态 + 告警流）、
 <strong>统计分析</strong>（近 14 天趋势柱图，深色段为高风险；事件类型 Top 12；级别构成；端点活跃度；近 7 天与环比）、
 <strong>事件台账</strong>（按端点/类型/级别/关键词检索）、<strong>端点资产</strong>（版本、链长、模型、插件、严格模式、生效策略）、
@@ -351,7 +380,7 @@ python -m yindun.control --host 0.0.0.0 --window yes   # 对外监听（默认�
 </tr>
 <tr>
 <td>文件沙箱</td>
-<td>所有文件操作限定在沙箱目录内，越界读写一律拒绝</td>
+<td>所有文件操作限定在沙箱目录内，越界读写一律拒绝。<strong>读了沙箱外的路径（例如桌面）不会静默失败</strong>：工具会明确回一句"超出安全沙箱"，模型据此如实告诉你读不到、并让你把文件放进沙箱（或换成沙箱内的路径）。沙箱目录默认是程序所在目录，可用环境变量 <code>SANDBOX_PATH</code> 指定（例如把沙箱指到某个资料目录，助手就只能读写那里）</td>
 </tr>
 <tr>
 <td>权限四档</td>
@@ -403,7 +432,7 @@ python -m yindun.control --host 0.0.0.0 --window yes   # 对外监听（默认�
 <hr />
 <h2>八、版本与声明</h2>
 <ul>
-<li>当前版本：<strong>V3.6.2</strong>（技术栈 Python · LangChain · pywebview/WebView2 · Chroma · Ollama；Qt 已移除）</li>
+<li>当前版本：<strong>V3.6.7</strong>（技术栈 Python · LangChain · pywebview/WebView2 · Chroma · Ollama；Qt 已移除）</li>
 <li>插件体系：内核不可插件化（脱敏 / 审批 / 审计 / 沙箱），能力可插件化（识别 / 解析 / 模板 / 导出），
   插件只能"做加法"；详见 <a href="插件开发.md">插件开发.md</a>。</li>
 <li>本文档中出现的个人信息（张伟 / 13812345678 等）均为虚构测试样例，不涉及任何真实个人数据。</li>

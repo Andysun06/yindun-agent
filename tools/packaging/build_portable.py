@@ -33,6 +33,36 @@ FINAL_NAME = f"隐盾安全智能体_{_pkg.__display_version__}_便携版.exe"
 FINAL_EXE = os.path.join(DIST, FINAL_NAME)
 
 
+def _locked_hint(final_exe: str) -> str:
+    """交付物被占用时返回"怎么办"的说明，否则返回空串。
+
+    判据是**试着重命名一次再改回来**：Windows 上正在运行的 exe 会被锁住（改名与删除都拒），
+    而"文件不存在"完全正常（首次构建）。这样探测不写任何内容，也不改动交付物。
+
+    想"先构建、回头再落名"（例如用户正开着程序、我又不想白等一场构建）就设
+    `YINDUN_BUILD_ALLOW_LOCKED=1`：跳过这次拦阻，构建完成后若仍改不了名，
+    会把新产物留在 `dist/YindunPortable.exe` 并说清楚，而不是抛 PermissionError。
+    """
+    if not os.path.isfile(final_exe):
+        return ""
+    probe = final_exe + ".probe"
+    try:
+        os.replace(final_exe, probe)
+    except OSError:
+        if os.environ.get("YINDUN_BUILD_ALLOW_LOCKED") == "1":
+            print("⚠ 交付物正被占用（多半是程序还在运行）：继续构建，完事后把新产物留在 dist/ 下不改名")
+            return ""
+        return ("产物被占用：dist 里这份 exe 正在运行（或被其它程序打开），无法替换。\n"
+                "   请先关闭正在运行的「隐盾安全智能体」窗口，再重新执行本脚本——\n"
+                "   否则会白等一场构建，而且新产物只会以 YindunPortable.exe 的名字留在 dist 里。\n"
+                "   （确实要先构建、回头再落名：设 YINDUN_BUILD_ALLOW_LOCKED=1）")
+    try:
+        os.replace(probe, final_exe)
+    except OSError:
+        print(f"⚠ 探测用改名未能改回，交付物现在是：{probe}（请手工改回）")
+    return ""
+
+
 def main() -> int:
     os.chdir(ROOT)
     if not os.path.isfile(SPEC):
@@ -49,6 +79,15 @@ def main() -> int:
         import PyInstaller.__main__ as pyi
     except ImportError:
         print("❌ 未安装 PyInstaller。请先执行：pip install -r requirements.txt")
+        return 1
+
+    # ★ 构建前先确认交付物文件**可以被替换**（V3.6.7 实测踩到）：如果用户正跑着 dist 里的
+    #   exe，Windows 会锁住该文件——旧写法要等 PyInstaller 跑完七分钟才在 os.remove 处抛
+    #   PermissionError，既白等一场，又留下一个没换名的半成品（dist/YindunPortable.exe）。
+    #   现在提前一步探一下：探不通就当场说清楚怎么办，别浪费七分钟。
+    blocked = _locked_hint(FINAL_EXE)
+    if blocked:
+        print(f"\n❌ {blocked}")
         return 1
 
     try:
@@ -70,7 +109,18 @@ def main() -> int:
         return 1
 
     if os.path.isfile(FINAL_EXE):
-        os.remove(FINAL_EXE)
+        try:
+            os.remove(FINAL_EXE)
+        except PermissionError:
+            # 走到这里说明是"允许占用继续构建"那条路：不抛栈，说清楚新产物在哪、怎么落名
+            print("\n" + "=" * 78)
+            print(f"⚠ 新产物已构建完成，但**未能改名**（旧 exe 正在运行，文件被锁）：")
+            print(f"   新产物：{RAW_EXE}")
+            print(f"   目标名：dist/{FINAL_NAME}")
+            print("   关掉正在运行的「隐盾安全智能体」窗口后，重新执行本脚本即可落名；")
+            print("   或者手工把上面那个文件改名为目标名（内容已是最新，无需重新构建）。")
+            print("=" * 78)
+            return 1
     os.replace(RAW_EXE, FINAL_EXE)
 
     size_mb = os.path.getsize(FINAL_EXE) / 1024 / 1024

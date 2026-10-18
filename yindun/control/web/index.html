@@ -10,6 +10,22 @@
 
 <!-- ── 鉴权面板（未持有令牌时唯一可见的界面）── -->
 <div class="auth" id="auth" hidden>
+  <!-- 登录态同样要有拖动区域与窗口按钮，否则无边框窗口在登录前既拖不动也关不掉。
+       拖动区类名必须是 pywebview 官方的 .pywebview-drag-region，自造类名不会被受理。 -->
+  <div class="auth__bar pywebview-drag-region">
+    <span class="auth__bar-t">隐盾控制台</span>
+    <div class="winctrl winctrl--auth" hidden>
+      <button class="winctrl__btn" type="button" data-win="min" title="最小化" aria-label="最小化">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>
+      </button>
+      <button class="winctrl__btn" type="button" data-win="max" title="最大化 / 还原" aria-label="最大化">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5h11v11h-11z"/></svg>
+      </button>
+      <button class="winctrl__btn winctrl__btn--close" type="button" data-win="close" title="关闭控制台" aria-label="关闭">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>
+      </button>
+    </div>
+  </div>
   <form class="auth__box" id="auth-form" autocomplete="off">
     <div class="auth__brand">
       <svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5.5c0 4.3-2.9 7.9-7 9-4.1-1.1-7-4.7-7-9V6l7-3z"/><path d="M9.2 12.2l2 2 3.6-4"/></svg>
@@ -69,33 +85,67 @@
     </nav>
 
     <div class="rail__foot">
-      <div class="boundary">
-        <b>数据边界</b>
-        <p>控制面看到的内容<b>等于端点本地审计落盘的内容</b>，不多一个字：敏感路径在落盘前已掩码，这里只见到占位符。</p>
-        <p>模型提示词与回答<b>不经过控制面</b>；映射密钥由端点 DPAPI 保管，此处<b>无法还原明文</b>。</p>
-        <p>策略<b>只能收紧</b>：脱敏豁免与审批放行没有任何下发通路。</p>
+      <div class="boundary" id="boundary">
+        <div class="boundary__head">
+          <span class="boundary__mark" aria-hidden="true">?</span>
+          <b>数据边界</b>
+        </div>
+        <p class="boundary__lead">控制面只看到<b>掩码事件、链头与元数据</b>——等于端点本地审计落盘的内容，不多一个字。</p>
+        <details class="boundary__more" id="boundary-more">
+          <summary>细节<b>（3 条）</b>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+          </summary>
+          <ul class="boundary__list">
+            <li>敏感路径在落盘前已<b>掩码</b>，这里只见到占位符。</li>
+            <li>模型提示词与回答<b>不经过控制面</b>；映射密钥由端点 DPAPI 保管，此处<b>无法还原明文</b>。</li>
+            <li>策略<b>只能收紧</b>：脱敏豁免与审批放行没有任何下发通路。</li>
+          </ul>
+        </details>
       </div>
     </div>
   </aside>
 
   <main class="main">
-    <header class="topbar">
+    <!-- 顶栏整条可拖动窗口；只在**无边框桌面窗口**里生效。
+         类名必须是 pywebview 官方的 .pywebview-drag-region（desktop.py 把窗口建成
+         frameless=True、easy_drag=False，拖动完全依赖这个选择器）。 -->
+    <header class="topbar pywebview-drag-region">
       <div class="topbar__title">
         <h2 id="page-title">态势总览</h2>
         <p id="page-sub">端点上报的掩码事件与链状态</p>
       </div>
       <div class="topbar__tools">
-        <span class="status" id="status"><i></i><em>未连接</em></span>
-        <button class="btn btn--ghost" id="btn-pair-code" title="生成一次性配对码（员工机凭码自助接入，无需管理令牌）">配对码</button>
+        <!-- 状态点旁常显一句人话：光有"已连接"三个字，管理员看不出连上的是什么、
+             连上意味着什么（V3.6.8 负责人问"这个是什么意思"后加的；窄窗口下由样式表隐藏）。 -->
+        <span class="status" id="status" title="控制面连接状态（令牌有效且服务可达即为已连接）">
+          <i></i><em>未连接</em><span class="status__note" id="status-note"></span>
+        </span>
+        <button class="btn btn--ghost" id="btn-pair-code" title="配对码与局域网接入（浮窗：大字配对码、有效期、复制、局域网开关）">配对码</button>
         <button class="btn btn--ghost" id="btn-export" title="导出掩码审计（合规留档用；内容与界面所见一致）">导出 CSV</button>
         <button class="btn btn--ghost" id="btn-refresh" title="刷新 (R)">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 11-2.3-5.7M20 4v5h-5"/></svg>刷新
         </button>
-        <label class="switch" title="每 10 秒自动刷新">
-          <input type="checkbox" id="auto-refresh" checked><span></span><em>自动</em>
+        <!-- 自动刷新：文字写成"自动刷新 10 秒 / 自动刷新 关"，页脚再给出下一次刷新的时间。
+             行为与以前完全一致（默认开、10 秒一拍、只对态势总览与端点资产生效）。 -->
+        <label class="switch" id="auto-refresh-switch"
+               title="每 10 秒自动刷新当前页；只对「态势总览」「端点资产」生效。关掉不影响手动刷新（R）。">
+          <input type="checkbox" id="auto-refresh" checked><span></span>
+          <em id="auto-refresh-text">自动刷新 10 秒</em>
         </label>
         <button class="btn btn--ghost btn--icon" id="btn-theme" title="明暗切换">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v2m0 14v2M4.2 4.2l1.4 1.4m12.8 12.8l1.4 1.4M3 12h2m14 0h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/><circle cx="12" cy="12" r="4"/></svg>
+        </button>
+      </div>
+      <!-- 自制窗口按钮：只在**无边框桌面窗口**里显示（浏览器/纯服务形态下由 app.js 隐藏） -->
+      <div class="winctrl" id="winctrl" hidden>
+        <button class="winctrl__btn" type="button" data-win="min" title="最小化" aria-label="最小化">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>
+        </button>
+        <button class="winctrl__btn" type="button" data-win="max" title="最大化 / 还原" aria-label="最大化">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5h11v11h-11z"/></svg>
+        </button>
+        <button class="winctrl__btn winctrl__btn--close" type="button" data-win="close" title="关闭控制台" aria-label="关闭">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>
         </button>
       </div>
     </header>
@@ -110,6 +160,63 @@
       <span>控制面只做汇总与收紧，不代理模型流量、不做整机监控</span>
     </footer>
   </main>
+</div>
+
+<!-- ── 配对码浮窗（V3.6.7）──────────────────────────────
+     早先点「配对码」只弹一条 9 秒的 toast：同学拿不到、也不方便转述。
+     改成模态浮窗：大字配对码 + 有效期、重新生成/自定义/复制、
+     局域网地址与开关、三步使用说明。内容由 app.js 填充（服务端数据一律 esc() 转义）；
+     接口未知/未就绪时在浮窗内给出可读提示，不静默失败。 -->
+<div class="modal" id="pair-modal" hidden role="dialog" aria-modal="true" aria-labelledby="pair-title">
+  <div class="modal__scrim" data-pair-close="1"></div>
+  <div class="modal__box">
+    <div class="modal__head">
+      <h3 id="pair-title">配对码</h3>
+      <button class="modal__x" type="button" id="pair-close" aria-label="关闭">×</button>
+    </div>
+
+    <div class="pair__box">
+      <div class="pair__code" id="pair-code">—</div>
+      <div class="pair__meta" id="pair-meta">—</div>
+    </div>
+    <div class="pair__actions">
+      <button class="btn btn--primary" type="button" id="pair-regen">重新生成</button>
+      <button class="btn" type="button" id="pair-custom-toggle">自定义…</button>
+      <button class="btn" type="button" id="pair-copy">复制配对码</button>
+      <span class="chip" id="pair-state" hidden></span>
+    </div>
+    <form class="pair__form" id="pair-custom" hidden autocomplete="off">
+      <input class="input mono" id="pair-custom-code" maxlength="12" spellcheck="false"
+             placeholder="自定义码：4–12 位字母 / 数字 / 连字符">
+      <button class="btn" type="submit" id="pair-custom-submit">使用这个码</button>
+      <button class="btn btn--ghost" type="button" id="pair-custom-cancel">取消</button>
+    </form>
+    <p class="pair__note" id="pair-msg" hidden></p>
+
+    <div class="pair__sec">
+      <h4>局域网接入</h4>
+      <div class="pair__url">
+        <code id="pair-url">—</code>
+        <button class="btn btn--sm" type="button" id="pair-copy-url">复制地址</button>
+      </div>
+      <div class="pair__row">
+        <label class="switch"><input type="checkbox" id="pair-lan"><span></span><em>允许局域网访问</em></label>
+        <span class="chip" id="pair-listen">—</span>
+      </div>
+      <p class="pair__note" id="pair-lan-note"></p>
+      <p class="pair__note" id="pair-fw">首次开启时 Windows 会弹出防火墙询问，请选择「允许访问」。</p>
+      <p class="pair__note">对外监听不带 TLS（明文 HTTP），务必只在本机可信局域网内使用；配对码用后作废。</p>
+    </div>
+
+    <div class="pair__sec">
+      <h4>别人怎么用</h4>
+      <ol class="pair__steps">
+        <li>把上面的地址和配对码给对方（口头念、微信、截图都行）。</li>
+        <li>对方用自己的浏览器打开这个地址。</li>
+        <li>输入配对码接入——码用后作废，下次要重新生成。</li>
+      </ol>
+    </div>
+  </div>
 </div>
 
 <div class="toast" id="toast" hidden></div>

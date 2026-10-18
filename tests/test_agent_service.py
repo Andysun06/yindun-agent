@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 from langchain_core.messages import AIMessage  # noqa: E402
 
 from yindun.app.agent_service import AgentService  # noqa: E402
+from yindun.app import agent_service  # noqa: E402  # 打桩探测出口用（见 ①.68）
 from yindun.app.session_store import SessionStore  # noqa: E402
 from yindun.app.settings_store import SettingsStore  # noqa: E402
 
@@ -540,6 +541,82 @@ check("保存时把完整端点归一化后再落盘",
       str(_models_now.get(_glm_name, {}).get("base_url")))
 service.remove_custom_model(_glm_name)
 check("测试配置已清理", _glm_name not in (svc_settings.get("custom_models") or {}))
+
+# ── ①.68 密钥「留空＝不改动」（V3.6.7 修真实缺陷）──────────────────────────
+# 用户实测：公网模型点「保存」后密钥就消失了，接着「测试连接」报 401「密钥不被接受」。
+# 根因两条：① 后端保存时**无条件用空串覆盖** api_key（界面却写着"留空则不改动"）；
+#          ② 探测把输入框的空值直接当密钥发出去，不看该条目已存的密钥。
+print("\n" + "=" * 78)
+print("【①.68】密钥留空语义：保存不清空、探测回落已存密钥")
+print("=" * 78)
+_key_name = "wan-密钥留存探针"
+service.add_custom_model(_key_name, "glm-4-flash", "https://example.invalid/api", FAKE_API_KEY, "wan")
+_saved_again = service.add_custom_model(_key_name, "glm-4-flash", "https://example.invalid/api", "", "wan")
+_now = dict(svc_settings.get("custom_models") or {}).get(_key_name, {})
+check("留空再保存 → 内存里密钥仍在（不是被空串覆盖）",
+      _now.get("api_key") == FAKE_API_KEY, repr(_now.get("api_key"))[:12])
+check("返回值如实说明「沿用了已存密钥」", _saved_again.get("kept_key") is True,
+      str(_saved_again.get("kept_key")))
+_reloaded = SettingsStore(path=svc_cfg)      # 服务写的是 svc_config.json（不是工具用的 global_config.json）
+_reloaded.load()
+check("重新加载后仍是同一把密钥（落盘加密链没被打断）",
+      _reloaded.get("custom_models", {}).get(_key_name, {}).get("api_key") == FAKE_API_KEY,
+      repr(_reloaded.get("custom_models", {}).get(_key_name, {}).get("api_key"))[:12])
+_public = [m for m in service.custom_models() if m.get("name") == _key_name][0]
+check("列给界面的信息只说「有没有密钥」，不含明文",
+      _public.get("has_key") is True and FAKE_API_KEY not in json.dumps(_public, ensure_ascii=False))
+
+_name_new = "wan-新建留空探针"
+service.add_custom_model(_name_new, "glm-4-flash", "https://example.invalid/api", "", "wan")
+check("新建时留空就是空（不会凭空造一把密钥）",
+      not (svc_settings.get("custom_models") or {}).get(_name_new, {}).get("api_key"))
+service.add_custom_model(_key_name, "glm-4-flash", "https://example.invalid/api", "sk-rotated", "wan")
+check("显式填入新密钥 → 正常覆盖（换密钥这条路没被修坏）",
+      (svc_settings.get("custom_models") or {}).get(_key_name, {}).get("api_key") == "sk-rotated")
+service.add_custom_model(_key_name, "glm-4-flash", "https://example.invalid/api", FAKE_API_KEY, "wan")
+
+# 探测：留空时回落到已存密钥。拦掉真实网络调用，只断言"发出去的到底是哪一把密钥"
+_seen_keys = []
+_real_probe = agent_service.probe_endpoint
+agent_service.probe_endpoint = lambda url, key="": (
+    _seen_keys.append(key) or {"ok": True, "models": [], "count": 0})
+try:
+    service.probe_model_endpoint("https://example.invalid/api", "", _key_name)
+    service.probe_model_endpoint("https://example.invalid/api", "sk-explicit", _key_name)
+    service.probe_model_endpoint("https://example.invalid/api", "", "不存在的条目")
+    service.probe_model_endpoint("https://example.invalid/api", "")
+finally:
+    agent_service.probe_endpoint = _real_probe
+check("点「测试连接」但输入框留空 → 用该条目已存的密钥（不再拿空密钥撞 401）",
+      _seen_keys[:1] == [FAKE_API_KEY], str([k[:10] for k in _seen_keys]))
+check("输入框里填了密钥 → 就用填的（不被已存值覆盖）",
+      _seen_keys[1:2] == ["sk-explicit"], str([k[:10] for k in _seen_keys]))
+check("条目名对不上 / 没给名字 → 空密钥（不越界去取别的条目的密钥）",
+      _seen_keys[2:] == ["", ""], str([k[:10] for k in _seen_keys]))
+service.remove_custom_model(_key_name)
+service.remove_custom_model(_name_new)
+check("①.68 测试配置已清理",
+      not any(n in (svc_settings.get("custom_models") or {}) for n in (_key_name, _name_new)))
+
+# 桥接契约（V3.6.7）：界面「测试连接」现在传三个参数（地址 / 密钥 / 条目名）。
+# pywebview 是按位置转发到 JsApi 的——少一个形参不会"少传"，而是当场 TypeError，
+# 于是"测试连接"整个不可用。沙盘 mock 接受任意参数，所以这条只能在这里钉。
+from yindun.app.webview_app import JsApi  # noqa: E402
+import inspect as _inspect  # noqa: E402
+_bridge_params = list(_inspect.signature(JsApi.probe_model_endpoint).parameters)
+check("桥的 probe_model_endpoint 接受条目名（否则前端传第三个参数会直接抛错）",
+      _bridge_params[:4] == ["self", "base_url", "api_key", "name"], str(_bridge_params))
+_forwarded = []
+_real_svc_probe = AgentService.probe_model_endpoint
+AgentService.probe_model_endpoint = lambda self, url, key="", name="": (
+    _forwarded.append((url, key, name)) or {"ok": True})
+try:
+    _api_inst = JsApi(service, {})
+    _api_inst.probe_model_endpoint("https://example.invalid/api", "", "某条目")
+finally:
+    AgentService.probe_model_endpoint = _real_svc_probe
+check("桥把三个参数原样转发给服务层（不是吞掉第三个）",
+      _forwarded == [("https://example.invalid/api", "", "某条目")], str(_forwarded))
 
 # 拖动区域契约（V3.6.4）：easy_drag 是"全局无筛选"，已在窗口层关掉；拖动只认标记区域
 _webview_src = Path(__file__).resolve().parents[1].joinpath(

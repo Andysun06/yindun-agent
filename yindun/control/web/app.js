@@ -27,11 +27,19 @@ const TYPE_LABEL = {
   control_report: "控制面上报",
 };
 
+// 自动刷新的作用范围（**行为不变**：默认开、10 秒一拍、只对这两页生效）。
+// 提成常量是为了一处定义、三处引用（定时器 / 顶栏文案 / 页脚说明），
+// 免得将来改了范围却留下一句过时的界面说明——那比没有说明更糟。
+const AUTO_MS = 10000;
+const AUTO_PAGES = ["overview", "endpoints"];
+
 const state = {
   base: "", token: "", page: "overview", timer: null, endpoints: [],
   filters: { endpoint_id: "", event_type: "", severity: "", q: "" }, offset: 0, total: 0,
-  policyDraft: { sensitive_paths: "", approval_floor: "", allowed_models: "", allowed_plugins: "",
-                 require_strict_mode: false, note: "" },
+  // 策略页的"点选式"状态：presets 走 DOM（复选框），模型/插件因含"手动补一个"而需记住
+  policyPick: { models: [], plugins: [] }, policyCands: { models: new Map(), plugins: new Map() },
+  lastDispatch: null,                       // 上次逐台下发的结果（成功/失败都要如实显示）
+  lastRenderAt: 0, autoNextAt: 0, tick: null,
 };
 
 /* ── 工具 ─────────────────────────────────────────────── */
@@ -53,6 +61,15 @@ function relTime(ts) {
   if (d < 86400) return `${Math.floor(d / 3600)} 小时前`;
   return `${Math.floor(d / 86400)} 天前`;
 }
+// 服务端时间戳是**本地朴素时间**（无时区后缀），这里产出同格式的字符串，
+// 让 mock 与真实后端的数据长得一模一样（Date.parse 对无时区字符串按本地时间解释）。
+const isoLocal = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+  .toISOString().slice(0, 19);
+function fmtCountdown(ms) {
+  if (!(ms > 0)) return "已过期";
+  const s = Math.floor(ms / 1000);
+  return `剩 ${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+}
 function toast(msg, ms = 2600) {
   const el = $("toast");
   el.textContent = msg;
@@ -60,11 +77,21 @@ function toast(msg, ms = 2600) {
   clearTimeout(el._t);
   el._t = setTimeout(() => { el.hidden = true; }, ms);
 }
-function setStatus(kind, text) {
+function setStatus(kind, text, note) {
   const el = $("status");
   el.className = "status" + (kind ? " is-" + kind : "");
   el.querySelector("em").textContent = text;
+  // "已连接"三个字对管理员说明不了"连的是什么、连上意味着什么"，所以状态点旁边
+  // 常显一句人话（窄窗口下由样式表隐藏，避免顶栏被挤开）。
+  const noteEl = $("status-note");
+  if (noteEl) noteEl.textContent = note || STATUS_NOTE[kind] || "";
 }
+// 状态点旁的常显说明：说清"这个连接是什么"，而不是让用户去猜。
+const STATUS_NOTE = {
+  live: "· 控制面在线，数据取自控制面本地汇总（不含明文、不代理模型流量）",
+  err: "· 与控制面的连接断了：请确认控制面进程还在运行",
+  "": "· 尚未连接：填好控制面地址与管理令牌后开始",
+};
 function sevBadge(sev) {
   const cls = ["critical", "security"].includes(sev) ? "bad" : (sev === "warning" ? "warn" : "idle");
   return `<span class="sev sev--${esc(sev)}">${esc(SEV_LABEL[sev] || sev)}</span>`;
@@ -73,6 +100,98 @@ function chainBadge(verdict) {
   const cls = verdict === "已锚定" ? "ok" : (verdict === "链异常" ? "bad" : "idle");
   return `<span class="badge badge--${cls}">${esc(verdict)}</span>`;
 }
+
+/* ── 自制下拉框 ─────────────────────────────────────────
+   为什么保留原生 <select>：页面逻辑里到处是 `$("f-ep").value` 与 `el.onchange = fire`。
+   把控件换成自定义结构就得把「取值」与「事件」全部改写，多改一处就多一处
+   「界面显示的条件 ≠ 实际发出的请求」的风险。所以做法是：
+     · 原生 select 留着（只做**值容器**），用 .selectnative 视觉隐藏；
+     · 旁边渲染一个同尺寸的自绘按钮 + 弹层 + 列表（纯 CSS，无第三方库）；
+     · 选中后写回 select.value 并派发**原生 change 事件** → 页面逻辑一行都不用改。
+   ─────────────────────────────────────────────────────── */
+const CARET = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>`;
+
+function closeAllDropdowns(except) {
+  document.querySelectorAll(".dd").forEach((dd) => {
+    if (dd === except) return;
+    dd.querySelector(".dd__list").hidden = true;
+    dd.querySelector(".dd__btn").setAttribute("aria-expanded", "false");
+  });
+}
+
+function enhanceSelect(sel) {
+  sel.dataset.dd = "1";
+  // .selectnative 负责"视觉退场"（透明铺满 .dd、不接鼠标），值语义一份不少
+  sel.classList.add("selectnative");
+  const dd = document.createElement("div");
+  dd.className = "dd";
+  const btn = document.createElement("button");
+  btn.type = "button"; btn.className = "dd__btn";
+  btn.setAttribute("aria-haspopup", "listbox");
+  btn.setAttribute("aria-expanded", "false");
+  const text = document.createElement("span");
+  const list = document.createElement("ul");
+  list.className = "dd__list"; list.hidden = true; list.setAttribute("role", "listbox");
+  const sync = () => {
+    const opt = sel.options[sel.selectedIndex];
+    text.textContent = opt ? opt.textContent : "";
+    list.querySelectorAll(".dd__opt").forEach((li) => {
+      li.setAttribute("aria-selected", li.dataset.value === sel.value ? "true" : "false");
+    });
+  };
+  const build = () => {
+    list.innerHTML = Array.from(sel.options).map((o) =>
+      `<li class="dd__opt" role="option" data-value="${esc(o.value)}">${esc(o.textContent)}</li>`).join("");
+    sync();
+  };
+  const pick = (value) => {
+    sel.value = value;
+    sync(); close();
+    // 原生事件：页面里的 el.onchange 照旧被触发，筛选/下发逻辑无需感知控件已被换皮
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  const open = () => {
+    closeAllDropdowns(dd);
+    build(); list.hidden = false; btn.setAttribute("aria-expanded", "true");
+    const cur = list.querySelector(".dd__opt[aria-selected='true']") || list.querySelector(".dd__opt");
+    if (cur) cur.scrollIntoView({ block: "nearest" });
+  };
+  const close = () => { list.hidden = true; btn.setAttribute("aria-expanded", "false"); };
+  btn.onclick = (e) => { e.stopPropagation(); list.hidden ? open() : close(); };
+  list.onclick = (e) => {
+    const li = e.target.closest(".dd__opt");
+    if (li) { e.stopPropagation(); pick(li.dataset.value); }
+  };
+  btn.onkeydown = (e) => {
+    const opts = Array.from(list.querySelectorAll(".dd__opt"));
+    const at = opts.findIndex((li) => li.classList.contains("is-active"));
+    if (e.key === "Escape") { close(); return; }
+    if (["ArrowDown", "ArrowUp", "Enter", " "].includes(e.key)) {
+      e.preventDefault();
+      if (list.hidden) { open(); return; }
+      const step = e.key === "ArrowUp" ? -1 : 1;
+      if (e.key === "Enter" && at >= 0) { pick(opts[at].dataset.value); return; }
+      const next = opts[Math.min(Math.max(at + step, 0), opts.length - 1)] || opts[0];
+      opts.forEach((li) => li.classList.remove("is-active"));
+      next.classList.add("is-active"); next.scrollIntoView({ block: "nearest" });
+    }
+  };
+  sel.parentNode.insertBefore(dd, sel);
+  btn.appendChild(text);
+  btn.insertAdjacentHTML("beforeend", CARET);   // CARET 是本文件的静态字符串，不含任何外部数据
+  dd.appendChild(btn);
+  dd.appendChild(list); dd.appendChild(sel);
+  build();
+  // 程序化改值（如"重置筛选"）也要让按钮上的字跟着变
+  sel.addEventListener("input", sync);
+}
+
+function enhanceSelects(root) {
+  (root || document).querySelectorAll("select.select").forEach((sel) => {
+    if (!sel.dataset.dd) enhanceSelect(sel);
+  });
+}
+document.addEventListener("click", () => closeAllDropdowns());
 
 /* ── 与后端通信 ───────────────────────────────────────── */
 async function api(path, options = {}) {
@@ -134,12 +253,6 @@ function start() {
     b.onclick = () => go(b.dataset.page);
   });
   $("btn-refresh").onclick = () => render(true);
-  if ($("btn-pair-code")) $("btn-pair-code").onclick = async () => {
-    try {
-      const res = await api("/api/v1/pair-code", { method: "POST", body: { ttl_minutes: 30, note: "控制台生成" } });
-      toast(`配对码 ${res.code}（${res.ttl_minutes} 分钟内有效、用后作废）——发给员工机，在「设置 → 企业控制面」里输入`, 9000);
-    } catch (e) { toast("生成失败：" + e.message); }
-  };
   if ($("btn-export")) $("btn-export").onclick = async () => {
     // 带鉴权 fetch 后再触发下载：令牌不进 URL（不进历史与日志）
     try {
@@ -159,24 +272,307 @@ function start() {
   applyTheme(localStorage.getItem("yd.theme") || "light");
   go("overview");
   startTimer();
+  if (!state.tick) state.tick = setInterval(paintRefreshStatus, 1000);   // 页脚倒计时（不发请求）
+  paintRefreshStatus();
 }
 function toggleTheme() {
   const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
   applyTheme(next); localStorage.setItem("yd.theme", next);
 }
 function applyTheme(t) { document.documentElement.dataset.theme = t; }
-function startTimer() { stopTimer(); state.timer = setInterval(() => {
-  if (["overview", "endpoints"].includes(state.page)) render(); }, 10000); }
-function stopTimer() { if (state.timer) clearInterval(state.timer); state.timer = null; }
+/* ── 自动刷新：行为不变，只是**能看懂了** ─────────────────
+   负责人问："顶部这个开关和'自动'是什么意思"——它是一个每 10 秒拉一次数据的开关，
+   但原来说明只藏在 tooltip 里（要悬停才知道），而且"对哪些页生效"没有任何说明。
+   现在的做法（行为一个字节都没改：默认开、10 秒、只对总览与端点资产生效）：
+     · 开关文字写成「自动刷新 10 秒 / 自动刷新 关」；
+     · 页脚常显"上次刷新 / 下一次刷新的时间"（当前页不生效时如实说明"本页不自动刷新"）。
+   ─────────────────────────────────────────────────────── */
+function autoCovers(page) { return AUTO_PAGES.includes(page || state.page); }
+function startTimer() {
+  stopTimer();
+  state.autoNextAt = Date.now() + AUTO_MS;
+  state.timer = setInterval(() => {
+    state.autoNextAt = Date.now() + AUTO_MS;
+    if (autoCovers()) render();              // 只对总览/资产页拉数据（现状不变）
+    else paintRefreshStatus();               // 其它页只更新页脚说明，不发请求
+  }, AUTO_MS);
+  paintRefreshStatus();
+}
+function stopTimer() {
+  if (state.timer) clearInterval(state.timer);
+  state.timer = null; state.autoNextAt = 0;
+  paintRefreshStatus();
+}
+function paintAutoLabel() {
+  const el = $("auto-refresh-text");
+  const box = $("auto-refresh");
+  if (el) el.textContent = box && box.checked ? "自动刷新 10 秒" : "自动刷新 关";
+  if (box) box.title = `每 ${AUTO_MS / 1000} 秒自动刷新当前页；只对「态势总览」「端点资产」生效，`
+    + "其它页面保持不动。关掉它不影响手动刷新（R 或点刷新按钮）。";
+}
+function paintRefreshStatus() {
+  paintAutoLabel();
+  const el = $("foot-stamp");
+  if (!el) return;
+  const stamp = state.lastRenderAt ? new Date(state.lastRenderAt).toLocaleTimeString("zh-CN") : "—";
+  let tail;
+  if (!state.timer) tail = "自动刷新已关（点「刷新」或按 R 可手动拉取）";
+  else if (!autoCovers()) tail = "本页不自动刷新（只对态势总览、端点资产生效）";
+  else {
+    const left = Math.max(0, Math.round((state.autoNextAt - Date.now()) / 1000));
+    tail = `下一次 ${new Date(state.autoNextAt).toLocaleTimeString("zh-CN")}（约 ${left} 秒后）`;
+  }
+  el.textContent = `${MOCK ? "预览数据 · " : ""}上次刷新 ${stamp} · ${tail}`;
+}
 
 function bindKeys() {
   document.addEventListener("keydown", (e) => {
     const tag = (e.target.tagName || "").toLowerCase();
     if (tag === "input" || tag === "textarea" || tag === "select" || e.metaKey || e.ctrlKey) return;
+    // 自绘下拉框展开时，↑↓/Enter/数字键都属于它，不能顺带触发"1..6 切页"
+    if (e.target.closest && e.target.closest(".dd")) return;
     if (e.key === "/") { e.preventDefault(); const box = $("f-q"); if (box) box.focus(); }
     if (e.key === "r") render(true);
     const page = Object.keys(PAGES)[Number(e.key) - 1];
     if (page) go(page);
+  });
+}
+
+/* ── 窗口按钮（只有无边框桌面窗口里才有桥）──────────────
+   桥是 pywebview 注入的 window.pywebview.api（见 yindun/control/desktop.py · WindowBridge）。
+   拿不到桥就**整组隐藏**：浏览器里这些按钮点了没反应，留着比没有更糟。 */
+function bindWindowControls() {
+  const groups = document.querySelectorAll(".winctrl");
+  if (!groups.length) return;
+  // 按钮上的 data-win 是短标签（min/max/close），桥认的是动作名——这里显式映射。
+  // 不做"直接转发 data-win"，否则桥收到 "min" 只认识 "minimize"，会当成未知动作拒绝。
+  const ACTION = { min: "minimize", max: "toggle_maximize", close: "close" };
+  const wait = setInterval(() => {
+    if (!window.pywebview || !window.pywebview.api || !window.pywebview.api.window_action) return;
+    clearInterval(wait);
+    groups.forEach((g) => { g.hidden = false; });
+    // 拖动区类名 = pywebview 官方的 .pywebview-drag-region（DRAG_REGION_SELECTOR 默认值）。
+    // 早先用的是自造类名 .pwdrag：pywebview 压根不认，顶栏拖不动（负责人实测）。
+    const BARS = ".pywebview-drag-region";
+    // 桌面窗口里拖动区不该顺带选中顶栏文字（浏览器里保留正常文本选择）
+    document.querySelectorAll(BARS).forEach((bar) => { bar.style.userSelect = "none"; });
+    const maxBtn = document.querySelector('.winctrl__btn[data-win="max"]');
+    const paint = (st) => { if (maxBtn && st) maxBtn.classList.toggle("is-max", !!st.maximized); };
+    document.querySelectorAll(".winctrl__btn").forEach((b) => {
+      b.onclick = async (e) => {
+        e.stopPropagation();
+        const act = ACTION[b.dataset.win];
+        if (!act) return;                    // 未知按钮不转发（前端多一个按钮不该等于桥多一个能力）
+        try { paint(await window.pywebview.api.window_action(act)); }
+        catch (err) { toast("窗口操作失败：" + (err && err.message ? err.message : err)); }
+      };
+    });
+    // 双击顶栏 = 最大化/还原（Windows 用户的肌肉记忆，缺了会被当成"窗口卡住"）
+    document.querySelectorAll(BARS).forEach((bar) => {
+      bar.ondblclick = (e) => {
+        if (e.target.closest(".winctrl, button, input, .switch, a")) return;
+        window.pywebview.api.window_action("toggle_maximize").then(paint).catch(() => {});
+      };
+      // pywebview 的拖动是挂在 body 上的 mousedown 监听 + 从事件目标向上找拖动区：
+      // 点在按钮上也会被判定成"按住顶栏"，于是点「刷新/配对码」时窗口会跟着鼠标走。
+      // 拖动区内**交互控件**上的 mousedown 就地拦下（只影响 pywebview 的这条监听，
+      // 不拦 click，按钮照常工作）。
+      bar.addEventListener("mousedown", (e) => {
+        if (e.target.closest("button, input, .switch, a, select, textarea")) e.stopPropagation();
+      });
+    });
+  }, 120);
+}
+
+/* ── 配对码浮窗（V3.6.7）─────────────────────────────────
+   负责人要求：配对码要能"拿到手、转述出去"，所以是模态浮窗而不是一条 9 秒的 toast。
+   对接的接口（未就绪/未知时逐项降级成可读提示，绝不静默失败）：
+     GET  /api/v1/pair-code  → {code, expires_at, ttl_minutes, custom}
+     POST /api/v1/pair-code   {ttl_minutes?, note?, code?}   （带 code 即自定义，4–12 位 [A-Za-z0-9-]）
+     GET  /api/v1/network    → {listen_host, listen_port, external, lan_urls, primary_url, firewall_hint}
+     POST /api/v1/listen      {host:"127.0.0.1"|"0.0.0.0"} → {ok, listen_host, lan_urls, note}
+   ─────────────────────────────────────────────────────── */
+const PAIR_TTL_MINUTES = 30;
+const CODE_RE = /^[A-Za-z0-9-]{4,12}$/;
+let pairTimer = null;
+
+function pairMsg(text, kind = "") {
+  const el = $("pair-msg");
+  if (!el) return;
+  el.hidden = !text;
+  el.className = "pair__note" + (kind ? " pair__note--" + kind : "");
+  el.textContent = text || "";
+}
+
+function paintPairCode(data) {
+  if (pairTimer) { clearInterval(pairTimer); pairTimer = null; }
+  const ok = !!(data && data.code);
+  $("pair-code").textContent = ok ? String(data.code) : "—";
+  // 码旁边的小标签：服务端给的 state（可用/已过期/无可用配对码）+ 自定义标记
+  const chips = [];
+  if (ok && data.custom) chips.push("自定义");
+  if (data && data.state) chips.push(String(data.state));
+  $("pair-state").hidden = !chips.length;
+  $("pair-state").textContent = chips.join(" · ");
+  const paintMeta = () => {
+    if (!ok) { $("pair-meta").textContent = (data && data.state) || "还没有可用配对码"; return; }
+    if (!data.expires_at) { $("pair-meta").textContent = "有效期未知（服务端未给到期时间）"; return; }
+    const left = Date.parse(String(data.expires_at).replace(" ", "T")) - Date.now();
+    $("pair-meta").textContent = `到期 ${fmtTime(data.expires_at)} · ${fmtCountdown(left)}`;
+  };
+  paintMeta();
+  if (ok && data.expires_at) pairTimer = setInterval(paintMeta, 1000);
+}
+
+async function loadPairCode() {
+  try {
+    const data = await api("/api/v1/pair-code");
+    paintPairCode(data);
+    // 有码但为空（服务端 state="无可用配对码"）也要说人话，不能只显示一个「—」
+    pairMsg(data && data.code ? ""
+      : "当前没有有效配对码：点「重新生成」生成一个（一次性、用后作废），"
+        + "再把它和上面的地址一起给对方。");
+  } catch (e) {
+    paintPairCode(null);
+    pairMsg(`配对码接口不可用：${e.message}。`
+      + "若控制面是较早版本，可直接点「重新生成」再试；生成不了也不影响已有端点上报。", "bad");
+  }
+}
+
+function paintNetwork(net) {
+  const urls = net.lan_urls || [];
+  const url = net.primary_url || urls[0] || "";
+  const box = $("pair-url");
+  box.textContent = url || "—";
+  box.dataset.url = url;                       // 复制按钮取这里（文本被 ellipsis 截断也不影响复制）
+  $("pair-lan").checked = !!net.external;
+  $("pair-listen").textContent = net.external
+    ? `对外监听 ${net.listen_host}:${net.listen_port}`
+    : `仅本机 ${net.listen_host}:${net.listen_port}`;
+  $("pair-lan-note").textContent = net.external
+    ? (urls.length > 1 ? `局域网地址：${urls.join("　")}` : "局域网内的机器可用上面的地址打开控制台。")
+    : "当前只有本机能访问。开启上面的开关后，局域网内的其他人才能用这个地址打开控制台。";
+  if (net.firewall_hint) $("pair-fw").textContent = net.firewall_hint;
+}
+
+async function loadNetwork() {
+  try {
+    paintNetwork(await api("/api/v1/network"));
+  } catch (e) {
+    $("pair-url").textContent = "—（读不到监听状态）";
+    $("pair-url").dataset.url = "";
+    $("pair-listen").textContent = "未知";
+    $("pair-lan").checked = false;
+    $("pair-lan").disabled = true;
+    $("pair-fw").textContent = `监听状态接口不可用：${e.message}。`
+      + "可先确认控制面监听的端口，本机浏览器直接打开 http://127.0.0.1:<端口>/。";
+  }
+}
+
+async function toggleLan(e) {
+  const on = e.target.checked;
+  e.target.disabled = true;
+  try {
+    const res = await api("/api/v1/listen", { method: "POST", body: { host: on ? "0.0.0.0" : "127.0.0.1" } });
+    if (res && res.ok === false) throw new Error(res.note || "监听地址未改变");
+    await loadNetwork();                       // 以服务端回报为准（不自作主张改界面）
+    pairMsg(res.note || (on ? "已切换为对外监听：首次会弹 Windows 防火墙询问，请允许。"
+                            : "已改回仅本机监听。"));
+  } catch (err) {
+    e.target.checked = !on;                    // 切失败就退回真实状态，不做假切换
+    pairMsg(`切换监听地址失败：${err.message}`, "bad");
+  } finally {
+    e.target.disabled = false;
+  }
+}
+
+async function copyText(text, label) {
+  const value = String(text || "").trim();
+  if (!value || value === "—") return toast("没有可复制的内容");
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error("no-clipboard");
+    await navigator.clipboard.writeText(value);
+    toast(`${label}已复制到剪贴板`);
+  } catch (e) {
+    // 降级：剪贴板 API 在非安全上下文/被拒时不可用，退到"选中 + execCommand"，
+    // 再不行就明确告诉用户手工复制（绝不谎报"已复制"）。
+    let ok = false;
+    const tmp = document.createElement("textarea");
+    tmp.value = value;
+    tmp.setAttribute("readonly", "");
+    tmp.style.position = "fixed";
+    tmp.style.opacity = "0";
+    document.body.appendChild(tmp);
+    tmp.select();
+    try { ok = document.execCommand("copy"); } catch (err) { ok = false; }
+    tmp.remove();
+    toast(ok ? `${label}已复制到剪贴板` : `${label}剪贴板不可用：已选中文本，请按 Ctrl+C`);
+  }
+}
+
+function openPairModal() {
+  $("pair-modal").hidden = false;
+  $("pair-custom").hidden = true;
+  pairMsg("");
+  loadPairCode();
+  loadNetwork();
+  const btn = $("pair-copy");
+  if (btn && btn.focus) btn.focus();
+}
+
+function closePairModal() {
+  $("pair-modal").hidden = true;
+  if (pairTimer) { clearInterval(pairTimer); pairTimer = null; }
+}
+
+async function submitPairCode(payload, okMsg) {
+  try {
+    const res = await api("/api/v1/pair-code", { method: "POST", body: payload });
+    // 真实后端的 POST 回包不带 custom（只有 GET 带），自定义标记按请求体自己补上，
+    // 否则"刚提交的自定义码"在界面上会被当成随机码。
+    paintPairCode(Object.assign({}, res, { custom: !!payload.code || !!(res && res.custom) }));
+    pairMsg(okMsg);
+    return true;
+  } catch (e) {
+    pairMsg(`生成失败：${e.message}`, "bad");
+    return false;
+  }
+}
+
+function bindPairModal() {
+  if (!$("pair-modal")) return;
+  $("btn-pair-code").onclick = openPairModal;
+  $("pair-close").onclick = closePairModal;
+  $("pair-modal").querySelector(".modal__scrim").onclick = closePairModal;
+  $("pair-regen").onclick = () => submitPairCode(
+    { ttl_minutes: PAIR_TTL_MINUTES, note: "控制台生成" },
+    `已生成新码，${PAIR_TTL_MINUTES} 分钟内有效、用后作废。`);
+  $("pair-custom-toggle").onclick = () => {
+    const form = $("pair-custom");
+    form.hidden = !form.hidden;
+    if (!form.hidden) $("pair-custom-code").focus();
+  };
+  $("pair-custom-cancel").onclick = () => { $("pair-custom").hidden = true; pairMsg(""); };
+  $("pair-custom").onsubmit = async (e) => {
+    e.preventDefault();
+    const code = $("pair-custom-code").value.trim().toUpperCase();
+    if (!CODE_RE.test(code)) {
+      pairMsg("自定义码只能是 4–12 位字母、数字或连字符（例如 A1B2C3、HR-2026）。", "bad");
+      return;
+    }
+    if (await submitPairCode({ code, ttl_minutes: PAIR_TTL_MINUTES, note: "控制台自定义" },
+                             `已改用自定义码 ${code}。`)) {
+      $("pair-custom").hidden = true;
+      $("pair-custom-code").value = "";
+    }
+  };
+  $("pair-copy").onclick = () => copyText($("pair-code").textContent, "配对码 ");
+  $("pair-copy-url").onclick = () => copyText($("pair-url").dataset.url, "控制台地址 ");
+  $("pair-lan").onchange = toggleLan;
+  // Esc 关浮窗（输入框里的 Esc 交给输入框自身，不误关）
+  document.addEventListener("keydown", (e) => {
+    const open = !$("pair-modal").hidden;
+    if (open && e.key === "Escape" && !(e.target.closest && e.target.closest(".dd"))) closePairModal();
   });
 }
 
@@ -200,13 +596,21 @@ async function render(showStamp = false) {
     else if (state.page === "policy") await renderPolicy(box);
     else if (state.page === "stats") await renderStats(box);
     else await renderUsage(box);
+    // ★ 页面归属记账必须**每个页面都写**（V3.6.7 修真实缺陷）：此前只有事件台账在渲染时
+    //   写了 dataset.page，别的页面不写 → "事件台账 → 端点资产 → 回事件台账"时它以为旧结构还在、
+    //   跳过重建，直接去操作已经不存在的元素 → 空指针（实测报错：
+    //   加载失败：Cannot set properties of null (setting 'textContent')）。
+    box.dataset.page = state.page;
     box.dataset.painted = "1";
+    enhanceSelects(box);      // 每次重建页面后接管下拉框（原生 select 仍是值容器）
     setStatus("live", MOCK ? "预览数据" : "已连接");
-    $("foot-stamp").textContent = (MOCK ? "预览数据 · " : "") + new Date().toLocaleTimeString("zh-CN");
+    state.lastRenderAt = Date.now();
+    paintRefreshStatus();     // 页脚：上次刷新时间 + 下一次刷新/本页不自动刷新（如实说明）
   } catch (e) {
     if (e.unauthorized) return showAuth("令牌无效或已过期，请重新输入");
     setStatus("err", "连接异常");
     box.innerHTML = `<div class="err-box">加载失败：${esc(e.message)}</div>`;
+    paintRefreshStatus();
   }
   if (showStamp) toast("已刷新");
 }
@@ -292,9 +696,9 @@ function eventTable(events, withPager = true) {
       <td>${esc(e.message || "—")}</td>
       <td class="num">${num(e.seq)}</td></tr>`).join("")}</tbody></table></div>`;
 }
-async function renderEvents(box) {
+async function renderEvents(box, force = false) {
   const f = state.filters;
-  if (!box.dataset.painted || box.dataset.page !== "events") {
+  if (force || !box.dataset.painted || box.dataset.page !== "events") {
     state.endpoints = (await api("/api/v1/endpoints")).endpoints || [];
     const types = (await api("/api/v1/events?limit=1")).types || [];
     box.dataset.page = "events";
@@ -330,6 +734,12 @@ async function renderEvents(box) {
   await loadEvents();
 }
 async function loadEvents(append = false) {
+  if (!$("events-host") || !$("f-total")) {
+    // 页面结构已不在（切走又切回、或别的页面覆盖了 content）→ 重建后再加载，
+    // 而不是对着 null 设 textContent 崩掉。
+    await renderEvents($("content"), true);
+    return;
+  }
   const q = new URLSearchParams(Object.assign({ limit: 100, offset: append ? state.offset : 0 }, state.filters));
   Object.keys(state.filters).forEach((k) => { if (!state.filters[k]) q.delete(k); });
   const data = await api("/api/v1/events?" + q.toString());
@@ -370,56 +780,414 @@ async function renderEndpoints(box) {
     : emptyState("还没有端点", "在端点侧配置并启用上报后，这里会出现它的资产与链状态")}</section>`;
 }
 
-/* ── 页面：策略下发 ───────────────────────────────────── */
+/* ── 页面：策略下发（点选式；负责人反馈"控制方式学习成本太高了"）──────
+   五处自由文本/单选改成点选：预设复选框、三档分段、多选 chip、多选端点、折叠说明区。
+   **语义一点都没变**（这是安全策略，改的是表达方式、不是行为），逐条对照：
+
+     · 敏感路径：预设勾选＝**替用户把 glob 写出来**，展开成同样的字符串数组，走同一条
+       `bundle.sensitive_paths` 通路 → 服务端/内核零改动，不可能引入新语义；
+       "自定义路径（高级）"折叠区保留原有多行 glob 输入能力，两者可并用（并集）；
+     · 审批下限：仍只有 ""/confirm/deny 三个值（不改变 / 至少人工确认 / 一律拒绝）；
+     · 允许模型 / 插件：候选来自端点上报的用量，另留"手动补一个"入口（原来逗号分隔能填的
+       名字，现在同样能填）。**一个都不选＝本条不下发**——不写成空数组，因为空数组在端点
+       是"全部禁用"的收紧语义，界面不擅自替用户引入；
+     · 下发范围：后端一次只收一个 scope（`{scope, bundle}`，scope 为 "global" 或端点 id），
+       多选端点时前端**逐台**签发并如实汇总（成功 N 台 / 失败清单，绝不只报成功）；
+     · 提交体仍然**只带真选了的键**（没选的键一个都不发）。
+
+   ★ 界面展示什么、提交什么，都出自同一个 `policyPreview()`：杜绝"屏幕上写的"与
+     "实际发出去的"不是一回事——那是安全策略界面最不能犯的错。
+   ─────────────────────────────────────────────────────── */
+
+// 关键词 →〔任意盘符 + UNC 共享〕两种写法。内核用 fnmatch（`*` 连子目录一起命中，
+// 路径先做 `\`→`/` 归一），所以 `*:/薪资*` 同时盖住 D:/薪资/10月/工资表.xlsx 与
+// D:/2026/薪资说明.md；`//*/合同*` 盖住 \\fileserver\share\合同\… 这类企业共享。
+const pathGlobs = (kw) => [`*:/${kw}*`, `//*/${kw}*`];
+
+const PATH_PRESETS = [
+  { group: "人事与薪酬", items: [
+    { id: "payroll", label: "薪酬 / 工资表",
+      effect: "命中工资单、奖金、个税等薪酬材料：这些路径下的读取或写入都要人工审批。",
+      globs: [...pathGlobs("薪资"), ...pathGlobs("工资"), ...pathGlobs("薪酬"), ...pathGlobs("奖金")] },
+    { id: "hr", label: "人事档案 / 简历",
+      effect: "命中人事档案、员工资料与简历：涉及员工个人信息的目录都要人工审批。",
+      globs: [...pathGlobs("人事"), ...pathGlobs("简历"), ...pathGlobs("员工档案")] },
+  ]},
+  { group: "财务与合同", items: [
+    { id: "finance", label: "财务 / 报销",
+      effect: "命中财务、报销、发票与税务材料：这类目录下的操作都要人工审批。",
+      globs: [...pathGlobs("财务"), ...pathGlobs("报销"), ...pathGlobs("发票"), ...pathGlobs("税务")] },
+    { id: "contract", label: "合同 / 法务",
+      effect: "命中合同与法务材料：合同文本的读取或改写都要人工审批。",
+      globs: [...pathGlobs("合同"), ...pathGlobs("法务")] },
+  ]},
+  { group: "客户与经营", items: [
+    { id: "customer", label: "客户资料 / 供应商",
+      effect: "命中客户、供应商与报价资料：客户与合作伙伴数据都要人工审批。",
+      globs: [...pathGlobs("客户"), ...pathGlobs("供应商"), ...pathGlobs("报价")] },
+  ]},
+  { group: "研发与密钥", items: [
+    { id: "source", label: "源代码 / 密钥材料",
+      effect: "命中源码、私钥、密钥与凭据目录：研发资产与密钥材料都要人工审批。",
+      globs: [...pathGlobs("源码"), ...pathGlobs("私钥"), ...pathGlobs("密钥"), ...pathGlobs("凭据")] },
+  ]},
+  { group: "医疗与证件", items: [
+    { id: "medical", label: "病历 / 健康",
+      effect: "命中病历、体检与健康记录：这类个人健康信息都要人工审批。",
+      globs: [...pathGlobs("病历"), ...pathGlobs("体检"), ...pathGlobs("健康")] },
+    { id: "idcard", label: "身份证 / 证件扫描件",
+      effect: "命中身份证、护照与证件材料：证件类材料都要人工审批。",
+      globs: [...pathGlobs("身份证"), ...pathGlobs("证件"), ...pathGlobs("护照")] },
+  ]},
+];
+// 三档即内核 APPROVAL_RANK 的三个语义（approve 是"自动放行"，控制面**无权**下发，
+// 所以这里没有这一档）：值域与原下拉框逐字相同。
+const FLOOR_OPTIONS = [
+  { value: "", label: "不改变", desc: "本条不下发审批下限，端点保持现状" },
+  { value: "confirm", label: "至少人工确认", desc: "confirm：每次操作都要人工点确认后才能继续" },
+  { value: "deny", label: "一律拒绝", desc: "deny：应急熔断，所有操作直接拒绝" },
+];
+const FLOOR_LABEL = { confirm: "至少人工确认（confirm）", deny: "一律拒绝（deny）" };
+
+function presetGlobs(ids) {
+  const out = [];
+  PATH_PRESETS.forEach((g) => g.items.forEach((it) => {
+    if (ids.includes(it.id)) it.globs.forEach((p) => out.push(p));
+  }));
+  return out;
+}
+function pickedPresetIds() {
+  return Array.from(document.querySelectorAll("#p-presets input[data-preset]:checked"))
+    .map((el) => el.dataset.preset);
+}
+function customPaths() {
+  const el = $("p-adv-paths");
+  return el ? el.value.split("\n").map((s) => s.trim()).filter(Boolean) : [];
+}
+function pickedList(kind) { return (state.policyPick[kind] || []).slice(); }
+
+/** 把各端点上报的能力清单汇成候选：值 → 哪些端点用过/启用了几台。
+ *  候选值原样来自服务端（渲染时一律 esc()），前端只做去重与计数。 */
+function policyCandidates(eps) {
+  const models = new Map();
+  const plugins = new Map();
+  (eps || []).forEach((e) => {
+    const who = e.name || e.endpoint_id;
+    const ext = new Set(e.external_models || []);
+    new Set([...(e.models || []), ...(e.external_models || [])]).forEach((raw) => {
+      const name = String(raw || "").trim();
+      if (!name) return;
+      if (!models.has(name)) models.set(name, { who: [], external: false });
+      const row = models.get(name);
+      if (!row.who.includes(who)) row.who.push(who);
+      if (ext.has(raw)) row.external = true;   // 公网模型：允许它＝允许出网调用，界面上标出来
+    });
+    (e.plugins || []).forEach((p) => {
+      const id = String((p && p.id) || "").trim();
+      if (!id) return;
+      if (!plugins.has(id)) plugins.set(id, { who: [], enabled: 0, version: "" });
+      const row = plugins.get(id);
+      if (!row.who.includes(who)) row.who.push(who);
+      if (p && p.enabled) row.enabled += 1;
+      if (p && p.version) row.version = String(p.version);
+    });
+  });
+  return { models, plugins };
+}
+
+/** 本次要下发什么：界面展示与提交体都取这里（唯一口径）。 */
+function policyPreview() {
+  const ids = pickedPresetIds();
+  const paths = presetGlobs(ids).concat(customPaths());
+  const floorEl = document.querySelector('input[name="p-floor"]:checked');
+  const globalEl = $("p-scope-global");
+  const globalOn = !!(globalEl && globalEl.checked);
+  const eps = Array.from(document.querySelectorAll(".p-scope-ep:checked"))
+    .map((el) => ({ scope: el.value, label: el.dataset.label || el.value }));
+  const targets = globalOn ? [{ scope: "global", label: "全部端点（全局策略）" }] : eps;
+  return {
+    presetIds: ids, paths, floor: floorEl ? floorEl.value : "",
+    models: pickedList("models"), plugins: pickedList("plugins"),
+    strict: !!($("p-strict") && $("p-strict").checked),
+    globalOn, targets,
+    scopeText: globalOn ? "全部端点（全局策略）"
+      : (targets.length ? `逐台下发：${targets.map((t) => t.label).join("、")}（共 ${targets.length} 台）`
+                        : "未选择"),
+  };
+}
+
+function paintPolicyPreview() {
+  const box = $("p-preview");
+  if (!box) return;
+  const pv = policyPreview();
+  const chips = (arr, empty) => arr.length
+    ? arr.map((v) => `<code>${esc(v)}</code>`).join("")
+    : `<em>${esc(empty)}</em>`;
+  const rows = [
+    `<b>敏感路径</b>${pv.paths.length
+        ? `共 <b>${pv.paths.length}</b> 条：${chips(pv.paths, "")}`
+        : `<em>未选（本条不下发）</em>`}`,
+    `<b>审批下限</b>${pv.floor ? esc(FLOOR_LABEL[pv.floor] || pv.floor) : "<em>不改变</em>"}`,
+    `<b>允许模型</b>${pv.models.length ? `共 ${pv.models.length} 个：${chips(pv.models, "")}`
+                                        : "<em>未选（本条不下发）</em>"}`,
+    `<b>允许插件</b>${pv.plugins.length ? `共 ${pv.plugins.length} 个：${chips(pv.plugins, "")}`
+                                        : "<em>未选（本条不下发）</em>"}`,
+    `<b>严格模式</b>${pv.strict ? "强制开启" : "<em>保持现状</em>"}`,
+    `<b>下发范围</b>${esc(pv.scopeText)}`,
+  ];
+  box.innerHTML = rows.map((r) => `<div class="preview__row">${r}</div>`).join("");
+  const cnt = $("p-path-count");
+  if (cnt) {
+    cnt.textContent = pv.presetIds.length
+      ? `已选 ${pv.presetIds.length} 个场景 · ${pv.paths.length} 条`
+      : (pv.paths.length ? `仅自定义 · ${pv.paths.length} 条` : "未选");
+  }
+  const btn = $("p-submit");
+  if (btn) {
+    btn.textContent = pv.globalOn ? "签发并下发（全部端点）"
+      : (pv.targets.length ? `逐台签发并下发（${pv.targets.length} 台）` : "签发并下发");
+  }
+}
+
+function presetLibraryHtml() {
+  return PATH_PRESETS.map((g) => {
+    const n = g.items.reduce((sum, it) => sum + it.globs.length, 0);
+    return `<div class="presets__group">
+      <div class="presets__gt">${esc(g.group)}<em>每个场景展开 4–8 条 glob，本组共 ${n} 条</em></div>
+      ${g.items.map((it) => `
+        <label class="preset">
+          <input type="checkbox" data-preset="${esc(it.id)}">
+          <span class="preset__body">
+            <b>${esc(it.label)}</b>
+            <span class="preset__effect">${esc(it.effect)}</span>
+            <span class="preset__globs">${it.globs.map((p) => `<code>${esc(p)}</code>`).join("")}</span>
+          </span>
+        </label>`).join("")}
+    </div>`;
+  }).join("");
+}
+
+function pickAreaHtml(kind) {
+  const cands = state.policyCands[kind] || new Map();
+  const picked = pickedList(kind);
+  const rows = Array.from(cands.entries()).sort((a, b) =>
+    b[1].who.length - a[1].who.length || String(a[0]).localeCompare(String(b[0])));
+  if (!rows.length) {
+    return `<p class="hint">还没有端点上报${kind === "models" ? "模型" : "插件"}清单：
+      可以先在下面手动补，或等端点下一次上报后再来点选。</p>`;
+  }
+  return `<div class="picks">${rows.map(([name, info]) => `
+    <button type="button" class="pick" data-pick="${kind}" data-value="${esc(name)}"
+            aria-pressed="${picked.includes(name) ? "true" : "false"}"
+            title="来自：${esc(info.who.join("、"))}">
+      <span>${esc(name)}</span>
+      ${kind === "models" && info.external ? `<em class="pick__tag">外部</em>` : ""}
+      <em>${kind === "models" ? `${info.who.length} 台用过` : `${info.enabled}/${info.who.length} 台启用`}</em>
+    </button>`).join("")}</div>`;
+}
+
+function pickedAreaHtml(kind) {
+  const picked = pickedList(kind);
+  const what = kind === "models" ? "模型" : "插件";
+  const body = picked.length
+    ? picked.map((v) => `<span class="picked__item">${esc(v)}<button type="button" class="picked__x"
+        data-unpick="${kind}" data-value="${esc(v)}" aria-label="移除 ${esc(v)}"
+        title="从本次允许集里移除">×</button></span>`).join("")
+    : `<span class="hint">一个都不选＝本条不下发（不会写成空数组——那在端点是"全部禁用"的收紧语义）。</span>`;
+  return `<div class="picked"><span class="picked__lead">本次允许${what}（共 ${picked.length} 个）：</span>${body}</div>`;
+}
+
+function paintPicks(kind) {
+  const host = $(kind === "models" ? "p-models-host" : "p-plugins-host");
+  if (host) host.innerHTML = pickAreaHtml(kind) + pickedAreaHtml(kind);
+}
+
+function togglePick(kind, value) {
+  const list = state.policyPick[kind];
+  const at = list.indexOf(value);
+  if (at >= 0) list.splice(at, 1); else list.push(value);
+  paintPicks(kind); paintPolicyPreview();
+}
+function removePick(kind, value) {
+  state.policyPick[kind] = state.policyPick[kind].filter((v) => v !== value);
+  paintPicks(kind); paintPolicyPreview();
+}
+
+function bindPickArea(kind, hostId, inputId, addId) {
+  const host = $(hostId);
+  if (host) {
+    // 事件挂在容器上（内容会整体重绘，元素级监听会随之丢失）
+    host.onclick = (e) => {
+      const pick = e.target.closest("button.pick");
+      if (pick && pick.dataset.pick === kind) return togglePick(kind, pick.dataset.value);
+      const x = e.target.closest("button.picked__x");
+      if (x && x.dataset.unpick === kind) return removePick(kind, x.dataset.value);
+    };
+  }
+  const input = $(inputId);
+  const add = () => {
+    if (!input) return;
+    const v = (input.value || "").trim();
+    if (!v) return toast("先填一个名字再点「加入」");
+    if (v.length > 96) return toast("名字太长：服务端上限 96 字符");
+    const list = state.policyPick[kind];
+    if (list.includes(v)) { input.value = ""; return toast("已经在本次允许集里了"); }
+    list.push(v); input.value = "";
+    paintPicks(kind); paintPolicyPreview();
+    toast(`已加入：${v}`);
+  };
+  if (input) input.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); add(); } };
+  const btn = $(addId);
+  if (btn) btn.onclick = add;
+  paintPicks(kind);
+}
+
+function bindPolicyForm() {
+  const redraw = () => paintPolicyPreview();
+  document.querySelectorAll("#p-presets input[data-preset]").forEach((el) => { el.onchange = redraw; });
+  const ta = $("p-adv-paths");
+  if (ta) ta.oninput = redraw;
+  document.querySelectorAll('input[name="p-floor"]').forEach((el) => { el.onchange = redraw; });
+  const strict = $("p-strict");
+  if (strict) strict.onchange = redraw;
+  bindPickArea("models", "p-models-host", "p-models-add", "p-models-add-btn");
+  bindPickArea("plugins", "p-plugins-host", "p-plugins-add", "p-plugins-add-btn");
+  const g = $("p-scope-global");
+  const epBoxes = Array.from(document.querySelectorAll(".p-scope-ep"));
+  if (g) g.onchange = () => {
+    // "全部端点"与逐台互斥：全局是"所有端点 + 以后新接入的"，与逐台混选会重复签发两种范围
+    if (g.checked) epBoxes.forEach((el) => { el.checked = false; });
+    redraw();
+  };
+  epBoxes.forEach((el) => {
+    el.onchange = () => {
+      if (el.checked && g) g.checked = false;
+      // 逐台一个都不剩时回到默认档"全部端点"（界面上看得见，不会静默变成空范围）
+      if (!el.checked && !epBoxes.some((x) => x.checked) && g) g.checked = true;
+      redraw();
+    };
+  });
+  $("p-submit").onclick = submitPolicy;
+  // ★ 首屏必须把两个候选区画出来（V3.6.7 补）：`paintPicks` 原本只在"点选 / 移除 / 手动补"时才被调用，
+  //   于是**刚进页面时两个候选区是空的**——整块"点选式"看起来像坏了（用户只看到两个空框）。
+  //   候选来自已上报端点的实际用量，首屏就该看得见；预览也一并按当前状态画一次。
+  paintPicks("models");
+  paintPicks("plugins");
+  redraw();
+}
+
+function dispatchResultHtml() {
+  const r = state.lastDispatch;
+  if (!r) return "";
+  const bad = r.fail.length;
+  return `<div class="block" id="p-result">
+    <div class="block__head"><h3>上次下发结果</h3>
+      <p>${bad ? `成功 ${r.ok.length} 台 / 失败 ${bad} 台 —— 失败的目标**没有**收到本次策略`
+              : `成功 ${r.ok.length}/${r.total}${r.total > 1 ? " 台" : ""}，全部成功`}</p></div>
+    <ul class="res-list">
+      ${r.ok.map((x) => `<li class="res-list__ok">${esc(x.label)} → 已签发
+        v${esc(x.version == null ? "—" : x.version)}</li>`).join("")}
+      ${r.fail.map((x) => `<li class="res-list__bad">${esc(x.label)} → 失败：${esc(x.error)}</li>`).join("")}
+    </ul>
+    ${bad ? `<p class="hint">失败项可稍后重试；「策略历史」里只有成功那几次的版本记录。</p>` : ""}
+  </div>`;
+}
+
 async function renderPolicy(box) {
   const [eps, pol] = await Promise.all([api("/api/v1/endpoints"), api("/api/v1/policy")]);
   state.endpoints = eps.endpoints || [];
-  const d = state.policyDraft;
+  state.policyCands = policyCandidates(state.endpoints);
+  state.policyPick = { models: [], plugins: [] };   // 每次进页面都是干净的（与旧版"下发后即清空"一致）
   box.innerHTML = `<section><div class="cols">
     <div>
       <div class="block">
-        <div class="block__head"><h3>新策略</h3><p>填哪几项就下发哪几项；留空表示"本条不下发"</p></div>
+        <div class="block__head"><h3>新策略</h3>
+          <p>点选即可，不需要写表达式；一个都不选的项＝本条不下发</p></div>
+
         <div class="form-row">
-          <label for="p-paths">追加敏感路径（每行一条，glob）</label>
-          <textarea class="textarea" id="p-paths" placeholder="D:\\薪资\\*&#10;/data/财务/*">${esc(d.sensitive_paths)}</textarea>
-          <p class="hint">与端点本地规则取<b>并集</b>——只会让更多路径被判为敏感，不会减少。</p>
+          <label>追加敏感路径 <span class="chip" id="p-path-count">未选</span></label>
+          <p class="hint">勾一个业务场景＝替你把对应的 glob 写进策略（与手写走同一条通路）。
+            与端点本地规则取<b>并集</b>——只会让更多路径需要人工确认，不会减少。</p>
+          <div class="presets" id="p-presets">${presetLibraryHtml()}</div>
+          <details class="fold" id="p-adv">
+            <summary>自定义路径（高级）：确实要自己写 glob 时用
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+            <textarea class="textarea" id="p-adv-paths" spellcheck="false"
+              placeholder="每行一条 glob，例如：&#10;D:/薪资/*&#10;//fileserver/share/合同/*"></textarea>
+            <p class="hint">留空＝不加自定义条目；与上面勾选的场景取<b>并集</b>。
+              <code>*</code> 连子目录一起命中（写法与内核一致）。</p>
+          </details>
         </div>
+
         <div class="form-row">
-          <label for="p-floor">审批下限</label>
-          <select class="select" id="p-floor">
-            <option value="">不改变</option>
-            <option value="confirm">至少人工确认（confirm）</option>
-            <option value="deny">一律拒绝（deny）</option>
-          </select>
-          <p class="hint">只能<b>提高</b>严格度；端点本地更严时保持端点自身的更严设置。</p>
+          <label>审批下限</label>
+          <div class="seg" id="p-floor" role="radiogroup" aria-label="审批下限">
+            ${FLOOR_OPTIONS.map((o) => `
+              <label class="seg__opt" title="${esc(o.desc)}">
+                <input type="radio" name="p-floor" value="${esc(o.value)}"${o.value === "" ? " checked" : ""}>
+                <span>${esc(o.label)}</span>
+              </label>`).join("")}
+          </div>
+          <p class="hint">只能<b>提高</b>严格度：不改变 ＜ 至少人工确认（confirm：每次操作都要点确认）
+            ＜ 一律拒绝（deny：应急熔断）。端点本地更严时保持端点自身设置。</p>
         </div>
+
         <div class="form-row">
-          <label for="p-models">允许使用的模型（逗号分隔，留空＝不下发）</label>
-          <input class="input" id="p-models" placeholder="qwen2.5:7b, qwen3.5:4b">
-          <p class="hint">与端点本地允许集取<b>交集</b>：填写后端点只能用这里列出的模型。</p>
+          <label>允许使用的模型</label>
+          <p class="hint">候选来自各端点上报的用量（括号＝有几台端点用过；标"外部"的是公网模型）。
+            点选＝加入允许集，与端点本地允许集取<b>交集</b>：写过之后端点只能用这里列出的模型。</p>
+          <div class="pick-host" id="p-models-host"></div>
+          <div class="inline manual">
+            <input class="input" id="p-models-add" spellcheck="false"
+                   placeholder="手动补一个（候选里没有的模型名也能填，回车或点「加入」）">
+            <button class="btn btn--sm" type="button" id="p-models-add-btn">加入</button>
+          </div>
         </div>
+
         <div class="form-row">
-          <label for="p-plugins">允许启用的插件（逗号分隔，留空＝不下发）</label>
-          <input class="input" id="p-plugins" placeholder="custom_dict, doc_extra">
-          <p class="hint">同样取<b>交集</b>；不在列表内的插件在端点侧会被停用。</p>
+          <label>允许启用的插件</label>
+          <p class="hint">同样取<b>交集</b>：不在列表内的插件在端点侧会被停用（只缩不扩）。
+            候选来自各端点上报的插件清单。</p>
+          <div class="pick-host" id="p-plugins-host"></div>
+          <div class="inline manual">
+            <input class="input" id="p-plugins-add" spellcheck="false"
+                   placeholder="手动补一个插件 id（回车或点「加入」）">
+            <button class="btn btn--sm" type="button" id="p-plugins-add-btn">加入</button>
+          </div>
         </div>
+
         <div class="form-row">
           <label class="switch"><input type="checkbox" id="p-strict"><span></span>
             <em>强制严格模式（端点禁用解释器，仅留只读命令）</em></label>
         </div>
+
         <div class="form-row">
-          <label for="p-scope">下发范围</label>
-          <select class="select" id="p-scope">
-            <option value="global">全部端点（全局策略）</option>
-            ${state.endpoints.map((e) => `<option value="${esc(e.endpoint_id)}">仅 ${esc(e.name)}</option>`).join("")}
-          </select>
+          <label>下发范围（可多选）</label>
+          <label class="scope scope--all"><input type="checkbox" id="p-scope-global" checked>
+            <span><b>全部端点</b>（签发一条全局策略：现有端点与以后新接入的机器都取到）</span></label>
+          ${state.endpoints.length ? `
+            <div class="scope__sep">或逐台下发（后端一次只接受一个范围，前端会<b>逐台</b>签发并汇总结果）</div>
+            <div class="scope__grid">${state.endpoints.map((e) => `
+              <label class="scope"><input type="checkbox" class="p-scope-ep" value="${esc(e.endpoint_id)}"
+                data-label="${esc(e.name)}"><span>${esc(e.name)}<em>${esc(e.endpoint_id)}</em></span></label>`).join("")}
+            </div>` : `<p class="hint">还没有端点接入：现在只能签发全局策略。</p>`}
         </div>
+
         <div class="form-row">
           <label for="p-note">备注</label>
-          <input class="input" id="p-note" placeholder="例：Q4 合规要求，收紧薪资目录" value="${esc(d.note)}">
+          <input class="input" id="p-note" placeholder="例：Q4 合规要求，收紧薪资目录">
         </div>
-        <button class="btn btn--primary" id="p-submit">签发并下发</button>
+
+        <div class="submit-row">
+          <button class="btn btn--primary" id="p-submit">签发并下发（全部端点）</button>
+          <span class="hint">下发前请核对下面「本次将下发」——那就是真正发出去的内容。</span>
+        </div>
+        <div class="preview" id="p-preview"></div>
+        <p class="hint">本页只能<b>收紧</b>：敏感路径取并集、审批下限取更严、允许集取交集；
+          控制面没有任何"放宽 / 豁免 / 放行"的通路。</p>
       </div>
+
+      ${dispatchResultHtml()}
 
       <div class="block">
         <div class="block__head"><h3>策略历史</h3><p>每次下发都留档，不可覆盖</p></div>
@@ -433,13 +1201,16 @@ async function renderPolicy(box) {
 
     <div>
       <div class="block">
-        <div class="denied">
-          <h4>控制面无法下发的项</h4>
-          <ul><li>anonymize</li><li>exempt</li><li>bypass</li><li>auto_approve</li>
-            <li>whitelist</li><li>disable_audit</li></ul>
-          <p>脱敏豁免、审批放行、白名单放行、审计开关属<b>内核判定权</b>，控制面没有任何通路可以下发。
-             端点侧会拒收含这些键的策略包，并按"只能收紧"的单调规则合并——即使控制面被攻破，也只能让端点管得更严。</p>
-        </div>
+        <details class="denied-fold" id="p-denied">
+          <summary>控制面无法下发的项：豁免 / 放行 / 白名单都不在通路里（6 类）
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></summary>
+          <div class="denied">
+            <ul><li>anonymize</li><li>exempt</li><li>bypass</li><li>auto_approve</li>
+              <li>whitelist</li><li>disable_audit</li></ul>
+            <p>脱敏豁免、审批放行、白名单放行、审计开关属<b>内核判定权</b>，控制面没有任何通路可以下发。
+               端点侧会拒收含这些键的策略包，并按"只能收紧"的单调规则合并——即使控制面被攻破，也只能让端点管得更严。</p>
+          </div>
+        </details>
       </div>
       <div class="block">
         <div class="block__head"><h3>端点当前生效策略</h3></div>
@@ -451,25 +1222,53 @@ async function renderPolicy(box) {
     </div>
   </div></section>`;
 
-  $("p-submit").onclick = submitPolicy;
+  bindPolicyForm();
+  paintPolicyPreview();
 }
+
 async function submitPolicy() {
-  const lines = $("p-paths").value.split("\n").map((s) => s.trim()).filter(Boolean);
-  const models = $("p-models").value.split(",").map((s) => s.trim()).filter(Boolean);
-  const plugins = $("p-plugins").value.split(",").map((s) => s.trim()).filter(Boolean);
-  const bundle = {};
-  if (lines.length) bundle.sensitive_paths = lines;
-  if ($("p-floor").value) bundle.approval_floor = $("p-floor").value;
-  if (models.length) bundle.allowed_models = models;
-  if (plugins.length) bundle.allowed_plugins = plugins;
-  if ($("p-strict").checked) bundle.require_strict_mode = true;
-  if ($("p-note").value.trim()) bundle.note = $("p-note").value.trim();
-  if (!Object.keys(bundle).length) return toast("至少要填一项再下发");
+  const pv = policyPreview();
+  const bundle = {};                       // 只带真选了的键：没选＝本条不下发（与原实现一致）
+  if (pv.paths.length) bundle.sensitive_paths = pv.paths;
+  if (pv.floor) bundle.approval_floor = pv.floor;
+  if (pv.models.length) bundle.allowed_models = pv.models;
+  if (pv.plugins.length) bundle.allowed_plugins = pv.plugins;
+  if (pv.strict) bundle.require_strict_mode = true;
+  const note = ($("p-note").value || "").trim();
+  if (note) bundle.note = note;
+  if (!Object.keys(bundle).length) return toast("至少要选一项再下发（一个都不选＝什么都不发）");
+  if (!pv.targets.length) return toast("请选择下发范围：全部端点，或至少勾选一台端点");
+
+  const btn = $("p-submit");
+  btn.disabled = true;
+  const ok = [], fail = [];
   try {
-    const res = await api("/api/v1/policy", { method: "POST", body: { scope: $("p-scope").value, bundle } });
-    toast(`已签发 v${res.version} · ${Object.entries(res.summary || {}).map(([k, v]) => k + "：" + v).join("；")}`, 4200);
-    render(true);
-  } catch (e) { toast("下发被拒绝：" + e.message, 5200); }
+    // 后端一次只接受一个 scope（{scope, bundle}），所以多选端点＝**逐台**签发。
+    // 串行而不是并发：本地小服务串行更好读日志，失败清单的顺序也稳定。
+    for (const t of pv.targets) {
+      try {
+        const res = await api("/api/v1/policy", { method: "POST", body: { scope: t.scope, bundle } });
+        ok.push({ label: t.label, version: res && res.version, summary: res && res.summary });
+      } catch (e) {
+        fail.push({ label: t.label, error: (e && e.message) ? e.message : String(e) });
+      }
+    }
+  } finally {
+    btn.disabled = false;
+  }
+  state.lastDispatch = { ok, fail, total: pv.targets.length, at: Date.now() };
+  // 提示条同样如实报数：有失败就绝不写成"下发成功"
+  const brief = (ok[0] && ok[0].summary)
+    ? " · " + Object.entries(ok[0].summary).map(([k, v]) => k + "：" + v).join("；") : "";
+  if (pv.targets.length === 1 && ok.length === 1) {
+    toast(`已签发 v${ok[0].version}（${pv.targets[0].label}）${brief}`, 4600);
+  } else if (fail.length) {
+    toast(`逐台下发完成：成功 ${ok.length} 台 / 失败 ${fail.length} 台`
+      + `（失败：${fail.map((f) => f.label).join("、")}，详见结果区）`, 8000);
+  } else {
+    toast(`逐台下发完成：成功 ${ok.length}/${pv.targets.length} 台，全部成功${brief}`, 5200);
+  }
+  render(true);
 }
 
 /* ── 页面：统计分析（服务端聚合，界面只画）─────────────────
@@ -685,7 +1484,14 @@ const MOCK_DATA = {
       message: "合同审查 · 步骤 2 完成", seq: 214, id: 414 },
     { ts: "2026-10-16T08:58:41", endpoint_id: "ep-rd-11", event_type: "control_report", severity: "warning",
       message: "控制面上报异常：HTTP 401 端点令牌无效", seq: 70, id: 413 }] },
-  "pair-code": { code: "A1B2C3", ttl_minutes: 30, expires_at: "2026-10-16T10:30:00" },
+  "pair-code": (() => ({ code: "A1B2C3", ttl_minutes: 30, custom: false,
+                         expires_at: isoLocal(new Date(Date.now() + 30 * 60000)) }))(),
+  // 局域网接入（#mock）：地址用示例网段，开启开关后 primary_url 才变成局域网地址——
+  // 与真实后端一致：监听在 127.0.0.1 时只有本机能访问。
+  network: { listen_host: "127.0.0.1", listen_port: 8787, external: false,
+             lan_urls: ["http://192.168.96.148:8787/", "http://10.0.4.21:8787/"],
+             primary_url: "http://127.0.0.1:8787/",
+             firewall_hint: "首次开启局域网访问时 Windows 会弹出防火墙询问，请选择「允许访问」（专用网络）。" },
   policy: { history: [
     { scope: "global", version: 3, updated_at: "2026-10-15T17:22:00" },
     { scope: "ep-hr-04", version: 5, updated_at: "2026-10-15T19:40:00" },
@@ -694,17 +1500,83 @@ const MOCK_DATA = {
     { model: "(端点合计)", scope: "local", calls: 512, chars: 1284400, endpoints: 3 },
     { model: "(端点合计)", scope: "external", calls: 38, chars: 96500, endpoints: 1 }] },
 };
-async function mockApi(path) {
-  const key = path.split("?")[0].replace("/api/v1/", "");
-  if (path.startsWith("/api/v1/events")) {
+/* #mock 沙盘：只为实现"预览模式下界面能被自动化测试完整走一遍"。
+   GET/POST 的差别按接口契约复现（配对码重新生成、自定义、监听地址切换）。 */
+function mockCode() {
+  return Math.random().toString(16).slice(2, 8).toUpperCase();
+}
+function mockNetwork() {
+  const external = MOCK_DATA.network.listen_host === "0.0.0.0";
+  const urls = MOCK_DATA.network.lan_urls;
+  return Object.assign({}, MOCK_DATA.network, {
+    external,
+    primary_url: external ? urls[0] : `http://127.0.0.1:${MOCK_DATA.network.listen_port}/`,
+  });
+}
+// 与 yindun/control/policy.py · describe() 同一套人话（预览模式的提示条要与真机一致）
+function mockDescribe(bundle) {
+  const out = {};
+  if ((bundle.sensitive_paths || []).length) out["敏感路径"] = `追加 ${bundle.sensitive_paths.length} 条`;
+  if (bundle.approval_floor) {
+    out["审批下限"] = { confirm: "必须人工确认", deny: "一律拒绝" }[bundle.approval_floor] || "";
+  }
+  if (bundle.allowed_models) out["允许模型"] = bundle.allowed_models.join("、") || "（空＝全部禁用）";
+  if (bundle.allowed_plugins) out["允许插件"] = bundle.allowed_plugins.join("、") || "（空＝全部禁用）";
+  if (bundle.require_strict_mode) out["严格模式"] = "强制开启（禁用解释器）";
+  if (bundle.note) out["备注"] = String(bundle.note);
+  return out;
+}
+async function mockApi(path, options = {}) {
+  const route = path.split("?")[0];
+  const key = route.replace("/api/v1/", "");
+  const body = options.body || {};
+  if (route.startsWith("/api/v1/events")) {
     const rows = MOCK_DATA.events.events;
     return { events: rows, total: rows.length, types: [...new Set(rows.map((r) => r.event_type))],
              limit: 100, offset: 0 };
+  }
+  if (key === "pair-code") {
+    if ((options.method || "GET") === "POST") {
+      const ttl = Math.max(5, Math.min(Number(body.ttl_minutes) || 30, 1440));
+      MOCK_DATA["pair-code"] = {
+        code: String(body.code || "").trim().toUpperCase() || mockCode(),
+        ttl_minutes: ttl, custom: !!body.code,
+        expires_at: isoLocal(new Date(Date.now() + ttl * 60000)),
+      };
+    }
+    return MOCK_DATA["pair-code"];
+  }
+  if (key === "network") return mockNetwork();
+  // 策略下发：按真实服务端口径复现（每个 scope 各自递增版本 + 历史追加 + summary 人话），
+  // 这样"勾预设 → 逐台下发 → 策略历史里出现新版本"在预览模式下也能完整走一遍。
+  if (key === "policy") {
+    if ((options.method || "GET") === "POST") {
+      const scope = String(body.scope || "global");
+      const versions = MOCK_DATA.policy.history.filter((h) => h.scope === scope).map((h) => h.version);
+      const version = Math.max(0, ...versions) + 1;
+      MOCK_DATA.policy.history.unshift({ scope, version, updated_at: isoLocal(new Date()),
+                                         active: 1 });
+      return { scope, version, sig: "mock0000", summary: mockDescribe(body.bundle || {}) };
+    }
+    return MOCK_DATA.policy;
+  }
+  if (key === "listen") {
+    const host = body.host === "0.0.0.0" ? "0.0.0.0" : "127.0.0.1";
+    MOCK_DATA.network.listen_host = host;
+    const net = mockNetwork();
+    return { ok: true, listen_host: host, lan_urls: net.lan_urls,
+             note: host === "0.0.0.0"
+               ? "已切换为对外监听（预览数据；真实环境首次会触发 Windows 防火墙询问）。"
+               : "已改回仅本机监听。" };
   }
   return MOCK_DATA[key] || {};
 }
 
 /* ── 启动 ─────────────────────────────────────────────── */
+// 窗口按钮要在**登录之前**就绪：无边框窗口的登录页同样需要能拖、能关
+bindWindowControls();
+// 配对码浮窗同理：绑定放在模块初始化处（不是 start() 里），登录/重连不会重复挂监听
+bindPairModal();
 $("auth-form").onsubmit = async (e) => {
   e.preventDefault();
   state.base = $("auth-url").value.trim().replace(/\/$/, "");

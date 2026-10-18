@@ -71,8 +71,10 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
-# onefile；console 仍为 True：启动信息（监听地址/数据目录/对外监听告警）与访问日志
-# 需要给运维看到——窗口模式下关掉控制台窗口即停服，符合"可见即可控"。
+# onefile + **无控制台**（用户反馈："不希望服务端还有个命令行"）：
+# 双击即一个原生控制台窗口，不再先弹一个黑命令行。代价是启动信息（监听地址/数据目录/令牌）
+# 没有终端可显示，因此统一改走 `desktop.say()`（无控制台时落日志）与 `desktop.notify()`
+# （启动失败弹系统对话框，写清原因与日志路径）——**不做"双击没反应"的静默失败**。
 exe = EXE(
     pyz,
     a.scripts,
@@ -84,6 +86,6 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=True,
+    console=False,
     disable_windowed_traceback=False,
 )

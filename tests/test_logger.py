@@ -152,6 +152,21 @@ try:
     warn_line = [ln for ln in text.splitlines() if "保存配置失败" in ln]
     check("像出错的行被抬成 WARNING", warn_line and "WARNING" in warn_line[-1], str(warn_line[-1:]))
     check("重复安装幂等", logger_mod.install_print_bridge())
+    # ★ 桥是**跨文件落点**：任何模块的 print 都会流进来。掩码必须在写出前就地做一遍，
+    #   而不是只靠 `_MaskingFilter`——否则将来少装一次过滤器（或把日志接到别处）掩码就静默失效。
+    #   这里把过滤器摘掉再打印，验证"就算没有过滤器，进 sink 的也已经是净化值"。
+    probe_logger = logging.getLogger("yindun.console")
+    saved_filters = probe_logger.filters[:]
+    probe_logger.filters = []
+    try:
+        print("[FakeModule] 联系人手机 13800138000 邮箱 someone@example.com")
+    finally:
+        probe_logger.filters = saved_filters
+    text2 = log_file.read_text(encoding="utf-8")
+    line = [ln for ln in text2.splitlines() if "联系人手机" in ln]
+    check("摘掉掩码过滤器后，print 进来的手机号仍不会明文落盘（掩码在桥的边界上）",
+          bool(line) and "13800138000" not in line[-1] and "someone@example.com" not in line[-1],
+          str(line[-1:])[:160])
 finally:
     sys.stdout, sys.stderr = saved_out, saved_err
     os.environ.pop("YINDUN_LOG_CAPTURE_PRINTS", None)

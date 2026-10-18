@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -40,6 +41,11 @@ from yindun.control.verify import ALERT_CODES, verify_report    # noqa: E402
 
 MAX_BODY = 2 * 1024 * 1024
 WEB_DIR = Path(__file__).resolve().parent / "web"
+
+# 运行期的监听状态（`serve()` 记录、`/api/v1/listen` 切换、`lan_access_info()` 读取）。
+# 放在模块级是因为"当前监听在哪个地址"是**进程级事实**，而这套服务只有一个实例。
+_LISTEN_STATE: Dict[str, Any] = {"host": "127.0.0.1", "port": 8787}
+_LISTEN_SERVER: Optional[ThreadingHTTPServer] = None
 STATIC_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
                 ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml",
                 ".png": "image/png", ".woff2": "font/woff2", ".ico": "image/x-icon"}
@@ -81,6 +87,22 @@ class ControlServer:
 
     def __init__(self, store: Optional[ControlStore] = None):
         self.store = store or ControlStore()
+        # 响应写完之后要做的动作（目前只有"切监听后退役旧服务对象"用；见 run_after_response）。
+        # 放在实例上而不是模块级：谁处理了这次请求，就由谁来收尾，多实例（测试里会起好几个）也不会串。
+        self._after_response: list = []
+
+    def defer_after_response(self, action) -> None:
+        """登记一个"响应写完后执行"的动作（V3.6.7：切监听退役旧服务对象用）。"""
+        self._after_response.append(action)
+
+    def run_after_response(self) -> None:
+        """执行并清空已登记的动作；任何异常都吞掉——收尾失败不该反过来影响已发出的响应。"""
+        actions, self._after_response = self._after_response, []
+        for action in actions:
+            try:
+                action()
+            except Exception:
+                pass
 
     # ── 鉴权 ──────────────────────────────────────────────
     @staticmethod
@@ -118,6 +140,12 @@ class ControlServer:
             return self.h_enroll(headers, body)
         if method == "POST" and path == "/api/v1/pair-code":
             return self.h_pair_code(headers, body)
+        if method == "GET" and path == "/api/v1/pair-code":
+            return self.h_pair_code_current(headers)
+        if method == "GET" and path == "/api/v1/network":
+            return self.h_network(headers)
+        if method == "POST" and path == "/api/v1/listen":
+            return self.h_listen(headers, body)
         if method == "GET" and path == "/api/v1/pair-codes":
             self.require_admin(headers)
             return 200, {"codes": self.store.list_pair_codes()}
@@ -214,12 +242,45 @@ class ControlServer:
                      "note": "令牌与策略签名密钥只在此处下发一次，请写入端点配置"}
 
     def h_pair_code(self, headers: Dict[str, str], body: bytes) -> Tuple[int, Any]:
-        """生成一次性配对码（管理端）。员工机凭码接入，不必持有管理令牌。"""
+        """生成一次性配对码（管理端）。员工机凭码接入，不必持有管理令牌。
+
+        传 `code` 即自定义码（口头/手写转述用），校验与占用检查在 store 层。
+        """
         self.require_admin(headers)
         data = _json_body(body) if body else {}
-        return 200, self.store.create_pair_code(
+        result = self.store.create_pair_code(
             ttl_minutes=int(data.get("ttl_minutes") or 30),
-            note=str(data.get("note") or ""))
+            note=str(data.get("note") or ""),
+            code=str(data.get("code") or ""))
+        if not result.get("ok"):
+            return 400, {"error": result.get("error") or "配对码生成失败"}
+        return 200, result
+
+    def h_pair_code_current(self, headers: Dict[str, str]) -> Tuple[int, Any]:
+        """当前可用配对码（只读）。界面要一直显示它，而不是弹一次就没了。"""
+        self.require_read(headers)
+        return 200, self.store.current_pair_code()
+
+    def h_network(self, headers: Dict[str, str]) -> Tuple[int, Any]:
+        """本机监听状态 + 局域网可访问地址（供"同学怎么连进来"这类场景）。
+
+        ★ 只做本机网卡枚举（`socket` 层面，无任何外部请求）：列出非回环、非虚拟网卡的 IPv4，
+          拼成 `<scheme>://<ip>:<port>/`。拿不到就返回空列表并说明原因，不猜。
+        """
+        self.require_read(headers)
+        return 200, lan_access_info()
+
+    def h_listen(self, headers: Dict[str, str], body: bytes) -> Tuple[int, Any]:
+        """切换监听地址（仅本机 ↔ 允许局域网）。
+
+        这是**管理动作**（改的是谁能访问控制面），所以只要管理令牌、不要只读令牌。
+        """
+        self.require_admin(headers)
+        data = _json_body(body) if body else {}
+        result = rebind_listen(str(data.get("host") or ""))
+        if not result.get("ok"):
+            return 400, {"error": result.get("error") or "监听地址切换失败"}
+        return 200, result
 
     def h_export(self, headers: Dict[str, str], query: Dict[str, list]) -> Tuple[int, Any]:
         """导出审计（合规检查/等保留档用）。导出的是**掩码后的事件**，与界面所见完全一致。"""
@@ -438,6 +499,9 @@ def make_handler(app: ControlServer, verbose: bool = True, rate_limit_per_min: i
     为什么默认关：单机/回环演示场景加限流只会添乱；一旦对外监听，就该显式打开。
     """
     limiter = RateLimiter(rate_limit_per_min)
+    # 把限流器挂到 app 上（V3.6.7）：切监听会重建服务对象，测试与运维需要一个**可读的凭据**
+    # 来确认"新服务仍带着原来的限流配置"——这样就不必为此发真实网络请求。
+    app.rate_limiter = limiter
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "YindunControl/" + CONTROL_VERSION
@@ -545,8 +609,150 @@ def make_handler(app: ControlServer, verbose: bool = True, rate_limit_per_min: i
                     import traceback
                     traceback.print_exc()
                 return self._send(500, {"error": f"服务端内部错误：{type(exc).__name__}"})
+            finally:
+                # ★ 响应写完之后才执行"退役动作"（V3.6.7 实测踩到）：切监听要关掉旧的服务对象，
+                #   但**旧服务正拿着这次请求**——在 handler 里就关掉它，响应会写不出去
+                #   （浏览器侧就是 `切换监听地址失败：Failed to fetch`），
+                #   `--no-window` 形态下更严重：旧服务的 serve_forever 跑在主线程，关掉它等于结束进程。
+                #   放到 finally 里、响应已在 wfile 里之后执行，顺序就对了。
+                app.run_after_response()
 
     return Handler
+
+
+def lan_ipv4_addresses() -> list:
+    """本机可用于局域网访问的 IPv4 地址（**纯本地枚举，不发任何外部请求**）。
+
+    怎么挑（按优先级）：先用一条 UDP socket"连"一个外部地址让系统选出默认出口网卡的源地址
+    （`connect` 不发包，只是让内核做路由选择），再把其它非回环地址补上。
+    过滤掉明显不是"别人能连"的地址：回环、APIPA(169.254)、以及常见的虚拟网卡网段
+    （VMware `192.168.x.1`/`.5.1` 这类宿主虚拟网段仍是合法地址，所以只按网段做**软**标注，不硬删）。
+    """
+    found: list = []
+    import socket as _socket
+
+    def _usable(ip: str) -> bool:
+        if not ip or ip.startswith("127.") or ip.startswith("169.254."):
+            return False
+        return bool(re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", ip))
+
+    sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    try:
+        sock.connect(("10.255.255.255", 1))          # 只为让内核选出口；UDP connect 不产生流量
+        primary = sock.getsockname()[0]
+        if _usable(primary):
+            found.append(primary)
+    except OSError:
+        pass
+    finally:
+        sock.close()
+    try:
+        for info in _socket.getaddrinfo(_socket.gethostname(), None, _socket.AF_INET):
+            ip = info[4][0]
+            if _usable(ip) and ip not in found:
+                found.append(ip)
+    except OSError:
+        pass
+    return found
+
+
+def lan_access_info() -> Dict[str, Any]:
+    """监听状态 + 局域网可访问地址 + 操作提示（给"别人怎么连进来"这个界面用）。
+
+    ★ 如实说明：默认只监听回环时，**局域网里的别的机器连不上**，这不是网络问题、也不是配对码问题；
+      要让别人连，必须切到对外监听，而且 Windows 防火墙第一次会弹询问（没允许就仍然连不上）。
+      这几句直接进返回值，界面照着显示即可——省得用户对着"连不上"猜。
+    """
+    host, port = _LISTEN_STATE.get("host", "127.0.0.1"), int(_LISTEN_STATE.get("port", 8787))
+    external = host not in ("127.0.0.1", "localhost", "::1", "")
+    ips = lan_ipv4_addresses()
+    urls = [f"http://{ip}:{port}/" for ip in ips]
+    return {
+        "listen_host": host,
+        "listen_port": port,
+        "external": external,
+        "lan_urls": urls if external else [],
+        "available_lan_urls": urls,             # 切到对外监听后**将会**可用的地址（提前显示，便于预判）
+        "primary_url": (urls[0] if urls else f"http://127.0.0.1:{port}/"),
+        # 装了 VMware/VirtualBox/内网穿透的机器会列出好几个地址，别人能连的通常只有第一个
+        # （默认出口网卡）。这句提示直接进返回值，界面照着显示，省得对方把虚拟网卡地址抄过去试半天。
+        "address_hint": ("列表里第一个通常是 WiFi/热点的地址，优先用它；"
+                         "192.168.x.1 这类多为 VMware/VirtualBox 虚拟网卡，别人连不上。"
+                         if len(urls) > 1 else ""),
+        "firewall_hint": ("对外监听后，Windows 防火墙会弹一次询问，必须选「允许访问」，"
+                          "否则别人仍然连不上（没弹就说明之前已拒绝过，需要到防火墙里放行 python/本程序）。"),
+        "tls_note": ("本形态不带 TLS：只在自己可信的局域网里用（例如手机热点/宿舍网），"
+                     "不要在公共 WiFi 上长期开着；配对码用后即作废、管理令牌不要外发。"),
+    }
+
+
+def rebind_listen(host: str) -> Dict[str, Any]:
+    """把监听地址切到 host（`127.0.0.1` 只本机 / `0.0.0.0` 允许局域网），**不重启进程**。
+
+    怎么做：在**新地址**上先建好新的 HTTP 服务（同一个 store、同一个 handler 工厂），
+    成功后再关掉旧的、把 `_LISTEN_STATE` 换成新的，最后启动新的服务线程。
+    先建后关是有意为之——若新地址绑不上（端口被占/权限），旧服务必须原样还在，
+    否则用户会"点一下开关把控制台弄没了"。
+    """
+    global _LISTEN_STATE, _LISTEN_SERVER
+    want = str(host or "").strip() or "127.0.0.1"
+    if want not in ("127.0.0.1", "0.0.0.0"):
+        return {"ok": False, "error": "只支持 127.0.0.1（仅本机）或 0.0.0.0（允许局域网）"}
+    cur = _LISTEN_STATE.get("host", "127.0.0.1")
+    if want == cur:
+        return {"ok": True, "changed": False, "note": "监听地址没有变化", **lan_access_info()}
+    port = int(_LISTEN_STATE.get("port", 8787))
+    store = _LISTEN_STATE.get("store")
+    if store is None or _LISTEN_SERVER is None:
+        return {"ok": False, "error": "当前形态不支持运行期切换监听（请用命令行 --host 重启）"}
+    # ★ 一定要在 serve() 之前取走"旧服务用的那个 app"：serve() 会把 _LISTEN_STATE["app"] 换成新 app，
+    #   而这次请求是**旧 app 在处理的**——退役动作登记错对象，旧监听就会一直留在那儿（实测：切回仅本机后
+    #   `0.0.0.0:port` 仍在 LISTENING）。
+    old = _LISTEN_SERVER
+    old_app = _LISTEN_STATE.get("app")
+    try:
+        fresh = serve(want, port, store, verbose=bool(_LISTEN_STATE.get("verbose", True)),
+                      rate_limit_per_min=int(_LISTEN_STATE.get("rate_limit", 0)),
+                      tls_cert=str(_LISTEN_STATE.get("tls_cert", "")),
+                      tls_key=str(_LISTEN_STATE.get("tls_key", "")))
+    except OSError as exc:
+        return {"ok": False, "error": f"切换失败（{type(exc).__name__}: {exc}）；已保持原监听不变"}
+    _LISTEN_SERVER = fresh
+    _LISTEN_STATE["host"] = want
+    # 谁在跑 serve_forever 决定"要不要自己起线程"（V3.6.7）：server（--no-window）形态下主线程
+    # 就是那个循环（它会自动接着服务新对象，见 main 里的 while）；其余形态 HTTP 跑在后台线程，
+    # 新对象得自己起一个。**不能两边都 serve_forever 同一个对象**——两个线程同时 accept 同一个
+    # socket 是竞态，宁可显式区分归属。
+    if _LISTEN_STATE.get("loop_owner") != "main":
+        threading.Thread(target=fresh.serve_forever, kwargs={"poll_interval": 0.3},
+                         daemon=True, name="yindun-control-http").start()
+
+    def _retire_old(grace: float) -> None:
+        """退役旧服务对象：先等 `grace` 秒，再停止接收新连接、最后关掉 socket。
+
+        ★ 为什么要等（V3.6.7 实测）：界面切完开关会紧接着再请求一次 `GET /api/v1/network`
+          （把界面刷成服务端的真实状态）。那个连接若落在**已被关掉**的旧 socket 上，
+          Windows 会回 `ERR_CONNECTION_RESET`——界面上就是「监听状态接口不可用：Failed to fetch」，
+          看着像切换失败。留宽限期后，这次请求落到新旧哪个监听都能被正常应答（同一个 store），
+          之后再关旧 socket 就没有这个问题了。
+        """
+        try:
+            time.sleep(grace)
+            old.shutdown()               # 停止接收新连接（已接纳的请求继续在各自线程里跑完）
+            time.sleep(0.2)
+            old.server_close()
+        except Exception:
+            pass
+
+    # 两条路都留着，缺一条就会漏：① 登记给**处理这次请求的那个 app**（正常路径：响应写完才开始计时）；
+    # ② 兜底线程——直接调 rebind_listen（测试/脚本）时没有请求在飞，没人来跑 ①。
+    # 两条都用同一个实现（只差宽限期），重复退役是安全的（shutdown/server_close 幂等）。
+    if old_app is not None:
+        old_app.defer_after_response(lambda: _retire_old(0.8))
+    threading.Thread(target=lambda: _retire_old(1.2), daemon=True,
+                     name="yindun-control-retire").start()
+    desktop.say(f"[控制面] 监听地址已切换：{cur} → {want}（端口 {port}）")
+    return {"ok": True, "changed": True, **lan_access_info()}
 
 
 def serve(host: str = "127.0.0.1", port: int = 8787, store: Optional[ControlStore] = None,
@@ -564,10 +770,42 @@ def serve(host: str = "127.0.0.1", port: int = 8787, store: Optional[ControlStor
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(certfile=tls_cert, keyfile=tls_key)
         httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
+    # 记下"当前监听的是什么、怎么重建"：`/api/v1/listen` 运行期切换要用（见 rebind_listen）。
+    # ★ 端口取**实际绑定的**（`port=0` 时由系统分配），否则切监听会跑到另一个随机端口上，
+    #   界面显示的地址也就跟着错。
+    bound_host, bound_port = httpd.server_address[0], httpd.server_address[1]
+    _LISTEN_STATE.update({"host": host if port else bound_host, "port": bound_port,
+                          "app": app, "store": store, "verbose": verbose,
+                          "rate_limit": rate_limit_per_min, "tls_cert": tls_cert, "tls_key": tls_key})
     return httpd
 
 
-def main(argv: Optional[list] = None) -> int:
+def port_in_use(host: str, port: int, timeout: float = 0.6) -> bool:
+    """这个端口上是不是已经有**活着的**服务在监听。
+
+    ★ 为什么必须主动探一次（V3.6.7 实测踩到）：Windows 上 `HTTPServer` 默认
+      `allow_reuse_address = 1`（SO_REUSEADDR），**两个进程可以同时绑同一个端口**，
+      于是"双击两次 exe"变成两个实例抢连接——浏览器落到哪个实例全看运气，
+      用户看到的是旧版本界面却以为是新 exe 没生效（实测：老版本实例还在跑，
+      新 exe 起在同一端口，页面上还是旧版本号）。端口上没人时才继续启动。
+    """
+    if not int(port or 0):
+        return False                      # 0 = 由系统分配端口，不存在占用一说
+    probe_host = {"0.0.0.0": "127.0.0.1", "::": "::1", "": "127.0.0.1"}.get(host, host)
+    import socket
+    family = socket.AF_INET6 if ":" in probe_host else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(timeout)
+        sock.connect((probe_host, int(port)))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def _run(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(description="隐盾控制面（企业侧集中管理 · 演示级原型）")
     parser.add_argument("--host", default="127.0.0.1", help="监听地址（默认仅回环）")
     parser.add_argument("--port", type=int, default=8787)
@@ -630,9 +868,24 @@ def main(argv: Optional[list] = None) -> int:
         _alerts.configure(url=args.alert_webhook,
                           silence_minutes=max(0, int(args.alert_silence_minutes)),
                           store=store, logger=log)
+    # ── 单实例：端口上已有活着的服务就别再起一个（V3.6.7）──────────────
+    # 双击两次 exe 在 Windows 上会**两个实例绑同一端口**（SO_REUSEADDR），
+    # 谁先接到连接谁说话 → 用户可能一直看着旧实例的界面，却以为新 exe 没生效。
+    if port_in_use(args.host, args.port):
+        where = f"http://{args.host if args.host else '127.0.0.1'}:{args.port}/"
+        desktop.say(f"[控制面] 端口 {args.port} 上已有服务在运行，本次不再启动（{where}）")
+        log.warning("端口 %s 已被占用，拒绝重复启动", args.port)
+        desktop.notify("隐盾控制台已经在运行",
+                       f"端口 {args.port} 上已经有一个控制台在运行了，本次不再重复启动。\n\n"
+                       "请使用已经打开的那个控制台窗口；如果找不到它，"
+                       "请在任务管理器里结束旧的「隐盾控制端…便携版.exe」进程后重新双击。\n\n"
+                       "（这样做是为了避免两个实例抢同一个端口，让你看到旧版本的界面）")
+        return 3
     httpd = serve(args.host, args.port, store, verbose=not args.quiet,
                   rate_limit_per_min=max(0, int(args.rate_limit)),
                   tls_cert=args.tls_cert, tls_key=args.tls_key)
+    global _LISTEN_SERVER
+    _LISTEN_SERVER = httpd          # 运行期切换监听要用（见 rebind_listen）
     external = args.host not in ("127.0.0.1", "localhost", "::1", "")
 
     mode, why = desktop.plan_launch(args.host, args.window)
@@ -640,41 +893,102 @@ def main(argv: Optional[list] = None) -> int:
     # 令牌只在"不会被自动登录"的模式下打印到终端（窗口/浏览器模式已带进去，没必要再吐一次）
     desktop.stdout_banner(args.host, args.port, store.dir, store.dir / "admin_token.txt",
                           token if mode == "server" else "", external=external)
-    print(f"  启动方式   {why}")
+    desktop.say(f"  启动方式   {why}")
 
     if mode == "server":
+        _LISTEN_STATE["loop_owner"] = "main"      # 主线程持有循环（切监听时不用另起线程）
+        # ★ 循环而非单次 serve_forever（V3.6.7）：`/api/v1/listen` 会在运行期换掉服务对象，
+        #   旧对象的 serve_forever 会因此返回——那不是"该退出了"，要接着服务新的那个；
+        #   只有返回时 `_LISTEN_SERVER` 还是自己，才说明是真正停止（Ctrl+C 或外部 shutdown）。
+        while True:
+            current = _LISTEN_SERVER
+            if current is None:
+                break
+            try:
+                current.serve_forever(poll_interval=0.3)
+            except KeyboardInterrupt:
+                break
+            if _LISTEN_SERVER is current:
+                break
+        desktop.say("[控制面] 已停止")
         try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:
-            print("\n[控制面] 已停止")
-        finally:
-            httpd.server_close()
+            if _LISTEN_SERVER is not None:
+                _LISTEN_SERVER.server_close()
+        except Exception:
+            pass
         return 0
 
     # 窗口 / 浏览器：HTTP 放后台线程，主线程让给 GUI（pywebview 的循环必须在主线程）
+    _LISTEN_STATE["loop_owner"] = "background"
     desktop.serve_in_background(httpd)
     try:
         if mode == "browser":
             if not desktop.open_browser(url):
-                print(f"[控制面] 未能自动打开浏览器，请手动访问：{url}")
-            print("[控制面] 服务运行中，按 Ctrl+C 停止")
+                # 无控制台时这行 print 是看不见的 → 必须弹窗，否则用户只看到"双击没反应"
+                desktop.notify("隐盾控制台", f"未能自动打开浏览器，请手动访问：\n{url}")
+            desktop.say("[控制面] 服务运行中，按 Ctrl+C 停止")
             while True:
                 time.sleep(0.5)
         else:
-            print("[控制面] 控制台窗口已打开（关闭窗口即退出服务）")
+            desktop.say("[控制面] 控制台窗口已打开（关闭窗口即退出服务）")
             if not desktop.open_window(url):
                 # 兜底：没有 WebView2/桌面环境时退回浏览器，并明确说明发生了什么
-                desktop.open_browser(url)
-                print("[控制面] 已在默认浏览器中打开控制台")
+                opened = desktop.open_browser(url)
+                desktop.say("[控制面] 已在默认浏览器中打开控制台")
+                desktop.notify(
+                    "隐盾控制台 · 已改用浏览器打开",
+                    ("本机没有可用的 WebView2 桌面窗口运行时，控制台已在系统浏览器中打开。\n\n"
+                     f"地址：{url}\n"
+                     "关闭浏览器标签不会停止服务：服务继续在后台运行，"
+                     "要停止请在任务管理器中结束本程序。\n\n"
+                     f"日志：{desktop.log_file_hint()}") if opened else
+                    ("未能打开控制台窗口，也未能自动打开浏览器。\n\n"
+                     f"请手动访问：{url}\n日志：{desktop.log_file_hint()}"))
                 while True:
                     time.sleep(0.5)
     except KeyboardInterrupt:
         pass
     finally:
-        print("\n[控制面] 已停止")
+        desktop.say("[控制面] 已停止")
         httpd.shutdown()
         httpd.server_close()
     return 0
+
+
+def main(argv: Optional[list] = None) -> int:
+    """启动入口（带"失败了也要让人看见"的兜底）。
+
+    ★ 为什么必须有这层：控制端 exe 是**无控制台**的窗口形态（V3.6.7）。这时一旦启动失败
+      （端口被占、数据目录不可写、WebView2 缺失…），没有任何终端会显示 traceback——
+      用户看到的就是"双击了，什么也没发生"。所以这里统一兜住异常，用系统弹窗说清
+      失败原因 + 日志路径，再以非 0 退出码收场。
+    """
+    try:
+        return _run(argv)
+    except SystemExit:
+        raise                       # argparse 的用法错误：照它自己的语义退出
+    except KeyboardInterrupt:
+        return 0
+    except Exception as exc:                                        # noqa: BLE001
+        import traceback
+        detail = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+        desktop.say(f"[控制面] 启动失败：{detail}")
+        try:
+            from yindun.utils.logger import get_logger
+            get_logger("control").error("启动失败：%s", detail, exc_info=True)
+        except Exception:
+            pass
+        desktop.notify("隐盾控制台启动失败",
+                       f"{detail}\n\n常见原因：{args_hint()}\n\n日志：{desktop.log_file_hint()}",
+                       error=True)
+        return 2
+
+
+def args_hint() -> str:
+    """失败时给出最可能的可照做建议（无控制台时这是用户唯一能看到的线索）。"""
+    return ("① 8787 端口已被占用（换个端口或先关掉旧实例）；"
+            "② 工作目录没有写权限（换成有权限的目录再运行）；"
+            "③ 杀毒软件拦截了本程序")
 
 
 if __name__ == "__main__":

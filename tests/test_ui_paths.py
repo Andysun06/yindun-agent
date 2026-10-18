@@ -4,7 +4,7 @@
 为什么要有它（开发记忆 §7 B-4，"当前最大的工程债"）：界面改动一直靠"源码契约 grep +
 手工点浏览器"验证——改一次要点十几轮，而且逻辑回归（渲染后的真实 DOM 行为）根本测不到。
 本套件用 Playwright 驱动真实 Chromium 打开 `index.html#mock`（界面自带的后端沙盘），
-把十条关键交互钉死；不需要 Ollama、不需要起后端，两分钟内跑完。
+把十二条关键交互钉死；不需要 Ollama、不需要起后端，两分钟内跑完。
 
 覆盖（每条都是"用户真会做的一步"）：
   1. 四档权限：分段器选中态 / 提示文案 / 矩阵渲染与内核 `MODE_POLICY` **逐格一致** / 落库调用
@@ -14,9 +14,17 @@
   5. 插件专属设置栏目：启用带设置的插件后栏目出现、停用后消失
   6. 插件专属设置页渲染：laya 三级接入表单（本机/局域网/正则）+ 保存调用
   7. 设置页六组页面渲染（模型/隐私与权限/知识库/插件/企业控制面/窗口与外观）
+  7b. 模型接入页点击逻辑：左栏本机档只一项高亮 / 点模型名真的切换并当场反映 /
+      点右栏胶囊左栏「使用中」跟着变 / 点已在用的那项不误切 / 局域网条目仍是「看配置」
   8. 工作流面板：模板列表、启动实例、步骤渲染、"已审批，待执行"文案、实现口径提示
   9. 闪发模式：输入与主输入同步、Enter 发送、Shift+Enter 换行（不发送）
  10. 明暗切换 / 右栏折叠 → 窗口按钮归位（topbar ↔ panel ↔ head 三态）
+ 11. 附件「＋」：真的触发 pick_files 并有可读反馈；桥缺失时提示「桥接未就绪」
+ 12. Markdown 表格单元格：粗体 / 行内代码 / <br> 换行 / 链接 / HTML 注入防护
+ 13. 反馈时序（真机事故固化）：发送**立刻**出现等待态；status / intermediate_result 到达后
+     是"同一条气泡原地升级"（工具行 / 流式正文），不是并存两条；finished 收到空串时显示
+     如实兜底文案且**不留空气泡**（已有流式正文时正文优先）；没有流式气泡时 trace 也有
+     可见落点；全程无 JS 运行时错误
 
 用法：python tests/test_ui_paths.py        （退出码 0 = 全部通过）
 依赖：pip install playwright && python -m playwright install chromium
@@ -295,6 +303,107 @@ def main() -> int:
         check("外观页有置顶开关与主题按钮",
               page.is_visible("#sw-topmost + .switch__track") and page.is_visible("#btn-theme-2"))
 
+        # ── 7b) 模型接入页的点击逻辑（负责人实测反馈"点击逻辑有问题"）──
+        print("\n" + "=" * 78)
+        print("【7b】模型接入页：点模型名 / 点胶囊都真的切换，且页面当场反映")
+        print("=" * 78)
+        page.click('.setnav__item[data-set="model"]')
+        page.wait_for_timeout(300)
+        # 记录 save_settings 的入参：切换是真的落库了，还是只改了界面
+        page.evaluate("""() => {
+          window.__saved = [];
+          const m = window.__YINDUN_MOCK__.api, orig = m.save_settings;
+          m.save_settings = (patch) => { window.__saved.push(patch); return orig(patch); };
+        }""")
+        st = lambda: page.evaluate("""() => ({
+          left: [...document.querySelectorAll('#prov-list .prov__item')].map(
+            (b) => ({ n: b.dataset.n, active: b.classList.contains('is-active'),
+                      cur: !!b.querySelector('.prov__cur') })),
+          chips: [...document.querySelectorAll('#prov-detail .prov__chip')].map(
+            (c) => ({ n: c.dataset.pick, cur: c.classList.contains('is-cur') })),
+          saved: window.__saved.slice(),
+        })""")
+        s0 = st()
+        locals_now = [i for i in s0["left"] if not i["n"] or ":" in i["n"]][:2]
+        cur0 = [i["n"] for i in s0["left"] if i["cur"]]
+        check("本机档只有「使用中」那一项被高亮（不是整档都亮）",
+              len([i for i in s0["left"] if i["active"] and i["n"] and ":" in i["n"]]) == 1,
+              str(s0["left"]))
+        other = [i["n"] for i in s0["left"] if ":" in i["n"] and not i["cur"]]
+        check("本机档至少有一个「非使用中」模型可供点击切换", bool(other) and bool(cur0),
+              f"cur={cur0} other={other}")
+        if other:
+            page.click(f'#prov-list .prov__item[data-n="{other[0]}"]')
+            page.wait_for_timeout(500)
+            s1 = st()
+            check("点左栏本机模型名 → 真的切换了模型（落库补丁正确）",
+                  s1["saved"] and s1["saved"][-1].get("model") == other[0], str(s1["saved"]))
+            check("切完左栏「使用中」移到新模型（页面当场反映，不是点了没反应）",
+                  [i["n"] for i in s1["left"] if i["cur"]] == [other[0]], str(s1["left"]))
+            check("右栏胶囊同步「使用中」",
+                  [c["n"] for c in s1["chips"] if c["cur"]] == [other[0]], str(s1["chips"]))
+            # 反向：点胶囊，左栏必须跟着变（这条正是本次修掉的核心症状）
+            back = [i["n"] for i in s1["left"] if ":" in i["n"] and not i["cur"]][0]
+            page.click(f'#prov-detail .prov__chip[data-pick="{back}"]')
+            page.wait_for_timeout(500)
+            s2 = st()
+            check("点右栏胶囊切回 → 左栏「使用中」跟着变（修掉了「只改后端不改界面」）",
+                  [i["n"] for i in s2["left"] if i["cur"]] == [back],
+                  f"{[i['n'] for i in s1['left'] if i['cur']]} → {[i['n'] for i in s2['left'] if i['cur']]}")
+            n_saved = len(s2["saved"])
+            page.click(f'#prov-list .prov__item[data-n="{back}"]')
+            page.wait_for_timeout(400)
+            s3 = st()
+            check("点「已经在用」的那一项不产生多余保存（只想回面板不会误换模型）",
+                  len(s3["saved"]) == n_saved and page.is_visible("#prov-detail .prov__chip"),
+                  f"{n_saved} → {len(s3['saved'])}")
+        page.click('#prov-list .prov__item[data-t="lan"]')
+        page.wait_for_timeout(350)
+        check("点局域网条目仍显示它的配置表单（原有「看配置」语义没有回退）",
+              "公司内网" in page.inner_text("#prov-detail"))
+
+        # ── 7c) 密钥「留空＝不改动」（负责人实测：保存后密钥消失、不能再保存/测试）──
+        print("\n" + "=" * 78)
+        print("【7c】公网模型密钥：保存不清空、测试连接会捎上条目名（好让后端回落已存密钥）")
+        print("=" * 78)
+        page.evaluate("""() => {
+          window.__probes = [];
+          const m = window.__YINDUN_MOCK__.api, orig = m.probe_model_endpoint;
+          m.probe_model_endpoint = (...args) => { window.__probes.push(args); return orig(...args); };
+        }""")
+        page.click('#prov-list .prov__add[data-addt="wan"]')
+        page.wait_for_timeout(300)
+        page.fill("#p-name", "回归-云端密钥")
+        page.fill("#p-model", "glm-4-flash")
+        page.fill("#p-url", "https://open.bigmodel.cn/api/paas/v4")
+        # 假密钥按仓库约定分段拼接（避免把"像密钥的字面量"写进仓库）
+        page.fill("#p-key", "sk-" + "regress-not-a-real-key")
+        page.click("#prov-detail [data-save]")
+        page.wait_for_timeout(600)
+        check("保存带密钥的条目 → 密钥输入框清空（不回显）且提示「沿用已存密钥」",
+              page.input_value("#p-key") == "" and
+              "沿用已存密钥" in (page.get_attribute("#p-key", "placeholder") or ""),
+              f"{page.input_value('#p-key')!r} / {page.get_attribute('#p-key', 'placeholder')!r}")
+        check("该条已出现在公网档列表里（保存真的生效，不是静默失败）",
+              page.query_selector('#prov-list .prov__item[data-n="回归-云端密钥"]') is not None)
+        page.click("#prov-detail [data-save]")          # 第二个"保存"：用户最容易踩的那一步
+        page.wait_for_timeout(600)
+        toast_text = page.eval_on_selector_all("#toast-root .toast", "els => els.map(e => e.textContent).join(' | ')")
+        check("留空再保存 → 如实提示「密钥沿用已存」（不是把密钥清掉）",
+              "密钥沿用已存" in toast_text, repr(toast_text[:60]))
+        check("留空再保存后该条仍是「已配置」（密钥没丢）",
+              "沿用已存密钥" in (page.get_attribute("#p-key", "placeholder") or ""),
+              repr(page.get_attribute("#p-key", "placeholder")))
+        page.click('#prov-detail [data-probe="detail"]')
+        page.wait_for_timeout(500)
+        probes = page.evaluate("() => window.__probes")
+        check("点「测试连接」把条目名一并交给后端（后端据此用已存密钥，而不是空密钥）",
+              bool(probes) and probes[-1][2] == "回归-云端密钥",
+              str(probes[-1] if probes else None)[:160])
+        check("探测时输入框是空的（密钥不回显，靠后端回落）",
+              bool(probes) and str(probes[-1][1]) == "",
+              str(probes[-1] if probes else None)[:160])
+
         # ── 8) 工作流面板 ──
         print("\n" + "=" * 78)
         print("【8】工作流面板")
@@ -396,6 +505,556 @@ def main() -> int:
         check("再点一次可展开", not page.evaluate(
             "() => document.querySelector('.app').classList.contains('is-right-collapsed')"))
 
+        # ── 11) 附件「＋」：真的触发 pick_files，且有可读反馈 ──
+        print("\n" + "=" * 78)
+        print("【11】附件「＋」按钮（正常 / 桥缺失两条路径）")
+        print("=" * 78)
+        chips_before = page.eval_on_selector_all("#chips .chip", "els => els.map(e => e.textContent)")
+        picks_before = len(calls("pick_files"))
+        page.click("#btn-attach")
+        page.wait_for_timeout(500)
+        check("点「＋」真的调用 pick_files（不是没收事件的死按钮）",
+              len(calls("pick_files")) > picks_before,
+              f"{picks_before} → {len(calls('pick_files'))}")
+        chips_after = page.eval_on_selector_all("#chips .chip", "els => els.map(e => e.textContent)")
+        check("点「＋」后附件条多出一项（界面真的生效）",
+              len(chips_after) == len(chips_before) + 1,
+              f"{len(chips_before)} → {len(chips_after)}")
+        toast_text = page.eval_on_selector_all(
+            "#toast-root .toast", "els => els.map(e => e.textContent).join(' | ')")
+        check("点「＋」给出可读提示（已挂载 N 个附件）",
+              "已挂载 1 个附件" in toast_text, repr(toast_text))
+        # 桥缺失：必须走 call() 的「桥接未就绪」提示，而不是静默无反应
+        page.evaluate("() => document.querySelectorAll('#toast-root .toast').forEach(e => e.remove())")
+        page.evaluate("() => { window.__savedPickFiles = window.__YINDUN_MOCK__.api.pick_files;"
+                      " delete window.__YINDUN_MOCK__.api.pick_files; }")
+        page.click("#btn-attach")
+        page.wait_for_timeout(350)
+        toast_text = page.eval_on_selector_all(
+            "#toast-root .toast", "els => els.map(e => e.textContent).join(' | ')")
+        check("桥里没有 pick_files 时提示「桥接未就绪」（不再静默）",
+              "桥接未就绪：pick_files" in toast_text, repr(toast_text))
+        page.evaluate("() => { window.__YINDUN_MOCK__.api.pick_files = window.__savedPickFiles; }")
+
+        # ── 12) Markdown 表格单元格：行内标记 / <br> / 注入防护 ──
+        print("\n" + "=" * 78)
+        print("【12】Markdown 表格单元格（粗体 / 行内代码 / <br> / 链接 / 注入防护）")
+        print("=" * 78)
+        # 恶意样例按仓库约定分段拼接：保持为纯字符串常量，不写成完整可执行载荷
+        evil_img = "<img src=x on" + "error=alert(" + "1)>"
+        evil_b = "<b>" + "不该生效" + "</b>"
+        evil_br = "<br onmouse" + "over=alert(" + "1)>"
+        evil_link = "[点我](java" + "script:alert(" + "1))"
+        md_table = "\n".join([
+            "| 列A | 列B | 列C | 列D | 列E | 列F | 列G | 列H | 列I | 列J |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+            "| **代码分析** | `grep` 片段 | grep ) <br> 文件内容读取 | - 甲<br/>- 乙 "
+            "| [官网](https://example.com/a?x=1&y=2) "
+            f"| {evil_img} {evil_b} | x {evil_br} y | {evil_link} | 1. 第一<br>2. 第二 "
+            "| `<br>` 应该原样显示 |",
+        ])
+        page.evaluate("(t) => window.yindun.onEvent('intermediate_result', t)", md_table)
+        page.wait_for_timeout(300)
+        cells = page.evaluate("""() => {
+          const t = [...document.querySelectorAll('#chat .entry__body table')].pop();
+          if (!t) return null;
+          return [...t.querySelectorAll('tbody td')].map((td) => ({
+            text: td.textContent, html: td.innerHTML,
+            strong: [...td.querySelectorAll('strong')].map((e) => e.textContent),
+            code: [...td.querySelectorAll('code')].map((e) => e.textContent),
+            brs: td.querySelectorAll('br').length,
+            imgs: td.querySelectorAll('img').length,
+            bs: td.querySelectorAll('b').length,
+            links: [...td.querySelectorAll('a')].map((a) => ({
+              text: a.textContent, href: a.getAttribute('href'), rel: a.getAttribute('rel') })),
+          }));
+        }""")
+        check("表格样例行渲染出 10 个单元格", isinstance(cells, list) and len(cells) == 10,
+              str(len(cells) if isinstance(cells, list) else cells))
+        if isinstance(cells, list) and len(cells) == 10:
+            c = cells
+            check("单元格内 **粗体** 渲染为 <strong>（不再出现字面 **）",
+                  c[0]["strong"] == ["代码分析"] and "**" not in c[0]["text"],
+                  f"{c[0]['strong']} / {c[0]['text']!r}")
+            check("单元格内 `行内代码` 渲染为 <code>", c[1]["code"] == ["grep"], str(c[1]["code"]))
+            check("单元格内 <br> 变成真正换行（DOM 有 br、文本无字面 <br>）",
+                  c[2]["brs"] == 1 and "<br>" not in c[2]["text"]
+                  and "grep" in c[2]["text"] and "文件内容读取" in c[2]["text"],
+                  f"brs={c[2]['brs']} text={c[2]['text']!r}")
+            check("单元格内 <br/> 同样换行，且无序列表标记变圆点",
+                  c[3]["brs"] == 1 and "• 甲" in c[3]["text"] and "• 乙" in c[3]["text"],
+                  f"brs={c[3]['brs']} text={c[3]['text']!r}")
+            links = c[4]["links"]
+            check("单元格内链接渲染为安全链接（http(s) + noopener）",
+                  len(links) == 1 and links[0]["href"] == "https://example.com/a?x=1&y=2"
+                  and "noopener" in (links[0]["rel"] or ""), str(links))
+            check("单元格里的 img 不被当成 HTML 执行（DOM 无 img 元素）",
+                  c[5]["imgs"] == 0, f"img={c[5]['imgs']}")
+            check("单元格里的 <b> 不被当成 HTML 渲染（DOM 无 b 元素）",
+                  c[5]["bs"] == 0, f"b={c[5]['bs']}")
+            check("恶意标签以转义后的原文可见（文本里能看到原样内容）",
+                  evil_img in c[5]["text"] and evil_b in c[5]["text"], repr(c[5]["text"]))
+            check("带属性的 <br on…> 不放行（不产生 br 元素）",
+                  c[6]["brs"] == 0 and evil_br in c[6]["text"],
+                  f"brs={c[6]['brs']} text={c[6]['text']!r}")
+            check("javascript: 链接不放行（不产生 a 元素）",
+                  c[7]["links"] == [] and "javascript:" in c[7]["text"],
+                  f"links={c[7]['links']} text={c[7]['text']!r}")
+            check("有序列表在同一单元格内保持可读的多行（数字标记不受损）",
+                  c[8]["brs"] == 1 and "1. 第一" in c[8]["text"] and "2. 第二" in c[8]["text"],
+                  f"brs={c[8]['brs']} text={c[8]['text']!r}")
+            check("行内代码里的 <br> 原样显示（不被换行替换拆开）",
+                  c[9]["code"] == ["<br>"] and c[9]["brs"] == 0 and "<br>" in c[9]["text"],
+                  f"code={c[9]['code']} brs={c[9]['brs']} text={c[9]['text']!r}")
+
+        # ── 13) 等待态 / 空回复兜底 / trace 落点（真机事故固化）──
+        # 事故（负责人实测）：问「我的桌面有几张图片？」→ 助手气泡是**空的**、整段生成期没有
+        # 任何"思考中"提示，重启后那一轮像没发生过。后端已修（直答快路径不再吞工具调用、
+        # 终止文本保证非空），这里把前端的三条反馈缺口钉死：发送即等待态、等待态被"升级"
+        # 而不是并存两条、空终稿有如实兜底且不留空气泡、trace 没有流式气泡时也有落点。
+        # 全部用 #mock 沙盘 + 直接派发事件构造时序（沙盘的 send 是 noop，不会自己发事件）。
+        print("\n" + "=" * 78)
+        print("【13】等待态（发送即出现）/ 空回复兜底 / trace 落点")
+        print("=" * 78)
+        errors_before = len(errors)
+        # 先给 §9 触发的那一轮补终止事件并回到空闲（沙盘不会自己发终止事件）
+        page.evaluate("() => window.yindun.onEvent('finished', '上一轮收口示例回复。')")
+        page.evaluate("() => window.yindun.onEvent('state', {busy: false})")
+        page.wait_for_timeout(150)
+        entering = page.evaluate("""() => ({
+            waitings: document.querySelectorAll('#chat .waiting').length,
+            inputDisabled: document.getElementById('input').disabled })""")
+        check("收口后回到空闲（无残留等待指示、输入框可用）",
+              entering["waitings"] == 0 and not entering["inputDisabled"], str(entering))
+
+        # 13a) 发送即等待态：不喂任何后端事件，等待指示必须已经在那儿
+        page.fill("#input", "我的桌面有几张图片？")
+        users_before = page.eval_on_selector_all("#chat .row--user", "els => els.length")
+        entries_before = page.eval_on_selector_all("#chat .entry", "els => els.length")
+        page.click("#btn-send")
+        wait = page.evaluate("""() => {
+            const rows = [...document.querySelectorAll('#chat .entry')];
+            const row = rows[rows.length - 1];
+            const w = row ? row.querySelector('.waiting') : null;
+            return {
+                count: rows.length,
+                waiting: !!w,
+                dots: w ? w.querySelectorAll('.typing i').length : 0,
+                text: row ? row.textContent.trim() : '',
+                thinking: !!(row && row.querySelector('.entry__body.is-thinking')),
+                users: document.querySelectorAll('#chat .row--user').length,
+                inputDisabled: document.getElementById('input').disabled,
+            };
+        }""")
+        check("发送后**立刻**出现等待指示（不等后端第一条事件）",
+              wait["waiting"] and wait["dots"] == 3, str(wait))
+        check("等待指示含「正在思考…」文字（忙态在对话区真的看得见）",
+              "正在思考" in wait["text"], repr(wait["text"])[:80])
+        check("等待态是用户消息之后新开的一条助手条目",
+              wait["count"] == entries_before + 1 and wait["users"] == users_before + 1,
+              f"{entries_before}→{wait['count']} / {users_before}→{wait['users']}")
+        check("等待期间输入框进入忙态（与发送按钮的停止态一致）", wait["inputDisabled"] is True)
+
+        # 13b) 升级：status → 工具行、intermediate_result → 流式正文，都落在同一条气泡里
+        page.evaluate("() => window.yindun.onEvent('status', '[快速回答] 直接回答问题...')")
+        page.wait_for_timeout(120)
+        up1 = page.evaluate("""() => {
+            const rows = [...document.querySelectorAll('#chat .entry')];
+            const row = rows[rows.length - 1];
+            return { count: rows.length, waiting: !!row.querySelector('.waiting'),
+                     tools: [...row.querySelectorAll('.tool-line__text')].map(e => e.textContent) };
+        }""")
+        check("收到 status → 原地升级出工具行（不是并存第二条气泡）",
+              up1["count"] == wait["count"] and up1["tools"] == ["[快速回答] 直接回答问题..."], str(up1))
+        check("升级后等待指示被摘掉（不会「正在思考…」与工具行同时挂着）", not up1["waiting"], str(up1))
+        page.evaluate("() => window.yindun.onEvent('intermediate_result', '桌面上一共 **3** 张图片。')")
+        page.wait_for_timeout(120)
+        up2 = page.evaluate("""() => {
+            const rows = [...document.querySelectorAll('#chat .entry')];
+            const row = rows[rows.length - 1];
+            return { count: rows.length, waiting: !!row.querySelector('.waiting'),
+                     thinking: !!row.querySelector('.entry__body.is-thinking'),
+                     body: row.querySelector('.entry__body').textContent.trim(),
+                     strong: [...row.querySelectorAll('.entry__body strong')].map(e => e.textContent),
+                     tools: row.querySelectorAll('.tool-line').length };
+        }""")
+        check("收到 intermediate_result → 同一条气泡里出流式正文（工具行仍留在它里面）",
+              up2["count"] == wait["count"] and "桌面上一共" in up2["body"]
+              and up2["strong"] == ["3"] and up2["tools"] == 1, str(up2))
+        check("流式正文到达后不再显示等待/思考标记（不一边出字一边转圈）",
+              not up2["waiting"] and not up2["thinking"], str(up2))
+
+        # 13c-1) 空终稿但已有流式正文：正文优先，绝不把已收到的内容抹掉
+        page.evaluate("() => window.yindun.onEvent('finished', '')")
+        page.wait_for_timeout(150)
+        fin1 = page.evaluate("""() => {
+            const rows = [...document.querySelectorAll('#chat .entry')];
+            const row = rows[rows.length - 1];
+            return { count: rows.length, body: row.querySelector('.entry__body').textContent.trim(),
+                     tag: (row.querySelector('.bubble__tag') || {}).textContent || '' };
+        }""")
+        check("空终稿不抹掉已流式的正文（内容还在，只补「无内容」状态标记）",
+              "桌面上一共" in fin1["body"] and fin1["tag"] == "无内容", str(fin1))
+        check("空终稿原地收口（条目数量不变，不再画一条）", fin1["count"] == wait["count"], str(fin1["count"]))
+
+        # 13c-2) 整条气泡都没有内容时的空终稿（事故第一现场）：兜底文案，绝不留空气泡
+        page.evaluate("() => window.yindun.onEvent('state', {busy: false})")
+        page.wait_for_timeout(120)
+        page.fill("#input", "再试一次：我的桌面有几张图片？")
+        page.click("#btn-send")
+        page.wait_for_timeout(120)
+        page.evaluate("() => window.yindun.onEvent('finished', '')")
+        page.wait_for_timeout(150)
+        fin2 = page.evaluate("""() => {
+            const rows = [...document.querySelectorAll('#chat .entry')];
+            const row = rows[rows.length - 1];
+            const body = row.querySelector('.entry__body');
+            return { count: rows.length, body: body.textContent.trim(),
+                     tag: (row.querySelector('.bubble__tag') || {}).textContent || '',
+                     emptyReply: body.classList.contains('is-empty-reply'),
+                     waiting: !!row.querySelector('.waiting') };
+        }""")
+        check("finished 收到空串 → 显示如实兜底文案（不是空气泡）",
+              "没有给出内容" in fin2["body"] and "再问一次" in fin2["body"], repr(fin2["body"])[:70])
+        check("兜底气泡带「无内容」标签与空回复样式（观感上区别于正常回答）",
+              fin2["tag"] == "无内容" and fin2["emptyReply"], str(fin2))
+        check("兜底文案在界面上真实可见（可见性取自布局，不是只看 DOM）",
+              page.is_visible("#chat .entry__body.is-empty-reply"), str(fin2))
+        check("空终稿不留等待指示（不会与兜底文案并存）", not fin2["waiting"], str(fin2))
+
+        # 13d) trace 落点：没有流式气泡时也必须看得见（旧实现直接丢帧）
+        page.evaluate("""() => window.yindun.onEvent('trace', {
+            seq: 7, kind: 'tool', name: '列出本地文件', detail: '沙箱内 只读扫描', status: 'ok', ms: 210 })""")
+        page.wait_for_timeout(150)
+        tr = page.evaluate("""() => {
+            const rows = [...document.querySelectorAll('#chat .entry')];
+            const row = rows[rows.length - 1];
+            const t = row.querySelector('.entry__trace .trace');
+            return { count: rows.length, hasTrace: !!t,
+                     text: t ? t.textContent.trim() : '', waiting: !!row.querySelector('.waiting') };
+        }""")
+        check("没有流式气泡时 trace 也有可见落点（就地现建条目，不再丢帧）",
+              tr["hasTrace"] and "列出本地文件" in tr["text"], str(tr))
+        check("trace 落点是新的一条条目（不覆盖上一条兜底气泡）",
+              tr["count"] == fin2["count"] + 1, f"{fin2['count']} → {tr['count']}")
+        check("trace 落地时不再显示等待指示（轨迹本身就是活动证据）", not tr["waiting"], str(tr))
+
+        # 收口：回到空闲 + 画布上没有任何"内容为空"的条目。
+        # 注意这条 state 到达时上一条 trace 气泡还开着（本时序故意漏掉终止事件）——
+        # 它必须按空回复口径收口，而不是永远转圈或把引用留给下一轮。
+        page.evaluate("() => window.yindun.onEvent('state', {busy: false})")
+        page.wait_for_timeout(150)
+        ending = page.evaluate("""() => {
+            const rows = [...document.querySelectorAll('#chat .entry')];
+            const last = rows[rows.length - 1];
+            return { waitings: document.querySelectorAll('#chat .waiting').length,
+                     inputDisabled: document.getElementById('input').disabled,
+                     lastBody: last ? last.querySelector('.entry__body').textContent.trim() : '',
+                     lastTag: last && last.querySelector('.bubble__tag')
+                              ? last.querySelector('.bubble__tag').textContent : '',
+                     air: rows.filter(r => !r.textContent.trim()).length };
+        }""")
+        check("时序跑完后没有遗留的等待指示、输入框恢复可用",
+              ending["waitings"] == 0 and not ending["inputDisabled"], str(ending))
+        check("终止事件丢失时，空闲状态把还开着的气泡收口成兜底文案（不跨轮悬挂）",
+              "没有给出内容" in ending["lastBody"] and ending["lastTag"] == "无内容", str(ending))
+        check("画布上不存在任何「内容为空」的助手条目（空气泡清点）", ending["air"] == 0, str(ending))
+        check("等待态/空回复/trace 时序全程无 JS 运行时错误", len(errors) == errors_before,
+              "；".join(errors[errors_before:][:3]))
+
+        # ── 14) 审计页安全工具：结构化 UI（不再贴 ==== 纯文本）──
+        print("\n" + "=" * 78)
+        print("【14】安全工具结构化渲染（隐私健康体检 / 模型行为画像）")
+        print("=" * 78)
+        page.click("#btn-audit")
+        page.wait_for_selector("#pane-audit.is-active", timeout=5000)
+        check("审计页出现两个安全工具按钮（显式点击才运行）",
+              page.is_visible("#btn-health") and page.is_visible("#btn-behavior"))
+
+        # 14a) 进行中可见状态：mock 延迟 350ms，点下去立刻能看到 loading
+        page.evaluate("""() => {
+          window.__origHealth = window.__YINDUN_MOCK__.api.health_scan;
+          window.__YINDUN_MOCK__.api.health_scan = (...a) =>
+            new Promise((resolve) => setTimeout(() => resolve(window.__origHealth(...a)), 350));
+        }""")
+        page.click("#btn-health")
+        page.wait_for_timeout(80)
+        loading = page.evaluate("""() => {
+          const el = document.querySelector('#tool-result .tool-loading');
+          return { visible: !!el, text: el ? el.textContent : '',
+                   disabled: document.getElementById('btn-health').disabled };
+        }""")
+        check("体检运行中有可见的进行中状态（不是点完毫无反馈）",
+              loading["visible"] and "正在扫描" in loading["text"], str(loading))
+        check("运行中按钮暂时禁用（避免重复触发）", loading["disabled"], str(loading))
+        page.wait_for_selector("#tool-result .health-group", timeout=6000)
+
+        # 14b) 体检：指标 + 严重程度分组 + 分级着色 + 空态/原文
+        health = page.evaluate("""() => {
+          const token = (name) => {
+            const d = document.createElement('div');
+            d.style.color = `var(${name})`;
+            document.body.appendChild(d);
+            const c = getComputedStyle(d).color;
+            d.remove();
+            return c;
+          };
+          const groups = [...document.querySelectorAll('#tool-result .health-group')];
+          return {
+            metrics: [...document.querySelectorAll('#tool-result .tool-metric')].map((m) => ({
+              num: (m.querySelector('.tool-metric__num') || {}).textContent || '',
+              label: (m.querySelector('.tool-metric__label') || {}).textContent || '',
+              cls: m.className,
+              color: getComputedStyle(m.querySelector('.tool-metric__num')).color,
+            })),
+            severities: groups.map((g) => g.dataset.severity),
+            badges: groups.map((g) => ({
+              sev: g.dataset.severity,
+              cls: (g.querySelector('.sev-badge') || {}).className || '',
+              color: getComputedStyle(g.querySelector('.sev-badge')).color,
+            })),
+            cats: [...new Set([...document.querySelectorAll('#tool-result .health-finding__cat')]
+              .map((e) => e.textContent))],
+            matches: [...document.querySelectorAll('#tool-result .health-finding__matches code')]
+              .map((e) => e.textContent),
+            lines: [...document.querySelectorAll('#tool-result .health-finding__line')]
+              .map((e) => e.textContent),
+            rawOpen: !!(document.querySelector('#tool-result .tool-raw') || {}).open,
+            rawHasSeparator: !!document.querySelector('#tool-result .tool-raw pre') &&
+              document.querySelector('#tool-result .tool-raw pre').textContent.includes('======'),
+            danger: token('--danger-500'), warn: token('--warn-500'),
+          };
+        }""")
+        check("体检渲染出 3 个指标（扫描文件 / 发现问题 / 风险评分）",
+              len(health["metrics"]) == 3 and
+              all(k in "".join(m["label"] for m in health["metrics"])
+                  for k in ("扫描文件", "发现问题", "风险评分")),
+              str(health["metrics"]))
+        check("指标数字来自结构化字段（121 扫描 / 4 问题 / 43 分）",
+              [m["num"] for m in health["metrics"]] == ["121", "4", "43"],
+              str([m["num"] for m in health["metrics"]]))
+        check("风险评分按中风险着色（43 分 → warn 色）",
+              "tool-metric--warn" in health["metrics"][2]["cls"] and
+              health["metrics"][2]["color"] == health["warn"],
+              f"{health['metrics'][2]['cls']} / {health['metrics'][2]['color']} vs {health['warn']}")
+        check("发现按严重程度分组，顺序为 绝密 → 机密 → 内部",
+              health["severities"] == ["绝密", "机密", "内部"], str(health["severities"]))
+        sev_colors = {b["sev"]: b["color"] for b in health["badges"]}
+        check("绝密/机密用红色、内部用琥珀色（按分级着色）",
+              sev_colors.get("绝密") == health["danger"] and
+              sev_colors.get("机密") == health["danger"] and
+              sev_colors.get("内部") == health["warn"],
+              str(health["badges"]))
+        check("每条发现带类别中文标签（敏感文件 / 敏感内容 / 权限异常）",
+              set(health["cats"]) == {"敏感文件", "敏感内容", "权限异常"}, str(health["cats"]))
+        check("匹配样例与行号可见（不是只报个文件名）",
+              "138****5678" in health["matches"] and any("第 12 行" in x for x in health["lines"]),
+              str(health["matches"]) + " / " + str(health["lines"]))
+        check("输出区默认不再出现 ====== 报告分隔线",
+              "======" not in page.inner_text("#tool-result"),
+              repr(page.inner_text("#tool-result")[:80]))
+        check("原始报告默认折叠，但里面保留后端原文（留证/排障）",
+              health["rawOpen"] is False and health["rawHasSeparator"] and
+              not page.is_visible("#tool-result .tool-raw pre"), str(health))
+        page.click("#tool-result .tool-raw summary")
+        page.wait_for_timeout(120)
+        check("展开「查看原始报告」后能看到原文",
+              page.is_visible("#tool-result .tool-raw pre") and
+              "======" in page.inner_text("#tool-result .tool-raw pre"))
+        page.click("#tool-result .tool-raw summary")
+        page.wait_for_timeout(100)
+
+        # 14c) 画像：指标 + 工具横条 + 操作分布 + 敏感路径 + 异常着色
+        page.evaluate("() => { window.__origBehavior = window.__YINDUN_MOCK__.api.behavior_profile; }")
+        page.click("#btn-behavior")
+        page.wait_for_selector("#tool-result .anomaly-list", timeout=5000)
+        behavior = page.evaluate("""() => {
+          const token = (name) => {
+            const d = document.createElement('div');
+            d.style.color = `var(${name})`;
+            document.body.appendChild(d);
+            const c = getComputedStyle(d).color;
+            d.remove();
+            return c;
+          };
+          return {
+            metrics: [...document.querySelectorAll('#tool-result .tool-metric')].map((m) => ({
+              num: (m.querySelector('.tool-metric__num') || {}).textContent || '',
+              cls: m.className,
+            })),
+            hbars: [...document.querySelectorAll('#tool-result .hbar')].map((b) => ({
+              name: (b.querySelector('.hbar__name') || {}).textContent || '',
+              width: (b.querySelector('.hbar__track > i') || {}).style ?
+                (b.querySelector('.hbar__track > i') || {}).style.width : '',
+              num: (b.querySelector('.hbar__num') || {}).textContent || '',
+            })),
+            ops: [...document.querySelectorAll('#tool-result .tool-op')].map((e) => e.textContent),
+            paths: [...document.querySelectorAll('#tool-result .tool-paths li')].map((e) => e.textContent),
+            anomalies: [...document.querySelectorAll('#tool-result .anomaly')].map((a) => ({
+              sev: a.dataset.severity,
+              cls: (a.querySelector('.sev-badge') || {}).className || '',
+              color: getComputedStyle(a.querySelector('.sev-badge')).color,
+              label: (a.querySelector('.anomaly__head b') || {}).textContent || '',
+            })),
+            rawOpen: !!(document.querySelector('#tool-result .tool-raw') || {}).open,
+            danger: token('--danger-500'), warn: token('--warn-500'), muted: token('--text-3'),
+          };
+        }""")
+        check("画像渲染出 4 个指标（工具调用 / 唯一路径 / 路径跳跃 / 风险评分）",
+              [m["num"] for m in behavior["metrics"]] == ["37", "14", "7", "62"],
+              str([m["num"] for m in behavior["metrics"]]))
+        check("风险评分 62 按高风险着色（critical 色）",
+              "tool-metric--critical" in behavior["metrics"][3]["cls"], str(behavior["metrics"][3]))
+        check("工具调用分布用横条呈现（5 项，按次数降序）",
+              len(behavior["hbars"]) == 5 and behavior["hbars"][0]["name"] == "读取文件" and
+              behavior["hbars"][0]["width"] == "100%" and "18" in behavior["hbars"][0]["num"],
+              str(behavior["hbars"][:2]))
+        check("操作类型分布四项齐全（读取 26 / 写入 6 / 删除 2 / 执行 3）",
+              len(behavior["ops"]) == 4 and "26读取" in behavior["ops"] and
+              "6写入" in behavior["ops"], str(behavior["ops"]))
+        check("被访问的敏感路径逐条列出（2 个）",
+              len(behavior["paths"]) >= 2 and
+              any("id_rsa" in p for p in behavior["paths"]), str(behavior["paths"]))
+        check("异常按 severity 排序并着色（high=红 / medium=琥珀 / low=灰）",
+              [a["sev"] for a in behavior["anomalies"]] == ["high", "medium", "low"] and
+              behavior["anomalies"][0]["color"] == behavior["danger"] and
+              behavior["anomalies"][1]["color"] == behavior["warn"] and
+              behavior["anomalies"][2]["color"] == behavior["muted"],
+              str(behavior["anomalies"]))
+        check("异常类型给中文标签（敏感路径访问 / 路径跳跃 / 非工作时间）",
+              [a["label"] for a in behavior["anomalies"]] ==
+              ["敏感路径访问", "路径跳跃", "非工作时间"], str(behavior["anomalies"]))
+        check("画像输出区不再出现 ====== 报告分隔线",
+              "======" not in page.inner_text("#tool-result"),
+              repr(page.inner_text("#tool-result")[:80]))
+        check("画像的原始报告默认折叠", behavior["rawOpen"] is False, str(behavior["rawOpen"]))
+
+        # 14d) 无发现：正面空态（而不是"0 项"一行）
+        page.evaluate("""() => {
+          window.__YINDUN_MOCK__.api.health_scan = () => Promise.resolve({
+            ok: true, target: 'E:/demo/clean',
+            summary: '======\\n隐盾隐私健康体检报告\\n✓ 未发现隐私风险\\n======',
+            json: JSON.stringify({
+              scan_root: 'E:/demo/clean', scan_time: '2026-10-16 10:30:00',
+              total_files: 9, scanned_files: 9, findings_count: 0,
+              risk_score: 0, findings: [],
+            }),
+          });
+        }""")
+        page.click("#btn-health")
+        page.wait_for_selector("#tool-result .tool-empty", timeout=5000)
+        empty = page.evaluate("""() => {
+          const el = document.querySelector('#tool-result .tool-empty');
+          return {
+            text: el ? el.textContent : '',
+            visible: !!el && el.getBoundingClientRect().height > 0,
+            groups: document.querySelectorAll('#tool-result .health-group').length,
+            nums: [...document.querySelectorAll('#tool-result .tool-metric__num')].map((e) => e.textContent),
+            okMetric: !!document.querySelector('#tool-result .tool-metric--ok'),
+          };
+        }""")
+        check("无发现时给正面空态（未发现隐私风险 + 扫描依据），不是「0 项」一行",
+              empty["visible"] and "未发现隐私风险" in empty["text"] and
+              "已扫描 9 个文件" in empty["text"], str(empty))
+        check("空态下不渲染空的分组容器", empty["groups"] == 0, str(empty["groups"]))
+        check("无发现时问题数与风险评分如实为 0，并用安全色",
+              empty["nums"] == ["9", "0", "0"] and empty["okMetric"], str(empty))
+
+        # 14e) 失败：原样显示后端 error，按钮可重试
+        page.evaluate("""() => {
+          window.__YINDUN_MOCK__.api.behavior_profile = () => Promise.resolve({
+            ok: false, error: 'RuntimeError: 审计日志不可读（回归样例）',
+          });
+        }""")
+        page.click("#btn-behavior")
+        page.wait_for_selector("#tool-result .tool-fail", timeout=5000)
+        fail = page.evaluate("""() => ({
+          text: (document.querySelector('#tool-result .tool-fail') || {}).textContent || '',
+          disabled: document.getElementById('btn-behavior').disabled,
+        })""")
+        check("失败时原样显示后端 error（不吞错、不改写）",
+              "执行失败" in fail["text"] and
+              "RuntimeError: 审计日志不可读（回归样例）" in fail["text"], str(fail))
+        check("失败后按钮恢复可用（可以重试）", not fail["disabled"], str(fail))
+
+        # 14f) 无异常：如实说明"未发现异常"
+        base = page.evaluate("async () => await window.__origBehavior()")
+        base["anomalies"] = []
+        page.evaluate("""(payload) => {
+          window.__YINDUN_MOCK__.api.behavior_profile = () => Promise.resolve(payload);
+        }""", base)
+        page.click("#btn-behavior")
+        page.wait_for_selector("#tool-result .tool-empty", timeout=5000)
+        check("无异常时如实说明「未发现异常行为」（不是留空或假装成功）",
+              "未发现异常行为" in page.inner_text("#tool-result .tool-empty"),
+              repr(page.inner_text("#tool-result .tool-empty")))
+        # 还原 mock，避免影响后续用例
+        page.evaluate("""() => {
+          window.__YINDUN_MOCK__.api.behavior_profile = window.__origBehavior;
+          window.__YINDUN_MOCK__.api.health_scan = window.__origHealth;
+        }""")
+
+        # ── 15) 设置页：内容限宽居中（1920 / 1000 两侧留白相等而且不横向溢出）──
+        print("\n" + "=" * 78)
+        print("【15】设置页内容居中（宽窗口不拉满 / 窄窗口不横向滚动）")
+        print("=" * 78)
+        page.click("#btn-settings")
+        page.wait_for_selector("#settings-view:not([hidden])", timeout=5000)
+        page.click('.setnav__item[data-set="appearance"]')
+        page.wait_for_timeout(200)
+
+        def settings_gaps(width: int) -> dict:
+            page.set_viewport_size({"width": width, "height": 900})
+            page.wait_for_timeout(350)
+            return page.evaluate("""() => {
+              const main = document.querySelector('.setmain');
+              const body = document.querySelector('.setmain__body');
+              const head = document.querySelector('.setmain__head');
+              const mr = main.getBoundingClientRect();
+              const br = body.getBoundingClientRect();
+              const hr = head.getBoundingClientRect();
+              return {
+                vw: window.innerWidth,
+                left: br.left - mr.left,
+                right: mr.right - br.right,
+                headLeft: hr.left - mr.left,
+                headRight: mr.right - hr.right,
+                bodyWidth: br.width,
+                rectWidth: mr.width,
+                clientWidth: main.clientWidth,
+                docOverflow: document.documentElement.scrollWidth - window.innerWidth,
+                mainOverflow: main.scrollWidth - main.clientWidth,
+                bodyOverflow: body.scrollWidth - body.clientWidth,
+              };
+            }""")
+
+        g1920 = settings_gaps(1920)
+        check("1920：设置内容左右留白相等（误差 ≤2px）",
+              abs(g1920["left"] - g1920["right"]) <= 2, str(g1920))
+        check("1920：内容限宽居中而不是拉满（≤1000px 且两侧确有留白）",
+              g1920["bodyWidth"] <= 1000.5 and g1920["left"] > 100, str(g1920))
+        check("1920：设置标题与内容列左右边缘对齐",
+              abs(g1920["headLeft"] - g1920["left"]) <= 2 and
+              abs(g1920["headRight"] - g1920["right"]) <= 2, str(g1920))
+        check("1920：无横向滚动（文档 / 滚动容器 / 内容列都没有溢出）",
+              g1920["docOverflow"] <= 0 and g1920["mainOverflow"] <= 0 and
+              g1920["bodyOverflow"] <= 0, str(g1920))
+
+        g1000 = settings_gaps(1000)
+        check("1000：设置内容左右留白相等（误差 ≤2px）",
+              abs(g1000["left"] - g1000["right"]) <= 2, str(g1000))
+        # clientWidth 扣掉了两侧的滚动条槽（scrollbar-gutter），所以"占满可用区"
+        # 要拿主区的 border-box 宽度来算，否则会误判成内容没铺满。
+        check("1000：窄窗口回落到满宽（内容 + 两侧留白正好占满可用区）",
+              abs((g1000["left"] + g1000["bodyWidth"] + g1000["right"]) -
+                  g1000["rectWidth"]) <= 2 and
+              g1000["bodyWidth"] >= g1000["clientWidth"] - 1, str(g1000))
+        check("1000：无横向滚动（文档 / 滚动容器 / 内容列都没有溢出）",
+              g1000["docOverflow"] <= 0 and g1000["mainOverflow"] <= 0 and
+              g1000["bodyOverflow"] <= 0, str(g1000))
+        page.set_viewport_size({"width": 1440, "height": 900})
+        page.wait_for_timeout(200)
+
         check("全程无 JS 运行时错误", not errors, "；".join(errors[:3]))
         browser.close()
 
@@ -407,7 +1066,7 @@ def main() -> int:
     if failures:
         print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))
         return 1
-    print("✅ 界面十条关键路径全部通过（四档权限 / 胶囊 / 思考 / 插件市场与设置页 / 工作流 / 闪发 / 主题与布局）")
+    print("✅ 界面十三条关键路径全部通过（四档权限 / 胶囊 / 思考 / 插件市场与设置页 / 模型接入点击逻辑 / 工作流 / 闪发 / 主题与布局 / 附件＋ / Markdown 表格 / 等待态与空回复兜底）")
     return 0
 
 

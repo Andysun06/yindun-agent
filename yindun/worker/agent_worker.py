@@ -528,17 +528,64 @@ class Worker:
 
             if (_is_simple or _is_audio_request) and not _has_attachment and not _kb_has_docs:
                 self.status.emit("[快速回答] 直接回答问题...")
-                reply = self._clean(self._direct_answer(ai_input, memory))
-                if self.privacy_shield and (box or self._box_mapping):
-                    # ★ 合并跨轮映射表：用「历史映射 + 本轮映射」还原，避免历史占位符无法还原
-                    merged_mapping = {**self._box_mapping, **box}
-                    reply = engine.deanonymize(reply, merged_mapping)
-                    if box:
-                        self._box_mapping.update(box)  # 累积本轮映射，供后续轮次还原
-                memory.update_with_context_result(self.user_input, reply)
-                self.result_messages = memory.to_dict_list()
-                self.finished.emit(reply)
-                return
+                # ★ 进度事件（真机事故整改）：聊天区的"正在思考"等待动画只挂在
+                #   intermediate_result 上（前端 ensureStreamBubble）；直答路径以前一条都不发，
+                #   用户在整段模型生成期间**在对话区看不到任何东西**（反馈原话：
+                #   "等了好久了没回复，也没有思考中之类的动画"）。这里复用既有通道推一条占位，
+                #   真回答到达时由 finished 整段覆盖，不新增事件类型。
+                self.intermediate_result.emit("正在生成回答…")
+                reply_msg = self._direct_answer_message(ai_input, memory)
+                reply = self._clean(getattr(reply_msg, "content", "") or "")
+                # ★ 空产出兜底（真机事故，V3.6.7）：实测 qwen3.5:4b 问"我的桌面有几张图片？"
+                #   会返回 content='' + tool_calls=[list_local_files(...)]——只取 content 就等于
+                #   把模型的工具调用静默丢掉，用户拿到一个**空气泡**，会话里那条空助手消息
+                #   下次加载还会被丢掉（只剩自己的提问）。两种空产出必须分开处理：
+                #   · 模型要工具 → 转到下面的工具推理循环，让它真的去调（并如实说明调不到）；
+                #   · 什么都没有 → 给一条可读的说明，绝不发空白。
+                if reply:
+                    # ★ 先留一份**还原前**的文本给审计链（V3.6.7）：审计链落盘必须是占位符形态，
+                    #   而下面这行会把 reply 覆盖成还原后的明文——顺序反了就等于把敏感内容写进审计。
+                    _raw_for_audit = reply
+                    if self.privacy_shield and (box or self._box_mapping):
+                        # ★ 合并跨轮映射表：用「历史映射 + 本轮映射」还原，避免历史占位符无法还原
+                        merged_mapping = {**self._box_mapping, **box}
+                        reply = engine.deanonymize(reply, merged_mapping)
+                        if box:
+                            self._box_mapping.update(box)  # 累积本轮映射，供后续轮次还原
+                    memory.update_with_context_result(self.user_input, reply)
+                    self.result_messages = memory.to_dict_list()
+                    self._ensure_reply_persisted(reply)
+                    # ★ 审计链只存**掩码态**（V3.6.7 补齐）：直答快路径以前只记 llm_input、
+                    #   不记 llm_output，事故那轮在审计链上解释不了"为什么没有回复"。
+                    #   但绝不能改记还原后的明文——落盘审计链必须是占位符形态（隐私不变量）。
+                    try:
+                        AuditLog().log_llm_output(_raw_for_audit, preview=_raw_for_audit[:200])
+                    except Exception:
+                        pass
+                    self.finished.emit(reply)
+                    return
+                if getattr(reply_msg, "tool_calls", None):
+                    # 直答这条车道本来就不执行工具；模型却明确要调工具 → 换到工具推理循环，
+                    # 不把它的工具调用吞掉（用户问的是真实世界的信息，答案只能由工具给出）。
+                    self.status.emit("[快速回答] 模型需要调用工具，转入工具推理...")
+                    self._trace("thinking", "改用工具推理",
+                                "直答未产出文字：模型要求调用工具", "ok")
+                else:
+                    # 既没文字也没工具调用：如实说明这一轮没拿到回答，并落库（不再是空气泡）。
+                    self.status.emit("[快速回答] 模型没有给出回答，已如实说明")
+                    _no_answer = (
+                        "抱歉，模型这一轮没有给出回答。\n"
+                        "本机小模型偶发空回复（实测约每 5 次出现 1 次，与本机算力负载有关），"
+                        "不是你的操作有问题。\n"
+                        "可以试试：再发一次、把问题问得更具体、切换到「深度思考」模式，或换用更大的模型。"
+                    )
+                    if self.privacy_shield and (box or self._box_mapping):
+                        self._box_mapping.update(box)
+                    memory.update_with_context_result(self.user_input, _no_answer)
+                    self.result_messages = memory.to_dict_list()
+                    self._ensure_reply_persisted(_no_answer)
+                    self.finished.emit(_no_answer)
+                    return
 
             # ──────────────────────────────────────────
             # ★★★ 关键修复：当用户输入包含完整路径和分析关键词时，
@@ -696,10 +743,18 @@ class Worker:
         except KeyboardInterrupt:
             # 用户主动取消，正常结束（不是错误）
             self.status.emit("[已取消] 推理已被用户中断")
+            # ★ 取消也要落库（V3.6.7）：以前这条提示只经 finished 飘一下，会话里既没有回复
+            #   也没有"这轮被取消"的痕迹——重启后那一轮看起来像没发生过（只有用户提问）。
+            self._persist_terminal_reply("推理已取消。")
             self.finished.emit("推理已取消。")
         except Exception as e:
-            self.result_messages = self.messages_snapshot
             friendly = self._translate_error(e)
+            # ★ 失败必须留下用户看得见、且能落库的回复（V3.6.7 真机整改）。旧写法是
+            #   `self.result_messages = self.messages_snapshot`——把消息链回退成"本轮之前的历史"，
+            #   等于服务层写库时**把用户刚发的那条提问一起删掉**，而失败说明只经 error 事件
+            #   在界面上闪一下（重启后什么都没有）。现在把"用户提问 + 失败说明"写进链尾，
+            #   界面和会话记录口径一致（落库仍走脱敏后的文本，不放松任何隐私不变量）。
+            self._persist_terminal_reply(friendly)
             self.error.emit(friendly)
 
     # ──────────────────────────────────────────
@@ -883,6 +938,10 @@ class Worker:
         round_start_idx = len(messages) - 1  # 从 HumanMessage 开始记录
         round_count = 0
         consecutive_failures = 0
+        # ★ 无进展轮数：连续多少轮"工具没成功 + 模型也没给出可交付文字"（见循环末尾的收敛判定）。
+        #   与 consecutive_failures 分开统计：后者只认抛异常/被拦截，前者还覆盖"工具正常返回但
+        #   结果是警告/越界/重复调用"这类声明式失败——它才是把人晾在原地的那一种。
+        no_progress_rounds = 0
         # ★ 每次推理在这里重置"按轮次"的状态：重复调用短路缓存与深化标记。
         #   放在循环入口而不是 run()，是为了无论从哪条路径进循环都保证隔离
         #   （跨轮复用会把"用户让我再读一次这个文件"短路掉——文件可能已经变了）。
@@ -895,6 +954,7 @@ class Worker:
             # 取消检测
             if self._cancel_requested.is_set():
                 self.status.emit("[已取消] 推理已被用户中断")
+                self._persist_terminal_reply("推理已取消。")   # 取消也要在会话里留痕，见更下方说明
                 return "推理已取消。"
 
             round_count += 1
@@ -1039,11 +1099,13 @@ class Worker:
             self.status.emit(f"[思考 {round_count}/{max_rounds}] 准备调用 {len(tool_calls)} 个工具...")
             all_success = True
             round_had_failure = False
+            round_made_progress = False   # 本轮是否拿到过成功工具结果（无进展收敛依据，见循环末尾）
 
             for tc in tool_calls:
                 # 取消检测
                 if self._cancel_requested.is_set():
                     self.status.emit("[已取消] 推理已被用户中断")
+                    self._persist_terminal_reply("推理已取消。")   # 取消也要在会话里留痕
                     return "推理已取消。"
 
                 tool_name = tc.get("name", "") if isinstance(tc, dict) else getattr(tc, "name", "")
@@ -1186,6 +1248,7 @@ class Worker:
                 _failed_result = any(mark in str(tool_result)[:200] for mark in self._FAILURE_MARKS)
                 if not _failed_result:
                     self._turn_tool_success = True
+                    round_made_progress = True
                 self._turn_tool_names.append(tool_name)
                 tool_msg = ToolMessage(content=self._with_failure_directive(tool_result),
                                        tool_call_id=tool_call_id)
@@ -1206,6 +1269,7 @@ class Worker:
                     chain = messages[round_start_idx:]
                     memory.update_with_full_chain(chain)
                     self.result_messages = memory.to_dict_list()
+                    self._ensure_reply_persisted(final_reply)
                     return final_reply
             else:
                 consecutive_failures = 0
@@ -1215,6 +1279,43 @@ class Worker:
                         f"[第 {round_count} 轮] 已完成工具检索，正在结合工具结果深入分析中..."
                     )
 
+            # ★ 无进展收敛（V3.6.7，真机事故兜底）：上面的"连续 2 轮失败"只认**抛异常**的工具
+            #   调用；而现实里最耗人的那类打转是"工具每次都正常返回、但结果是警告/越界/重复调用"
+            #   ——声明式失败（如"⚠️ 指定路径超出安全沙箱"）不算 round_had_failure，于是模型可以
+            #   把 max_rounds 全部用完，用户就一直在等（每轮都是一次完整生成）。
+            #   阈值取 2，与既有"连续 2 轮工具调用失败就放弃"同一标准：一轮没成功可能是模型在
+            #   换参数试探，两轮都换不来任何成功结果，继续撞墙的期望收益极低；小模型每轮 1~40 秒，
+            #   继续等是纯粹的浪费。命中即**如实收尾**（说清没做成、为什么、下一步），不再空转。
+            if round_made_progress:
+                no_progress_rounds = 0
+            else:
+                no_progress_rounds += 1
+                if no_progress_rounds >= self._NO_PROGRESS_ROUNDS_LIMIT:
+                    self.status.emit(
+                        f"[放弃] 连续 {no_progress_rounds} 轮没有成功结果，已如实收尾"
+                    )
+                    # 摘一句最近的工具返回作为"凭什么说没做成"的证据。★ 先过工具输出脱敏通道：
+                    # 这段文字会进最终回复、也会进审计副本，和工具结果的待遇必须一致
+                    # （脱敏产生的映射并入跨轮表，用户看到的仍是还原后的真值）。
+                    _hint_raw = (str(last_tool_result or "").strip().splitlines() or [""])[0][:120]
+                    _hint, _ = self._anonymize_tool_output(_hint_raw)
+                    final_reply = (
+                        f"抱歉，我连续 {no_progress_rounds} 轮都没能取得有效结果，已经停止重试"
+                        f"（本轮共推理 {round_count} 次）。\n"
+                        + (f"最近一次工具返回：{_hint}\n" if _hint else "")
+                        + "可能的原因：\n"
+                        "1. 目标不在我的沙箱目录内——越界路径会被安全策略挡下（这是设计如此，不会绕过）；\n"
+                        "2. 我的工具箱里没有能完成这件事的能力（例如「统计某个目录里有几张图片」这类专门统计）；\n"
+                        "3. 模型给出的工具参数不可用（例如目录名不存在）。\n"
+                        "可以试试：把文件放到沙箱目录（或告诉我沙箱内的准确路径）、把问题问得更具体，"
+                        "或者换一个更大的模型再试。"
+                    )
+                    chain = messages[round_start_idx:]
+                    memory.update_with_full_chain(chain)
+                    self.result_messages = memory.to_dict_list()
+                    self._ensure_reply_persisted(final_reply)
+                    return final_reply
+
             # 一轮工具执行完毕，继续循环让模型基于结果生成下一轮决策
 
         # 达到最大轮次，让模型总结
@@ -1223,10 +1324,21 @@ class Worker:
         messages.append(final_msg)
         content = getattr(final_msg, "content", "")
         final_reply = self._clean(content) if content and isinstance(content, str) else last_tool_result
+        # ★ 空产出兜底：`_clean` 之后可能是空串（只有空白/只有 tool_call 标签），而
+        #   last_tool_result 也可能为空（本轮一个工具都没执行）——旧实现会把空串当回答返回，
+        #   用户看到的就是一个空气泡。宁可如实说明，也不发空白。
+        if not str(final_reply or "").strip():
+            final_reply = (
+                f"抱歉，我在 {round_count} 轮推理内没有拿到可用的结果，已停止。\n"
+                "可能原因：模型一直没给出最终回答（本机小模型偶发空回复），"
+                "或目标内容不在沙箱目录内因而被安全策略挡下。\n"
+                "可以试试：再发一次、把问题问得更具体、切换到「深度思考」模式，或换用更大的模型。"
+            )
         # 保存完整消息链
         chain = messages[round_start_idx:]
         memory.update_with_full_chain(chain)
         self.result_messages = memory.to_dict_list()
+        self._ensure_reply_persisted(final_reply)
         return final_reply
 
     # ──────────────────────────────────────────
@@ -1393,6 +1505,11 @@ class Worker:
                        "analyze_project", "scan_privacy", "read_attachment_chunk",
                        "search_knowledge_base", "list_attachments"}
 
+    # 无进展收敛阈值（V3.6.7）：连续这么多轮"没有成功工具结果 + 模型也没给出可交付文字"
+    # 就如实收尾。取 2 与既有的"连续 2 轮工具调用失败就放弃"保持同一标准（不新立尺子）：
+    # 一轮没成功可能是模型在换参数试探，两轮都换不来任何成功结果，继续撞墙的期望收益极低。
+    _NO_PROGRESS_ROUNDS_LIMIT = 2
+
     def _call_fingerprint(self, tool_name: str, args: dict) -> str:
         """同一工具同一参数的指纹（用于识别重复调用）。"""
         try:
@@ -1506,6 +1623,30 @@ class Worker:
         self.result_messages = list(self.result_messages) + [
             {"role": "assistant", "content": final_reply}
         ]
+
+    def _persist_terminal_reply(self, text: str) -> None:
+        """为"非正常收尾"（失败 / 取消）准备一条**可落库**的消息链：用户提问 + 说明文本。
+
+        为什么必须有（V3.6.7，真机事故整改）：失败分支旧写法是
+        `self.result_messages = self.messages_snapshot`，而 messages_snapshot 是**本轮之前**
+        的历史（服务层 send() 先写用户提问、再把它传给 worker）——于是服务层落库时会把用户
+        刚发的那条一起覆盖掉，失败说明又只经 error 事件飘一下：重启后那一轮彻底消失。
+        这里按"用户提问 + 助手说明"补齐，链尾就是用户看到的那段文字（口径与界面一致）。
+
+        注意：写进去的用户文本是本轮送给模型的 user_input；若它含附件上下文，服务层
+        `_restore_display_text` 会把它换回界面展示文本（与其它路径同一处理）。
+        """
+        body = str(text or "").strip()
+        if not body:
+            return
+        try:
+            chain = [dict(m) for m in (self.messages_snapshot or []) if isinstance(m, dict)]
+            chain.append({"role": "user", "content": self.user_input})
+            chain.append({"role": "assistant", "content": text})
+            self.result_messages = chain
+        except Exception:
+            # 兜底失败也不能让异常冒出去（它发生在异常处理路径里，再抛就会吞掉真正的失败原因）
+            self.result_messages = self.messages_snapshot
 
     @staticmethod
     def _looks_substantive(text: str) -> bool:
@@ -2069,7 +2210,20 @@ class Worker:
     # 直接回答：不调用工具的纯问答模式
     # ──────────────────────────────────────────
     def _direct_answer(self, ai_input: str, memory) -> str:
-        """让模型直接回答用户问题（不调用工具）"""
+        """让模型直接回答用户问题（不调用工具），返回文本（调用方只关心文字时用它）。"""
+        resp = self._direct_answer_message(ai_input, memory)
+        content = getattr(resp, "content", "")
+        return content if isinstance(content, str) else str(content)
+
+    def _direct_answer_message(self, ai_input: str, memory):
+        """直接回答（不调用工具）的**原始模型消息**。
+
+        为什么要把"消息"给调用方而不是只回文本（V3.6.7，真机事故）：实测 qwen3.5:4b 对
+        「我的桌面有几张图片？」这类需要真实世界信息的问题会返回
+        `content='' + tool_calls=[list_local_files(target_directory='系统物理桌面')]`——
+        旧写法只取 content，等于把模型的工具调用**静默丢掉**：工具一次没跑、回答是空串、
+        用户拿到一个空气泡。调用方据此可以改走工具推理，而不是把空白当答案。
+        """
         messages = [SystemMessage(
             content="你是一个专业的中文智能助手，代号「隐盾」。请用中文直接、完整地回答用户的问题。\n\n"
                     "回答要求：\n"
@@ -2082,9 +2236,7 @@ class Worker:
         )]
         messages.extend(memory.get_context_messages(self.llm))
         messages.append(HumanMessage(content=ai_input))
-        resp = self._invoke_llm_with_cancel_check(messages)
-        content = getattr(resp, "content", "")
-        return content if isinstance(content, str) else str(content)
+        return self._invoke_llm_with_cancel_check(messages)
 
     # ──────────────────────────────────────────
     # 工具结果落地性兜底

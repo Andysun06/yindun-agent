@@ -278,6 +278,15 @@ html[data-frameless="1"] .win-ctrls { display: inline-flex; }
 .typing i:nth-child(2) { animation-delay: .18s; } .typing i:nth-child(3) { animation-delay: .36s; }
 @keyframes blink { 0%, 60%, 100% { opacity: .25; } 30% { opacity: 1; } }
 
+/* 发送即出现的等待态（脉动点 + 文字）：它是本轮唯一的气泡，正文/工具行/轨迹都写进这一条，
+   收到任何实质事件后由 JS 摘掉指示、原地升级（不会与正文并存）。
+   动效沿用上面的 blink，系统开了「减少动态效果」时由全局规则关掉（第 19 行）。 */
+.waiting { display: inline-flex; align-items: center; gap: var(--sp-3); }
+.waiting__text { color: var(--text-2); font-size: var(--fs-sm); }
+
+/* 空回复兜底（无内容/被中断）：降一档对比度，与正常回答区分开，但保持可读 */
+.entry__body.is-empty-reply { color: var(--text-2); }
+
 /* 文书块（代码/表格）：浅底 + 发丝边 */
 /* 注意：用户输入在 .slip>.bubble 内，助手输出在 .entry__body 内，两者都要覆盖 */
 .bubble pre, .entry__body pre { margin: var(--sp-4) 0; padding: var(--sp-4); background: var(--code-bg); border: 1px solid var(--code-border); border-radius: var(--r-ctrl); overflow-x: auto; line-height: 1.7; font-size: var(--fs-sm); }
@@ -497,13 +506,19 @@ html[data-frameless="1"] .win-ctrls { display: inline-flex; }
 .setnav__foot { margin-top: auto; padding-top: var(--sp-4); border-top: 1px solid var(--border-1);
   color: var(--text-3); font-size: var(--fs-meta); line-height: 1.7; }
 
-.setmain { display: flex; flex-direction: column; min-width: 0; overflow-y: auto; }
+.setmain { display: flex; flex-direction: column; min-width: 0; overflow-y: auto;
+  /* 两侧对称保留滚动条槽：设置内容限宽居中后，"左留白 = 右留白"才不会被
+     右侧那 10px 滚动条破坏（否则内容整体偏左，宽窗口一眼就能看出来）。 */
+  scrollbar-gutter: stable both-edges; }
 .setmain__head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-5);
+  width: 100%; max-width: 1000px; margin-inline: auto;
   padding: var(--sp-7) var(--sp-7) var(--sp-5); }
 .setmain__head h2 { font-size: 23px; font-weight: 700; letter-spacing: -.01em; }
 .setmain__head p { margin-top: 6px; color: var(--text-3); font-size: var(--fs-sm); }
 .setmain__actions { display: flex; align-items: center; gap: var(--sp-2); flex: none; }
-.setmain__body { padding: 0 var(--sp-7) var(--sp-8); width: 100%; max-width: 1000px; }
+/* 内容列限宽并居中：宽窗口下不把设置项拉成超长一行；窄窗口（<1000px）
+   自然回落到满宽。max-width 含左右内边距，保证与 header 的左边缘对齐。 */
+.setmain__body { padding: 0 var(--sp-7) var(--sp-8); width: 100%; max-width: 1000px; margin-inline: auto; }
 .setpage { display: none; }
 .setpage.is-active { display: block; }
 
@@ -842,8 +857,135 @@ html[data-theme="dark"] .plugin-item__runtime.is-bad { background: rgba(196, 54,
 .cm-form input { font-size: var(--fs-meta); }
 .cm-form .btn { grid-column: 1 / -1; }
 
-/* ── 安全工具结果 ─────────────────────────────────── */
-.tool-result { margin-top: var(--sp-3); padding: var(--sp-4); background: var(--code-bg); border: 1px solid var(--code-border); border-radius: var(--r-ctrl); font-family: var(--font-mono); font-size: var(--fs-meta); line-height: 1.65; white-space: pre-wrap; max-height: 300px; overflow-y: auto; }
+/* ── 安全工具结果（隐私健康体检 / 模型行为画像）──────────
+   结构化视图：指标条 + 分组/横条；原始报告只在折叠项里出现。
+   颜色只承担语义：红=绝密/机密/严重，琥珀=内部/中，灰=公开/低，绿=低风险。 */
+.tool-panel { margin-top: var(--sp-3); padding: var(--sp-4); background: var(--bg-canvas);
+  border: 1px solid var(--border-1); border-radius: var(--r-ctrl); font-size: var(--fs-sm);
+  line-height: 1.6; max-height: 52vh; overflow-y: auto; overflow-x: hidden; }
+
+/* 顶部指标：1px 分隔线由容器背景透出，读数用等宽字体 */
+.tool-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  gap: 1px; background: var(--border-1); border: 1px solid var(--border-1);
+  border-radius: var(--r-ctrl); overflow: hidden; }
+.tool-metric { display: flex; flex-direction: column; gap: 2px; min-width: 0;
+  padding: var(--sp-3); background: var(--bg-canvas); }
+.tool-metric__num { font-family: var(--font-mono); font-size: var(--fs-lg); font-weight: 650; line-height: 1.15; }
+.tool-metric__label { display: flex; flex-direction: column; color: var(--text-3); font-size: var(--fs-meta); line-height: 1.45; }
+.tool-metric__label i { font-style: normal; }
+.tool-metric--bad .tool-metric__num, .tool-metric--critical .tool-metric__num { color: var(--danger-500); }
+.tool-metric--warn .tool-metric__num { color: var(--warn-500); }
+.tool-metric--ok .tool-metric__num { color: var(--accent-600); }
+
+.tool-target { margin-top: var(--sp-3); color: var(--text-3); font-family: var(--font-mono);
+  font-size: var(--fs-meta); line-height: 1.55; overflow-wrap: anywhere; }
+
+/* 严重程度徽标（体检分级与异常 severity 共用一套色） */
+.sev-badge { display: inline-flex; align-items: center; height: 18px; padding: 0 7px;
+  border: 1px solid transparent; border-radius: var(--r-chip); font-size: var(--fs-meta);
+  font-weight: 600; line-height: 1; white-space: nowrap; }
+.sev-badge--critical { color: var(--danger-500); background: var(--danger-50); border-color: rgba(196, 54, 47, .22); }
+.sev-badge--warn { color: var(--warn-500); background: var(--warn-50); border-color: rgba(169, 118, 27, .24); }
+.sev-badge--muted { color: var(--text-3); background: var(--bg-subtle); border-color: var(--border-1); }
+html[data-theme="dark"] .sev-badge--critical { background: rgba(196, 54, 47, .14); border-color: rgba(196, 54, 47, .34); }
+html[data-theme="dark"] .sev-badge--warn { background: rgba(169, 118, 27, .16); border-color: rgba(169, 118, 27, .36); }
+
+/* 体检：按严重程度分组；组内每条左侧色条与组头一致 */
+.health-groups { display: flex; flex-direction: column; gap: var(--sp-4); margin-top: var(--sp-4); }
+.health-group__head { display: flex; align-items: center; gap: var(--sp-3);
+  padding-bottom: var(--sp-2); border-bottom: 1px solid var(--border-1); }
+.health-group__count { color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-meta); }
+.health-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.health-finding { padding: var(--sp-3) 0 var(--sp-3) var(--sp-3);
+  border-left: 2px solid var(--border-2); border-bottom: 1px solid var(--border-1); }
+.health-finding:last-child { border-bottom: none; }
+.health-group--critical .health-finding { border-left-color: var(--danger-500); }
+.health-group--warn .health-finding { border-left-color: var(--warn-500); }
+.health-finding__head { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+.health-finding__name { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; color: var(--text-1); font-size: var(--fs-sm); font-weight: 600; }
+.health-finding__cat { padding: 0 6px; border-radius: var(--r-chip); background: var(--bg-subtle);
+  color: var(--text-2); font-size: var(--fs-meta); }
+.health-finding__line { margin-left: auto; color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-meta); }
+.health-finding__desc { margin-top: 3px; color: var(--text-1); }
+.health-finding__path { margin-top: 3px; color: var(--text-3); font-family: var(--font-mono);
+  font-size: var(--fs-meta); overflow-wrap: anywhere; }
+.health-finding__matches { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); }
+.health-finding__matches code { padding: 0 5px; border-radius: var(--r-chip); background: var(--bg-subtle);
+  color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-meta); overflow-wrap: anywhere; }
+.health-finding__more { align-self: center; color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-meta); }
+
+/* 画像：工具调用横条（不引图表库，沿用控制面的 hbar 形态） */
+.tool-section { margin-top: var(--sp-5); }
+.tool-section__title { display: flex; align-items: baseline; justify-content: space-between;
+  gap: var(--sp-3); padding-bottom: var(--sp-2); border-bottom: 1px solid var(--border-1);
+  color: var(--text-2); font-size: var(--fs-sm); font-weight: 600; }
+.tool-section__title > span { color: var(--text-3); font-family: var(--font-mono);
+  font-size: var(--fs-meta); font-weight: 400; }
+.tool-section__hint { padding-top: var(--sp-3); color: var(--text-3); font-size: var(--fs-meta); }
+.hbars { display: flex; flex-direction: column; gap: 9px; margin-top: var(--sp-3); }
+.hbar { display: grid; grid-template-columns: minmax(72px, 120px) 1fr auto; gap: var(--sp-3);
+  align-items: center; font-size: var(--fs-meta); }
+.hbar__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+.hbar__track { height: 8px; border-radius: 999px; background: var(--bg-subtle); overflow: hidden; }
+.hbar__track > i { display: block; height: 100%; border-radius: 999px; background: var(--accent-500); }
+.hbar__num { white-space: nowrap; color: var(--text-1); font-family: var(--font-mono); font-size: var(--fs-meta); }
+.hbar__num em { margin-left: 6px; color: var(--text-3); font-style: normal; }
+
+/* 操作类型：四格小指标（read / write / delete / execute） */
+.tool-ops { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--sp-2); margin-top: var(--sp-3); }
+.tool-op { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: var(--sp-2);
+  border-radius: var(--r-ctrl); background: var(--bg-subtle); color: var(--text-2); font-size: var(--fs-meta); }
+.tool-op b { color: var(--text-1); font-family: var(--font-mono); font-size: var(--fs-base); }
+.tool-op.is-zero, .tool-op.is-zero b { color: var(--text-3); }
+
+/* 路径列表：敏感路径用红条；长路径允许任意位置换行（窄面板也能看全） */
+.tool-paths { display: flex; flex-direction: column; gap: 2px; margin: var(--sp-3) 0 0; padding: 0; list-style: none; }
+.tool-paths li { padding: 3px 0 3px var(--sp-3); border-left: 2px solid var(--danger-500);
+  color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-meta); overflow-wrap: anywhere; }
+.tool-paths--factors li { border-left-color: var(--warn-500); font-family: var(--font-sans); font-size: var(--fs-sm); }
+
+/* 异常：单列卡片，左条 + 徽标共同表达 severity */
+.anomaly-list { display: flex; flex-direction: column; gap: var(--sp-2); margin-top: var(--sp-3); }
+.anomaly { display: flex; align-items: flex-start; gap: var(--sp-3); padding: var(--sp-3);
+  border-left: 2px solid var(--border-2); border-radius: var(--r-ctrl); background: var(--bg-subtle); }
+.anomaly--critical { border-left-color: var(--danger-500); }
+.anomaly--warn { border-left-color: var(--warn-500); }
+.anomaly--muted { border-left-color: var(--text-3); }
+.anomaly__body { flex: 1; min-width: 0; }
+.anomaly__head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-3);
+  flex-wrap: wrap; font-size: var(--fs-sm); }
+.anomaly__time { color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-meta); }
+.anomaly__desc { margin-top: 2px; color: var(--text-2); overflow-wrap: anywhere; }
+
+/* 空态：正面结论要有"结论 + 依据"，而不是一行 0 项 */
+.tool-empty { display: flex; flex-direction: column; align-items: center; gap: 4px;
+  margin-top: var(--sp-4); padding: var(--sp-5) var(--sp-4); text-align: center;
+  border: 1px dashed var(--border-2); border-radius: var(--r-ctrl); }
+.tool-empty__mark { display: grid; place-items: center; width: 26px; height: 26px;
+  border-radius: 999px; background: var(--accent-50); color: var(--accent-600); font-weight: 700; }
+html[data-theme="dark"] .tool-empty__mark { background: rgba(22, 161, 99, .14); color: var(--accent-300); }
+.tool-empty b { color: var(--text-1); font-size: var(--fs-sm); }
+.tool-empty span { color: var(--text-3); font-size: var(--fs-meta); line-height: 1.6; }
+
+/* 进行中 / 失败 / 原始报告 */
+.tool-loading { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) 0;
+  color: var(--text-2); font-size: var(--fs-sm); }
+.tool-loading__mark { width: 12px; height: 12px; border: 2px solid var(--border-2);
+  border-top-color: var(--accent-500); border-radius: 50%; animation: tool-spin .8s linear infinite; }
+@keyframes tool-spin { to { transform: rotate(360deg); } }
+.tool-fail { display: flex; flex-direction: column; gap: 3px; padding: var(--sp-3) var(--sp-4);
+  border-left: 2px solid var(--danger-500); border-radius: var(--r-ctrl); background: var(--danger-50); }
+html[data-theme="dark"] .tool-fail { background: rgba(196, 54, 47, .12); }
+.tool-fail b { color: var(--danger-500); font-size: var(--fs-sm); }
+.tool-fail span { color: var(--text-1); font-family: var(--font-mono); font-size: var(--fs-meta); overflow-wrap: anywhere; }
+.tool-raw { margin-top: var(--sp-4); padding-top: var(--sp-3); border-top: 1px solid var(--border-1); }
+.tool-raw summary { color: var(--text-3); font-size: var(--fs-meta); cursor: pointer; user-select: none; }
+.tool-raw summary:hover { color: var(--text-1); }
+.tool-raw pre { margin: var(--sp-3) 0 0; padding: var(--sp-3); max-height: 220px; overflow: auto;
+  background: var(--code-bg); border: 1px solid var(--code-border); border-radius: var(--r-ctrl);
+  font-family: var(--font-mono); font-size: var(--fs-meta); line-height: 1.6;
+  white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* ── 工作流 ───────────────────────────────────────── */
 .wf-templates { display: flex; flex-direction: column; gap: 1px; }
