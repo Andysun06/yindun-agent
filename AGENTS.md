@@ -51,3 +51,15 @@
 | 测试语料里的假密钥 / 假 JWT 字面量 | 分段拼接生成（见 `tests/privacy_audit_test.py` 顶部做法） |
 
 > 说明：这些约定与 Mimosa 是否开启无关——它们是这个仓库自己的工程习惯，AI 助手请照旧遵守。
+
+### 网络：连 GitHub 要走本机代理（否则超时）
+
+直接访问 `github.com` 在这台机器上会超时（`Could not connect to server` / `Connection was reset`）。
+本机跑着 Clash for Windows（混合端口 `127.0.0.1:7890`），**push 与 gh release 都要带上代理**：
+
+```bash
+git -c http.proxy=http://127.0.0.1:7890 -c https.proxy=http://127.0.0.1:7890 push origin main
+HTTPS_PROXY=http://127.0.0.1:7890 HTTP_PROXY=http://127.0.0.1:7890 gh release upload v<版本> <资产...> --clobber
+```
+
+排查顺序：先 `netstat -ano | grep :7890` 看代理在不在听；不在听就先起 Clash（或问负责人），不要反复重试直连。
