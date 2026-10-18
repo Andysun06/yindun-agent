@@ -545,7 +545,13 @@ class WebApp:
             "confirm_close": False,
         }
         if frameless:
-            window_kwargs.update({"frameless": True, "easy_drag": True})
+            # ★ 拖动只发生在**顶栏/浮条**（V3.6.4 修）：pywebview 的 `easy_drag=True` 会装一个
+            #   **全局且完全不筛选元素**的 mousedown 监听（见 pywebview/js/customize.js），
+            #   于是"在输入框里按下拖动"也会把整个窗口拖走（用户实测反馈），文本选择同时失效。
+            #   改用 pywebview 的官方"拖动区域"机制：只有带 `.pywebview-drag-region` 的元素
+            #   （顶栏、闪发浮条）及其子元素能拖动窗口，其余区域一律不接管鼠标事件。
+            webview.settings["DRAG_REGION_DIRECT_TARGET_ONLY"] = False   # 区域内任意位置都可拖
+            window_kwargs.update({"frameless": True, "easy_drag": False})
         self._window = webview.create_window(
             f"隐盾安全智能体 {__display_version__}",
             url=str(INDEX_HTML),

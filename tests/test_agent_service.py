@@ -507,6 +507,57 @@ check("原因里给出可执行动作（启动 Ollama / 换模型 / 重新检测
       str(_dead_status.get("error"))[:160])
 
 
+# ── ①.67 公网模型接入：地址归一化 + 多候选探测（V3.6.4，负责人接 GLM 一直失败的根因）──
+#   实测：用户把**完整端点**（https://open.bigmodel.cn/api/paas/v4/chat/completions）
+#   填进"接口地址"，探测拼 /models 变 404、保存后 chat 又拼成 …/chat/completions/chat/completions。
+from yindun.app.llm_factory import normalize_base_url as _norm, probe_candidates as _cands  # noqa: E402
+
+_bad = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+check("完整端点被还原成基础地址",
+      _norm(_bad) == "https://open.bigmodel.cn/api/paas/v4", _norm(_bad))
+check("带尾斜杠的完整端点同样还原",
+      _norm(_bad + "/") == "https://open.bigmodel.cn/api/paas/v4", _norm(_bad + "/"))
+check("标准 /v1 基础地址原样保留（不猜测、不乱补）",
+      _norm("https://api.deepseek.com/v1") == "https://api.deepseek.com/v1")
+check("Ollama 默认地址原样保留", _norm("http://127.0.0.1:11434") == "http://127.0.0.1:11434")
+check("误填 /models 也能还原", _norm("https://open.bigmodel.cn/api/paas/v4/models")
+      == "https://open.bigmodel.cn/api/paas/v4")
+_c = _cands(_bad)
+check("探测候选含 /models，并在最后带真实 chat 兜底（只提供 chat 的服务也能判连通）",
+      _c and _c[0][0].endswith("/models") and _c[-1][0].endswith("/chat/completions")
+      and _c[-1][1] == "chat", str(_c))
+check("候选都建立在归一化后的基础地址上（不会再出现 …/chat/completions/models）",
+      all("/chat/completions/" not in u for u, _ in _c), str(_c))
+
+# 保存时归一化：把完整端点存进来，落盘的必须是基础地址（否则 OpenAI 客户端会再拼一次）
+_glm_name = "glm-归一化探针"
+svc_settings = service.settings
+_saved = service.add_custom_model(_glm_name, "glm-4-flash", _bad, "sk-test")
+_models_now = dict(svc_settings.get("custom_models") or {})
+check("保存时把完整端点归一化后再落盘",
+      _saved.get("ok") and _models_now.get(_glm_name, {}).get("base_url")
+      == "https://open.bigmodel.cn/api/paas/v4",
+      str(_models_now.get(_glm_name, {}).get("base_url")))
+service.remove_custom_model(_glm_name)
+check("测试配置已清理", _glm_name not in (svc_settings.get("custom_models") or {}))
+
+# 拖动区域契约（V3.6.4）：easy_drag 是"全局无筛选"，已在窗口层关掉；拖动只认标记区域
+_webview_src = Path(__file__).resolve().parents[1].joinpath(
+    "yindun", "app", "webview_app.py").read_text(encoding="utf-8")
+_index_src = Path(__file__).resolve().parents[1].joinpath(
+    "yindun", "app", "web", "index.html").read_text(encoding="utf-8")
+check("窗口不再用全局 easy_drag（它连输入框里的拖动都会拖走整个窗口）",
+      '"easy_drag": False' in _webview_src and '"easy_drag": True' not in _webview_src)
+check("整条顶栏与闪发浮条被标记为拖动区域",
+      'class="band topbar pywebview-drag-region"' in _index_src
+      and 'class="minibar pywebview-drag-region"' in _index_src)
+check("设置页顶部栏也是拖动区域（在设置里也能移动窗口）",
+      'class="setmain__head pywebview-drag-region"' in _index_src)
+check("输入区没有被标成拖动区域（在输入框里拖动就是选文字）",
+      'composer pywebview-drag-region' not in _index_src
+      and 'id="input" class="pywebview-drag-region"' not in _index_src)
+
+
 # ── ①.66 "别让 agent 成为短板"：提示词分层 + 反编造兜底（V3.6.3，真机实测驱动）──
 #   实测背景（本机 qwen3.5:4b，A/B 对照）：把大段"附件规范"常驻在提示词里时，
 #   一句"读一下沙箱里的 x.txt"它**一次工具都不调**，还回出"我会严格按照规范使用 function

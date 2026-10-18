@@ -12,7 +12,7 @@
        折叠后窗口本身会缩成一条浮条（底边对齐、水平居中），
        在这里输入指令回车 = 自动展开完整界面并发送；Shift+Enter 换行（不发送）。
        草稿由 carryDraft() 与主输入框互相搬运：折叠/展开都不丢字。 -->
-  <div class="minibar" id="minibar">
+  <div class="minibar pywebview-drag-region" id="minibar">
     <button class="minibar__expand" id="btn-mini-expand" title="展开完整界面（Esc）">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4v5H4M15 20v-5h5"/></svg>
     </button>
@@ -79,13 +79,13 @@
 
     <!-- ── 主区 ─────────────────────────────── -->
     <main class="main">
-      <header class="band topbar">
+      <header class="band topbar pywebview-drag-region">
         <button class="btn btn--ghost" id="btn-sidebar" title="折叠 / 展开会话栏" style="display:inline-flex">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
         <div class="topbar__title" id="chat-title">新对话</div>
         <span class="band__id" id="session-id-mark"></span>
-        <div class="topbar__spacer"></div>
+        <div class="topbar__spacer pywebview-drag-region"></div>
         <button class="btn btn--ghost" id="btn-mini" title="折叠为闪发浮条（浮条内输入回车即自动展开并发送）">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h16M4 16h16"/></svg>
         </button>
@@ -216,7 +216,7 @@
         </aside>
 
         <div class="setmain">
-          <header class="setmain__head">
+          <header class="setmain__head pywebview-drag-region">
             <div>
               <h2 id="set-title">模型接入</h2>
               <p id="set-sub">按数据边界分三档：本机 / 局域网 / 公网</p>

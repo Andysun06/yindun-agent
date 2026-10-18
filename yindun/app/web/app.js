@@ -885,6 +885,15 @@
             + (res.models && res.models.length ? "：" + res.models.slice(0, 3).join("、") : "");
           note.className = "is-ok";
           if (!isLocal) {
+            // ★ 地址归一化回填（本轮）：用户常把"完整端点"（…/chat/completions）当基础地址填，
+            //   那样会拼出 …/chat/completions/chat/completions 而必然失败。探测已识别出基础地址，
+            //   这里回填并说明——用户看得见"该填什么"，不用猜。
+            const urlBox = $("p-url");
+            const normalized = String(res.endpoint || "");
+            if (urlBox && normalized && normalized !== String(urlBox.value || "").trim()) {
+              urlBox.value = normalized;
+              note.textContent += `（地址已按基础地址识别：${normalized}）`;
+            }
             const mid = $("p-model");
             if (mid && !mid.value.trim() && res.models && res.models.length) mid.value = res.models[0];
           }

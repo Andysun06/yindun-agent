@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, List, Optional
 from yindun import APP_ROOT
 from yindun.app.attachment import build_attachment_context, parse_attachment
 from yindun.app.llm_factory import (TIER_LABEL, build_llm_variants, detect_chat_models,
+                                    normalize_base_url,
                                     detect_ollama_models, infer_tier, model_catalog,
                                     probe_endpoint, tier_of)
 from yindun.core.permission import PERMISSION_ENV, resolve_mode
@@ -794,6 +795,20 @@ class AgentService:
             return {"ok": False, "error": "名称、模型 ID、接口地址都不能为空"}
         if not base_url.lower().startswith(("http://", "https://")):
             return {"ok": False, "error": "接口地址需以 http:// 或 https:// 开头"}
+        # ★ 归一化（V3.6.4）：把"完整端点"（…/chat/completions）还原成基础地址再落盘——
+        #   否则 OpenAI 兼容客户端会在 base 后再拼一次 /chat/completions，请求必然 404。
+        #   实测：接 GLM-4-Flash 一直失败就是这一步（用户粘的是完整端点）。
+        normalized = normalize_base_url(base_url)
+        if normalized and normalized != base_url:
+            try:
+                from yindun.core.audit_log import AuditEventType, AuditLog, AuditSeverity
+                AuditLog().add_entry(
+                    AuditEventType.ACCESS_CONTROL, AuditSeverity.INFO,
+                    f"接口地址已归一化为基础地址：{normalized}",
+                    {"name": name, "input": base_url[:160], "normalized": normalized[:160]})
+            except Exception:
+                pass
+            base_url = normalized
         tier = str(tier or "").strip().lower()
         if tier not in ("local", "lan", "wan"):
             tier = infer_tier(base_url)

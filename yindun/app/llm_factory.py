@@ -211,15 +211,73 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         raise urllib.error.HTTPError(req.full_url, code, "探测不跟随重定向", headers, fp)
 
 
+# ── 端点地址归一化（V3.6.4）：用户很容易把"完整接口地址"当成"基础地址"填进来 ──
+#   实测（负责人接 GLM-4-Flash 一直失败）：填的是
+#     https://open.bigmodel.cn/api/paas/v4/chat/completions
+#   而 OpenAI 兼容客户端会在这个 base 后面**再拼一次** /chat/completions →
+#   请求打到 …/chat/completions/chat/completions，必然失败；连通性探测拼 /models 也是 404。
+#   所以：**存进来之前、探测之前、建客户端之前**都先归一化成"基础地址"。
+_ENDPOINT_SUFFIXES = (
+    "/chat/completions", "/completions", "/embeddings", "/models", "/api/tags", "/api/generate",
+)
+
+
+def normalize_base_url(base_url: str) -> str:
+    """把用户填的地址归一化成 OpenAI/Ollama 客户端的**基础地址**。
+
+    规则（保守，只去掉明确的"接口端点后缀"）：
+      · 去掉结尾的 /chat/completions、/completions、/embeddings、/models、/api/tags、/api/generate
+        （可重复，容忍用户粘贴了带后缀又带斜杠的形态）；
+      · 去掉多余的尾部斜杠；
+      · 不猜测、不补全路径——例如 `https://open.bigmodel.cn/api/paas/v4` 原样保留
+        （补 `/v1` 会把它改错；`https://api.openai.com` 这种也让客户端自己按标准拼）。
+    """
+    url = str(base_url or "").strip()
+    if not url:
+        return ""
+    url = url.rstrip("/")
+    changed = True
+    while changed:
+        changed = False
+        for suffix in _ENDPOINT_SUFFIXES:
+            if url.lower().endswith(suffix):
+                url = url[: -len(suffix)].rstrip("/")
+                changed = True
+    return url
+
+
+def probe_candidates(base_url: str) -> List[tuple]:
+    """连通性探测的候选路径（按顺序试），返回 [(完整URL, 风格)]。
+
+    为什么要多候选（实测）：只认 `/models` 会把两类正常端点判死——
+      · 只提供 chat 接口、不提供模型列表的服务（探测必然 404）；
+      · 用户填了完整端点（归一化后已经能救回来，但候选里保留真实 chat 兜底更稳）。
+    """
+    base = normalize_base_url(base_url)
+    if not base:
+        return []
+    items = [(base + "/models", "openai")]
+    if "/v1" not in base:
+        items.append((base + "/api/tags", "ollama"))
+    items.append((base + "/chat/completions", "chat"))
+    return items
+
+
 def probe_endpoint(base_url: str, api_key: str = "", timeout: float = 4.0) -> Dict[str, Any]:
-    """探测一个 OpenAI 兼容端点是否可用，并列出它提供的模型。
+    """探测一个 OpenAI 兼容 / Ollama 端点是否可用，并尽可能列出模型。
 
     ★ 安全边界（与"零裸 HTTP"的取舍说明）：本函数**只接受来自设置页输入框的地址**，
-      不接受任何来自文档/工具结果的内容；只允许 http/https，禁止跟随重定向，4 秒超时，
-      且只读 `GET {base}/models`（失败再试 Ollama 原生 `GET {base}/api/tags`）。
+      不接受任何来自文档/工具结果的内容；只允许 http/https，禁止跟随重定向，短超时。
       它是"用户主动发起的配置动作"，不是可被内容诱导的请求路径——设置页会明确写这一点。
+
+    ★ V3.6.4 起做三件事（实测驱动）：
+      ① **地址归一化**：把"完整端点"（…/chat/completions）还原成基础地址——负责人接 GLM 一直失败
+         就是因为粘贴了完整端点，探测拼 /models 变 404、保存后 chat 又拼成 …/chat/completions/chat/completions；
+      ② **多候选探测**：/models → /api/tags（非 /v1 时）→ **真实最小 chat 请求**兜底
+         （只提供 chat、不提供模型列表的服务由此也能判为连通）；
+      ③ **错误分类说人话**：401/403 认证、404 无此接口、超时/DNS 分开报，并回带归一化后的地址。
     """
-    url = (base_url or "").strip().rstrip("/")
+    url = normalize_base_url(base_url)
     if not url:
         return {"ok": False, "error": "请先填写接口地址"}
     parsed = urlparse(url)
@@ -231,23 +289,56 @@ def probe_endpoint(base_url: str, api_key: str = "", timeout: float = 4.0) -> Di
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
 
-    for path, style in (("/models", "openai"), ("/api/tags", "ollama")):
-        if "/v1" in url and path == "/api/tags":
-            continue                      # 已是 /v1 形式，不再试 Ollama 原生路径
+    last_error = ""
+    for candidate, style in probe_candidates(url):
         try:
-            request = urllib.request.Request(url + path, headers=headers)
+            if style == "chat":
+                # 真实最小对话请求：对"只提供 chat 的服务"是唯一可靠的连通性证据。
+                # 只发 1 个 token、不带任何用户内容（固定字符串，避免把业务数据发到公网）。
+                body = json.dumps({"model": _probe_model_hint() or "glm-4-flash",
+                                   "messages": [{"role": "user", "content": "ping"}],
+                                   "max_tokens": 1}).encode("utf-8")
+                request = urllib.request.Request(
+                    candidate, data=body, method="POST",
+                    headers={**headers, "Content-Type": "application/json"})
+            else:
+                request = urllib.request.Request(candidate, headers=headers)
             with opener.open(request, timeout=timeout) as response:
-                payload = json.loads(response.read(2_000_000).decode("utf-8", "ignore") or "{}")
+                raw = response.read(2_000_000).decode("utf-8", "ignore")
         except urllib.error.HTTPError as exc:
             if exc.code in (404, 405):
-                continue                  # 换另一种端点风格再试
+                last_error = f"HTTP {exc.code}"
+                continue                          # 换下一种端点风格
             if exc.code in (401, 403):
-                return {"ok": False, "error": f"认证失败（HTTP {exc.code}）：密钥可能不正确"}
-            return {"ok": False, "error": f"HTTP {exc.code}：{exc.reason}"}
-        except Exception as exc:          # 超时 / DNS / 拒绝连接 / 证书
-            return {"ok": False, "error": f"连不上：{type(exc).__name__} {exc}"}
+                return {"ok": False, "endpoint": url,
+                        "error": (f"认证失败（HTTP {exc.code}）：地址是通的，但密钥不被接受——"
+                                  f"请确认密钥是否正确、是否已过期/额度用尽")}
+            return {"ok": False, "endpoint": url, "error": f"HTTP {exc.code}：{exc.reason}"}
+        except Exception as exc:                  # 超时 / DNS / 拒绝连接 / 证书
+            return {"ok": False, "endpoint": url,
+                    "error": f"连不上：{type(exc).__name__} {exc}（地址：{url}）"}
+
+        if style == "chat":
+            # 能聊天就说明可用；模型名从响应里尽量取回来（取不到就让用户手填）
+            model_id = ""
+            try:
+                payload = json.loads(raw or "{}")
+                if isinstance(payload, dict):
+                    model_id = str(payload.get("model") or "")
+            except Exception:
+                payload = {}
+            models = [model_id] if model_id else []
+            return {"ok": True, "style": "openai-chat", "models": models, "count": len(models),
+                    "endpoint": url,
+                    "note": ("已连通（该端点不提供模型列表，已用一次最小对话验证；"
+                             "模型 ID 请按服务商文档填写）")}
 
         models: List[str] = []
+        if isinstance(raw, str):
+            try:
+                payload = json.loads(raw or "{}")
+            except Exception:
+                payload = {}
         if isinstance(payload, dict):
             data = payload.get("data")            # OpenAI: {"data":[{"id":...}]}
             if isinstance(data, list):
@@ -256,7 +347,28 @@ def probe_endpoint(base_url: str, api_key: str = "", timeout: float = 4.0) -> Di
                 models = [str(m.get("name")) for m in payload["models"]
                           if isinstance(m, dict) and m.get("name")]
         return {"ok": True, "style": style, "models": models[:200], "count": len(models),
-                "endpoint": url, "note": "已连通" + (f"，发现 {len(models)} 个模型" if models else "")}
+                "endpoint": url,
+                "note": "已连通" + (f"，发现 {len(models)} 个模型" if models else "")}
+
+    return {"ok": False, "endpoint": url,
+            "error": (f"端点没有响应可用的接口（试过 /models 与最小对话请求"
+                      f"{'，最后错误 ' + last_error if last_error else ''}）："
+                      f"请确认这是 OpenAI 兼容或 Ollama 服务，且地址填到基础路径"
+                      f"（例如 https://open.bigmodel.cn/api/paas/v4）")}
+
+
+def _probe_model_hint() -> str:
+    """探测时用的模型名提示：优先取用户当前/最近配置的模型 ID，取不到用空串。"""
+    try:
+        from yindun.app.settings_store import SettingsStore
+        settings = SettingsStore()
+        model = str(settings.get("model") or "")
+        custom = settings.get("custom_models") or {}
+        if model in custom:
+            return str(custom[model].get("model_id") or "")
+    except Exception:
+        pass
+    return ""
     return {"ok": False, "error": "端点没有响应 /models 或 /api/tags（请确认是 OpenAI 兼容或 Ollama 服务）"}
 
 
@@ -319,7 +431,9 @@ def build_llm(settings: Dict[str, Any], tools: List[Any],
             from langchain_openai import ChatOpenAI
             base_model = ChatOpenAI(
                 model=info.get("model_id", model_name),
-                openai_api_base=info.get("base_url", ""),
+                # ★ 建客户端前再归一化一次（V3.6.4）：老配置里可能存着完整端点，
+                #   这里兜底修好，用户不必删了重建。
+                openai_api_base=normalize_base_url(info.get("base_url", "")),
                 openai_api_key=info.get("api_key", ""),
             )
         else:
