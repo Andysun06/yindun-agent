@@ -29,6 +29,12 @@ def main() -> int:
             print("Qt 界面已移除（视图层重构完成）。当前仅提供 Web 界面；"
                   "如需旧界面请从 git 历史取回 yindun/gui/。")
             return 2
+    # 统一日志出口（V3.6.1）：打包成 exe 后 `print` 的输出会掉进临时解压目录、现场看不到，
+    # 现在固定写 <APP_ROOT>/logs/yindun.log（`--log-level` / `--log-dir` 可调），
+    # 打包态还会顺带把散装 print 收进同一份日志文件。
+    from yindun.utils.logger import get_logger, setup_from_argv
+    setup_from_argv()
+    get_logger("main").info("启动隐盾客户端（%s）", " ".join(sys.argv[1:]) or "无参数")
     return run_web_ui()
 
 

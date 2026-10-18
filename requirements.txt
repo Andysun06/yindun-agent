@@ -23,3 +23,6 @@ langchain-text-splitters>=0.2.0
 # 界面：pywebview + WebView2（Windows 10/11 通常自带 WebView2 运行时）
 # 说明：Qt（PySide6）已随视图层重构整体移除；`python run.py` 即启动 Web 界面
 pywebview>=5.0
+# 界面自动化回归（tests/test_ui_paths.py）：装完依赖还要下一份浏览器内核
+#   python -m playwright install chromium
+playwright>=1.40

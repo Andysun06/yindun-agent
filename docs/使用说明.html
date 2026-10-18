@@ -21,7 +21,7 @@ tr:nth-child(even) td{background:#fafcfa;} hr{border:none;border-top:1px solid v
 strong{color:#0a5c3b;} @page{size:A4;margin:16mm 12mm;} h2{page-break-after:avoid;} table,pre,blockquote{page-break-inside:avoid;}
 </style></head><body><div class="page"><h1>隐盾安全智能体 · 使用说明</h1>
 <blockquote>
-<p>面向涉密办公场景的本地化隐私防护桌面智能体 · V3.6.0
+<p>面向涉密办公场景的本地化隐私防护桌面智能体 · V3.6.1
 Yindun Security Agent — 让本地 AI 更安全、更智能、更可控</p>
 </blockquote>
 <hr />
@@ -63,7 +63,8 @@ Yindun Security Agent — 让本地 AI 更安全、更智能、更可控</p>
    界面底部会显示启动进度：<strong>探测算力 → 载入模型 → 已就绪</strong>；模型在后台载入内存（本机实测约 7~15 秒，
    首次或换模型时可能要 20~60 秒），载入完成后再提问就不会等；载入期间界面已经可以正常操作。</li>
 </ol>
-<p><strong>数据落在哪</strong>：配置、会话记录、审计日志、知识库向量数据都写在 <strong>exe 同目录</strong>，所以请把 exe 放在可写目录（桌面、文档、便携盘均可）。
+<p><strong>出问题看哪里</strong>：运行日志在 <strong>exe 同目录的 <code>logs/yindun.log</code></strong>（按 2MB × 3 份轮转，含启动、模型载入、插件与工具调用、异常栈；敏感值写盘前已掩码）。查更细的过程可加 <code>--log-level DEBUG</code> 启动；若需要把程序内部的常规输出也一并记下（排障用），再加 <code>--log-capture-prints</code>（<strong>默认不采集</strong>：日志是明文落盘面，默认只记关键事件）。
+<strong>数据落在哪</strong>：配置、会话记录、审计日志、知识库向量数据都写在 <strong>exe 同目录</strong>，所以请把 exe 放在可写目录（桌面、文档、便携盘均可）。
 <strong>卸载</strong>：删除 exe 及其同目录下生成的数据文件即可，不留残余。</p>
 <h3>方式 B：源码运行（开发者）</h3>
 <pre><code class="language-bash"># Python 3.10+，安装依赖
@@ -400,7 +401,7 @@ python -m yindun.control --host 0.0.0.0 --window yes   # 对外监听（默认�
 <hr />
 <h2>八、版本与声明</h2>
 <ul>
-<li>当前版本：<strong>V3.6.0</strong>（技术栈 Python · LangChain · pywebview/WebView2 · Chroma · Ollama；Qt 已移除）</li>
+<li>当前版本：<strong>V3.6.1</strong>（技术栈 Python · LangChain · pywebview/WebView2 · Chroma · Ollama；Qt 已移除）</li>
 <li>插件体系：内核不可插件化（脱敏 / 审批 / 审计 / 沙箱），能力可插件化（识别 / 解析 / 模板 / 导出），
   插件只能"做加法"；详见 <a href="插件开发.md">插件开发.md</a>。</li>
 <li>本文档中出现的个人信息（张伟 / 13812345678 等）均为虚构测试样例，不涉及任何真实个人数据。</li>

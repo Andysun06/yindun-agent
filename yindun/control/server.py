@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import threading
 import time
@@ -49,6 +50,30 @@ class ApiError(Exception):
         super().__init__(message)
         self.status = status
         self.message = message
+
+
+def display_version() -> str:
+    """产品版本号（唯一来源：`yindun.__display_version__`）。
+
+    控制台页面与客户端界面都不许写死版本——写死就会漂：
+    V3.5.x 期间出现过"控制台徽标还写 V3.5.9、客户端已经是 V3.6.0"的不一致，
+    每次 bump 要手改三处，漏一处没人发现。现在页面里放 `{{VERSION}}` 占位符，
+    由这里注入；`tests/test_version_consistency.py` 会钉住这条链路。
+    取不到就返回空串（页面显示空白而不是一个错的版本号）。
+    """
+    try:
+        from yindun import __display_version__
+        return str(__display_version__)
+    except Exception:
+        return ""
+
+
+def render_static(target: Path) -> bytes:
+    """读取控制台静态资源；对 index.html 做版本占位符注入。"""
+    blob = target.read_bytes()
+    if target.name == "index.html" and b"{{VERSION}}" in blob:
+        blob = blob.replace(b"{{VERSION}}", display_version().encode("utf-8"))
+    return blob
 
 
 class ControlServer:
@@ -355,7 +380,7 @@ def make_handler(app: ControlServer, verbose: bool = True):
                 raise ApiError(403, "越界路径被拒绝") from None
             if not target.is_file() or target.suffix.lower() not in STATIC_TYPES:
                 raise ApiError(404, "未找到")
-            self._send(200, target.read_bytes(), STATIC_TYPES[target.suffix.lower()])
+            self._send(200, render_static(target), STATIC_TYPES[target.suffix.lower()])
 
         # ── 方法 ──
         def do_GET(self) -> None:      # noqa: N802
@@ -416,6 +441,10 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--data", default="", help="控制面数据目录（默认 control_data/）")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--log-level", default="", help="日志级别 DEBUG/INFO/WARNING/ERROR（默认 INFO）")
+    parser.add_argument("--log-dir", default="", help="日志落点（默认 <APP_ROOT>/logs）")
+    parser.add_argument("--log-capture-prints", action="store_true",
+                        help="把散装 print 也收进日志（默认不采：避免默认多一条明文落盘面）")
     parser.add_argument("--window", dest="window", nargs="?", const="yes", default="auto",
                         choices=["auto", "yes", "no", "browser"],
                         help="承载方式：auto（默认，回环监听时开桌面窗口）/ yes / no（纯服务）/ browser（用默认浏览器打开）")
@@ -425,6 +454,19 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--browser", dest="window", action="store_const", const="browser",
                         help="等价于 --window browser：不弹窗口，用系统默认浏览器打开控制台")
     args = parser.parse_args(argv)
+
+    # 统一日志出口（V3.6.1）：控制面打包成 exe 后原本什么都不落盘，现场排障只能靠终端。
+    # 现在固定写 <APP_ROOT>/logs/yindun.log（可用 --log-dir 换），级别默认 INFO。
+    # 散装 print 的采集**默认关闭**（多一条明文落盘面要慎重），需要排障时用 --log-capture-prints 打开。
+    from yindun.utils.logger import get_logger, install_print_bridge, setup_logging
+    if args.log_capture_prints:
+        os.environ["YINDUN_LOG_CAPTURE_PRINTS"] = "1"
+    setup_logging(level=args.log_level, log_dir=args.log_dir, console=not args.quiet)
+    if getattr(sys, "frozen", False):
+        install_print_bridge()
+    log = get_logger("control")
+    log.info("控制面启动请求：host=%s port=%s data=%s window=%s",
+             args.host, args.port, args.data or "(默认)", args.window)
 
     store = ControlStore(Path(args.data) / "control.db") if args.data else ControlStore()
     token = store.ensure_admin_token()

@@ -421,8 +421,13 @@ check("输入区有本对话权限胶囊（设置页那份是「新对话默认�
 check("下拉里含「跟随设置默认」一项（可清除本对话覆盖）",
       "跟随设置默认" in js and 'data-mode=""' in js)
 check("切换本对话档位后同时刷新胶囊与安全态势条",
-      "state.sessionPermission = res.permission || null" in js
-      and js.count("paintPermPill(state.sessionPermission)") >= 2)
+      # ★ 字段名必须是 `session_permission`（界面自动化回归抓出的真缺陷，已修）：
+      #   内核返回的是 {ok, session_permission, default_permission, effective}，
+      #   旧断言钉的 `res.permission` 永远是 undefined → 胶囊每次都退回默认档，
+      #   用户选了档位却看不出生效。这里改成钉**正确的键**。
+      "state.sessionPermission = res.session_permission || null" in js
+      and js.count("paintPermPill(state.sessionPermission)") >= 2
+      and "res.permission || null" not in js)
 check("后端提供会话级档位接口（空值 = 清除覆盖）",
       "def set_session_permission" in service_src and "def effective_permission" in service_src
       and "def set_session_permission" in webview_src)

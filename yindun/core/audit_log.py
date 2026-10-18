@@ -17,6 +17,12 @@ from pathlib import Path
 from typing import List, Dict, Optional
 from enum import Enum
 
+from yindun.utils.logger import get_logger
+
+# 审计的异常/告警一律走统一日志出口（V3.6.1）：打包成 exe 后 print 会掉进临时解压目录，
+# 现场排障时"审计链校验失败"这类关键线索必须留在 <APP_ROOT>/logs/yindun.log 里。
+log = get_logger("audit")
+
 # 审计 HMAC 密钥缓存（模块级，进程内只需加载一次）
 _HMAC_KEY = b""
 _HMAC_KEY_LOADED = False
@@ -60,8 +66,8 @@ def _get_hmac_key() -> Optional[bytes]:
                 os.chmod(key_file, 0o600)
             except OSError:
                 pass
-            print(f"[AuditLog] 审计 HMAC 密钥已迁移至：{key_file}")
-            print(f"[AuditLog] 旧文件可手动删除：{legacy_file}")
+            log.info("审计 HMAC 密钥已迁移至：%s", key_file)
+            log.info("旧文件可手动删除：%s", legacy_file)
         else:
             data = secrets.token_bytes(32)
             key_file.parent.mkdir(parents=True, exist_ok=True)
@@ -75,7 +81,7 @@ def _get_hmac_key() -> Optional[bytes]:
             raise ValueError("审计 HMAC 密钥长度不足 32 字节")
         _HMAC_KEY = data
     except Exception as e:
-        print(f"[AuditLog] 审计 HMAC 密钥加载失败：{e}")
+        log.error("审计 HMAC 密钥加载失败：%s", e)
         _HMAC_KEY = b""
         return None
     _HMAC_KEY_LOADED = True
@@ -135,7 +141,7 @@ class AuditEntry:
         key = _get_hmac_key()
         if key is None:
             # 密钥缺失：无法计算 HMAC，条目置空哈希（校验将失败），显式告警而非静默
-            print("[AuditLog] 审计 HMAC 密钥缺失，无法计算哈希，条目将无法通过校验")
+            log.error("审计 HMAC 密钥缺失，无法计算哈希，条目将无法通过校验")
             self.entry_hash = ""
             return self.entry_hash
         self.entry_hash = hmac.new(key, canonical, hashlib.sha256).hexdigest()
@@ -228,7 +234,7 @@ class AuditLog:
                         entry = AuditEntry.from_dict(entry_data)
                         self._entries.append(entry)
             except Exception as e:
-                print(f"[AuditLog] 审计日志加载失败：{e}")
+                log.error("审计日志加载失败：%s", e)
 
     # ── 链锚点：防"整链改写 + 尾部截断" ────────────────
     # 为什么需要它：哈希链只能证明"中间没被改"，防不住两种攻击——
@@ -261,7 +267,7 @@ class AuditLog:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
-            print(f"[AuditLog] 锚点文件解析失败：{type(exc).__name__}: {exc}")
+            log.warning("锚点文件解析失败：%s: %s", type(exc).__name__, exc)
             return {"tampered": True, "reason": f"锚点文件损坏：{exc}"}
         key = _get_hmac_key()
         if key is None:
@@ -296,7 +302,7 @@ class AuditLog:
                            ensure_ascii=False, indent=2),
                 encoding="utf-8")
         except Exception as exc:
-            print(f"[AuditLog] 锚点写入失败（下次启动将无法发现截断）：{exc}")
+            log.error("锚点写入失败（下次启动将无法发现截断）：%s", exc)
 
     def reanchor(self, reason: str = "") -> dict:
         """显式重建锚点（用于迁移/拷贝审计目录后的确认动作）。
@@ -330,7 +336,7 @@ class AuditLog:
                 # 链落盘与锚点刷新必须成对发生：否则新写入的条目会被下一次校验当成"截断"
                 self._write_anchor()
         except Exception as e:
-            print(f"[AuditLog] 审计日志保存失败：{e}")
+            log.error("审计日志保存失败：%s", e)
 
     def set_session_id(self, session_id: str):
         self._current_session_id = session_id
@@ -357,7 +363,7 @@ class AuditLog:
                 self._save_logs()
                 return entry
         except Exception as e:
-            print(f"[AuditLog] 审计条目写入失败：{e}")
+            log.error("审计条目写入失败：%s", e)
         return None
 
     def log_tool_call(self, tool_name: str, tool_args: dict, target_path: str = ""):
@@ -548,20 +554,20 @@ class AuditLog:
         key = _get_hmac_key()
         if key is None:
             detail["reason"] = "密钥缺失，无法校验审计链（无法证明条目未被篡改）"
-            print("[AuditLog] 审计链无法校验（密钥缺失）")
+            log.warning("审计链无法校验（密钥缺失）")
             return detail
 
         anchor = self._read_anchor()
         if anchor is not None and anchor.get("tampered"):
             detail["anchor"] = "tampered"
             detail["reason"] = anchor.get("reason") or "锚点不可信"
-            print(f"[AuditLog] 审计链校验失败：{detail['reason']}")
+            log.warning("审计链校验失败：%s", detail['reason'])
             return detail
 
         if anchor is None and self._entries and not allow_missing_anchor:
             detail["reason"] = ("锚点缺失但审计链非空 —— 审计目录可能被整体替换、锚点被删除，"
                                "或这是首次升级（可在审计面板点「重建锚点」确认接受当前链）")
-            print(f"[AuditLog] 审计链校验失败：{detail['reason']}")
+            log.warning("审计链校验失败：%s", detail['reason'])
             return detail
 
         legacy_total = sum(1 for e in self._entries if e.legacy)
@@ -578,14 +584,14 @@ class AuditLog:
                 if index >= allowed_legacy:
                     detail["reason"] = (f"第 {index + 1} 条出现未受保护的旧版条目（超出锚定的历史前缀 "
                                         f"{allowed_legacy} 条）—— 疑似抹掉 HMAC 标记后重算整链")
-                    print(f"[AuditLog] 审计链校验失败：{detail['reason']}")
+                    log.warning("审计链校验失败：%s", detail['reason'])
                     return detail
                 expected_hash = hashlib.sha256(canonical).hexdigest()
             else:
                 expected_hash = hmac.new(key, canonical, hashlib.sha256).hexdigest()
             if entry.entry_hash != expected_hash:
                 detail["reason"] = f"第 {index + 1} 条哈希不匹配（该条内容被改动）"
-                print(f"[AuditLog] 审计链校验失败：{detail['reason']}")
+                log.warning("审计链校验失败：%s", detail['reason'])
                 return detail
             prev_hash = entry.entry_hash
 
@@ -593,12 +599,12 @@ class AuditLog:
             if len(self._entries) < int(anchor.get("count", 0)):
                 detail["reason"] = (f"条目数少于锚点记录（现有 {len(self._entries)} 条 / 锚点 "
                                     f"{anchor.get('count')} 条）—— 尾部被截断")
-                print(f"[AuditLog] 审计链校验失败：{detail['reason']}")
+                log.warning("审计链校验失败：%s", detail['reason'])
                 return detail
             anchor_count = int(anchor.get("count", 0))
             if anchor_count > 0 and self._entries[anchor_count - 1].entry_hash != anchor.get("head"):
                 detail["reason"] = "锚点位置的链头不匹配 —— 尾部条目被替换或重排"
-                print(f"[AuditLog] 审计链校验失败：{detail['reason']}")
+                log.warning("审计链校验失败：%s", detail['reason'])
                 return detail
 
         detail["valid"] = True

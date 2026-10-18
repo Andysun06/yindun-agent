@@ -1640,9 +1640,13 @@
     document.querySelectorAll(".setnav__item").forEach((b) =>
       b.classList.toggle("is-active", b.dataset.set === page
         && (page !== "plugin-settings" || b.dataset.plugin === pluginId)));
+    // ★ 插件设置页要**先渲染再切显隐**（本轮修）：`renderPluginSettings` 会把内容填进
+    //   `#plugin-settings-page`，而"哪一页可见"由 data-set 的 .is-active 决定。旧顺序是先切
+    //   显隐、后渲染——首次进入时该容器还没渲染过、也没有 data-set，于是**第一次点插件设置是
+    //   一张白板**，得再点一次才出现（界面自动化回归抓出来的真实缺陷）。
+    if (page === "plugin-settings") renderPluginSettings(pluginId);
     document.querySelectorAll(".setpage").forEach((p) =>
       p.classList.toggle("is-active", p.dataset.set === page));
-    if (page === "plugin-settings") renderPluginSettings(pluginId);
   }
 
   function pluginSettingsMeta(pluginId) {
@@ -1856,7 +1860,7 @@
     }
     const det = $("laya-detail");
     if (det) det.innerHTML = layaDetailHtml(sel.tier, cur);
-    bindLayaDetail(sel.tier);
+    bindLayaDetail(sel.tier, host);
   }
 
   function layaDetailHtml(tier, cur) {
@@ -1911,7 +1915,11 @@
         接口口径：OpenAI 兼容的 <code>/chat/completions</code>，回复里需要出现 0–1 的概率或「高危/中危/低危」字样；解析不出就如实报错并回退正则。</p>`;
   }
 
-  function bindLayaDetail(tier) {
+  function bindLayaDetail(tier, host) {
+    // ★ `host` 必须是入参（本轮修）：本函数里多处 `renderLayaSettings(host)` 重新渲染，
+    //   旧签名只有 `tier`，`host` 只在 renderLayaSettings 的作用域里——于是**切档/保存后
+    //   重渲染直接抛 ReferenceError: host is not defined**：用户点「局域网」「正则」没反应，
+    //   详情面板停在原档（界面自动化回归抓出来的真实缺陷，laya 三级接入是亮点功能，不能用不了）。
     const box = $("laya-detail");
     if (!box) return;
     const put = (text, cls) => {
@@ -2408,7 +2416,11 @@
         closePermPop();
         const res = await call("set_session_permission", mode);
         if (!res || !res.ok) { toast("切换失败：" + ((res && res.error) || "未知原因")); return; }
-        state.sessionPermission = res.permission || null;
+        // ★ 字段名必须与内核返回一致（本轮修）：`set_session_permission` 返回的是
+        //   `session_permission` / `default_permission` / `effective`，旧代码读的 `res.permission`
+        //   永远是 undefined → 胶囊每次都退回"跟随设置默认"，用户选了档位却看不出生效
+        //   （后端其实已经生效——界面显示与实际行为不一致，比功能缺失更糟）。
+        state.sessionPermission = res.session_permission || null;
         paintPermPill(state.sessionPermission);
         renderPosture(res.posture || null);
         toast(mode ? `本对话权限：${(PERM_MODES[mode] || {}).label || mode}` : "本对话权限：跟随设置默认");

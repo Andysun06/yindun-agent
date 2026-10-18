@@ -2,6 +2,11 @@ name: CI
 
 # 说明：本项目的测试套件是"可直接执行的脚本"（退出码即结论），因此 CI 就是逐个跑套件。
 # 知识库套件需本地 Ollama，离线会自动跳过并返回 0；端到端实测需 YINDUN_E2E=1，CI 不开启。
+#
+# 另有 packaging job：构建两个 exe → `tools/packaging/verify_archive.py --all` 校验
+# "exe 内资产 = 源码"（改前端/插件却没重建 exe 会在这里报红）→ 控制端 exe 起服务冒烟。
+# 本地模型车道（YINDUN_E2E / test_plugins_live §9）依赖开发机上的 Ollama，CI 上不跑——
+# 但套件在离线时会**明确标注跳过**（跳过 ≠ 通过），不给假绿灯。
 
 on:
   push:
@@ -33,6 +38,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: 安装 Playwright Chromium（界面自动化回归用）
+        run: python -m playwright install chromium
+
       - name: 全量测试套件（逐个执行，任一非 0 即失败）
         shell: bash
         run: |
@@ -52,4 +60,67 @@ jobs:
           path: |
             tests/privacy_eval_results.json
             tests/privacy_holdout_results.json
+          if-no-files-found: warn
+
+  packaging:
+    name: 打包校验（exe 内资产 = 源码 + 启动冒烟）
+    runs-on: windows-latest
+    timeout-minutes: 75
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 构建客户端 exe
+        run: python tools/packaging/build_portable.py
+
+      - name: 构建控制端 exe
+        run: python tools/packaging/build_control.py
+
+      - name: 归档校验（插件/前端资源逐字节 + 关键符号 + 版本号）
+        run: python tools/packaging/verify_archive.py --all
+
+      - name: 版本号单点化一致性
+        run: python tests/test_version_consistency.py
+
+      - name: 控制端 exe 启动冒烟（起服务 → 真实鉴权 → 读自检与统计）
+        shell: bash
+        run: |
+          set -e
+          EXE=$(ls dist/隐盾控制端_*_便携版.exe | head -1)
+          echo "被测 exe：$EXE"
+          "$EXE" --port 8911 --no-window &
+          for i in $(seq 1 30); do
+            [ -f control_data/admin_token.txt ] && break
+            sleep 2
+          done
+          TOKEN=$(grep -v '^#' control_data/admin_token.txt | head -1 | tr -d '\r\n')
+          test -n "$TOKEN"
+          for i in $(seq 1 15); do
+            code=$(curl -s -o /tmp/selftest.json -w "%{http_code}" \
+              -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8911/api/v1/self-test) && [ "$code" = "200" ] && break
+            sleep 2
+          done
+          test "$code" = "200"
+          python -c "import json;d=json.load(open('/tmp/selftest.json',encoding='utf-8'));assert d.get('all_monotonic') and d.get('all_rejected'),d"
+          code=$(curl -s -o /tmp/stats.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8911/api/v1/stats?days=7")
+          test "$code" = "200"
+          echo "✅ 控制端 exe 冒烟通过（自检 200 + 只收紧不变式成立 + 统计 200）"
+          taskkill //F //IM "$(basename "$EXE")" || true
+
+      - name: 上传 exe 构件
+        uses: actions/upload-artifact@v4
+        with:
+          name: yindun-exe
+          path: dist/*.exe
           if-no-files-found: warn

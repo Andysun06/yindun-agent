@@ -325,8 +325,11 @@
                 插件只能做加法：补充识别、扩展解析、工作流模板、导出格式；脱敏豁免 / 白名单 / 审批放行 / 审计写入永不开放。</p>
             </div>
 
-            <!-- ── 插件专属设置页（容器）：启用某个有设置的插件后，把它的设置渲染到这里 ── -->
-            <div class="setpage" id="plugin-settings-page"></div>
+            <!-- ── 插件专属设置页（容器）：启用某个有设置的插件后，把它的设置渲染到这里 ──
+                 data-set 必须在 HTML 里就写好：`setSettingsPage` 是按 data-set 切 .is-active 的，
+                 以前靠 renderPluginSettings 事后补 data-set，于是**第一次点进插件设置是空白页**，
+                 要点第二次才显示（本轮由界面自动化回归抓出并修） -->
+            <div class="setpage" id="plugin-settings-page" data-set="plugin-settings"></div>
 
             <!-- ── 企业控制面（V3.5.0）── -->
             <div class="setpage" data-set="control">

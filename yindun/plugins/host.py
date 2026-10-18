@@ -47,6 +47,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from yindun import APP_ROOT
+from yindun.utils.logger import get_logger
+
+# 插件宿主的问题（预热失败/模块读不到/钩子超时）必须留下带级别的日志：
+# "不允许静默失效"是硬性约定（§5 不变量 12），而打包成 exe 后 print 是看不见的。
+log = get_logger("plugins")
 
 # ──────────────────────────────────────────────
 # 钩子契约
@@ -622,7 +627,8 @@ class PluginHost:
                     return
                 hook()
             except Exception as exc:      # 预热失败绝不能影响"插件已启用"这个事实
-                print(f"[PluginHost] 插件 {record.plugin_id} 预热失败（不影响启用）：{type(exc).__name__}: {exc}")
+                log.warning("插件 %s 预热失败（不影响启用）：%s: %s",
+                            record.plugin_id, type(exc).__name__, exc)
 
         threading.Thread(target=_run, daemon=True,
                          name=f"preload-{record.plugin_id}").start()
@@ -649,7 +655,7 @@ class PluginHost:
         try:
             module = self._module_for(record)
         except Exception as exc:
-            print(f"[PluginHost] 读取插件 {plugin_id} 模块失败：{type(exc).__name__}: {exc}")
+            log.error("读取插件 %s 模块失败：%s: %s", plugin_id, type(exc).__name__, exc)
             return default
         value = getattr(module, name, default)
         return value
@@ -813,7 +819,7 @@ class PluginHost:
             directory = self.data_dir(record.plugin_id)
             module.PLUGIN_DATA_DIR = str(directory) if directory else ""
         except Exception as exc:
-            print(f"[PluginHost] 注入插件数据目录失败（{record.plugin_id}）：{exc}")
+            log.warning("注入插件数据目录失败（%s）：%s", record.plugin_id, exc)
         record._module = module
         return module
 
@@ -860,12 +866,13 @@ class PluginHost:
             if thread.is_alive():
                 _note_runtime(record, "timeout", int(timeout * 1000), hook,
                               f"超时（>{timeout:.1f}s）")
-                print(f"[PluginHost] 插件 {record.plugin_id} 的 {hook} 超时（>{timeout:.1f}s），已跳过")
+                log.warning("插件 %s 的 %s 超时（>%.1fs），已跳过",
+                            record.plugin_id, hook, timeout)
                 continue
             if outcome.get("error"):
                 _note_runtime(record, "error", int((time.monotonic() - started) * 1000), hook,
                               outcome["error"])
-                print(f"[PluginHost] 插件 {record.plugin_id} 的 {hook} 失败：{outcome['error']}")
+                log.warning("插件 %s 的 %s 失败：%s", record.plugin_id, hook, outcome['error'])
                 continue
             value = outcome.get("value")
             if spec.normalize is not None:

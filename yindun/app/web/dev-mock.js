@@ -192,17 +192,26 @@
         result: "{'ok': True, 'summary': '已提取 6 条关键条款（本地模型）'}" },
       { step_id: "s3", name: "风险点分析", description: "识别合同中的潜在风险和不利条款",
         tool_name: "analyze_contract", approval_type: "auto", status: "waiting_approval", unimplemented: false, result: null },
+      // 沙盘里保留一个"已审批、待执行"的步骤：这是"审批通过 → 执行下一步"的中间态，
+      // 界面文案是「已审批，待执行」（V3.6.0 修的真实卡死点就卡在这个状态上）
       { step_id: "s4", name: "生成审查意见", description: "基于分析结果生成专业的审查意见书",
-        tool_name: "generate_report", approval_type: "manual", status: "pending", unimplemented: false, result: null },
+        tool_name: "generate_report", approval_type: "manual", status: "approved",
+        reviewer: "张三", unimplemented: false, result: null },
       { step_id: "s5", name: "导出PDF报告", description: "将审查意见导出为PDF文件",
         tool_name: "export_file", approval_type: "manual", forced_approval: true,
         status: "pending", unimplemented: false, result: null },
+      // 外部模板里的未实现工具：界面应标「未实现」，而不是假装能跑
+      { step_id: "s6", name: "外呼通知（第三方模板）", description: "来自外部配置的步骤，内核没有对应执行器",
+        tool_name: "notify_vendor", approval_type: "auto", status: "pending",
+        unimplemented: true, result: null },
     ],
   };
 
   const api = {
     bootstrap: () => Promise.resolve({
-      version: "V3.6.0",
+      // 预览模式不写死版本号：这份 mock 只在本地看界面用（`index.html#mock`），
+      // 写死产品版本就会漂——版本号唯一来源是 `yindun/__init__.py`，随打包注入/载荷下发。
+      version: "预览模式（界面沙盘）",
       settings: {
         model: "qwen3.5:4b", ollama_host: "http://127.0.0.1:11434", privacy: true, allow_script_exec: true,
         dark_mode: location.hash.indexOf("light") < 0, topmost: true,

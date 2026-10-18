@@ -6,8 +6,13 @@ from pathlib import Path
 
 from yindun import APP_ROOT
 from yindun.core.permission import gate_reason
+from yindun.utils.logger import get_logger
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
+
+# 执行容器/沙箱相关的问题要有级别地落盘：打包成 exe 后 print 看不见，
+# 而"进程容器不可用，回退普通执行"这类降级必须能在 logs/yindun.log 里查到。
+log = get_logger("tools")
 
 
 # ──────────────────────────────────────────
@@ -489,7 +494,7 @@ def _run_contained(parts, cwd, env, timeout):
             except Exception:
                 pass
     except Exception as exc:
-        print(f"[file_tools] 进程容器不可用，回退普通执行：{type(exc).__name__}: {exc}")
+        log.warning("进程容器不可用，回退普通执行：%s: %s", type(exc).__name__, exc)
         r = subprocess.run(parts, shell=False, cwd=cwd, capture_output=True,
                            text=True, timeout=timeout, env=env)
         return r.returncode, r.stdout or "", r.stderr or "", False

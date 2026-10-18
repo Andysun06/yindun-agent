@@ -44,6 +44,11 @@ from yindun.core.file_tools import (
 )
 from yindun.worker.agent_worker import WORKER_EVENTS, Worker
 from yindun.plugins.host import PluginHost
+from yindun.utils.logger import get_logger
+
+# 服务层的"某件事没做成"（模型预热、插件扩展名、工作流映射、审计写入）以前只 print，
+# 打包成 exe 后现场完全看不到——而这些恰恰是排障时最需要的第一手线索。
+log = get_logger("service")
 
 Listener = Callable[[str, Any], None]
 
