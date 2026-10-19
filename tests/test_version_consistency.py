@@ -141,6 +141,24 @@ check("两个产物的图标是**不同**的（一眼分得清客户端与控制
       != (ROOT / "assets" / "icons" / "yindun-control.ico").read_bytes())
 
 print("\n" + "=" * 78)
+print("【4c】版本元数据：run.py / 安装包脚本 / 记忆管理器 必须同源")
+print("=" * 78)
+# 背景（V3.6.11 实测）：`run.py` 的文档串还写着 V2.2.0、`installer.nsi` 的 OutFile 与五处
+# 版本字段还停在 V3.4.5——与权威源 `yindun/__init__.py` 不一致，安装包文件名与注册表显示
+# 版本都会错。这些文件原先不在门禁里，靠人工发现；现在钉住。
+_meta_files = {
+    "run.py": [f"{DISPLAY} — 程序入口"],
+    "yindun/core/memory_manager.py": [f"{DISPLAY} —"],
+    "tools/packaging/installer.nsi": [f"_{DISPLAY}_安装包.exe", f'"{DISPLAY}"',
+                                      f'"{VERSION}"', f'"{VERSION}.0"'],
+}
+for _rel, _needles in _meta_files.items():
+    _body = (ROOT / _rel).read_text(encoding="utf-8")
+    check(f"{_rel} 的版本串与权威源一致（{DISPLAY}）",
+          all(_needle in _body for _needle in _needles),
+          str([_needle for _needle in _needles if _needle not in _body]))
+
+print("\n" + "=" * 78)
 print("【5】文档跟得上 bump（漏改会在这里报红）")
 print("=" * 78)
 readme = (ROOT / "README.md").read_text(encoding="utf-8")
