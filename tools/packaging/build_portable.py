@@ -134,7 +134,24 @@ def main() -> int:
     print("  2) exe 放在可写目录（桌面/便携盘均可）：配置、会话、审计、向量库")
     print("     会写在 exe 同目录下；主密钥由 Windows DPAPI 按当前用户保护。")
     print("  3) 免安装、免脚本：双击即用；卸载 = 删除 exe 与其同目录生成的数据文件。")
+    print(f"  4) OCR（图片 / 扫描件 PDF 能否读出文字）：{_ocr_status()}")
+    print("     附件支持格式见 使用说明；不支持或读不出的格式，界面会给出可行动的原因。")
     return 0
+
+
+def _ocr_status() -> str:
+    """本次构建产物是否含 OCR（图片与扫描件 PDF 识别能力的唯一前提）。
+
+    ★ 为什么写在"使用前提"里：这里静默降级过一次——spec 装不到 OCR 包时只打一行日志，
+    构建完谁也没注意，交付出去才发现"图片/扫描件读不到文字"。这行字把结论摆到人眼前。
+    """
+    import importlib.util
+    for name, label in (("rapidocr_onnxruntime", "rapidocr-onnxruntime"), ("rapidocr", "rapidocr")):
+        if importlib.util.find_spec(name) is not None:
+            return f"✅ 含 OCR（{label}）→ 图片与扫描件 PDF 可提取文字"
+    return ("⚠ 不含 OCR → 图片附件与扫描件 PDF **读不到文字**（会如实提示“需要 OCR 组件”）；"
+            "如需支持：pip install rapidocr 后重新构建（模型随包离线自带）")
+
 
 
 if __name__ == "__main__":

@@ -36,6 +36,21 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 INDEX_HTML = WEB_DIR / "index.html"
 
 
+def doc_file_types(exts) -> tuple:
+    """文件对话框的过滤器。
+
+    ★ 扩展名之间**必须是分号**（V3.6.7 修真实缺陷）：pywebview 6.x 的校验正则是
+      `^([\\w ]+)\\((\\*(?:\\.(?:\\w+|\\*))*(?:;\\*(?:\\.(?:\\w+|\\*))*)*)\\)$` —— 只认 `;`，
+      用空格拼出来的 `文档 (*.pdf *.docx)` 会被判为非法过滤器并**直接抛错**，
+      表现是"点添加文档/附件，弹窗根本不出现，只弹一句 打开文件对话框失败"。
+      实测：空格分隔 → ValueError；分号分隔 → 正常解析。
+    第二个过滤器放"所有文件"，是为了让用户**至少能选到**列表外的格式（解析器对未知扩展名
+    有兜底：能读成文本就读，读不了会给出可读原因，而不是静默跳过）。
+    """
+    patterns = ";".join(f"*.{ext}" for ext in exts)
+    return (f"文档 ({patterns})", "所有文件 (*.*)")
+
+
 class JsApi:
     """暴露给前端的接口（方法名即 JS 侧调用名）。"""
 
@@ -122,9 +137,8 @@ class JsApi:
         try:
             import webview as _wv
             from yindun.app.attachment import normalize_paths
-            patterns = " ".join(f"*.{ext}" for ext in self._svc.supported_exts())
             picked = window.create_file_dialog(
-                _wv.OPEN_DIALOG, allow_multiple=True, file_types=(f"文档 ({patterns})", "所有文件 (*.*)")
+                _wv.OPEN_DIALOG, allow_multiple=True, file_types=doc_file_types(self._svc.supported_exts())
             )
         except Exception as exc:
             print(f"[WebView] 打开文件对话框失败：{exc}")
@@ -230,9 +244,8 @@ class JsApi:
         try:
             import webview as _wv
             from yindun.app.attachment import normalize_paths
-            patterns = " ".join(f"*.{ext}" for ext in self._svc.supported_exts())
             picked = window.create_file_dialog(
-                _wv.OPEN_DIALOG, allow_multiple=True, file_types=(f"文档 ({patterns})", "所有文件 (*.*)"))
+                _wv.OPEN_DIALOG, allow_multiple=True, file_types=doc_file_types(self._svc.supported_exts()))
         except Exception as exc:
             return {"ok": False, "error": f"打开文件对话框失败：{exc}"}
         return self._svc.kb_add(normalize_paths(picked))
@@ -264,7 +277,7 @@ class JsApi:
             if action == "minimize":
                 window.minimize()
             elif action == "toggle_top":
-                new_value = not bool(self._svc.settings.get("topmost", True))
+                new_value = not bool(self._svc.settings.get("topmost", False))
                 self._svc.settings.set("topmost", new_value)
                 self._svc.settings.save()
                 try:
@@ -546,7 +559,7 @@ class WebApp:
             #   边缘拖拽改尺寸由前端热区 + window_resize_edge 实现，最小尺寸在那里按展开态 clamp，
             #   所以这里给折叠态的小值不会让用户把窗口缩到不可用。
             "min_size": window_layout.MINI_MIN_SIZE,
-            "on_top": bool(settings.get("topmost", True)),
+            "on_top": bool(settings.get("topmost", False)),   # 默认不置顶（与 settings_store 默认值一致）
             "confirm_close": False,
         }
         if frameless:

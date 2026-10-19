@@ -442,9 +442,18 @@ class AgentService:
     # 其余扩展名（.eml/.html/…）由声明了该扩展名的插件优先解析，内核仍是兜底。
     # 这条规则让"插件增强"与"内核兜底"同时成立：插件永远抢不走内核的既有能力，
     # 但可以补上内核本来就不支持的格式，并且解析结果一样要过脱敏管线。
+    #
+    # ★ 清单口径 = "document_parser 真的有解析分支、且交付形态下跑得起来"：
+    #   · 文本家族 / PDF / DOCX / PPTX / XLSX / XLS：内核有分支；
+    #   · 图片：内核有 OCR 分支（引擎缺失时给出可行动说明，不是静默跳过）——仍算内核原生，
+    #     插件若声明了 png 之类，会在"内核没读出内容"时被兜底调用（attach_files 的回落路径）；
+    #   · 音频（mp3/wav/…）：**已移出**——转写依赖 FunASR + torch，而客户端 exe 明确排除 torch，
+    #     交付形态下必然读不出内容；继续算"内核原生"会挡住真正能转写的插件。
     KERNEL_NATIVE_EXTS = frozenset({
-        "pdf", "docx", "xlsx", "xls", "csv", "txt", "md",
-        "mp3", "wav", "flac", "m4a", "aac", "ogg", "opus", "wma",
+        "pdf", "docx", "pptx", "xlsx", "xls",
+        "csv", "tsv", "txt", "text", "md", "json", "html", "htm", "log",
+        "yaml", "yml", "xml", "ini", "conf", "rst",
+        "png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp",
     })
 
     def supported_exts(self) -> List[str]:

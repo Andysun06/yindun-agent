@@ -739,6 +739,32 @@ def main() -> int:
               tr["count"] == fin2["count"] + 1, f"{fin2['count']} → {tr['count']}")
         check("trace 落地时不再显示等待指示（轨迹本身就是活动证据）", not tr["waiting"], str(tr))
 
+        # 13e) 组员审查报告点名的场景：**每轮最早的那条隐私网关轨迹不能被丢掉**
+        # （他们的取证：审计里有 privacy_sensitive，对话流里却完全没有轨迹——因为旧实现的
+        #  sendText 不建气泡、trace 只在"已有流式气泡"时才渲染，于是每轮最早的事件必然丢帧。）
+        # 现在 sendText 之前就建了等待气泡，所以"网关判定"应当看得见。
+        # 先回到空闲（上面几步故意留着忙态，忙时输入框是禁用的）——这正是真实一轮的起点。
+        page.evaluate("() => window.yindun.onEvent('state', {busy: false})")
+        page.wait_for_timeout(150)
+        page.fill("#input", "我的手机号是 13800138000，帮我记一下")
+        page.press("#input", "Enter")
+        page.wait_for_timeout(150)
+        page.evaluate("""() => window.yindun.onEvent('trace', {
+            seq: 1, kind: 'judge', name: '隐私隔离网关', status: 'ok', ms: 12,
+            detail: '识别到敏感实体，已在本机替换为占位符' })""")
+        page.wait_for_timeout(200)
+        gw = page.evaluate("""() => {
+            const rows = [...document.querySelectorAll('#chat .entry')];
+            const row = rows[rows.length - 1];
+            const t = row.querySelector('.entry__trace');
+            return { hasTrace: !!t, text: t ? t.textContent.replace(/\\s+/g, ' ').trim() : '',
+                     hasBody: !!row.querySelector('.entry__body'), rows: rows.length };
+        }""")
+        check("★ 发送后立刻出现的隐私网关轨迹看得见（报告里「网关作用找不到」的回归位）",
+              gw["hasTrace"] and "隐私隔离网关" in gw["text"], str(gw))
+        check("网关轨迹落在本轮新建的条目里（既没丢帧，也没塞进上一轮）",
+              gw["hasBody"], str(gw))
+
         # 收口：回到空闲 + 画布上没有任何"内容为空"的条目。
         # 注意这条 state 到达时上一条 trace 气泡还开着（本时序故意漏掉终止事件）——
         # 它必须按空回复口径收口，而不是永远转圈或把引用留给下一轮。

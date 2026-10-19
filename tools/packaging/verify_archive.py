@@ -54,6 +54,18 @@ CLIENT_SYMBOLS: Dict[str, Sequence[str]] = {
     "yindun.app.llm_factory": ["normalize_base_url", "probe_candidates", "probe_endpoint"],
     "yindun.plugins.host": ["module_attr", "preload"],
     "yindun.utils.logger": ["setup_logging"],
+    # ★ 插件是**按文件路径动态加载**的（plugins/host.py 的 spec_from_file_location），
+    #   PyInstaller 的静态分析进不去那些 plugin.py —— 插件独有的 import 只能靠"碰巧被别的模块带进来"。
+    #   一旦漏了，源码跑得好好的、exe 里插件自检报 ModuleNotFoundError（组员审查报告里的真实案例）。
+    #   这四条就是插件与解析器的独有依赖：它们必须在包里，缺了就在这里报红。
+    "html.parser": ["HTMLParser"],
+    "email.policy": ["EmailPolicy"],
+    "pptx": ["Presentation"],
+    "xlrd": ["open_workbook"],
+    # 附件解析能力（V3.6.8）：PPTX 分支 / 旧版 .xls 分支 / 图片 OCR / 失败判定必须真的在包里。
+    # 这些符号缺任何一个，都说明打进包的是"图片与 pptx 读不出内容、且失败被当成正文"的旧解析器。
+    "yindun.utils.document_parser": ["PptxParser", "is_parse_failure", "_extract_xls",
+                                     "_extract_image", "_ocr_engine"],
 }
 
 CONTROL_SYMBOLS: Dict[str, Sequence[str]] = {

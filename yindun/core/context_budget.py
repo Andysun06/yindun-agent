@@ -27,6 +27,15 @@ SUMMARY_TARGET_TOKENS = 900          # 摘要压缩后的目标长度
 PLUGIN_SMALL_TOKENS = 2048           # 插件小模型（审批提示 / laya 分级）的窗口
 PLUGIN_SMALL_MAX_NEW = 64            # 插件小模型的输出上限（只出短结论）
 
+# 单轮注入模型的**附件正文总量**上限（字符，见 app/attachment.build_attachment_context）。
+# 取值理由（不拍脑袋）：窗口 MODEL_WINDOW_TOKENS=16384 里，系统提示（常驻基线约 1.2k 字）
+# 与历史（压缩阈值 5000 token）已占去大半，只把约 1/4 留给附件正文，剩下的才够放工具结果
+# 与本次回答。按全项目唯一的估算口径 estimate_tokens（CJK 1 字 ≈ 1 token），
+# 1/4 窗口 ≈ 4096 字；取 4000 作为"中文正文"的保守上限。
+# 为什么要这个总量：单篇 30000 字的注入上限本身已经超过整个窗口，再挂第二篇必然把模型
+# 侧顶爆（表现为回答退化/被截断），而界面上只显示"已挂载 N 个附件"，用户看不出原因。
+ATTACHMENT_TOTAL_CHARS = 4000
+
 
 def history_usage(messages: List[dict], estimate=None) -> Dict[str, object]:
     """给界面用：当前历史占了多少、阈值多少、还差多少触发压缩。
@@ -68,6 +77,8 @@ def budget_table() -> Dict[str, object]:
         "summary_target": SUMMARY_TARGET_TOKENS,
         "plugin_small_window": PLUGIN_SMALL_TOKENS,
         "plugin_small_max_new": PLUGIN_SMALL_MAX_NEW,
+        "attachment_total_chars": ATTACHMENT_TOTAL_CHARS,
         "rule": ("历史累计超过 history_compress 就摘要压缩早期消息；"
-                 "插件小模型只做短判定，用独立的小窗口"),
+                 "插件小模型只做短判定，用独立的小窗口；"
+                 "单轮附件正文合计不超过 attachment_total_chars，超出部分改给检索指引"),
     }

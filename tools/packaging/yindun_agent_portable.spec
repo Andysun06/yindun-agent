@@ -37,7 +37,9 @@ for pkg in [
     "pymupdf",
     "pdfplumber",
     "docx",
+    "pptx",       # PPTX 附件解析（python-pptx）：带 templates/*.pptx 等数据文件，必须整包收集
     "openpyxl",
+    "xlrd",       # 旧版 .xls（OLE/BIFF）只能靠 xlrd；缺了它"支持 xls"就是源码级空话
     "PIL",
     "huggingface_hub",
 ]:
@@ -50,17 +52,86 @@ for pkg in [
     binaries += b
     hiddenimports += h
 
-# OCR（扫描件 PDF）在 Python >= 3.13 下不可用，存在才收
-try:
-    d, b, h = collect_all("rapidocr_onnxruntime")
+# ── OCR（扫描件 PDF + 图片识别）──────────────────────────────
+# ★ 这一段以前是"静默降级"：collect_all("rapidocr_onnxruntime") 包在 try 里，装不到只 print 一行，
+#   构建日志一滚就没了——结果交付出去的 exe 根本读不了图片/扫描件，却没人知道。
+#   现在两个包名都试（老包元数据要求 Python <3.13；rapidocr 2.x/3.x 支持 3.13，且模型随 wheel
+#   离线自带，不需要联网下载），并**无论有没有都把结论打成横幅**
+#   （看日志的人 = 打包的人 = 交付的人，这行字就是"本次产物能做什么"的凭据）。
+_OCR_PKGS = ["rapidocr_onnxruntime", "rapidocr"]
+_ocr_collected = []
+for _pkg in _OCR_PKGS:
+    try:
+        d, b, h = collect_all(_pkg)
+    except Exception as exc:
+        print(f"[spec] OCR 引擎 {_pkg} 未收集：{exc}")
+        continue
     datas += d
     binaries += b
     hiddenimports += h
-except Exception as exc:
-    print(f"[spec] 跳过 OCR 依赖 rapidocr_onnxruntime: {exc}")
+    _ocr_collected.append(_pkg)
+
+if _ocr_collected:
+    print("*" * 78)
+    print(f"* 本次产物【含 OCR】：{'、'.join(_ocr_collected)} → 扫描件 PDF 与图片可提取文字")
+    print("*" * 78)
+else:
+    print("*" * 78)
+    print("* 本次产物【不含 OCR】：★ 图片附件与扫描件 PDF 将**读不到文字**")
+    print("*   （程序会如实提示「需要 OCR 组件」，不会假装读到了内容）")
+    print("*   原因：rapidocr-onnxruntime 的包元数据要求 Python <3.13（3.13 上装不上）；")
+    print("*         支持 3.13 的 rapidocr 本次未安装。两者的模型都随包离线自带，不需要联网下载。")
+    print("*   要支持：pip install rapidocr 后重新构建（会一并收集 onnxruntime/opencv 等依赖）")
+    print("*" * 78)
 
 # ── 产品代码与随包文档 ──
 hiddenimports += collect_submodules("yindun")
+
+# ── 插件按【文件路径】加载 → 静态分析看不见它们的 import，必须显式兜住 ──
+# 根因：`plugins/host.py` 用 spec_from_file_location 从 .py 文件加载插件，PyInstaller 的
+# import 图里没有 plugin.py 这一环，插件独有的 import（例如 doc_extra 用的 `html.parser`）只能
+# 靠"恰好被别的模块带进来"，属于碰运气。下面的做法是**扫描**内置插件的 import 并自动加入，
+# 而不是手抄一份清单（手抄会随插件增删漂移）：
+#   · 正则抓 `import x` / `from x import y`（含缩进内的函数内导入）；
+#   · 只收仓库内插件真实出现的模块名，运行时缺失会当场报 ModuleNotFoundError，不会静默；
+#   · 另有 _ALWAYS_HIDDEN：解析器/插件都会用、但同样可能只被动态路径触达的标准库与三方模块。
+_ALWAYS_HIDDEN = [
+    "html", "html.parser",        # doc_extra 扩展附件解析（.eml/.html/.mht）
+    "email", "email.policy", "email.parser", "email.message",
+    "pptx", "pptx.parts", "pptx.opc", "pptx.chart",     # PPTX 附件解析
+    "xlrd", "xlrd.biffh", "xlrd.book", "xlrd.sheet",    # 旧版 .xls
+    "openpyxl", "docx", "fitz", "pdfplumber",           # 其余附件解析路径
+]
+hiddenimports += _ALWAYS_HIDDEN
+
+
+def _plugin_imports(plugin_root):
+    """扫描内置插件源码里的 import 语句，返回模块名集合（正则够用，不做 AST）。"""
+    import re as _re
+    found = set()
+    pattern = _re.compile(r"^\s*(?:from\s+([\w\.]+)\s+import|import\s+([\w\.]+))", _re.M)
+    if not os.path.isdir(plugin_root):
+        return found
+    for root, dirs, files in os.walk(plugin_root):
+        dirs[:] = [d for d in dirs if d not in ("__pycache__", ".mimosa")]
+        for name in files:
+            if not name.endswith(".py"):
+                continue
+            try:
+                text = open(os.path.join(root, name), "r", encoding="utf-8", errors="replace").read()
+            except OSError:
+                continue
+            for mod in pattern.findall(text):
+                mod = mod[0] or mod[1]
+                if mod and not mod.startswith("."):
+                    found.add(mod)
+    return found
+
+
+_PLUGIN_MODULES = _plugin_imports(os.path.join(_ROOT, "yindun", "plugins", "builtin"))
+hiddenimports += sorted(_PLUGIN_MODULES)
+print(f"[spec] 内置插件 import 扫描：加入 {len(_PLUGIN_MODULES)} 个候选模块"
+      f"（{', '.join(sorted(_PLUGIN_MODULES))[:160]}…）")
 
 
 def _collect_dir(src, dest, skip_dirs=(".mimosa", "__pycache__"), skip_ext=(".pyc", ".pyo")):

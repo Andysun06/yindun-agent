@@ -2,7 +2,7 @@
 
 欢迎来到 **隐盾安全智能体 (V3.6.7)** 官方代码库。
 
-本应用是一款常驻系统桌面最上层的原生半透明悬浮智能体客户端。项目经历多轮工业级深度解耦重构，视图层已整体迁移到 Web 前端（原生 ES + 设计 token，无构建步骤）。
+本应用是一款原生半透明悬浮智能体客户端（**默认不置顶**，需要时一键置顶并持久化）。项目经历多轮工业级深度解耦重构，视图层已整体迁移到 Web 前端（原生 ES + 设计 token，无构建步骤）。
 
 **V3.0 重大升级**：全面迁移至 LangChain 原生 Tool Calling 协议，彻底抛弃正则解析与结构化字段提取，实现真正的 ReAct 推理循环。
 
@@ -504,7 +504,7 @@ yindun-agent/
   "model": "qwen3.5:4b",
   "privacy": true,
   "dark_mode": false,
-  "topmost": true,
+  "topmost": false,
   "thinking_depth": 3,
   "permission": "ask",
   "custom_models": {}
@@ -516,7 +516,7 @@ yindun-agent/
 | `model` | 当前使用的模型名称 |
 | `privacy` | 是否启用隐私脱敏 |
 | `dark_mode` | 是否启用暗色主题 |
-| `topmost` | 是否始终置顶 |
+| `topmost` | 是否始终置顶（**默认关闭**：常驻最上层会挡住别的窗口；要置顶在设置页/顶栏图钉一键开，值会持久化） |
 | `thinking_depth` | 思考强度（1–10，界面按四档显示：低2 / 中4 / 高7 / 最高10） |
 | `permission` | **新对话默认**权限档位（`plan` 计划 / `ask` 变更前确认（默认）/ `auto` 自主 / `full` 完全访问；旧中文档位名自动兼容）。每个对话可在输入区胶囊里单独覆盖，覆盖值随会话存在 `chat_sessions.json` |
 | `custom_models` | 自定义外部模型配置 |

@@ -25,7 +25,10 @@ DEFAULTS: Dict[str, Any] = {
     "ollama_host": "http://127.0.0.1:11434",
     "privacy": True,
     "dark_mode": False,
-    "topmost": True,
+    # 窗口置顶**默认关闭**（V3.6.7，负责人明确要求）：常驻最上层会挡住别的窗口，
+    # 新用户第一眼的观感是"这软件抢焦点"。要置顶在设置页/顶栏图钉里一键开，值会持久化；
+    # 已有配置里存着 true 的用户不受影响（默认值只作用于首次运行/新目录）。
+    "topmost": False,
     "thinking_depth": 3,
     # 四档权限：plan(计划模式) / ask(变更前确认·默认) / auto(自主模式) / full(完全访问)
     # 旧版中文档位名（彻底审计/安全只读/完全控制）由 core/permission.resolve_mode 自动兼容

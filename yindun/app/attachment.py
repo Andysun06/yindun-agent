@@ -19,11 +19,35 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from yindun.core.context_budget import ATTACHMENT_TOTAL_CHARS
+from yindun.utils.document_parser import is_parse_failure, parse_failure_reason
+
 # 单篇文档注入上下文的字符上限（超出部分靠 read_attachment_chunk 工具按题号/关键词检索）
 MAX_DOC_CHARS = 30000
 
-# 文件选择对话框用的扩展名（与 document_parser 支持范围一致）
-SUPPORTED_EXTS = ["pdf", "docx", "doc", "xlsx", "xls", "csv", "txt", "md", "png", "jpg", "jpeg"]
+# 单轮**全部**附件的注入总量上限：数字来自 core/context_budget.py（预算表是唯一出处）。
+# 为什么要总量：单篇 30000 字 ≈ 30000 token（估算口径 CJK 1 字≈1 token），已经超过
+# MODEL_WINDOW_TOKENS=16384 的整个窗口；再挂第二篇就会把模型侧直接顶爆，
+# 表现为"回答变差/被截断"，而界面上只显示"已挂载 N 个附件"——用户看不出原因。
+MAX_TOTAL_DOC_CHARS = ATTACHMENT_TOTAL_CHARS
+
+# 文件选择对话框用的扩展名（★ 必须与 document_parser 真实支持的格式一一对应）：
+# 对话框过滤器只显示这里列出的类型（pywebview 不会列出别的），少列一个 = 用户根本选不到；
+# 多列一个"实际读不了"的 = 用户白挂一次、还以为是自己的文件有问题。
+SUPPORTED_EXTS = [
+    # 文档
+    "pdf", "docx", "pptx", "xlsx", "xls",
+    # 纯文本家族（解析器按 utf-8→gbk→… 自适应解码）
+    "txt", "text", "md", "csv", "tsv", "json", "html", "htm", "log",
+    "yaml", "yml", "xml", "ini", "conf", "rst",
+    # 图片（走离线 OCR：有 OCR 组件就出字，没有就如实说明"需要 OCR 组件/请给文本版"）
+    "png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp",
+]
+# 不进列表的格式（理由写在这里，避免下次又"顺手加上"）：
+#   · doc：旧版 Word 是 OLE 二进制，内核没有解析器（会给出"另存为 .docx"的可行动说明），
+#     列进对话框只会让用户以为选了就能读；
+#   · 音频（mp3/wav/…）：转写依赖 FunASR + torch，客户端 exe 明确排除 torch，
+#     交付形态下必然读不出内容，因此不进过滤器（解析器仍会给出如实说明）。
 
 
 # ──────────────────────────────────────────────
@@ -102,6 +126,12 @@ def parse_attachment(path: str) -> Dict[str, Any]:
     脱敏引擎匹配不到，会直接进入模型上下文，与"模型全程只见占位符"的承诺冲突。
     因此报告单独存放在 `report` 字段（供界面/审计按需展示），`text` 只保留文档正文，
     送入模型与快照前统一走脱敏网关。
+
+    ★★ 失败必须被判成失败（真机事故固化）：解析器把"读不到"编码成一段**非空字符串**
+    （"[文档解析失败: …]"）返回，旧实现只看 `text.strip()` 是否为空 → 图片附件显示
+    "已挂载 22 字 / error=None"、审计记为成功，而那 22 字其实是提示串，还被当成正文
+    拼进了模型上下文。现在统一走 `is_parse_failure()`：失败时 `text` 置空、`chars=0`、
+    原因进 `error`（界面直接显示 `error`，模型看到的是"这份附件读不出来，因为 X"）。
     """
     file_path = Path(path)
     result: Dict[str, Any] = {
@@ -117,11 +147,18 @@ def parse_attachment(path: str) -> Dict[str, Any]:
         marker = "【隐私风险报告】"
         if marker in combined:
             body, _, report = combined.partition(marker)
-            result["text"] = body.rstrip()
+            body = body.rstrip()
             result["report"] = marker + report
         else:
-            result["text"] = combined
-        result["chars"] = len(result["text"])
+            body = combined
+        if is_parse_failure(body):
+            # 失败提示不是正文：chars 记 0（此前把提示串的长度算成"已挂载字数"）
+            result["text"] = ""
+            result["chars"] = 0
+            result["error"] = parse_failure_reason(body) or "未能提取到文本"
+            return result
+        result["text"] = body
+        result["chars"] = len(body)
         if not result["text"].strip():
             result["error"] = "未能提取到文本（可能是纯图片/加密文档）"
     except Exception as exc:
@@ -137,42 +174,63 @@ def build_attachment_context(user_text: str,
 
     · 短文档（≤ MAX_DOC_CHARS）：注入题号锚点后整篇给出
     · 超长文档：只给前 MAX_DOC_CHARS 字 + 提示用 read_attachment_chunk 按题号/关键词/偏移继续读
+    · 多篇文档：单轮注入**总量**受 MAX_TOTAL_DOC_CHARS 约束，超出预算的附件改为"只报名字 +
+      检索指引"——模型永远知道有哪些附件（不会"悄悄少一个"），内容按预算给
     · 快照保留**原文**（不加锚点），保证工具检索时不受锚点污染
+    · 读不出内容的附件**带上原因**（不是一句干巴巴的"未提取到文本"），模型才能如实回答
+      "这份附件读不出来，因为 X"
     """
     snapshot: Dict[str, str] = dict(session_snapshot or {})
     contexts: List[str] = []
+    injected_chars = 0          # 本轮已注入的附件正文字符总量（按预算约束）
 
     for item in new_files or []:
         name = item.get("name") or "未命名附件"
         full_text = item.get("text") or ""
         snapshot[name] = full_text          # 同名文件以最新一次为准
         if not full_text:
-            contexts.append(f"[离线附件环境上下文：{name}]\n（该附件未能提取到文本）")
+            reason = (item.get("error") or "").strip() or "未能提取到文本（原因未知，可能是纯图片或加密文档）"
+            contexts.append(f"[离线附件环境上下文：{name}]\n（该附件未能提取到文本：{reason}）")
             continue
-        if len(full_text) <= MAX_DOC_CHARS:
+
+        remaining = MAX_TOTAL_DOC_CHARS - injected_chars
+        single_cap = min(MAX_DOC_CHARS, max(remaining, 0))
+        if len(full_text) <= single_cap:
             contexts.append(f"[离线附件环境上下文：{name}]\n{inject_question_anchors(full_text)}")
-        else:
-            head = inject_question_anchors(full_text[:MAX_DOC_CHARS])
+            injected_chars += len(full_text)
+            continue
+
+        # 预算用尽：不注入正文，但要**报名字 + 检索指引**（绝不能悄悄丢掉）
+        if single_cap <= 0:
             contexts.append(
-                f"[离线附件环境上下文：{name}]\n{head}\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"【长文档分块提示】该文档总长 {len(full_text)} 字符，上方仅展示前 {MAX_DOC_CHARS} 字符。"
-                f"如需读取后续内容，请调用工具：\n"
+                f"[离线附件环境上下文：{name}]\n"
+                f"（已挂载但未全文注入：该文档 {len(full_text)} 字符，本轮附件注入预算"
+                f"（共 {MAX_TOTAL_DOC_CHARS} 字符）已用尽，正文未放入上下文。"
+                f"需要时请调用工具检索：\n"
                 f"  read_attachment_chunk(file='{name}', question='题号')  # 如 question='5'\n"
                 f"  read_attachment_chunk(file='{name}', keyword='关键词')  # 模糊定位\n"
-                f"  read_attachment_chunk(file='{name}', char_start={MAX_DOC_CHARS})  # 继续读\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                f"  read_attachment_chunk(file='{name}', char_start=0)  # 从头读\n"
+                f"）"
             )
+            continue
+
+        head = inject_question_anchors(full_text[:single_cap])
+        injected_chars += single_cap
+        contexts.append(
+            f"[离线附件环境上下文：{name}]\n{head}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"【长文档分块提示】该文档总长 {len(full_text)} 字符，上方仅展示前 {single_cap} 字符"
+            f"（本轮附件注入预算共 {MAX_TOTAL_DOC_CHARS} 字符）。"
+            f"如需读取后续内容，请调用工具：\n"
+            f"  read_attachment_chunk(file='{name}', question='题号')  # 如 question='5'\n"
+            f"  read_attachment_chunk(file='{name}', keyword='关键词')  # 模糊定位\n"
+            f"  read_attachment_chunk(file='{name}', char_start={single_cap})  # 继续读\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
 
     if not contexts:
         return user_text, snapshot
     return "\n\n".join(contexts) + f"\n\n[人类当前实时提问]：{user_text}", snapshot
-
-
-def file_dialog_filter() -> str:
-    """pywebview 文件对话框的过滤器描述。"""
-    patterns = " ".join(f"*.{ext}" for ext in SUPPORTED_EXTS)
-    return f"文档 ({patterns})"
 
 
 def normalize_paths(paths: Any) -> List[str]:

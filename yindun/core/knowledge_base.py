@@ -28,7 +28,15 @@ from typing import Optional
 from yindun import APP_ROOT
 from yindun.core.privacy_engine import PrivacyEngine
 from yindun.core.secret_manager import SecretManager
-from yindun.utils.document_parser import extract_file_text
+# 判定"解析器到底有没有产出正文"必须走解析器自己的契约（PARSE_FAIL_PREFIXES /
+# is_parse_failure / parse_failure_reason），KB 不再维护第二份前缀清单：解析器以后
+# 新增失败提示（图片 OCR 缺失、音频缺 FunASR、PPT 损坏……）时 KB 自动跟上，
+# 不会再把"一句提示语"当成正文入库。
+from yindun.utils.document_parser import (
+    extract_file_text,
+    is_parse_failure,
+    parse_failure_reason,
+)
 
 
 # 占位符解析正则：兼容新旧两套格式
@@ -39,6 +47,111 @@ _PLACEHOLDER_RE = re.compile(r"\[([A-Z][A-Z0-9_]*)_(\d+)(?:_([a-z0-9]{4}))?\]")
 #   ACCESS_TOKEN，插件补充识别的实体是 PLUGIN_*。旧正则 [A-Z]+ 匹配不到这些名字，后果是
 #   检索时它们既不参与全局重编号、也不带隔离前缀 —— 多文档检索时可能把 A 文档的真实值
 #   还原到 B 文档的同名占位符上（串值），KB_ 隔离形同虚设。
+
+
+# ──────────────────────────────────────────
+# 解析结果分类：把"解析器提示语"与真实正文分开
+# ──────────────────────────────────────────
+# 为什么需要：document_parser.extract_file_text 读不出内容时**不抛异常**，而是返回一句
+# 提示文本（超限拒绝 / 图片缺 OCR / 音频缺 FunASR / PDF 无文字层……）。旧实现只挡了
+# "[文档解析失败"，于是 .png/.pptx/.zip/.doc、超过大小上限的文件、纯图片 PDF 都会被
+# 当成正文入库并计为"成功"——用户看到"入库完成"，向量库里其实只有那句提示语。
+# 失败判定统一走 document_parser.is_parse_failure()（前缀清单的唯一出处）；这里只
+# 负责把它翻成"给用户看的原因"，并补上解析器没说清时的格式提示。
+_PARTIAL_NOTICE_RE = re.compile(
+    r"\[(?:第 \d+ 页尺寸过大，已跳过 OCR"
+    r"|本页为扫描图片[^\]]*"
+    r"|本页文字层为空[^\]]*"
+    r"|文档含 \d+ 张内嵌图片，未自动解析"
+    r"|本页含 \d+ 张图片，未自动解析"
+    r"|本文档部分页面通过 OCR 识别，可能存在识别误差)\]"
+)
+_MAX_NOTICE_ITEMS = 5
+
+# 正文里出现上面这些提示 = 文档**部分内容**没进库（图片页 / 未解析的内嵌图片）。
+# 这类文件仍算入库成功（确有正文），但必须把损失如实带出去，不能当作完整入库。
+
+# 失败时的"为什么读不出"兜底提示：解析器给出的说明通常已经可行动，这里只在它过于笼统
+# （或来自旧式/插件式提示）时补一句格式层面的建议。**不参与放行/拦截判定** —— 判定永远
+# 以"解析器这次是否真的返回了正文"为准，解析器将来补上 OCR/PPT 能力后这些格式自动能进库。
+_FORMAT_HINTS = {
+    **{ext: "图片类文件需要 OCR 支持才能转成文本"
+       for ext in (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".webp")},
+    **{ext: "演示文稿（PPT）的解析取决于内核解析器是否支持该格式"
+       for ext in (".ppt", ".pptx")},
+    **{ext: "压缩包不会被展开解析，请先解压后导入其中的文档"
+       for ext in (".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz")},
+    **{ext: "音频文件需要 FunASR 转写组件才能得到文本"
+       for ext in (".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma")},
+    ".doc": "旧版 .doc 是二进制格式，请另存为 .docx 后导入",
+}
+
+# 环境级向量化错误（Ollama 不可达 / embedding 模型缺失）的固定说法：命中前缀后，
+# 批量入库不再对后续文件逐个重试（必然同样失败），但每个文件都记为 failed 并带同一原因。
+_EMBED_ENV_ERROR_PREFIXES = ("向量化失败：本地 embedding 服务不可用",
+                             "向量化失败：embedding 模型")
+
+
+def _clip(text: str, limit: int) -> str:
+    """截断长文本用于一句话汇总（界面 toast 长度有限）。"""
+    text = str(text or "")
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _format_hint(file_path: str) -> str:
+    """按扩展名给一句"这类文件为什么读不出"的兜底提示（仅失败提示用）。"""
+    ext = os.path.splitext(file_path or "")[1].lower()
+    hint = _FORMAT_HINTS.get(ext)
+    return f"{hint}；" if hint else ""
+
+
+def _classify_extracted_text(text, file_path: str = "") -> tuple:
+    """判断 extract_file_text 的返回值是真实正文还是解析器的提示语。
+
+    返回 (is_content, reason)：
+      · is_content=True  → 可以入库，reason 为空
+      · is_content=False → reason 是给用户看的中文原因（解析器说明 + 必要的格式提示）
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return False, f"{_format_hint(file_path)}没有解析出任何文本（空文件，或纯图片/加密文档）"
+    if is_parse_failure(text):
+        # 解析器的失败串本身就是"可行动说明"（请 另存为 / 解压 / 装 OCR …）：优先原样透出，
+        # 避免 KB 再拼一句同义提示把真正的原因淹掉；只有它短得没说清下一步时才补格式提示
+        reason = parse_failure_reason(text) or _clip(stripped, 300)
+        # 前缀切掉后可能留下一个顿号/逗号（"[PDF 全文无可提取文字，…]"→"，OCR…"），清一下
+        reason = reason.lstrip("，,。;；:：、 ")
+        hint = _format_hint(file_path)
+        return False, f"{hint}{reason}" if hint and len(reason) < 24 else reason
+    return True, ""
+
+
+def _collect_partial_notices(text: str) -> list:
+    """收集"有内容没进库"的解析器提示（图片页 / 内嵌图片），去重并限量。"""
+    seen = []
+    for match in _PARTIAL_NOTICE_RE.finditer(text or ""):
+        notice = match.group(0)
+        if notice not in seen:
+            seen.append(notice)
+    if len(seen) > _MAX_NOTICE_ITEMS:
+        extra = len(seen) - _MAX_NOTICE_ITEMS
+        seen = seen[:_MAX_NOTICE_ITEMS] + [f"…另有 {extra} 处类似提示"]
+    return seen
+
+
+def _vectorize_error_message(exc: Exception, model: str) -> str:
+    """把向量化异常翻译成用户能照着做的中文原因（保留原始错误便于排查）。"""
+    raw = f"{type(exc).__name__}: {exc}"
+    low = raw.lower()
+    if "not found" in low and "pull" in low:
+        reason = (f"向量化失败：embedding 模型 {model} 未就绪，"
+                  f"请运行 ollama pull {model} 后重试")
+    elif "connect" in low or "connection" in low:
+        reason = ("向量化失败：本地 embedding 服务不可用（Ollama 未启动或不可达），"
+                  "请确认 Ollama 已运行后重试")
+    else:
+        reason = f"向量化失败：写入向量库时出错（embedding 模型 {model}）"
+    return f"{reason}；原始错误：{_clip(raw, 200)}"
 
 
 class KnowledgeBase:
@@ -184,7 +297,10 @@ class KnowledgeBase:
         同名文档重复入库时会先删除旧数据。
 
         返回统计 dict：
-            {"file": "xxx.pdf", "chunks": 12, "chars": 6000, "sensitive": {"NAME": 3, ...}}
+            {"file": "xxx.pdf", "chunks": 12, "chars": 6000,
+             "sensitive": {"NAME": 3, ...}, "warnings": ["[...]"]}
+            warnings：解析器明确提示"有内容没解析"的地方（图片页/内嵌图片等），
+                      非空表示这次入库**不完整**，调用方应如实展示。
         """
         with self._lock:
             self._ensure_ready()
@@ -192,24 +308,27 @@ class KnowledgeBase:
             file_name = os.path.basename(file_path)
             if not os.path.exists(file_path):
                 raise FileNotFoundError(f"文档不存在: {file_path}")
+            # 目录不做递归：这里明确说清楚，避免解析器抛出的 PermissionError 让人看不懂
+            if os.path.isdir(file_path):
+                raise RuntimeError(
+                    f"这是目录，不是文件 [文件：{file_name}]：知识库暂不支持目录递归导入，"
+                    "请进入目录后逐个选择要入库的文件")
 
             # 1. 解析全文
             full_text = extract_file_text(file_path)
-            if not full_text or not full_text.strip():
-                raise RuntimeError(f"文档内容为空或解析失败: {file_name}")
-            # 去掉解析失败提示
-            if full_text.startswith("[文档解析失败"):
-                raise RuntimeError(full_text)
+            # ★ 解析器读不出内容时返回的是"一句提示语"而不是空串/异常，必须按失败处理，
+            #   否则提示语会被当成正文入库并计为成功（判定走 document_parser.is_parse_failure）
+            is_content, reason = _classify_extracted_text(full_text, file_path)
+            if not is_content:
+                raise RuntimeError(f"{reason} [文件：{file_name}]")
+            warnings = _collect_partial_notices(full_text)
 
             # 2. ★ 整篇脱敏 → 切块（顺序不可颠倒，见 mask_and_split 的说明）
             chunks, chunk_mappings, total_sensitive = self.mask_and_split(full_text, self.engine)
             if not chunks:
                 raise RuntimeError(f"切块后无有效内容: {file_name}")
 
-            # 3. 同名文档先删旧数据（去重）
-            self._remove_by_source(file_name)
-
-            # 4. 准备入库数据
+            # 3. 准备入库数据
             #    chunk id 用文件名（而非完整路径）派生：避免把本机目录结构写进向量库。
             #    这里的哈希只用来生成稳定的 chunk id，不承担任何完整性校验（校验另有审计哈希链）。
             documents = []
@@ -236,14 +355,35 @@ class KnowledgeBase:
                 })
                 ids.append(chunk_id)
 
-            # 5. 向量化并存储（批量写入）
-            self._vectorstore.add_texts(texts=documents, metadatas=metadatas, ids=ids)
+            # 4. 向量化并存储（批量写入）
+            #    embedding 失败要给出可读原因（Ollama 没起 / 模型没拉 / 其它），并带上原始错误
+            try:
+                self._vectorstore.add_texts(texts=documents, metadatas=metadatas, ids=ids)
+            except Exception as exc:
+                raise RuntimeError(_vectorize_error_message(exc, self.embed_model)) from exc
+
+            # 5. 覆盖语义：写成功之后才清理旧版本残留 —— 顺序不可颠倒。
+            #    旧实现"先删旧、再写入"，一旦向量化失败（例如 Ollama 中途掉线），
+            #    同名文档的**旧版本也会一起消失**：用户重导一次反而把库里那份弄丢了。
+            #    先写后删：新块的 id 与旧块相同（同名同下标）直接 upsert，只有旧版本多出来的
+            #    尾部块需要删掉；同名文档依旧只保留一份，不会产生重复块。
+            new_ids = set(ids)
+            try:
+                stale_ids = [i for i in self._ids_by_source(file_name) if i not in new_ids]
+                if stale_ids:
+                    self._vectorstore._collection.delete(ids=stale_ids)
+            except Exception as exc:
+                # 旧数据残留必须可见：本次新内容已入库，但库里可能留下旧版本的冗余块
+                raise RuntimeError(
+                    f"新内容已写入，但清理同名文档旧数据失败 [文件：{file_name}]："
+                    f"{type(exc).__name__}: {_clip(exc, 200)}") from exc
 
             return {
                 "file": file_name,
                 "chunks": len(chunks),
                 "chars": len(full_text),
                 "sensitive": total_sensitive,
+                "warnings": warnings,
             }
 
     def add_documents(self, file_paths, progress_callback=None) -> dict:
@@ -256,15 +396,33 @@ class KnowledgeBase:
                               status 取值："processing" / "success" / "failed"
 
         返回统计 dict：
-            {"total": 3, "success": 2, "failed": 1, "details": [...], "total_chunks": 12}
+            {"total": 3, "success": 2, "failed": 1, "details": [...], "total_chunks": 12,
+             "summary": "入库完成：成功 2/3，失败 1：b.png（…原因…）"}
+
+        ★ 失败必须留在面上：details 逐条给出每个文件的结果与原因（success 项带 warnings），
+          summary 是一句话汇总（含失败文件名与原因），供界面直接展示——不允许"只说完成、
+          不说哪些没进"。环境级错误（Ollama 不可达/模型缺失）会停止后续尝试，但每个文件
+          仍逐条记为 failed 并带同一原因，不静默跳过任何一条。
         """
         total = len(file_paths)
         details = []
         success_count = 0
         total_chunks = 0
+        env_fail_reason = None     # 环境级失败原因：命中后后续文件不再逐个尝试
+        imported_names = {}        # 同批次内同名文件：后一条会覆盖前一条，需如实备注
 
         for i, path in enumerate(file_paths, 1):
             fname = os.path.basename(path)
+
+            if env_fail_reason is not None:
+                details.append({"file": fname, "status": "failed", "error": env_fail_reason})
+                if progress_callback:
+                    try:
+                        progress_callback(i, total, fname, "failed", env_fail_reason)
+                    except Exception:
+                        pass
+                continue
+
             # 通知开始处理
             if progress_callback:
                 try:
@@ -276,20 +434,36 @@ class KnowledgeBase:
                 stats = self.add_document(path)
                 success_count += 1
                 total_chunks += stats.get("chunks", 0)
-                details.append({
+                detail = {
                     "file": fname, "status": "success",
                     "chunks": stats.get("chunks", 0),
                     "sensitive": stats.get("sensitive", {}),
-                })
+                }
+                warnings = stats.get("warnings") or []
+                if warnings:
+                    detail["warnings"] = warnings
+                # 同一批次里同名文件会被后来者覆盖：库中只保留最后一份，前一条必须挂备注，
+                # 否则"成功 2 条"与库中"1 篇文档"看起来就是自相矛盾
+                prev = imported_names.get(fname)
+                if prev is not None:
+                    prev.setdefault("notes", []).append(
+                        "同批次里出现了同名文件，本条已被本次导入里的同名文件覆盖（库中只保留最后一份）")
+                imported_names[fname] = detail
+                details.append(detail)
                 if progress_callback:
                     try:
                         progress_callback(i, total, fname, "success",
-                                          f"{stats.get('chunks', 0)} 个片段")
+                                          f"{stats.get('chunks', 0)} 个片段" + (
+                                              f"；{len(warnings)} 处内容未解析" if warnings else ""))
                     except Exception:
                         pass
             except Exception as e:
                 err_msg = f"{type(e).__name__}: {e}"
                 details.append({"file": fname, "status": "failed", "error": err_msg})
+                # 环境级向量化错误（Ollama 不可达 / 模型缺失）后续文件必然同样失败：
+                # 停止逐个尝试以免用户等 N 次超时，但仍逐条记 failed（见上方循环开头的分支）
+                if any(p in err_msg for p in _EMBED_ENV_ERROR_PREFIXES):
+                    env_fail_reason = err_msg + "（同一环境问题，后续文件不再逐个尝试）"
                 if progress_callback:
                     try:
                         progress_callback(i, total, fname, "failed", err_msg)
@@ -302,7 +476,25 @@ class KnowledgeBase:
             "failed": total - success_count,
             "details": details,
             "total_chunks": total_chunks,
+            "summary": self._format_batch_summary(total, success_count, details),
         }
+
+    @staticmethod
+    def _format_batch_summary(total: int, success: int, details: list) -> str:
+        """一句话汇总（含失败文件名与原因、部分未解析提醒），供界面直接展示。"""
+        failed = [d for d in details if d.get("status") != "success"]
+        parts = [f"入库完成：成功 {success}/{total}"]
+        if failed:
+            parts.append(f"，失败 {len(failed)}：")
+            items = [f"{d.get('file')}（{_clip(d.get('error') or '原因未知', 80)}）"
+                     for d in failed[:3]]
+            parts.append("；".join(items))
+            if len(failed) > 3:
+                parts.append(f"；另有 {len(failed) - 3} 个失败，见 details")
+        warned = [d for d in details if d.get("warnings")]
+        if warned:
+            parts.append(f"；{len(warned)} 个文件有部分内容未解析（见 details[].warnings）")
+        return "".join(parts)
 
     # ──────────────────────────────────────────
     # 2. 检索：问题脱敏 → 向量检索 → 返回脱敏片段 + 全局映射表
@@ -480,6 +672,15 @@ class KnowledgeBase:
         with self._lock:
             self._ensure_ready()
             return self._remove_by_source(file_name)
+
+    def _ids_by_source(self, file_name: str) -> list:
+        """内部方法：查同名文档当前的 chunk id 列表（覆盖导入时用来清理旧版本的尾部块）。
+
+        读失败直接抛出（由调用方翻成可读错误）：静默返回空表会让旧数据悄悄留着。
+        """
+        collection = self._vectorstore._collection
+        results = collection.get(where={"source": file_name}, include=[])
+        return list(results.get("ids") or []) if results else []
 
     def _remove_by_source(self, file_name: str) -> bool:
         """内部方法：按 source metadata 删除指定文档的所有向量。"""
