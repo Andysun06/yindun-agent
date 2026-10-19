@@ -76,6 +76,114 @@ def detect_ollama_models() -> List[str]:
     return sorted(set(names), key=lambda n: (not n.endswith(":latest"), n))
 
 
+def _direct_opener():
+    """构造一个**不读任何代理环境变量**的 opener（单测直接断言它的代理表为空）。"""
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _loopback_direct_http(url: str, timeout: float = 1.5) -> str:
+    """访问**本机回环**的 HTTP 接口，**绕过系统/环境代理**。
+
+    为什么必须绕：这台机器（以及很多国内开发机）开着 Clash 之类的系统代理，
+    `HTTP_PROXY` / `HTTPS_PROXY` 会让 requests/urllib 把 `http://127.0.0.1:11434`
+    也发给代理 → 代理连不到 127.0.0.1 → 检测**恒为空**，用户看到"本机模型搜不到"。
+    这里显式用 `ProxyHandler({})`（空 = 不用任何代理）。仅用于回环地址，不碰外网。
+    """
+    opener = _direct_opener()
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with opener.open(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8", "replace")
+
+
+def _describe_conn_error(exc: Exception) -> str:
+    """把连接失败翻译成**用户能照着做**的说法。
+
+    Windows 实测（本机真实复现）：往一个**没在监听**的回环端口连，系统要重试 SYN 约 2 秒
+    才回「积极拒绝」，比这里 1.5 秒的等待更久 —— 于是"服务没开"会被报成 `timed out`。
+    对用户来说超时和拒接是同一句话（服务没在跑 / 端口不通），所以合并表述，
+    原始异常名附在括号里备排障，不丢信息也不吓人。
+    """
+    kind = type(exc).__name__
+    text = str(exc)
+    lowered = text.lower()
+    if "timed out" in lowered or "timeout" in lowered:
+        return f"服务没在运行或端口不通（连接等待超时，{kind}）"
+    if "refused" in lowered or "10061" in text or "拒绝" in text:
+        return f"服务没在运行或端口不通（连接被拒绝，{kind}）"
+    if "name or service not known" in lowered or "getaddrinfo" in lowered:
+        return f"地址解析失败，检查地址是否写错（{kind}）"
+    return f"{kind}: {text}"
+
+
+def detect_ollama_models_via_api(host: str = "") -> "Tuple[List[str], str]":
+    """问 Ollama 服务本身要模型列表（`GET /api/tags`）——**权威来源**。
+
+    为什么不能只扫硬盘（V3.6.7 实测的真实事故）：组员的便携版拷到同学机器上，
+    同学装了 `qwen3.5:27b` 却"本地模型搜不到、只能手动加 localhost"。根因是旧实现
+    只 `rglob(~/.ollama/models/manifests)`——模型放在别的盘（`OLLAMA_MODELS`）、
+    装在别的用户目录、跑在容器里，或者 exe 以管理员身份运行（`~` 变成了管理员目录），
+    都会扫成空。而 Ollama 服务自己知道它有哪些模型，问它就行。
+
+    返回 (模型名列表, 说明)。说明用于界面如实告诉用户"为什么是空的"。
+    """
+    base = normalize_base_url(host or DEFAULT_OLLAMA_HOST).rstrip("/")
+    # Ollama 的原生 API 在**根**（/api/tags）；用户把地址填成 `…/v1`（OpenAI 兼容入口）时
+    # 要退回到根再问一次——`…/v1/api/tags` 是 404，这是"检测恒空"的第二个常见来源。
+    candidates = []
+    if base.endswith("/v1"):
+        candidates.append(base[:-3])
+    candidates.append(base)
+    last_error = ""
+    for url in candidates:
+        try:
+            raw = _loopback_direct_http(url.rstrip("/") + "/api/tags")
+            data = json.loads(raw or "{}")
+            models = [str((m or {}).get("name") or "") for m in (data.get("models") or [])]
+            models = [m for m in models if m]
+            if models:
+                return models, f"已从 Ollama 服务读取（{url}）"
+            return [], f"Ollama 服务在 {url} 有响应，但一个模型都没有（先用 ollama pull 拉一个）"
+        except Exception as exc:                                    # noqa: BLE001
+            last_error = _describe_conn_error(exc)
+    return [], f"连不上本机 Ollama 服务（{base}）：{last_error}"
+
+
+def detect_local_models(host: str = "") -> Dict[str, Any]:
+    """本机模型检测的**唯一入口**：硬盘扫描 + 服务 API 双源合并，并给出人话说明。
+
+    合并规则：两边都收（服务 API 优先排序）——硬盘能列出"装了但服务没起"的模型，
+    API 能列出"装在别处/服务正在提供"的模型；两者互补，任一可用都不再是"空列表"。
+    """
+    fs_models = detect_chat_models()
+    api_models_raw, api_note = detect_ollama_models_via_api(host)
+    # 只保留**能对话**的模型：`/api/tags` 里也会列 embedding 模型（如 nomic-embed-text），
+    # 它们不能进"本机模型"清单（选了也没法聊），但要在说明里如实提一句。
+    api_models = [m for m in api_models_raw if not is_embedding_model(m)]
+    dropped = [m for m in api_models_raw if is_embedding_model(m)]
+    merged: List[str] = []
+    for name in list(api_models) + list(fs_models):
+        if name not in merged:
+            merged.append(name)
+    if merged:
+        if api_models:
+            # 只说"服务"会漏掉硬盘补来的那部分，两个源都出力时如实写两个
+            src = "Ollama 服务 + 本机模型目录" if fs_models else "Ollama 服务"
+            note = f"已检测到本机模型（来自{src}）"
+        else:
+            # 磁盘上有模型、服务却连不上：列表非空但**现在聊不了**。必须说清楚，
+            # 否则用户选了模型只等到一句连接失败，又变成"查不出原因"。
+            note = (f"只在本机模型目录里找到 {len(fs_models)} 个模型，"
+                    "Ollama 服务当前连不上 —— 服务起来后才能对话")
+        if dropped:
+            note += f"；另有 {len(dropped)} 个向量/嵌入模型（不能对话，未列出）"
+    else:
+        note = "没有检测到可对话的本机模型。" + api_note
+        if dropped:
+            note += f"（服务里只有 {len(dropped)} 个向量/嵌入模型，不能用于对话）"
+        note += "；也可以点「＋ 手动添加本机模型」直接填模型名"
+    return {"models": merged, "note": note, "via_api": api_models, "via_disk": fs_models}
+
+
 def is_embedding_model(name: str) -> bool:
     """判断是否为 embedding 模型（不能用于对话）。"""
     lowered = (name or "").lower()
@@ -176,8 +284,10 @@ def model_catalog(settings: Dict[str, Any]) -> Dict[str, Any]:
     tiers: Dict[str, List[Dict[str, Any]]] = {"local": [], "lan": [], "wan": []}
     seen: set = set()
 
-    # ① 本机 Ollama：直接探测 manifests，零网络
-    detected = detect_chat_models()
+    # ① 本机 Ollama：**硬盘 + 服务 API 双源**（V3.6.7 修真实事故：只扫硬盘时，
+    #    模型装在别的盘/别的用户目录/exe 以管理员运行时会被判成"一个都没有"）
+    local_info = detect_local_models(settings.get("ollama_host") or "")
+    detected = local_info["models"]
     for name in detected:
         tiers["local"].append({"name": name, "model_id": name, "tier": "local",
                                "source": "ollama", "base_url": settings.get("ollama_host")
@@ -200,6 +310,12 @@ def model_catalog(settings: Dict[str, Any]) -> Dict[str, Any]:
 
     return {"current": current, "tiers": tiers, "ollama_host": settings.get("ollama_host")
             or DEFAULT_OLLAMA_HOST, "local_detected": detected,
+            # 空列表时界面要能说出"为什么空"（连不上服务 / 一个模型都没有 / 在哪找到了）
+            "local_note": local_info["note"],
+            # 当前配置的模型**到底在不在可用清单里**：界面据此显示"未选择模型"，
+            # 而不是把一个本机根本不存在的名字当成在用模型（V3.6.7 修）
+            "current_available": bool(current) and any(
+                e["name"] == current for t_ in tiers.values() for e in t_),
             "tier_labels": TIER_LABEL, "tier_boundary": TIER_BOUNDARY, "tier_hint": TIER_HINT}
 
 
@@ -418,12 +534,19 @@ def build_llm(settings: Dict[str, Any], tools: List[Any],
       · reasoning：模型思考开关。默认（`__from_mode__`）按当前 think_mode 推导；
         显式传 None 表示**不传该参数**（保持模型默认）。
     """
-    model_name = settings.get("model") or "qwen3.5:4b"
+    # ★ 模型名只在**配置里真的有**时才用；配置为空（用户没选过）时**不要凭空造一个名字**——
+    #   旧实现回落成写死的 `qwen3.5:4b`，在没装这个模型的机器上就会去连一个不存在的模型，
+    #   报错信息把方向也带偏（负责人实测：同学的机器装的是 27b，界面却显示 4b）。
+    #   为空就如实报"还没有选择模型"，由服务层的首启自动挑选（`_resolve_model_selection`）补上。
+    model_name = str(settings.get("model") or "").strip()
     custom_models = settings.get("custom_models", {}) or {}
     ollama_host = settings.get("ollama_host") or DEFAULT_OLLAMA_HOST
     models = detect_ollama_models()
     if reasoning == "__from_mode__":
         reasoning = reasoning_for_mode(settings.get("think_mode"))
+
+    if not model_name:
+        return None, {}, models, "还没有选择模型：请在输入框下方选择要用的模型（本机模型需先在 Ollama 里 pull）"
 
     try:
         if model_name in custom_models:

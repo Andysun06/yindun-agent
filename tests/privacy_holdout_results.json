@@ -8,32 +8,32 @@
   "留出集": {
     "种子": 20261017,
     "文档数": 60,
-    "生成时间": "2026-10-17"
+    "生成时间": "2026-10-19"
   },
   "留出性自检_与开发集重合实例": [],
   "在册形态": {
-    "实例总数": 230,
-    "完整命中": 222,
-    "召回": "222/230",
-    "召回率": "96.5%"
+    "实例总数": 264,
+    "完整命中": 264,
+    "召回": "264/264",
+    "召回率": "100.0%"
   },
   "未覆盖形态": {
-    "实例总数": 50,
+    "实例总数": 16,
     "命中": 0,
-    "召回": "0/50",
+    "召回": "0/16",
     "召回率": "0.0%"
   },
   "全量口径": {
     "实例总数": 280,
-    "完整命中": 222,
-    "召回": "222/280",
-    "召回率": "79.3%"
+    "完整命中": 264,
+    "召回": "264/280",
+    "召回率": "94.3%"
   },
   "按类型": {
     "ADDRESS": "18/18",
     "APIKEY": "8/8",
     "BANKCARD": "9/9",
-    "BANKCARD_DOTTED": "0/4",
+    "BANKCARD_DOTTED": "4/4",
     "BANKCARD_LOOKALIKE": "0/4",
     "BEARER": "4/4",
     "CLOUD_KEY": "8/8",
@@ -43,7 +43,7 @@
     "EMAIL_OBFUSCATED": "0/4",
     "FILE_PATH": "4/4",
     "IDCARD": "13/13",
-    "IDCARD_SLASH": "0/4",
+    "IDCARD_SLASH": "4/4",
     "IP": "8/8",
     "IPV6": "4/4",
     "JWT": "4/4",
@@ -52,15 +52,15 @@
     "MEDICAL_INSURANCE": "4/4",
     "MEDICAL_RECORD": "4/4",
     "MONEY": "13/13",
-    "MONEY_CN": "0/4",
-    "NAME": "37/45",
+    "MONEY_CN": "4/4",
+    "NAME": "45/45",
     "NAME_BARE": "0/4",
-    "NAME_COMPOUND": "0/8",
-    "NAME_TABLE_CELL": "0/10",
+    "NAME_COMPOUND": "8/8",
+    "NAME_TABLE_CELL": "10/10",
     "PASSPORT": "4/4",
     "PASSWORD": "12/12",
     "PHONE": "22/22",
-    "PHONE_DOTTED": "0/4",
+    "PHONE_DOTTED": "4/4",
     "PLATE": "4/4",
     "PRIVATE_KEY": "4/4",
     "SENSITIVE_PATH": "4/4",
@@ -81,46 +81,22 @@
   },
   "部分掩码检出": [],
   "未命中明细": [
-    "doc#5 NAME_TABLE_CELL: 字面值残留",
-    "doc#5 NAME_TABLE_CELL: 字面值残留",
-    "doc#5 NAME_TABLE_CELL: 字面值残留",
-    "doc#9 NAME: 字面值残留",
-    "doc#9 NAME: 字面值残留",
     "doc#10 LANDLINE: 字面值残留",
     "doc#10 EMAIL_OBFUSCATED: 字面值残留",
     "doc#10 BANKCARD_LOOKALIKE: 字面值残留",
     "doc#10 NAME_BARE: 字面值残留",
-    "doc#13 NAME_COMPOUND: 字面值残留",
-    "doc#13 NAME_COMPOUND: 字面值残留",
-    "doc#14 MONEY_CN: 字面值残留",
-    "doc#15 PHONE_DOTTED: 字面值残留",
-    "doc#15 BANKCARD_DOTTED: 字面值残留",
-    "doc#15 IDCARD_SLASH: 字面值残留",
-    "doc#20 NAME_TABLE_CELL: 字面值残留",
-    "doc#20 NAME_TABLE_CELL: 字面值残留",
-    "doc#20 NAME_TABLE_CELL: 字面值残留",
-    "doc#24 NAME: 字面值残留",
-    "doc#24 NAME: 字面值残留",
     "doc#25 LANDLINE: 字面值残留",
     "doc#25 EMAIL_OBFUSCATED: 字面值残留",
     "doc#25 BANKCARD_LOOKALIKE: 字面值残留",
     "doc#25 NAME_BARE: 字面值残留",
-    "doc#28 NAME_COMPOUND: 字面值残留",
-    "doc#28 NAME_COMPOUND: 字面值残留",
-    "doc#29 MONEY_CN: 字面值残留",
-    "doc#30 PHONE_DOTTED: 字面值残留",
-    "doc#30 BANKCARD_DOTTED: 字面值残留",
-    "doc#30 IDCARD_SLASH: 字面值残留",
-    "doc#35 NAME_TABLE_CELL: 字面值残留",
-    "doc#35 NAME_TABLE_CELL: 字面值残留",
-    "doc#39 NAME: 字面值残留",
-    "doc#39 NAME: 字面值残留",
     "doc#40 LANDLINE: 字面值残留",
     "doc#40 EMAIL_OBFUSCATED: 字面值残留",
     "doc#40 BANKCARD_LOOKALIKE: 字面值残留",
     "doc#40 NAME_BARE: 字面值残留",
-    "doc#43 NAME_COMPOUND: 字面值残留",
-    "doc#43 NAME_COMPOUND: 字面值残留"
+    "doc#55 LANDLINE: 字面值残留",
+    "doc#55 EMAIL_OBFUSCATED: 字面值残留",
+    "doc#55 BANKCARD_LOOKALIKE: 字面值残留",
+    "doc#55 NAME_BARE: 字面值残留"
   ],
   "历史": [
     {
@@ -193,6 +169,22 @@
       "文档数": 60,
       "在册形态": "222/230",
       "全量口径": "222/280",
+      "备注": ""
+    },
+    {
+      "时间": "2026-10-19 11:38",
+      "种子": 20261017,
+      "文档数": 60,
+      "在册形态": "264/264",
+      "全量口径": "264/280",
+      "备注": ""
+    },
+    {
+      "时间": "2026-10-19 12:20",
+      "种子": 20261017,
+      "文档数": 60,
+      "在册形态": "264/264",
+      "全量口径": "264/280",
       "备注": ""
     }
   ]

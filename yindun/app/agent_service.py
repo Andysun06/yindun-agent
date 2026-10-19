@@ -33,12 +33,17 @@ from yindun.app.session_store import SessionStore
 from yindun.app.settings_store import SettingsStore
 from yindun.core.file_tools import (
     analyze_project,
+    batch_rename_local_files,
+    copy_local_file,
     create_local_file,
     delete_local_file,
     list_local_files,
+    make_local_dir,
     modify_local_file,
+    move_local_file,
     read_attachment_chunk,
     read_local_file,
+    rename_local_file,
     run_local_command,
     search_in_files,
     search_knowledge_base,
@@ -55,10 +60,17 @@ Listener = Callable[[str, Any], None]
 
 
 def build_tools() -> List[Any]:
-    """全部可用工具（与旧界面保持一致：9 个本地工具 + 1 个知识库检索）。"""
+    """全部可用工具：本地读写 + 文件管理（移动/复制/改名/批量改名/建目录）+ 知识库检索。
+
+    ★ 文件管理族是 V3.6.8 补上的（负责人实测："让他移动几个文件、批量改后缀，他说做不了"）：
+    没有这些工具时，模型只能用"读出来 + 新建 + 删掉"硬拼，批量改名更是无路可走——
+    能力面缺一块，用户感受到的就是"这个智能体没用"。
+    """
     return [
         list_local_files, create_local_file, delete_local_file, read_local_file,
-        modify_local_file, run_local_command, analyze_project, search_in_files,
+        modify_local_file, move_local_file, copy_local_file, rename_local_file,
+        batch_rename_local_files, make_local_dir,
+        run_local_command, analyze_project, search_in_files,
         read_attachment_chunk, search_knowledge_base,
     ]
 
@@ -67,6 +79,60 @@ def _time_stamp() -> str:
     """文件名用的时间戳（插件渲染导出失败时兜底命名）。"""
     from datetime import datetime
     return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+# ── 自定义模型的「供应商」元数据（V3.6.8）────────────────────
+# 「模型接入」页按供应商聚合（照 ZCode 的模型设置：左列供应商 / 右侧表单与模型列表）。
+# 存储仍是 `custom_models[条目名] = {model_id, base_url, api_key, tier, ...}`——一条模型
+# 一行；`provider` 只是**可选**的分组显示名，老配置没有它，所以必须能按 base_url 兜底
+# 归组（同一台机器 / 同一个云服务的多条模型要落到同一组，否则左栏会散成一堆单模型分组）。
+API_FORMATS = ("chat_completions",)      # 目前**只有** OpenAI 兼容 Chat Completions 真能用
+API_FORMAT_LABEL = {"chat_completions": "OpenAI 兼容 Chat Completions"}
+
+
+def clean_tags(value: Any) -> List[str]:
+    """标签数组净化：只留非空字符串、去重、最多 8 个、每个 ≤ 24 字。
+
+    标签是**用户自填**的自由文本（配置可能被手工改坏），进界面、进审计前统一在这里收口。
+    另有一条产品口径：标签只许标真实能力——我们没有多模态直连通路（图片走本地 OCR），
+    所以界面上不提供「视觉」一类预设标签，也不在代码里预置任何能力暗示。
+    """
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: List[str] = []
+    for item in value:
+        text = str(item or "").strip()[:24]
+        if text and text not in out:
+            out.append(text)
+        if len(out) >= 8:
+            break
+    return out
+
+
+def provider_of(name: str, info: Dict[str, Any]) -> str:
+    """供应商显示名：显式 `provider` 字段优先，缺失时按 base_url 的 host 兜底。
+
+    兜底顺序说明：host（含端口，能把"同一主机的两个服务"分开）→ 条目名 → 「未命名供应商」。
+    绝不用 model_id 兜底：模型名相同而供应商不同的情况很常见，那样会把两家并成一组。
+    """
+    text = str((info or {}).get("provider") or "").strip()
+    if text:
+        return text[:40]
+    base = str((info or {}).get("base_url") or "").strip()
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(base).netloc or "").strip()
+    except Exception:
+        host = ""
+    return host[:40] or str(name or "").strip()[:40] or "未命名供应商"
+
+
+def api_format_of(info: Dict[str, Any]) -> str:
+    """接口格式：只有 `chat_completions` 是**真能用**的，其它值一律回落（不认识的格式不能假装支持）。"""
+    value = str((info or {}).get("api_format") or "").strip().lower()
+    return value if value in API_FORMATS else "chat_completions"
 
 
 class AgentService:
@@ -133,6 +199,16 @@ class AgentService:
         # 已启用的插件（如 laya 本机模型）在后台预热：否则每次重启后的第一次审批
         # 都要重新吃一次冷启动（实测 17~25 秒），第一次分级就永远看不到模型结论
         self._plugins.preload_enabled()
+        # ★ 可读写范围（沙箱根）也要下发：内核解析顺序是「设置 sandbox_dir > 环境变量
+        #   SANDBOX_PATH > 程序目录」，而 core 不反向 import app 层，所以由这里把"读设置"的
+        #   **只读**回调注入内核（core/permission 提供的注册口）。注入读取器而非快照：
+        #   设置一改，下一次工具调用就按新范围判定（立即生效）。
+        #   空串 = 未配置 → 内核按旧规则回退，行为与改前完全一致。
+        try:
+            from yindun.core.permission import register_sandbox_settings_source
+            register_sandbox_settings_source(lambda: self.settings.get("sandbox_dir", ""))
+        except Exception as exc:
+            log.warning("注册可读写范围读取器失败（将按环境变量回退）：%s", exc)
 
     def set_listener(self, listener: Optional[Listener]) -> None:
         self._listener = listener
@@ -168,7 +244,71 @@ class AgentService:
         mode = resolve_mode(session_mode or self.settings.get("permission"))
         os.environ[PERMISSION_ENV] = mode
         os.environ["ALLOW_SCRIPT_EXEC"] = "1" if self.settings.get("allow_script_exec", True) else "0"
+        # ★ 可读写范围同样在这里下发（V3.6.8）：内核已能直接读设置，但服务层自己还有几处
+        #   按 SANDBOX_PATH 取"当前范围"（worker.sandbox_path、工作流默认目录、健康扫描、
+        #   状态快照）——不投影就会出现"工具判定按设置、默认目录按旧环境变量"的两套真相。
+        self._project_sandbox_env()
         return mode
+
+    def _project_sandbox_env(self) -> str:
+        """把设置里的「可读写范围」（sandbox_dir）投影到 SANDBOX_PATH，返回当前生效的绝对路径。
+
+        语义（键名是内核契约，见 core/permission.SETTINGS_KEY）：
+          · sandbox_dir 非空 → 写入 SANDBOX_PATH（绝对化），并记住"投影前的原值"；
+          · sandbox_dir 为空串 → 还原投影前的原值（空串 = 未配置：按旧规则
+            SANDBOX_PATH → 程序目录回退；不能把外部/脚本设的范围一并清掉）。
+        """
+        configured = str(self.settings.get("sandbox_dir", "") or "").strip()
+        if configured:
+            resolved = os.path.abspath(configured)
+            if not getattr(self, "_projected_sandbox", None):
+                # 第一次投影：先留存原值，用户把设置清空时才能还原（否则会退到程序目录，
+                # 把"管理员/脚本用 SANDBOX_PATH 指定的范围"丢掉——那是静默改安全边界）
+                self._sandbox_env_backup = os.environ.get("SANDBOX_PATH")
+            os.environ["SANDBOX_PATH"] = resolved
+            self._projected_sandbox = resolved
+            return resolved
+        projected = getattr(self, "_projected_sandbox", None)
+        if projected and os.environ.get("SANDBOX_PATH") == projected:
+            backup = getattr(self, "_sandbox_env_backup", None)
+            if backup:
+                os.environ["SANDBOX_PATH"] = backup
+            else:
+                os.environ.pop("SANDBOX_PATH", None)
+            self._projected_sandbox = None
+            self._sandbox_env_backup = None
+        from yindun.core.permission import sandbox_root
+        return sandbox_root()
+
+    def set_sandbox_dir(self, path: str = "") -> Dict[str, Any]:
+        """设置「可读写范围」（设置键 `sandbox_dir`；空串 = 回到默认）。
+
+        这是"把范围改到桌面/某个资料目录"的唯一入口（界面上的目录选择器最终调它）：
+          · 非空时必须是**已存在的目录**——不自动创建：写错一个盘符就默默新建一棵空树，
+            比直接报错更难排查；失败时保留原值（不静默改动安全设置）。
+          · 改完**立即生效**（内核每次调用现读），并写审计（放宽可读写范围是有安全含义的动作）。
+        """
+        raw = str(path or "").strip()
+        if raw:
+            resolved = os.path.abspath(os.path.expanduser(raw))
+            if not os.path.isdir(resolved):
+                return {"ok": False, "error": f"目录不存在或不是目录：{resolved}", "sandbox_dir": raw}
+            value: Optional[str] = resolved
+        else:
+            value = ""
+        self.settings.set("sandbox_dir", value)
+        self.settings.save()
+        effective = self._project_sandbox_env()
+        try:
+            from yindun.core.audit_log import AuditEventType, AuditLog, AuditSeverity
+            AuditLog().add_entry(
+                AuditEventType.ACCESS_CONTROL, AuditSeverity.WARNING,
+                f"可读写范围改为：{value or '默认（环境变量 → 程序目录）'}",
+                {"sandbox_dir": value or "", "effective": effective, "scope": "settings"},
+            )
+        except Exception as exc:
+            print(f"[AgentService] 可读写范围改动写审计失败：{exc}")
+        return {"ok": True, "sandbox_dir": value or "", "effective": effective}
 
     def effective_permission(self, session_id: Optional[str] = None) -> Dict[str, Any]:
         """本对话生效的权限档位 + 它是"会话覆盖"还是"跟随默认"（界面据此显示与提示）。"""
@@ -244,31 +384,32 @@ class AgentService:
                     os.environ["no_proxy"] = os.environ["NO_PROXY"]
         except Exception:
             pass
-        # ★ 首启兜底（真实使用中发现）：settings 默认模型名可能与本机实际拉取的不一致
-        #   （如 "qwen2.5:7b" vs "qwen2.5:7b-instruct"），ChatOllama 构建时不校验模型名，
-        #   直到发消息才 404。这里把模型名对齐到本机实际存在的对话模型并如实告知。
-        #   ★ 内网/远程 Ollama 例外：本机探测不到内网模型，"对齐"会把用户填的内网模型名
-        #   覆盖成本机模型——非本地地址一律跳过兜底，信任用户配置。
-        is_local_host = ("127.0.0.1" in host_cfg) or ("localhost" in host_cfg) or ("[::1]" in host_cfg)
-        try:
-            configured = str(self.settings.get("model") or "")
-            custom = self.settings.get("custom_models") or {}
-            if configured and configured not in custom and is_local_host:
-                from yindun.app.llm_factory import detect_chat_models
-                available = detect_chat_models()
-                if available and configured not in available:
-                    fallback = available[0]
-                    self.settings.set("model", fallback)
-                    self.settings.save()
-                    self._emit("status", f"模型 {configured} 本机未安装，已改用 {fallback}")
-        except Exception as exc:
-            print(f"[AgentService] 模型名对齐失败（按原配置继续）：{exc}")
+        # ★ 模型选择（V3.6.8 修"对着不存在的模型说就绪"）：
+        #   · 从未选过（配置为空）→ 自动选用检测到的第一个可对话本机模型并落库；
+        #     一个都检测不到就保持空 → 界面显示"请选择模型"，绝不凭空写一个模型名。
+        #   · 用户选过（非空）→ **一律不改**：本机没装就是"不可用 + 原因"，
+        #     由 llm_status/_diagnose_llm_unavailable 如实告知，绝不静默换成别的模型。
+        model_name, model_available, unavailable_reason = self._resolve_model_selection()
+        if not model_available:
+            # 不可用就**不构建算力**：宁可如实说"未就绪 + 原因"，也不要建出一个指向
+            # 不存在模型的对象再对外宣称"已就绪"（ChatOllama 不校验模型名，构建永远
+            # "成功"，直到用户发第一句话才 404——那就是假就绪，负责人实测过）。
+            self._llm_variants = {}
+            self._llm = None
+            self._tools_map = build_tools()
+            self._llm_error = unavailable_reason or "算力不可用"
+            status = self.llm_status()
+            self._emit("llm_status", status)
+            self._emit("startup", {"phase": "ready", "done": True,
+                                   "text": f"算力不可用：{self._llm_error}"})
+            return status
         # 一次建好两套算力变体（关思考 / 保持模型默认），每轮按当前模式挑一套用：
         # 切「快速 / 深度思考」不需要重建算力，也不会打断正在跑的轮次。
         self._llm_variants, self._tools_map, models, err = build_llm_variants(
             self.settings.data, build_tools())
         self._llm = self._llm_for(self.settings.get("think_mode"))
         self._llm_error = err
+        self._llm_model = model_name
         if models:
             self.settings.set("ollama_models_cache", models)
             self.settings.save()
@@ -334,25 +475,79 @@ class AgentService:
             print(f"[AgentService] 模型预热调度失败：{exc}")
             return False
 
+    # ── 模型选择（首启自动选 + 不可用如实报）─────────────────
+    def _resolve_model_selection(self) -> Any:
+        """决定本次要用的模型名，返回 (model, available, reason_if_unavailable)。
+
+        ★ 为什么要有这一步（V3.6.8，负责人实测）：便携版拷到没有该模型的机器上，
+          界面与 llm_status 仍宣称"已就绪: qwen3.5:4b"——对着一个不存在的模型说就绪。
+          规则：
+            · 配置为空（用户从未选过）→ 自动选用**检测到的第一个可对话模型**并落库；
+              一个都检测不到就保持空 → 界面显示"请选择模型"，绝不凭空写一个模型名。
+            · 配置非空（用户选过）→ **一律不改**：本机没装就是"不可用 + 原因"。
+          可用性判据统一用 `model_catalog()["current_available"]`（本机探测 + 自定义条目
+          一起算，见 llm_factory），不另立第二套判断。
+        """
+        catalog = self.model_catalog()
+        current = str(self.settings.get("model") or "").strip()
+        if not current:
+            picked = ""
+            for name in (catalog.get("local_detected") or []):
+                if str(name or "").strip():
+                    picked = str(name).strip()
+                    break
+            if not picked:
+                for entry in (catalog.get("tiers", {}).get("local") or []):
+                    if str(entry.get("name") or "").strip():
+                        picked = str(entry["name"]).strip()
+                        break
+            if not picked:
+                # 检测不到任何可对话模型：保持空（不写死名字），由界面提示"请选择模型"
+                return "", False, self._diagnose_llm_unavailable(catalog=catalog)
+            self.settings.set("model", picked)
+            self.settings.save()
+            self._emit("status", f"未选择过模型，已自动选用本机检测到的 {picked}")
+            catalog = self.model_catalog()
+            current = picked
+        if bool(catalog.get("current_available")):
+            return current, True, ""
+        return current, False, self._diagnose_llm_unavailable(catalog=catalog)
+
     def llm_status(self) -> Dict[str, Any]:
         """算力状态：就绪与否 + **为什么不可用**（V3.6.2，路线图 A-1）。
 
         为什么补这条说明：把算力端点指到一个没人监听的端口时，旧实现只回 `ready:false`、
         `error:null`——界面上就是"未就绪"三个字，用户无从判断该去检查什么。
         演示现场第一号风险就是"Ollama 没起"，产品必须自己把话说明白。
+
+        ★ V3.6.8：状态必须与事实一致——`ready` 只在"算力已建好 **且** 当前模型真的
+          在可用清单里"时为真。配置了一个本机不存在的模型时如实报"不可用 + 原因"，
+          绝不再出现"模型不存在却报已就绪"。
         """
         detail = self._llm_error
         if self._llm is None and not detail:
             detail = self._diagnose_llm_unavailable()
+        try:
+            catalog = self.model_catalog()
+        except Exception:
+            catalog = {}
+        available = bool(catalog.get("current_available"))
+        if self._llm is not None and not available and not detail:
+            # 构建之后模型被删/被换掉：状态跟着事实走，不能继续说"已就绪"
+            detail = self._diagnose_llm_unavailable(catalog=catalog)
         return {
-            "ready": self._llm is not None,
+            "ready": self._llm is not None and available,
             "model": self.settings.get("model"),
+            # 当前模型是否真的可用（界面据此显示"请选择模型"而不是某个名字）
+            "model_available": available,
+            "local_note": catalog.get("local_note", ""),
+            "local_detected": catalog.get("local_detected", []),
             "models": detect_ollama_models(),
             "chat_models": detect_chat_models(),
             "error": detail,
         }
 
-    def _diagnose_llm_unavailable(self) -> str:
+    def _diagnose_llm_unavailable(self, catalog: Optional[Dict[str, Any]] = None) -> str:
         """算力没就绪时给一句**能照着做**的说明（而不是空白）。"""
         model = str(self.settings.get("model") or "").strip()
         host = str(self.settings.get("ollama_host") or "").strip()
@@ -369,6 +564,20 @@ class AgentService:
             if installed and model not in installed:
                 return (f"本机没有这个模型：{model}（本机已装：{'、'.join(installed[:3])}）。"
                         f"在设置里换成本机已装的模型，或先 `ollama pull {model}`")
+            if not installed:
+                # 一个可对话模型都没有：把"为什么空"如实说出来（连不上 / 只有嵌入模型…），
+                # 并把两种常见的自救动作都写清楚（Ollama 没起 / 模型没拉）。
+                note = ""
+                try:
+                    if catalog is None:
+                        catalog = self.model_catalog()
+                    note = str(catalog.get("local_note") or "")
+                except Exception:
+                    note = ""
+                return (f"当前选择的模型不可用：{model}——本机没有检测到可对话的模型。"
+                        f"{note}。请确认 Ollama 已启动（命令行执行 `ollama serve`，"
+                        f"或双击托盘图标）后点「重新检测」；或在「设置 → 模型接入」里换一个模型，"
+                        f"或先 `ollama pull {model}` 把它拉下来")
             return (f"连不上本机算力（{host or '默认地址'}）：请确认 Ollama 已启动"
                     f"（命令行执行 `ollama serve`，或双击托盘图标）后点「重新检测」")
         return (f"连不上算力端点（{host}）：请检查网络、地址与密钥是否正确；"
@@ -765,14 +974,34 @@ class AgentService:
                 "model_id": info.get("model_id", ""),
                 "base_url": info.get("base_url", ""),
                 "tier": tier_of(name, info),
+                "provider": provider_of(name, info),
+                "api_format": api_format_of(info),
+                "tags": clean_tags(info.get("tags")),
                 "has_key": bool(info.get("api_key")),
                 "key_invalid": bool(info.get("key_invalid")),
             })
         return out
 
     def model_catalog(self) -> Dict[str, Any]:
-        """本机 / 局域网 / 公网三档算力清单（供设置页分区与模型下拉分组）。"""
-        return model_catalog(self.settings.data)
+        """本机 / 局域网 / 公网三档算力清单（供设置页分区与模型下拉分组）。
+
+        ★ 供应商元数据在本层补齐（V3.6.8「模型接入」页按供应商聚合）：`llm_factory`
+        只回答"有哪些模型"，而 `provider` / `api_format` / `tags` 是**可选**的界面元数据
+        （老配置里没有这些字段）。放在服务层兜底有两个好处：① 老配置无需迁移即可分组；
+        ② 内核清单不必引入"供应商"这种界面概念（保持 core/app 的边界干净）。
+        """
+        catalog = model_catalog(self.settings.data)
+        custom = self.settings.get("custom_models") or {}
+        for tier in ("local", "lan", "wan"):
+            for entry in catalog.get("tiers", {}).get(tier, []) or []:
+                if entry.get("source") != "custom":
+                    continue
+                info = custom.get(entry.get("name"))
+                info = info if isinstance(info, dict) else {}
+                entry["provider"] = provider_of(str(entry.get("name") or ""), info)
+                entry["api_format"] = api_format_of(info)
+                entry["tags"] = clean_tags(info.get("tags"))
+        return catalog
 
     def probe_model_endpoint(self, base_url: str, api_key: str = "",
                              name: str = "") -> Dict[str, Any]:
@@ -809,11 +1038,17 @@ class AgentService:
             return ""
 
     def add_custom_model(self, name: str, model_id: str, base_url: str, api_key: str,
-                         tier: str = "") -> Dict[str, Any]:
+                         tier: str = "", provider: str = "", api_format: str = "",
+                         tags: Any = None) -> Dict[str, Any]:
         """新增/覆盖一个外部模型配置。api_key 由设置层加密落盘（api_key_enc）。
 
         tier 为空时按地址自动分档（`llm_factory.infer_tier`）；界面会显示推断结果，
         用户也可在对应档位卡片里显式指定。
+
+        ★ V3.6.8 起多三个**可选**参数（老调用方不传也照常工作）：
+          · provider   —— 供应商显示名（界面按它分组）；空 → 按 base_url 的 host 兜底；
+          · api_format —— 接口格式，只认 chat_completions，其它值回落（不假装支持）；
+          · tags       —— 用户标签数组；None = 保持原值、[] = 清空（区分"不改"与"清空"）。
         """
         name = (name or "").strip()
         model_id = (model_id or "").strip()
@@ -854,7 +1089,14 @@ class AgentService:
             key = prev_key
             kept_key = True
         models[name] = {"model_id": model_id, "base_url": base_url,
-                        "api_key": key, "tier": tier}
+                        "api_key": key, "tier": tier,
+                        # provider：显式给的用显式值，否则按 final base_url 归组（同一 base_url
+                        # 的多条模型自然落到同一供应商，这正是界面"＋ 添加模型"的语义）
+                        "provider": str(provider or "").strip()[:40]
+                                    or provider_of(name, {"base_url": base_url}),
+                        "api_format": api_format_of({"api_format": api_format}),
+                        "tags": (clean_tags(tags) if tags is not None
+                                 else clean_tags((prev or {}).get("tags") if isinstance(prev, dict) else None))}
         self.settings.set("custom_models", models)
         self.settings.save()
         try:
@@ -863,12 +1105,14 @@ class AgentService:
                 AuditEventType.ACCESS_CONTROL, AuditSeverity.WARNING,
                 f"新增外部算力配置：{name}（{TIER_LABEL.get(tier, tier)}）",
                 {"name": name, "model_id": model_id, "base_url": base_url,
-                 "tier": tier, "has_key": bool(key), "kept_key": kept_key},
+                 "tier": tier, "has_key": bool(key), "kept_key": kept_key,
+                 "provider": models[name].get("provider", "")},
             )
         except Exception:
             pass
         return {"ok": True, "models": self.custom_models(), "tier": tier,
-                "tier_label": TIER_LABEL.get(tier, tier), "kept_key": kept_key}
+                "tier_label": TIER_LABEL.get(tier, tier), "kept_key": kept_key,
+                "provider": models[name].get("provider", "")}
 
     def remove_custom_model(self, name: str) -> Dict[str, Any]:
         models = dict(self.settings.get("custom_models") or {})
@@ -877,14 +1121,121 @@ class AgentService:
         models.pop(name, None)
         self.settings.set("custom_models", models)
         # 若当前正在用这个模型，回退到本地模型，避免指向已删除的配置
+        #   ★ 回退值必须是**真实检测到**的本机模型；检测不到就清空（=「未选择」），
+        #     绝不能写死 `qwen3.5:4b` 这类名字——那正是"界面显示一个本机根本没有的模型"
+        #     的来源（负责人实测：同学的机器装了 27b，界面却显示 4b）。
         if self.settings.get("model") == name:
             from yindun.app.llm_factory import get_first_available_model
-            fallback = get_first_available_model() or "qwen3.5:4b"
-            self.settings.set("model", fallback)
+            self.settings.set("model", get_first_available_model() or "")
             self._llm = None
             self._llm_variants = {}
         self.settings.save()
         return {"ok": True, "models": self.custom_models()}
+
+    def custom_model_key(self, name: str) -> Dict[str, Any]:
+        """把某个供应商**已存的本机明文密钥**交给本地界面（用户点「查看」时才调用）。
+
+        ★ 口令与留痕（这是本条通路存在的唯一理由，改之前先读）：
+          一个只会"留空＝不改动"的密钥框，用户没法确认自己当初存进去的到底是什么——
+          要么去翻配置文件（明文只在内存，磁盘是密文，根本翻不到），要么删了重填。
+          所以提供**显式**查看动作（ZCode 的模型设置就是这样：眼睛图标 + 明文回显）。
+
+        ★ 为什么按「供应商名」找密钥：存储粒度是"每条模型一行"（`custom_models[条目名]`），
+          而界面是按供应商配置密钥（同一供应商的模型共用一把）。这里先按供应商名匹配，
+          再按条目名匹配（兼容单模型条目），取第一条非空密钥。
+
+        ★ 为什么每次查看都写审计、且用 WARNING：查看明文凭据是**用户主动发起的高敏动作**
+          （INFO 会淹没在日常事件里，SECURITY 是给篡改/链异常留的级别）；审计只记录
+          "谁在什么时候看了哪个供应商的密钥、有没有取到"，**绝不写密钥本身**。
+
+        ★ 交付面：本方法只经 `webview_app.JsApi`（本机 pywebview 私有桥，回环随机
+          UUID）暴露给本地窗口；不进控制面、不上报、不落盘。
+        """
+        target = str(name or "").strip()
+        key = ""
+        if target:
+            models = self.settings.get("custom_models") or {}
+            for entry_name, info in models.items():
+                if not isinstance(info, dict):
+                    continue
+                matches = str(entry_name) == target or provider_of(str(entry_name), info) == target
+                if matches and info.get("api_key"):
+                    key = str(info.get("api_key"))
+                    break
+        try:
+            from yindun.core.audit_log import AuditEventType, AuditLog, AuditSeverity
+            AuditLog().add_entry(
+                AuditEventType.ACCESS_CONTROL, AuditSeverity.WARNING,
+                f"在界面上查看已存的 API Key：{'已显示' if key else '未取到'}（明文仅在本机窗口显示）",
+                {"provider": target[:40], "has_key": bool(key)},
+            )
+        except Exception:
+            pass
+        if not key:
+            return {"ok": False, "error": "该供应商还没有已存的密钥"}
+        return {"ok": True, "key": key}
+
+    # ── 上下文容量浮层（V3.6.8）────────────────────
+    def context_usage(self) -> Dict[str, Any]:
+        """当前上下文的**真实构成**（顶栏「上下文 x/y」点开的浮层用）。
+
+        口径（每一项都是真取数；改这里必须同步 tests/test_ui_paths.py 的断言）：
+          · 消息（历史）：本会话消息里**除工具消息以外**的全部内容，按
+            `memory_manager.estimate_tokens` 逐条估算——与"何时触发摘要压缩"同一口径；
+          · 系统提示词：worker 的常驻基线（挂了附件时加上附件规范），同一估算器折算；
+          · 附件：本轮已挂附件的注入字符数（内核按 ATTACHMENT_TOTAL_CHARS 截顶；
+            正文是中文，按项目唯一口径 CJK 1 字 ≈ 1 token 折算 token）；
+          · 工具结果：会话消息里 role == "tool" 的部分（同一估算口径，与"历史"不重叠）。
+        **没有的分类不显示**：我们没有 prompt 缓存、没有"技能 / MCP 工具"这些概念，
+        知识库检索片段已经并进工具结果里——宁可少一项，也不编一个数字出来。
+        """
+        from yindun.core.context_budget import (ATTACHMENT_TOTAL_CHARS, HISTORY_COMPRESS_TOKENS,
+                                                MODEL_WINDOW_TOKENS, SUMMARY_TARGET_TOKENS)
+        from yindun.core.memory_manager import estimate_tokens
+        from yindun.worker.agent_worker import _ATTACHMENT_RULES, _SYSTEM_PROMPT
+
+        try:
+            messages = self.sessions.get_messages(self.current_session_id()) or []
+        except Exception:
+            messages = []
+        history = sum(estimate_tokens(str(m.get("content") or ""))
+                      for m in messages if (m.get("role") or "") != "tool")
+        tools = sum(estimate_tokens(str(m.get("content") or ""))
+                    for m in messages if (m.get("role") or "") == "tool")
+
+        # 系统提示词：真挂了附件才会追加附件规范（worker 拼装处同一条件）
+        prompt_text = _SYSTEM_PROMPT
+        if self._attachments:
+            prompt_text = _SYSTEM_PROMPT + _ATTACHMENT_RULES
+        system = estimate_tokens(prompt_text)
+
+        # 附件：注入字符量（按总量预算截顶）折算 token
+        attach_chars = sum(int(item.get("chars") or 0) for item in self._attachments
+                           if not item.get("error"))
+        attach_chars = min(attach_chars, ATTACHMENT_TOTAL_CHARS)
+
+        parts = []
+        for key, label, tokens in (("history", "消息（历史）", history),
+                                   ("system", "系统提示词", system),
+                                   ("attach", "附件", attach_chars),
+                                   ("tools", "工具结果", tools)):
+            if tokens <= 0:
+                continue
+            parts.append({"key": key, "label": label, "tokens": int(tokens),
+                          "percent": round(tokens / MODEL_WINDOW_TOKENS * 100, 1)})
+        used = sum(p["tokens"] for p in parts)
+        return {
+            "limit_tokens": MODEL_WINDOW_TOKENS,
+            "used_tokens": used,
+            "percent": round(used / MODEL_WINDOW_TOKENS * 100, 1),
+            "parts": parts,
+            # 底部两行汇总：都是预算表里的真实口径（我们没有 prompt 缓存，
+            # 所以这里绝不写"缓存命中率"这类我们没有的指标）
+            "footer": {"lines": [
+                f"历史超过 {HISTORY_COMPRESS_TOKENS} token 就摘要压缩（压到约 {SUMMARY_TARGET_TOKENS}）",
+                f"单轮附件正文预算 {ATTACHMENT_TOTAL_CHARS} 字，超出部分改给检索指引",
+            ]},
+        }
 
     # ══ 企业控制面接入（V3.5.0）════════════════════════════
     #  数据边界（写在这里，改代码前先读）：
@@ -1517,16 +1868,20 @@ class AgentService:
         # 「深度思考」用保持模型默认的算力——两套都在 prepare_llm 时建好了。
         worker.llm = self._llm_for(self.settings.get("think_mode"))
         worker.tools_map = self._tools_map
-        worker.sandbox_path = os.environ.get("SANDBOX_PATH", str(APP_ROOT))
+        # 可读写范围：以"设置 sandbox_dir → 环境变量 SANDBOX_PATH → 程序目录"解析后的值为准
+        # （与内核判定同一来源），避免 worker 的默认目录与策略判定错位。
+        self.apply_runtime_env(sid)      # 按本会话的档位下发（会话覆盖优先，其次设置默认）
+        from yindun.core.permission import sandbox_root as _sandbox_root
+        worker.sandbox_path = _sandbox_root()
         worker.attachment_fulltext = self.sessions.get_attachment_fulltext(sid)
         worker.session_id = sid
 
-        # 权限等级与脚本执行开关通过环境变量下发给工具层（与旧界面一致）
-        # 权限档位：走 core/permission.py 的统一协议（稳定代码 plan/ask/auto/full），
-        # 工具层与策略引擎每次调用现读 → 设置一改立即生效，无需重启。
-        self.apply_runtime_env(sid)      # 按本会话的档位下发（会话覆盖优先，其次设置默认）
-        os.environ["SANDBOX_PATH"] = worker.sandbox_path
-
+        # ★ 权限等级与脚本执行开关通过环境变量下发给工具层（与旧界面一致）；
+        #   但**可读写范围绝不在这里写进 SANDBOX_PATH**（V3.6.8 真机探针逮到的坑）：
+        #   环境变量在内核的解析顺序里是**硬覆盖**（设置 > 环境变量 > 默认集合），
+        #   一旦把"主根"（程序目录）写进去，默认集合（桌面/文档/下载）就被挤掉——
+        #   表现是"打开对话前桌面在范围内、发一句话之后桌面又变成越界要确认"。
+        #   范围下发只走 `_project_sandbox_env()`：只有设置里显式配了 sandbox_dir 才写环境变量。
         for topic in WORKER_EVENTS:
             worker.bus.subscribe(topic, self._make_forwarder(run_id, topic))
 
@@ -1665,9 +2020,15 @@ class AgentService:
             "privacy": bool(self.settings.get("privacy", True)),
             "permission": self.settings.get("permission"),
             "session_permission": self.effective_permission(session_id).get("session_permission"),
-            "sandbox": os.environ.get("SANDBOX_PATH", str(APP_ROOT)),
+            # 可读写范围：报"当前生效值"（设置 sandbox_dir 优先），与 worker/策略判定同一来源
+            "sandbox": (self.worker_sandbox_root()),
             "think_mode": self.settings.get("think_mode") or "快速回答",
         }
+
+    def worker_sandbox_root(self) -> str:
+        """当前生效的可读写范围（供状态快照与界面态势行显示；与内核判定同一解析顺序）。"""
+        from yindun.core.permission import sandbox_root
+        return sandbox_root()
 
     def cancel(self) -> None:
         """取消当前推理（立即返回，不等待在途模型请求）。"""

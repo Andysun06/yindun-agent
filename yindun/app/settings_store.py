@@ -21,7 +21,11 @@ CONFIG_FILE = APP_ROOT / "global_config.json"
 
 # 默认配置（与旧版字段名保持一致）
 DEFAULTS: Dict[str, Any] = {
-    "model": "qwen3.5:4b",
+    # ★ 不写死默认模型名（V3.6.8，负责人实测）：便携版拷到别的机器上，本机根本没有
+    #   `qwen3.5:4b`，界面却显示"已就绪: qwen3.5:4b"——对着一个不存在的模型宣称就绪。
+    #   现在默认是**空串 = 未选择**：首启由服务层按本机检测结果自动选第一个可对话模型
+    #   （见 AgentService._resolve_model_selection），检测不到就保持空，界面显示"请选择模型"。
+    "model": "",
     "ollama_host": "http://127.0.0.1:11434",
     "privacy": True,
     "dark_mode": False,
@@ -35,6 +39,10 @@ DEFAULTS: Dict[str, Any] = {
     "permission": "ask",
     # 是否允许执行本地脚本（解释器）：关闭 = 严格模式，禁用 python/python3，仅保留只读命令
     "allow_script_exec": True,
+    # 可读写范围（沙箱根，V3.6.8）：空串 = 未配置，按"环境变量 SANDBOX_PATH → 程序目录"回退。
+    # 键名是**内核契约**：core/permission.SETTINGS_KEY 与它一致，界面只负责读写这个键；
+    # 放在这里只是让"新装用户的默认配置"就有这个字段（界面能直接显示当前范围）。
+    "sandbox_dir": "",
     "think_mode": "快速回答",
     "custom_models": {},
     "ollama_models_cache": [],
@@ -60,12 +68,21 @@ class SettingsStore:
         self._path = Path(path) if path else CONFIG_FILE
         self._lock = threading.RLock()
         self._data: Dict[str, Any] = dict(DEFAULTS)
+        # 磁盘上**真实出现过**的键（用于区分"用户显式选过"与"从未选过"）。
+        # 为什么需要：默认值改成空/新默认后，不能靠"值等于默认值"来判断——那样会把
+        # 用户手选的模型误判成默认值而覆盖掉（负责人明确要求不许覆盖用户的选择）。
+        self._saved_keys: set = set()
 
     # ── 读 ────────────────────────────────────────
     @property
     def data(self) -> Dict[str, Any]:
         with self._lock:
             return self._data
+
+    def was_saved(self, key: str) -> bool:
+        """该配置键是否曾被写进配置文件（= 用户/上次运行显式设过，而非仅取默认值）。"""
+        with self._lock:
+            return key in self._saved_keys
 
     def get(self, key: str, default: Any = None) -> Any:
         with self._lock:
@@ -75,6 +92,7 @@ class SettingsStore:
         """从磁盘加载；损坏时保留默认值并保持可见（不静默吞掉）。"""
         with self._lock:
             self._data = dict(DEFAULTS)
+            self._saved_keys = set()
             if not self._path.exists():
                 return self._data
             try:
@@ -82,6 +100,7 @@ class SettingsStore:
                     saved = json.load(handle)
                 if isinstance(saved, dict):
                     self._data.update(saved)
+                    self._saved_keys = set(saved.keys())
             except Exception as exc:  # 配置损坏必须可见
                 print(f"[SettingsStore] 加载配置失败({type(exc).__name__}): {exc}")
             self._decrypt_custom_model_keys()

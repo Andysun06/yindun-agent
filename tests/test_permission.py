@@ -138,6 +138,165 @@ for sensitive in ("C:\\Users\\Andy\\.ssh\\id_rsa", "C:\\Users\\Andy\\.aws\\crede
     check(f"本机敏感路径：完全访问档仍需确认（{Path(sensitive).name}）", d == "confirm", str(d))
 restore_env()
 
+# ── 3.5) 可读写范围（沙箱）降级为"默认可读写范围"：越界按档位判定 + 必留痕 ──
+print("-" * 78)
+print("【3.5】越界判定：plan 拒绝 / ask 人工确认 / auto·full 放行（留审计 + 结果标注）")
+print("-" * 78)
+import tempfile  # noqa: E402
+
+from yindun.core.audit_log import AuditLog  # noqa: E402
+
+_rng_tmp = Path(tempfile.mkdtemp(prefix="yindun_perm_range_"))
+_rng_in = _rng_tmp / "box"
+_rng_out = _rng_tmp / "outside"
+_rng_in.mkdir(parents=True, exist_ok=True)
+_rng_out.mkdir(parents=True, exist_ok=True)
+_saved_sbx_env = os.environ.get("SANDBOX_PATH")
+os.environ["SANDBOX_PATH"] = str(_rng_in)          # 本段用自己的临时范围，退出时还原
+
+# ★ 审计落点也要隔离：本段会产生"越界访问"审计条目并带**真实路径**（临时目录路径），
+#   写进仓库 audit_logs/ 会污染"落盘敏感明文"扫描（隐私套件扫的就是这个目录）——
+#   测试数据不该进产品审计链。同一条链的内存条目照常可断言，退出时还原落点。
+_audit_probe = AuditLog()
+_saved_audit_dir = _audit_probe._storage_path
+_audit_probe._storage_path = _rng_tmp / "audit_logs"
+
+def range_probe(**kw):
+    return ft.create_local_file.invoke(dict({"filename": "probe.txt", "content": "hi"}, **kw))
+
+try:
+    # ① 策略层：越界 × 四档（同一张档位矩阵，取更严）
+    OUTSIDE_EXPECT = {"plan": "deny", "ask": "confirm", "auto": "approve", "full": "approve"}
+    for mode, expect in OUTSIDE_EXPECT.items():
+        set_mode(mode)
+        d = PolicyManager().check("create_local_file", str(_rng_out / "a.txt"))
+        check(f"{perm.LABELS[mode]}：越界写盘判定 = {expect}（不是「一律拒绝」）", d == expect, str(d))
+    set_mode("plan")
+    check("plan 档越界是 deny 而不是 confirm —— 本档没有审批流，不该弹确认",
+          PolicyManager().check("create_local_file", str(_rng_out / "a.txt")) == "deny")
+    check("plan 档越界读也被拒（计划模式不越界访问）",
+          PolicyManager().check("list_local_files", str(_rng_out)) == "deny")
+    check("越界执行命令在任何一档都不是 approve（命令的硬底线不被越界规则放宽）",
+          all(PolicyManager().check("run_local_command", str(_rng_out)) != "approve"
+              for _ in [set_mode(m) for m in perm.MODES]))
+
+    # ② 硬地板：越界 + 系统目录/凭据类，任何档位都不松
+    for mode in perm.MODES:
+        set_mode(mode)
+        check(f"{perm.LABELS[mode]}：越界到系统目录仍直接拒绝",
+              PolicyManager().check("create_local_file", "C:\\Windows\\System32\\x.txt") == "deny")
+    set_mode("full")
+    check("完全访问 + 越界到凭据目录仍需确认（地板与档位无关）",
+          PolicyManager().check("modify_local_file", "C:\\Users\\Andy\\.ssh\\id_rsa") == "confirm")
+
+    # ③ 工具层：没有宿主令牌 → 越界一律拒绝（不静默回退），且话术可行动
+    #    · 读操作：四档都要回「可读写范围之外」（以前是"静默回退到默认目录"，最误导）
+    for mode in perm.MODES:
+        set_mode(mode)
+        r_read = ft.list_local_files.invoke({"target_directory": str(_rng_out)})
+        check(f"{perm.LABELS[mode]}：越界读被拒且不静默回退",
+              r_read.startswith("❌") and "可读写范围之外" in r_read, r_read[:40])
+    #    · 变更操作：计划模式由档位硬闸先拦（本档不该有审批流），其余三档回越界话术
+    for mode in perm.MODES:
+        set_mode(mode)
+        r = range_probe(target_directory=str(_rng_out))
+        if mode == "plan":
+            check("计划模式：越界写盘被档位硬闸拦下（只读分析，不产生任何变更）",
+                  r.startswith("❌") and "权限拦截" in r, r[:40])
+        else:
+            check(f"{perm.LABELS[mode]}：工具直调（无宿主令牌）越界被拒",
+                  r.startswith("❌") and "可读写范围之外" in r, r[:40])
+    check("拒绝话术给出可行动的下一步（设置项 sandbox_dir / 换档位）",
+          ("sandbox_dir" in r) and ("可读写范围" in r), r[:80])
+    check("被拒的越界调用没有留下文件（拒绝是真实的，不是「说给模型听」的）",
+          not (_rng_out / "probe.txt").exists())
+
+    # ④ 模型自授权：参数里塞"允许越界"必须被丢弃（语言层参数是模型可写的）
+    set_mode("full")
+    r_self = range_probe(target_directory=str(_rng_out), _outside_ok=True, outside_ok=True)
+    check("★ 模型塞 _outside_ok=True 不能自授权（工具层只认宿主令牌）",
+          r_self.startswith("❌") and not (_rng_out / "probe.txt").exists(), r_self[:40])
+
+    # ⑤ 宿主授予令牌 → 放行，且结果里带"在可读写范围之外"标注 + 审计有条目
+    _ac_before = len(AuditLog().get_entries({"event_type": "access_control"}))
+    ft.grant_outside_access(str(_rng_out))
+    try:
+        r_ok = range_probe(target_directory=str(_rng_out))
+    finally:
+        ft.revoke_outside_grants()
+    check("★ 宿主授予令牌后越界写盘放行并真实落盘",
+          r_ok.startswith("✅") and (_rng_out / "probe.txt").exists(), r_ok[:60])
+    check("★ 放行结果里明确写着「本次操作在可读写范围之外：<路径>」（不允许静默放行）",
+          "本次操作在可读写范围之外" in r_ok and str(_rng_out) in r_ok, r_ok[:120])
+    _ac_entries = AuditLog().get_entries({"event_type": "access_control"})
+    _ac_new = _ac_entries[-max(1, len(_ac_entries) - _ac_before):] if _ac_entries else []
+    _hit = [e for e in _ac_new
+            if (e.details or {}).get("outside_sandbox") and (e.details or {}).get("approved")
+            and (e.details or {}).get("tool_name") == "create_local_file"]
+    check("★ 越界放行写入了 access_control 审计（含工具名/真实路径/档位/判定）",
+          bool(_hit), str([(e.details or {}).get("decision") for e in _ac_new]))
+    if _hit:
+        d = _hit[-1].details or {}
+        check("审计详情含真实路径、当前范围与档位",
+              os.path.normcase(d.get("path", "")) == os.path.normcase(os.path.realpath(str(_rng_out)))
+              and bool(d.get("sandbox_root"))
+              and d.get("permission") == "full" and d.get("decision") == "outside_allowed",
+              str(d))
+    check("令牌用完即撤：撤销后同一次会话再调仍然被拒",
+          (ft.revoke_outside_grants() or True) and range_probe(target_directory=str(_rng_out)).startswith("❌"))
+
+    # ⑥ realpath 兜底不放松：目录内符号链接指向外部时，落点校验仍拒绝（与档位无关）
+    _link_out = _rng_tmp / "link_out"          # 范围之外的另一个目录
+    _link_out.mkdir(exist_ok=True)
+    try:
+        _link = _rng_in / "escape"              # 指向范围外的链接
+        os.symlink(str(_link_out), str(_link), target_is_directory=True)
+        set_mode("full")
+        ft.grant_outside_access(str(_rng_in))
+        try:
+            # 写入 escape/x.txt：base_dir 在范围内（有令牌），但 realpath 落到范围外 → 必须拒绝
+            r_link = ft.create_local_file.invoke(
+                {"filename": "inner.txt", "content": "x",
+                 "target_directory": str(_rng_in / "escape")})
+        finally:
+            ft.revoke_outside_grants()
+        check("符号链接逃逸仍被拒（越界放行只覆盖用户点的那个目录，不覆盖链接指向处）",
+              r_link.startswith("❌"), r_link[:80])
+    except (OSError, NotImplementedError):
+        print("  [ℹ️] 符号链接创建被系统拒绝（Windows 需要开发者模式/管理员）——跳过该用例")
+
+    # ⑦ 可读写范围改配置后立即生效（设置键 sandbox_dir > 环境变量）
+    _cfg_dir = _rng_tmp / "configured"
+    _cfg_dir.mkdir(exist_ok=True)
+    _env_before = os.environ.get("SANDBOX_PATH")
+    perm.register_sandbox_settings_source(lambda: str(_cfg_dir))
+    try:
+        set_mode("full")
+        check("★ 设置里的 sandbox_dir 优先于环境变量（sandbox_root 立即返回它）",
+              os.path.normcase(ft.sandbox_root()) == os.path.normcase(str(_cfg_dir)),
+              f"{ft.sandbox_root()} != {_cfg_dir}")
+        check("新范围**内**的写盘按沙箱内语义判定（完全访问档 = 自动放行，无需确认）",
+              PolicyManager().check("create_local_file", str(_cfg_dir / "a.txt")) == "approve")
+        check("旧范围（原环境变量目录）此时变成「范围之外」：档位判定随之变化",
+              PolicyManager().check("create_local_file", str(_rng_out / "a.txt")) == "approve"
+              and PolicyManager().check("run_local_command", str(_rng_out)) != "approve")
+        r_cfg = ft.create_local_file.invoke(
+            {"filename": "cfg.txt", "content": "ok", "target_directory": str(_cfg_dir)})
+        check("工具侧同样立即跟随新范围（不再认旧环境变量）",
+              r_cfg.startswith("✅") and (_cfg_dir / "cfg.txt").exists(), r_cfg[:60])
+    finally:
+        perm.register_sandbox_settings_source(None)      # 注销：不影响后续用例
+    check("注销后回到环境变量解析（读取器是「每次现读」，不是快照）",
+          os.path.normcase(ft.sandbox_root()) == os.path.normcase(str(_rng_in)),
+          ft.sandbox_root())
+finally:
+    _audit_probe._storage_path = _saved_audit_dir      # 还原审计落点（别把测试数据留在产品链里）
+    if _saved_sbx_env is None:
+        os.environ.pop("SANDBOX_PATH", None)
+    else:
+        os.environ["SANDBOX_PATH"] = _saved_sbx_env
+    restore_env()
+
 # ── 4) 立即生效 + 规则只能收紧 ──────────────────────
 print("=" * 78)
 print("【4】立即生效（无需重启）与「控制面只能收紧」")

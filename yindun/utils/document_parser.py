@@ -13,6 +13,7 @@
 import os
 import re
 import zipfile
+from html.parser import HTMLParser as _HTMLParser
 from typing import Optional
 
 _AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma")
@@ -910,6 +911,70 @@ def _read_text_file(filepath) -> str:
         return f.read()
 
 
+def _html_to_text(markup: str) -> str:
+    """把 HTML 收敛成**给人看的正文**（V3.6.8）。
+
+    跳过 script/style/head/noscript/template/svg；块级元素补换行、表格单元格用 ` | ` 分隔；
+    运行畸形 HTML 时不抛错，退化为"去掉标签留下文字"。与插件 `doc_extra` 的 `_html_to_text`
+    同一套判据（内核与插件对同一份文件应给出一致口径）。
+    """
+    parser = _HtmlTextExtractor()
+    try:
+        parser.feed(markup or "")
+        parser.close()
+    except Exception:
+        return _strip_tags_fallback(markup or "")
+    return parser.text() or _strip_tags_fallback(markup or "")
+
+
+def _strip_tags_fallback(markup: str) -> str:
+    """朴素兜底：去掉标签、丢掉 script/style 段，保留文字。"""
+    without_scripts = re.sub(r"(?is)<(script|style|noscript|template|svg)\b.*?</\1>", " ", markup)
+    text = re.sub(r"(?s)<[^>]*>", " ", without_scripts)
+    return " ".join(text.split())
+
+
+class _HtmlTextExtractor(_HTMLParser):
+    """HTML → 纯文本（模块级导入 html.parser，标准库、零依赖）。"""
+
+    _SKIP = {"script", "style", "head", "noscript", "template", "svg"}
+    _BLOCK = {"p", "div", "br", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6",
+              "table", "section", "article", "blockquote", "pre"}
+    _CELL = {"td", "th"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self._SKIP:
+            self._skip_depth += 1
+        elif tag in self._BLOCK:
+            self._parts.append("\n")
+        elif tag in self._CELL:
+            self._parts.append("\t")
+
+    def handle_endtag(self, tag):
+        if tag in self._SKIP and self._skip_depth:
+            self._skip_depth -= 1
+        elif tag in self._BLOCK:
+            self._parts.append("\n")
+
+    def handle_data(self, data):
+        if not self._skip_depth and data:
+            self._parts.append(data)
+
+    def text(self) -> str:
+        lines = []
+        for line in "".join(self._parts).splitlines():
+            cells = [cell.strip() for cell in line.split("\t")]
+            cleaned = " ".join(" | ".join(cell for cell in cells if cell).split())
+            if cleaned:
+                lines.append(cleaned)
+        return "\n".join(lines)
+
+
 def extract_file_text_with_report(filepath, scan_privacy: bool = True) -> str:
     """
     统一入口：解析文件 + 可选隐私风险报告。
@@ -967,6 +1032,12 @@ def _parse_by_type(filepath, scan_privacy: bool) -> str:
         return _extract_image(filepath, scan_privacy=scan_privacy)
 
     if ext in _TEXT_EXTS:
+        # ★ HTML/HTM 单独走**去标签**通路（V3.6.8）：它们列在文本家族里，早先按纯文本读，
+        #   于是 `<style>p{color:red}</style>`、`<div>` 这些标签连同正文一起进了模型上下文——
+        #   模型拿到的是 HTML 源码，得自己猜哪段是给人看的（插件侧本来有正确的 HTML 解析，
+        #   内核把这些格式认成原生格式后反而退化了；这条通路让"开不开插件"都得到干净正文）。
+        if ext in (".html", ".htm"):
+            return _scan_and_append_report(_html_to_text(_read_text_file(filepath)), scan_privacy)
         return _scan_and_append_report(_read_text_file(filepath), scan_privacy)
 
     if name.endswith(".pdf"):

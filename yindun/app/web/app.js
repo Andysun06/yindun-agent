@@ -13,7 +13,7 @@
     settings: {}, llm: { ready: false, model: "", models: [] },
     streamBubble: null, startedAt: 0,
     attachments: [], audit: null,
-    pane: "settings", auditFormats: [], wfFormats: [],
+    pane: "settings", auditFormats: [],
     catalog: null,           // 三档算力清单（本机 / 局域网 / 公网）
     plugins: [],             // 插件清单（市场页渲染 + 搜索过滤都基于它）
     settingsPage: null,      // 当前设置页标识（判断"插件被停用后要不要退回"用）
@@ -21,6 +21,7 @@
     sessionPermission: null, // 本对话的权限覆盖（null = 跟随设置默认）
     laya: null,              // laya 接入状态（本机 / 局域网 / 正则回退）
     toolBusy: false,         // 安全工具同一时间只跑一个（避免结果互相覆盖）
+    prov: null,              // 模型接入页"正在查看"的供应商 {tier, provider, builtin, isNew?}
   };
 
   /* ── 工具 ─────────────────────────────────────────── */
@@ -207,6 +208,26 @@
   }
 
   /* ── 安全态势（真实状态，非装饰）───────────────────── */
+  /* ── 可读写范围（沙箱目录，V3.6.8）─────────────────────────
+     设置键 `sandbox_dir`：非空 = 用户选定；空串 = 回到默认（后端按 SANDBOX_PATH 环境变量，
+     再退到程序所在目录）。界面**只显示与保存**，越界怎么判定完全在内核（按权限档 + 审计），
+     这里任何"自己判断一下越界"的实现都是在制造第二套口径。 */
+  const effectiveSandbox = () => {
+    const s = state.settings || {};
+    return String(s.sandbox_dir || "").trim() || String(s.sandbox || "").trim() || "—";
+  };
+
+  function paintSandbox() {
+    const s = state.settings || {};
+    const custom = String(s.sandbox_dir || "").trim();
+    if ($("sandbox-path")) $("sandbox-path").textContent = effectiveSandbox();
+    if ($("sandbox-note")) {
+      $("sandbox-note").textContent = custom
+        ? "已自定义：助手只能读写这个目录及其子目录（越界按当前权限档判定并写入审计）。点「清除」回到默认。"
+        : "当前用默认范围（未自定义）。选一个目录可以把它限制到你指定的工作区；清空即回到默认。";
+    }
+  }
+
   function renderPosture(payload) {
     const s = state.settings || {};
     const privacy = payload && "privacy" in payload ? payload.privacy : s.privacy;
@@ -220,7 +241,10 @@
     $("posture-permission").querySelector("span").textContent =
       (PERM_MODES[permKey(permission)] || {}).label || String(permission).replace(/\s*\(.*\)$/, "");
 
-    const sandbox = (payload && payload.sandbox) || s.sandbox || state.sandbox || "—";
+    // 沙箱路径与设置页「可读写范围」**同一来源**（V3.6.8）：设置里填了就用它，
+    // 否则回到后端给的默认值（SANDBOX_PATH 环境变量 → 程序所在目录）。
+    // 界面只负责显示，越界判定不在这里做。
+    const sandbox = effectiveSandbox();
     $("posture-sandbox").querySelector("span").textContent = sandbox;
 
     const chain = state.audit && state.audit.chain_ok;
@@ -231,20 +255,69 @@
   }
 
   /* ── 数据看板 ─────────────────────────────────── */
-  function renderStats(payload) {
-    const model = (payload && payload.model) || state.settings.model || "—";
+  function renderStats(payload) {    const model = (payload && payload.model) || state.settings.model || "—";
     $("stat-model").textContent = model.length > 24 ? model.slice(0, 22) + "…" : model;
     $("stat-tools").textContent = `工具 ${(payload && payload.tool_calls) || 0}`;
     const tokens = (payload && payload.context_tokens) || 0;
-    // 阈值与说明都来自后端预算表（core/context_budget.py）——界面不再自己写数，
+    // 阈值来自后端预算表（core/context_budget.py）——界面不再自己写数，
     // 也就不会出现"界面说 5000、实际按 8192 压缩"这种对不上账的情况（C-13）。
     const limit = (payload && payload.context_limit) || 5000;
-    $("stat-tokens").textContent = `上下文 ${tokens >= 1000 ? (tokens / 1000).toFixed(1) + "k" : tokens}/${limit >= 1000 ? (limit / 1000).toFixed(0) + "k" : limit}`;
+    const label = `上下文 ${fmtTokens(tokens)}/${fmtTokens(limit)}`;
+    const btn = $("stat-tokens");
+    btn.textContent = label;
     const nearLimit = limit > 0 && tokens / limit >= 0.8;
-    $("stat-tokens").classList.toggle("is-warn", nearLimit);
-    $("stat-tokens").title = (payload && payload.context_note)
-      || `按中英文分权重估算的上下文占用；超过 ${limit} 会触发历史摘要压缩（估算口径与摘要压缩一致）`;
+    btn.classList.toggle("is-warn", nearLimit);
+    // ★ 长 tooltip 文案已移除（V3.6.8）：占用口径与明细都在点开的浮层里（#ctx-pop），
+    //   hover 只留一句"点开看什么"，不再把预算规则塞进 title。
+    btn.title = "上下文容量：点击查看构成明细（消息 / 系统提示词 / 附件 / 工具结果）";
+    // 浮层开着时同步刷新（沿用既有刷新时机：一轮结束的 state 事件，不新增轮询）
+    const pop = $("ctx-pop");
+    if (pop && !pop.hidden) renderCtxPop();
     renderPosture(payload);
+  }
+
+  const fmtTokens = (n) => {
+    const v = Number(n) || 0;
+    return v >= 1000 ? (v / 1000).toFixed(1) + "k" : String(v);
+  };
+
+  /* ── 上下文容量浮层（V3.6.8，照 ZCode 的形态）─────────────
+     结构：标题行（已用/上限 + 百分比）→ 进度条 → 分类占比列表 → 底部两行汇总。
+     数字**全部来自后端** `context_usage()`（服务层注释里逐项写了取数口径），前端只做呈现：
+     进度条宽度直接用后端 percent，列表每项的百分比也原样显示——界面上不出现任何自己算的占比。
+     底部汇总同理来自预算表；我们没有 prompt 缓存，所以不会出现"缓存命中率"这类我们没有的指标。 */
+  async function renderCtxPop() {
+    const data = await call("context_usage");
+    if (!data || !$("ctx-list")) return;
+    const pct = Number(data.percent) || 0;
+    $("ctx-used").textContent = `已用 ${fmtTokens(data.used_tokens)} / ${fmtTokens(data.limit_tokens)}`;
+    $("ctx-pct").textContent = `${pct}%`;
+    $("ctx-fill").style.width = Math.max(0, Math.min(100, pct)) + "%";
+    const parts = data.parts || [];
+    $("ctx-list").innerHTML = parts.length
+      ? parts.map((p, i) => `
+        <div class="ctx__item" data-key="${esc(p.key)}">
+          <i class="ctx__dot ctx__dot--${i % 4}"></i>
+          <span class="ctx__label">${esc(p.label)}</span>
+          <span class="ctx__pct">${esc(String(p.percent))}%</span>
+        </div>`).join("")
+      : `<div class="ctx__empty">当前没有可统计的上下文占用</div>`;
+    $("ctx-foot").innerHTML = ((data.footer && data.footer.lines) || [])
+      .map((line) => `<span>${esc(line)}</span>`).join("");
+  }
+
+  function openCtxPop() {
+    const pop = $("ctx-pop");
+    if (!pop) return;
+    pop.hidden = false;
+    $("stat-tokens").setAttribute("aria-expanded", "true");
+    renderCtxPop();
+  }
+
+  function closeCtxPop() {
+    const pop = $("ctx-pop");
+    if (pop) pop.hidden = true;
+    if ($("stat-tokens")) $("stat-tokens").setAttribute("aria-expanded", "false");
   }
 
   /* ── 渲染：消息 ───────────────────────────────────── */
@@ -638,6 +711,8 @@
       // 展开：把折叠期间在浮条里打的字带回来（旧实现直接清空，属于丢字）
       carryDraft("input", "mini-input");
     }
+    // 折叠态下最大化按钮要禁用（服务端也会拒绝：浮条上最大化会卡在半个状态里）
+    paintWindowState();
   }
 
   async function sendText(text) {
@@ -880,36 +955,237 @@
     return "ask";                                      // 空值 / 未知 → 默认档
   };
 
-  /** 渲染「模型接入」页：左侧按三档列供应商，右侧是选中项的详情表单。
-   *  范式参考主流 agent：左边管"有哪几个入口"，右边管"这一个怎么配"。 */
-  function renderProv(cat) {
-    const box = $("prov-list"), detail = $("prov-detail");
-    if (!box || !cat || !cat.tiers) return;
-    state.catalog = cat;
-    const cur = (state.settings && state.settings.model) || cat.current || "";
-    const sel = state.prov || (state.prov = { tier: "local", name: "" });
-    const items = (t) => cat.tiers[t] || [];
+  /* ══ 模型接入页（V3.6.8 按 ZCode「模型设置」的结构重做）════════════════════
+     结构：左列 = 三档分组（本机 / 局域网 / 公网）内**按供应商聚合**（自定义模型按 base_url
+           归组，provider 兜底在服务层做，老配置无需迁移）；右侧 = 选中供应商的表单
+           （显示名称 / Base URL / API 格式 / API Key）+ 它的模型列表 + 底部动作。
+     两条硬规则（都是"照搬前先想清楚语义"的结果）：
+       ① **背景高亮只表示"正在查看"的那一项**（`.prov__item.is-active`，同一时刻最多一个）。
+          「使用中」一律用绿点 + 绿字（`.usage-flag`）——旧实现两种语义都用背景，截图里
+          两个条目同时亮，"谁在跑 / 我在看谁"根本分不清（负责人实测报的缺陷）。
+       ② **同一时刻只有一个"使用中"模型**（单选式，点模型名即切换）：ZCode 的模型列表是
+          多个启停开关，但我们的后端确实只有一个 `settings.model`（换模型＝重建算力），
+          做成开关会让人以为能同时开好几个——这里有意不照搬，不变量由内核保证。 */
 
+  const OLLAMA_PROVIDER = "本机 Ollama";   // 本机档的内置供应商（Ollama 探测得来，不是手工配置项）
+  // 手动添加的本机模型单独一组：**不并进「本机 Ollama」**——那一组是"探测到的"（不可编辑 /
+  // 不可删除），并进去会让用户没法改/删自己手填错的条目；换个清楚的组名反而更好懂。
+  const MANUAL_LOCAL_PROVIDER = "本机 Ollama（手动添加）";
+
+  // 接口格式：目前**只有** OpenAI 兼容 Chat Completions 真能用；其它选项在界面上置灰并注明
+  // 「暂不支持」——宁可明说不支持，也不给一个选了会静默失败的选项（内核侧也会回落校验）。
+  const API_FORMATS = [
+    { key: "chat_completions", label: "OpenAI 兼容 Chat Completions", ok: true },
+    { key: "responses", label: "OpenAI Responses", ok: false },
+    { key: "anthropic", label: "Anthropic Messages", ok: false },
+    { key: "ollama_native", label: "Ollama 原生接口", ok: false },
+  ];
+
+  const currentModel = () => (state.settings && state.settings.model) || "";
+
+  /** 算力清单是否已到（拿到之前界面不许宣称任何模型在用，显示「检查模型…」）。 */
+  const catalogReady = () => !!(state.catalog && typeof state.catalog.current_available === "boolean");
+
+  /** **可用**的当前模型（「使用中」判定用这个，不是配置里的裸名字）。
+   *  K（负责人实测）：便携版在同学机器上胶囊显示 `qwen3.5:4b`，而那台机器根本没有这个模型——
+   *  界面把"配置里写了什么"当成"现在能用什么"是错的。`current_available` 由后端给
+   *  （清单里真的能选到才算），为 false 时一律当作"没选模型"，任何地方都不再显示这个名字。 */
+  const activeModel = () => {
+    const cur = currentModel();
+    if (!catalogReady()) return "";
+    return state.catalog.current_available ? cur : "";
+  };
+
+  /** 「使用中」标记：绿点（+ 可选的"使用中"文字），**绝不使用背景**（规则 ①）。
+   *  `data-cur-flag` 的值 = 命中的模型名；paintUsage() 按当前模型统一收起/放出。 */
+  const usageFlag = (cur, dotOnly) => dotOnly
+    ? `<i class="usage-flag usage-flag--dot" data-cur-flag="${esc(cur)}" title="使用中"></i>`
+    : `<span class="usage-flag" data-cur-flag="${esc(cur)}"><i class="usage-flag__dot"></i>使用中</span>`;
+
+  /** 重绘「使用中」标记（切模型后当场生效）。
+   *  为什么不整页重渲染：右栏表单里可能有用户刚敲了一半的 Base URL / 密钥，
+   *  整页重绘会把它们吞掉（旧实现的老毛病）。
+   *  做法：右栏模型行按 `data-cur-flag` 就地收起/放出；**左列整块重绘并重绑事件**——
+   *  供应商条目的绿点取决于"这一组里有没有正在用的模型"，那是渲染期算出来的，
+   *  只靠标记切换会留下过期状态（左列没有输入控件，重绘无副作用）。 */
+  function paintUsage() {
+    const cur = activeModel();
+    document.querySelectorAll("#prov-detail [data-cur-flag]").forEach((el) => {
+      el.hidden = !cur || el.dataset.curFlag !== cur;
+    });
+    if (state.catalog && $("prov-list")) {
+      renderProvList();
+      bindProvListEvents(state.catalog);      // innerHTML 重绘会带走 onclick，必须重绑
+    }
+  }
+
+  /** 一档内按供应商聚合。本机档的 Ollama 探测结果归到内置供应商「本机 Ollama」。 */
+  function providersOfTier(cat, tier) {
+    const groups = [], byKey = new Map();
+    (((cat || {}).tiers || {})[tier] || []).forEach((m) => {
+      const builtin = m.source === "ollama";
+      const provider = builtin ? OLLAMA_PROVIDER : (m.provider || "未命名供应商");
+      const key = `${tier}::${provider}::${builtin ? 1 : 0}`;
+      let g = byKey.get(key);
+      if (!g) { g = { key, tier, provider, builtin, models: [] }; byKey.set(key, g); groups.push(g); }
+      g.models.push(m);
+    });
+    groups.sort((a, b) => (a.builtin === b.builtin ? 0 : (a.builtin ? -1 : 1)));   // 内置排最前
+    return groups;
+  }
+
+  /** 某个模型挂在哪个供应商下（触发器显示「供应商 / 模型」、选择器默认展开项都用它）。 */
+  function placementOf(name) {
+    if (!name) return null;
+    for (const tier of ["local", "lan", "wan"]) {
+      for (const g of providersOfTier(state.catalog, tier)) {
+        if (g.models.some((m) => m.name === name)) return g;
+      }
+    }
+    return null;
+  }
+
+  function formatOptions(current) {
+    const cur = API_FORMATS.some((f) => f.key === current) ? current : "chat_completions";
+    return API_FORMATS.map((f) =>
+      `<option value="${f.key}"${f.key === cur ? " selected" : ""}${f.ok ? "" : " disabled"}>` +
+      `${esc(f.label)}${f.ok ? "" : "（暂不支持）"}</option>`).join("");
+  }
+
+  const splitTags = (text) =>
+    String(text || "").split(/[,，、\s]+/).map((s) => s.trim()).filter(Boolean);
+
+  /** 模型列表：每行 = 显示名称 + 模型 ID + 标签 + 「使用中」标记 + 编辑/删除。
+   *  本机 Ollama 的条目由安装决定，不提供编辑/删除（改不了，也不该假装能改）。 */
+  function modelListHtml(models, builtin) {
+    const rows = (models || []).map((m) => {
+      const tags = (m.tags || []).map((t) => `<i class="mtag">${esc(t)}</i>`).join("");
+      const mid = builtin ? "本机已安装" : String(m.model_id || "");
+      const showMid = !!mid && mid !== m.name;
+      return `<div class="mrow" data-mname="${esc(m.name)}">
+        <button class="mrow__use" type="button" data-use="${esc(m.name)}" title="点一下即切换为使用中的模型">
+          <span class="mrow__name">${esc(m.name)}</span>
+          ${showMid ? `<span class="mrow__mid">${esc(mid)}</span>` : ""}
+          ${tags}
+        </button>
+        ${usageFlag(m.name, false)}
+        ${builtin ? "" : `<span class="mrow__ops">
+          <button class="mbtn" type="button" data-edit="${esc(m.name)}">编辑</button>
+          <button class="mbtn mbtn--danger" type="button" data-del="${esc(m.name)}">删除</button></span>`}
+      </div>`;
+    }).join("");
+    const body = rows
+      ? `<div class="mlist" id="p-models">${rows}</div>`
+      : (builtin
+         // 本机档的空态文案要指向**真实存在的**出口（本机档没有"＋ 添加模型"按钮，
+         // 出口在下面那句说明与「重新检测 / ＋ 手动添加本机模型」上，别指着不存在的按钮）
+         ? `<div class="mlist mlist--empty">还没有检测到可对话的本机模型——看下面的说明，或用「重新检测 / ＋ 手动添加本机模型」</div>`
+         : `<div class="mlist mlist--empty">这个供应商还没有模型——点下面的「＋ 添加模型」加一个</div>`);
+    // 添加模型只对自定义供应商开放（本机 Ollama 的模型来自安装，不是手工添加的对象）；
+    // 本机档的手动添加入口在"空态说明"旁边（data-addlocal），见 renderProv。
+    return body + (builtin ? "" : `<button class="prov__add" type="button" data-addmodel="1">＋ 添加模型</button>`);
+  }
+
+  /** 模型编辑面板：新增供应商时它就是"第一个模型"（必填，随供应商一起保存）；
+   *  已有供应商时默认收起，点「编辑 / ＋ 添加模型」才展开。 */
+  function modelEditPanelHtml(isNew) {
+    return `<div class="medit" id="pm-panel"${isNew ? "" : " hidden"}>
+      <div class="medit__title" id="pm-title">${isNew ? "第一个模型" : "添加模型"}</div>
+      <div class="medit__row"><label for="pm-model">模型 ID</label>
+        <input type="text" id="pm-model" spellcheck="false" placeholder="服务端认的模型名，如 glm-4-flash"></div>
+      <div class="medit__row"><label for="pm-name">显示名称</label>
+        <input type="text" id="pm-name" spellcheck="false" placeholder="留空 = 用模型 ID"></div>
+      <div class="medit__row"><label for="pm-tags">标签</label>
+        <input type="text" id="pm-tags" spellcheck="false"
+          placeholder="可选，逗号分隔；只标真实能力（如 长文 / 中文 / 低成本）"></div>
+      ${isNew ? "" : `<div class="medit__ops">
+        <button class="btn btn--primary" type="button" data-msave="1">保存模型</button>
+        <button class="btn" type="button" data-mcancel="1">取消</button></div>`}
+      <div class="medit__hint" id="pm-note">${isNew
+        ? "供应商要挂至少一个模型才能写入本机配置：填好模型 ID，点上面的「保存」一起落盘。"
+        : ""}</div>
+    </div>`;
+  }
+
+  /** 供应商表单（局域网 / 公网；也可能是显式配到本机档的自建服务）。 */
+  function provFormHtml(g, sel) {
+    const meta = TIER_META[sel.tier];
+    const isNew = !!sel.isNew;
+    const first = (g && g.models[0]) || {};
+    const hasKey = !!(g && g.models.some((m) => m.has_key));
+    const keyHint = hasKey
+      ? "已在本机加密保存（不回显；留空＝不改动，不会清空。要看已存的那把点「查看」）"
+      : (sel.tier === "lan" ? "内网通常可留空；只在本机加密保存" : "只在本机加密保存");
+    return `
+      <h3 class="prov__title">${esc(isNew ? "添加" + meta.label : g.provider)}
+        <span class="prov__badge">${esc(meta.boundary)}</span></h3>
+      <p class="prov__desc">${esc(meta.hint)}；出网内容在本机脱敏之后才发送，密钥加密存本机、不回显。</p>
+      <div class="setcard">
+        <div class="setrow"><div class="setrow__text"><b>显示名称</b>
+            <span>供应商名：左列分组与模型选择器里显示的名字</span></div>
+          <div class="setrow__ctrl"><input type="text" id="p-provider" spellcheck="false"
+            value="${esc(isNew ? "" : g.provider)}"
+            placeholder="${sel.tier === "lan" ? "如 公司内网" : "如 云端GLM"}"></div></div>
+        <div class="setrow"><div class="setrow__text"><b>Base URL</b>
+            <span>OpenAI 兼容的基础地址（不要带 /chat/completions）</span></div>
+          <div class="setrow__ctrl"><input type="text" id="p-url" spellcheck="false"
+            value="${esc(isNew ? "" : (first.base_url || ""))}"
+            placeholder="${sel.tier === "lan" ? "http://10.0.0.8:8000/v1" : "https://…/v1"}"></div></div>
+        <div class="setrow"><div class="setrow__text"><b>API 格式</b>
+            <span>目前只有 OpenAI 兼容 Chat Completions 接了通路，其它格式暂不支持</span></div>
+          <div class="setrow__ctrl"><select id="p-format">${formatOptions(first.api_format || "chat_completions")}</select></div></div>
+        <div class="setrow"><div class="setrow__text"><b>API Key</b><span>${keyHint}</span></div>
+          <div class="setrow__ctrl">
+            <input type="text" id="p-key" value="" spellcheck="false" autocomplete="off"
+              placeholder="${hasKey ? "已配置（留空则沿用已存密钥）" : "未配置"}">
+            <button class="btn" type="button" id="p-key-eye"
+              title="查看本机已存的密钥（每次查看都会写入审计）">查看</button>
+          </div></div>
+        <div class="setrow"><div class="setrow__text"><b>连通性</b><span id="probe-detail">尚未测试</span></div>
+          <div class="setrow__ctrl">
+            <button class="btn" type="button" data-probe="detail">测试连接</button>
+            <button class="btn btn--primary" type="button" data-save="1">保存</button>
+            ${isNew ? "" : `<button class="btn" type="button" data-remove-provider="1">删除</button>`}
+          </div></div>
+      </div>
+      <h4 class="prov__subtitle">模型列表
+        <span class="muted">（同一时刻只有一个「使用中」；点模型名即切换）</span></h4>
+      ${isNew ? "" : modelListHtml(g.models, false)}
+      ${modelEditPanelHtml(isNew)}`;
+  }
+
+  /** 左列（三档分组 → 供应商 + 本机档摊开的模型子项）单独成函数：
+   *  切模型时只需重绘它（见 paintUsage），右栏未保存的表单不受影响。 */
+  function renderProvList() {
+    const box = $("prov-list"), cat = state.catalog, sel = state.prov;
+    if (!box || !cat || !sel) return;
+    const cur = activeModel() || cat.current || "";
     box.innerHTML = ["local", "lan", "wan"].map((tier) => {
       const meta = TIER_META[tier];
-      const rows = items(tier).map((m) => {
-        // ★ 本机档的"选中"＝**使用中**那一项（本机档没有"每模型详情"，右栏永远是同一个
-        //   本机 Ollama 面板）；局域网/公网档的"选中"＝右侧正在显示其配置表单的那一项。
-        //   早先写成 `sel.tier === tier && (tier === "local" || …)`，结果本机档**两项都高亮**
-        //   （谁在用完全看不出来），且点哪一项都没有任何变化（用户实测反馈"点击逻辑有问题"）。
-        const active = tier === "local"
-          ? (m.name === cur)
-          : (sel.tier === tier && sel.name === m.name);
-        const meta = tier === "local" ? "本机已安装" : (m.base_url || "");
+      const rows = providersOfTier(cat, tier).map((g) => {
+        // 「正在查看」＝唯一允许背景高亮的状态（规则 ①）
+        const active = !sel.isNew && sel.tier === tier && sel.provider === g.provider
+          && !!sel.builtin === !!g.builtin;
+        const usedBy = g.models.find((m) => m.name === cur);
+        const info = g.builtin
+          ? `${g.models.length} 个已安装模型`
+          : `${g.models.length} 个模型 · ${String((g.models[0] || {}).base_url || "").replace(/^https?:\/\//, "")}`;
+        // 本机档额外摊开 Ollama 已安装模型（点一下即切换）：本机模型就那几个，少一步点击；
+        // 局域网/公网可能挂很多模型，不摊开（避免左列变成一长串），数量在 meta 里写明。
+        const subs = g.builtin ? g.models.map((m) => `
+          <button class="prov__sub" type="button" data-t="${tier}" data-prov="${esc(g.provider)}"
+                  data-builtin="1" data-use="${esc(m.name)}" title="点一下即切换为使用中的模型">
+            <span class="prov__subname">${esc(m.name)}</span>${usageFlag(m.name, true)}
+          </button>`).join("") : "";
         return `<button class="prov__item${active ? " is-active" : ""}" type="button"
-          data-t="${tier}" data-n="${esc(m.name)}">
-          <span class="prov__name">${esc(m.name)}${m.name === cur ? `<i class="prov__cur">使用中</i>` : ""}</span>
-          <span class="prov__meta">${esc(meta)}</span>
-        </button>`;
+            data-t="${tier}" data-prov="${esc(g.provider)}" data-builtin="${g.builtin ? 1 : 0}">
+            <span class="prov__name">${esc(g.provider)}${usageFlag(usedBy ? usedBy.name : "", true)}</span>
+            <span class="prov__meta">${esc(info)}</span>
+          </button>${subs}`;
       }).join("");
-      // 本机档没有"添加"：本机模型由 Ollama 安装决定，探测得到，不是手工添加的对象
+      // 本机档没有"添加供应商"：本机模型由 Ollama 安装决定，探测得到，不是手工添加的对象
       const add = tier === "local" ? "" :
-        `<button class="prov__add" type="button" data-addt="${tier}">＋ 添加${meta.label}</button>`;
+        `<button class="prov__add" type="button" data-addt="${tier}">＋ 添加供应商</button>`;
       return `<div class="prov__group">
         <div class="prov__gtitle"><span class="tier-dot tier-dot--${tier}"></span>
           <b>${meta.label}</b><em>${meta.boundary}</em></div>
@@ -917,12 +1193,42 @@
         ${add}
       </div>`;
     }).join("");
+    // 左列自己的"使用中"绿点在渲染期就定下来了（paintUsage 会重绘它），
+    // 这里只需保证首次渲染后标记状态正确
+    paintUsageFlagsIn(box, cur);
+  }
 
-    // ── 右侧详情 ──
-    if (sel.tier === "local") {
-      const models = items("local");
+  /** 只切换容器内的 `data-cur-flag` 显隐（不重绘 DOM）。 */
+  function paintUsageFlagsIn(root, cur) {
+    root.querySelectorAll("[data-cur-flag]").forEach((el) => {
+      el.hidden = !cur || el.dataset.curFlag !== cur;
+    });
+  }
+  /** 渲染「模型接入」页：左侧按三档列供应商，右侧是选中供应商的表单与模型列表。 */
+  function renderProv(cat) {
+    const box = $("prov-list"), detail = $("prov-detail");
+    if (!box || !detail || !cat || !cat.tiers) return;
+    state.catalog = cat;
+    const cur = activeModel() || cat.current || "";
+
+    // 选中的供应商必须仍然存在（删掉 / 改名 / 清单刷新后消失 → 回落到本机档内置供应商），
+    // 否则左列会出现"没有一个条目是选中态"或高亮错位。
+    const findGroup = (s) => (s && providersOfTier(cat, s.tier).find(
+      (g) => g.provider === s.provider && !!g.builtin === !!s.builtin)) || null;
+    if (!state.prov || (!state.prov.isNew && !findGroup(state.prov))) {
+      state.prov = { tier: "local", provider: OLLAMA_PROVIDER, builtin: true };
+    }
+    const sel = state.prov;
+
+    renderProvList();
+    // 注意：接下来的右栏渲染 + bindProvEvents 之后才轮到 paintUsage，
+    // 而 paintUsage 会重绘左列——所以左列事件单独绑（见 bindProvListEvents）。
+
+    // ── 右侧：选中供应商的表单 + 模型列表 ──
+    if (sel.builtin) {
+      const g = findGroup(sel) || { provider: OLLAMA_PROVIDER, models: [] };
       detail.innerHTML = `
-        <h3 class="prov__title">本机 Ollama<span class="prov__badge">数据不出这台电脑</span></h3>
+        <h3 class="prov__title">${esc(OLLAMA_PROVIDER)}<span class="prov__badge">${esc(TIER_META.local.boundary)}</span></h3>
         <p class="prov__desc">本机安装的 Ollama 服务。把地址改成别的机器，数据就会出这台电脑——
           那种情况请改用「局域网模型」显式配置。</p>
         <div class="setcard">
@@ -939,67 +1245,101 @@
             </div>
           </div>
         </div>
-        <h4 class="prov__subtitle">已检测到的模型<span class="muted">（点一下即切换）</span></h4>
-        <div class="prov__models">${models.length ? models.map((m) => `
-          <button class="prov__chip${m.name === cur ? " is-cur" : ""}" type="button" data-pick="${esc(m.name)}">
-            ${esc(m.name)}${m.name === cur ? " ✓" : ""}</button>`).join("")
-          : `<span class="muted">没检测到模型——装好 Ollama 后点「重新检测」</span>`}</div>`;
-    } else {
-      const list = items(sel.tier);
-      const found = sel.name ? list.find((m) => m.name === sel.name) : null;
-      const m = found || { name: "", model_id: "", base_url: "", tier: sel.tier, has_key: false };
-      detail.innerHTML = `
-        <h3 class="prov__title">${found ? esc(m.name) : "添加" + TIER_META[sel.tier].label}
-          <span class="prov__badge">${TIER_META[sel.tier].boundary}</span></h3>
-        <p class="prov__desc">${TIER_META[sel.tier].hint}；出网内容在本机脱敏之后才发送，密钥加密存本机、不回显。</p>
-        <div class="setcard">
-          <div class="setrow"><div class="setrow__text"><b>显示名称</b><span>聊天时下拉里显示的名字</span></div>
-            <div class="setrow__ctrl"><input type="text" id="p-name" value="${esc(m.name)}"
-              placeholder="如 ${sel.tier === "lan" ? "公司内网Qwen" : "云端GLM"}"></div></div>
-          <div class="setrow"><div class="setrow__text"><b>模型 ID</b><span>服务端认的模型名（探测通过后可自动填）</span></div>
-            <div class="setrow__ctrl"><input type="text" id="p-model" value="${esc(m.model_id || "")}"
-              placeholder="${sel.tier === "lan" ? "qwen2.5:14b" : "glm-4-flash"}"></div></div>
-          <div class="setrow"><div class="setrow__text"><b>接口地址</b><span>OpenAI 兼容端点</span></div>
-            <div class="setrow__ctrl"><input type="text" id="p-url" value="${esc(m.base_url || "")}"
-              placeholder="${sel.tier === "lan" ? "http://10.0.0.8:8000/v1" : "https://…/v1"}"></div></div>
-          <div class="setrow"><div class="setrow__text"><b>API Key</b><span>${m.has_key
-            ? "已在本机加密保存（不回显；留空＝不改动，不会清空）"
-            : (sel.tier === "lan" ? "内网通常可留空" : "只在本机加密保存")}</span></div>
-            <div class="setrow__ctrl"><input type="text" id="p-key" value=""
-              placeholder="${m.has_key ? "已配置（留空则沿用已存密钥）" : "未配置"}"></div></div>
-          <div class="setrow"><div class="setrow__text"><b>连通性</b><span id="probe-detail">尚未测试</span></div>
-            <div class="setrow__ctrl">
-              <button class="btn" type="button" data-probe="detail">测试连接</button>
-              <button class="btn btn--primary" type="button" data-save="1">保存</button>
-              ${found ? `<button class="btn" type="button" data-remove="${esc(m.name)}">删除</button>` : ""}
-            </div></div>
+        <h4 class="prov__subtitle">本机模型
+          <span class="muted">（同一时刻只有一个「使用中」；点模型名即切换）</span></h4>
+        ${modelListHtml(g.models, true)}
+        <!-- 本机档空态（K）：把后端给的 local_note **原样**显示出来（为什么空：连不上服务 /
+             一个都没装 / 只找到向量模型…），并当场给出两条可走的路：重新检测、手动添加。 -->
+        <div class="mrow-note" id="local-note">${esc(cat.local_note || "")}</div>
+        <div class="prov__actions">
+          <button class="btn" type="button" data-rescan="1">重新检测</button>
+          <button class="btn" type="button" data-addlocal="1">＋ 手动添加本机模型</button>
+        </div>
+        <div class="medit" id="local-add" hidden>
+          <div class="medit__title">＋ 手动添加本机模型</div>
+          <div class="medit__row"><label for="la-name">显示名称</label>
+            <input type="text" id="la-name" spellcheck="false" placeholder="留空 = 用模型名"></div>
+          <div class="medit__row"><label for="la-model">模型名</label>
+            <input type="text" id="la-model" spellcheck="false" placeholder="如 qwen3.5:27b"></div>
+          <div class="medit__ops">
+            <button class="btn btn--primary" type="button" data-lasave="1">添加</button>
+            <button class="btn" type="button" data-lacancel="1">取消</button>
+          </div>
+          <div class="medit__hint" id="la-note">填的模型名会走 Ollama 的 OpenAI 兼容接口
+            （<span class="mono" id="la-base">—</span>，密钥固定填 <span class="mono">ollama</span>）——
+            这样"手动填的"与"自动探测到的"在下游是同一条通路，不用另建一套客户端。</div>
         </div>`;
+    } else {
+      detail.innerHTML = provFormHtml(findGroup(sel), sel);
     }
     bindProvEvents(cat);
+    paintUsage();
     paintModelTrigger();
+  }
+
+  /** 左列事件（单独成函数：paintUsage 会重绘左列，必须能重新绑定）。 */
+  function bindProvListEvents(cat) {
+    const box = $("prov-list");
+    if (!box) return;
+    // 点供应商 = "正在查看"它（背景高亮的唯一出口）；本机档摊开的模型子项点一下即切换
+    box.querySelectorAll("[data-use]").forEach((el) => {
+      el.onclick = (ev) => {
+        ev.stopPropagation();
+        state.prov = { tier: el.dataset.t, provider: el.dataset.prov, builtin: el.dataset.builtin === "1" };
+        if (el.dataset.use && el.dataset.use !== activeModel()) persist({ model: el.dataset.use });
+        else renderProv(state.catalog || cat);
+      };
+    });
+    box.querySelectorAll("[data-t]").forEach((el) => {
+      el.onclick = () => {
+        state.prov = { tier: el.dataset.t, provider: el.dataset.prov, builtin: el.dataset.builtin === "1" };
+        renderProv(cat);
+      };
+    });
+    box.querySelectorAll("[data-addt]").forEach((el) => {
+      el.onclick = () => {
+        // 新供应商是"草稿"：存储粒度是"一条模型一行"，所以必须先有第一个模型才能落盘
+        state.prov = { tier: el.dataset.addt, provider: "", builtin: false, isNew: true };
+        renderProv(cat);
+      };
+    });
   }
 
   function bindProvEvents(cat) {
     const box = $("prov-list"), detail = $("prov-detail");
     if (!box || !detail) return;
-    const cur = (state.settings && state.settings.model) || "";
-    box.querySelectorAll("[data-t]").forEach((el) => {
-      el.onclick = () => {
-        const tier = el.dataset.t, name = el.dataset.n || "";
-        state.prov = { tier, name };
-        // ★ 本机档的条目没有"单独的配置表单"可看（右栏就是本机 Ollama 面板），所以点模型名
-        //   ＝切换使用中的模型——这正是文档里的口径「点模型名即切换」。点**已经在用**的那一项
-        //   只是回到面板（不做多余的保存，也避免"只想看看本机档却把模型换了"）。
-        //   局域网/公网档点条目仍是"看它的配置"：那才是那里唯一有意义的动作。
-        if (tier === "local" && name && name !== cur) persist({ model: name });
-        else renderProv(cat);
-      };
+    const val = (id) => (($(id) && $(id).value) || "").trim();
+    const groupOf = () => (!state.prov || state.prov.isNew) ? null
+      : providersOfTier(state.catalog, state.prov.tier).find(
+          (g) => g.provider === state.prov.provider && !!g.builtin === !!state.prov.builtin) || null;
+
+    /** 供应商级三件套的当前表单值（保存供应商 / 添加模型都用它，空密钥＝沿用已存）。 */
+    const formValue = () => ({
+      tier: state.prov.tier,
+      provider: val("p-provider"),
+      url: val("p-url"),
+      key: val("p-key"),
+      format: (($("p-format") && $("p-format").value) || "chat_completions"),
     });
-    box.querySelectorAll("[data-addt]").forEach((el) => {
-      el.onclick = () => { state.prov = { tier: el.dataset.addt, name: "" }; renderProv(cat); };
-    });
-    detail.querySelectorAll("[data-pick]").forEach((el) => {
-      el.onclick = () => persist({ model: el.dataset.pick });
+
+    /** 改完配置的统一收口：重取清单 + 重渲染 + 同步输入区。
+     *  顺带把内核可能改掉的当前模型读回来（删掉"正在用"的条目时内核会回退本地模型——
+     *  界面必须如实反映，否则触发器还挂着已经不存在的模型名）。 */
+    const afterChange = async () => {
+      const info = await call("llm_status");
+      if (info) {
+        state.llm = info;
+        if (info.model) state.settings.model = info.model;
+      }
+      renderProv(await call("model_catalog"));
+      fillSettings();
+    };
+
+    // 左列：点供应商 = "正在查看"它（背景高亮的唯一出口）；本机档摊开的模型子项点一下即切换
+    bindProvListEvents(cat);
+    // 右栏模型列表：点模型名 = 切换（单选式"使用中"）；编辑/删除是显式动作
+    detail.querySelectorAll(".mrow__use").forEach((el) => {
+      el.onclick = () => { if (el.dataset.use !== activeModel()) persist({ model: el.dataset.use }); };
     });
     const host = $("ollama-host");
     if (host) {
@@ -1016,14 +1356,60 @@
         renderProv(await call("model_catalog"));
       };
     });
+    // ── 手动添加本机模型（K）──
+    // 为什么需要：自动探测依赖"Ollama 服务在跑 + 模型装在默认位置"，同学机器上两样都不成立时
+    // 界面就成了死路（只能绕去填"局域网模型 localhost"）。这里允许直接填模型名，
+    // 落到 custom_models 的 **tier=local**（与本机档同栏），地址用 `<ollama_host>/v1`、
+    // 密钥固定 `ollama`——Ollama 的 /v1 就是 OpenAI 兼容端点、不做鉴权校验，
+    // 这样手动条目与探测条目在下游走同一条客户端通路（不要改成别的值：换了就打不通）。
+    const localAdd = $("local-add");
+    if (localAdd) {
+      const ollamaBase = () => {
+        const host = String((state.settings && state.settings.ollama_host) || "http://127.0.0.1:11434")
+          .trim().replace(/\/+$/, "");
+        return /\/v1$/i.test(host) ? host : host + "/v1";
+      };
+      if ($("la-base")) $("la-base").textContent = ollamaBase();
+      detail.querySelectorAll("[data-addlocal]").forEach((el) => {
+        el.onclick = () => {
+          localAdd.hidden = false;
+          if ($("la-model")) $("la-model").focus();
+        };
+      });
+      detail.querySelectorAll("[data-lacancel]").forEach((el) => {
+        el.onclick = () => { localAdd.hidden = true; };
+      });
+      detail.querySelectorAll("[data-lasave]").forEach((el) => {
+        el.onclick = async () => {
+          const note = $("la-note");
+          const mid = val("la-model"), mname = val("la-name") || mid;
+          if (!mid) {
+            note.textContent = "模型名不能为空（本机已装的话可以先用 `ollama list` 看一眼）";
+            note.className = "medit__hint is-bad"; return;
+          }
+          const res = await call("add_custom_model", mname, mid, ollamaBase(), "ollama",
+                                 "local", MANUAL_LOCAL_PROVIDER, "chat_completions", []);
+          if (!res || !res.ok) {
+            note.textContent = "添加失败：" + ((res && res.error) || "未知原因");
+            note.className = "medit__hint is-bad"; return;
+          }
+          toast(`已添加本机模型「${mname}」（走 Ollama 的 OpenAI 兼容接口）`);
+          state.prov = { tier: "local", provider: MANUAL_LOCAL_PROVIDER, builtin: false };
+          renderProv(await call("model_catalog"));
+          fillSettings();
+        };
+      });
+    }
     detail.querySelectorAll("[data-probe]").forEach((el) => {
       el.onclick = async () => {
         const isLocal = el.dataset.probe === "local";
-        const url = isLocal ? ($("ollama-host").value || "").trim() : ($("p-url").value || "").trim();
-        const key = isLocal ? "" : ($("p-key").value || "").trim();
-        // ★ 把条目名一起交给后端（V3.6.7 修）：密钥不回显，所以存过之后输入框是空的——
-        //   后端据此**回落到该条目已存的密钥**去探，否则会拿空密钥撞 401，看起来像"密钥丢了"。
-        const entryName = isLocal ? "" : String((state.prov && state.prov.name) || "");
+        const url = isLocal ? val("ollama-host") : val("p-url");
+        const key = isLocal ? "" : val("p-key");
+        // ★ 把**条目名**一起交给后端（V3.6.7 修）：密钥不回显，所以存过之后输入框是空的——
+        //   后端据此回落到该条目已存的密钥去探，否则会拿空密钥撞 401，看起来像"密钥丢了"。
+        //   供应商可能有多个模型，密钥在组内共享，取第一条的条目名即可。
+        const g = groupOf();
+        const entryName = (isLocal || !g) ? "" : String((g.models[0] || {}).name || "");
         const note = isLocal ? $("probe-local") : $("probe-detail");
         note.textContent = "正在测试连接…"; note.className = "";
         const res = await call("probe_model_endpoint", url, key, entryName);
@@ -1032,7 +1418,7 @@
             + (res.models && res.models.length ? "：" + res.models.slice(0, 3).join("、") : "");
           note.className = "is-ok";
           if (!isLocal) {
-            // ★ 地址归一化回填（本轮）：用户常把"完整端点"（…/chat/completions）当基础地址填，
+            // ★ 地址归一化回填（V3.6.7）：用户常把"完整端点"（…/chat/completions）当基础地址填，
             //   那样会拼出 …/chat/completions/chat/completions 而必然失败。探测已识别出基础地址，
             //   这里回填并说明——用户看得见"该填什么"，不用猜。
             const urlBox = $("p-url");
@@ -1041,8 +1427,11 @@
               urlBox.value = normalized;
               note.textContent += `（地址已按基础地址识别：${normalized}）`;
             }
-            const mid = $("p-model");
-            if (mid && !mid.value.trim() && res.models && res.models.length) mid.value = res.models[0];
+            // 探测到的模型名回填到"添加模型"面板（仅在面板打开且模型 ID 还空着时，不越权改写）
+            const mid = $("pm-model");
+            if (mid && !$("pm-panel").hidden && !mid.value.trim() && res.models && res.models.length) {
+              mid.value = res.models[0];
+            }
           }
         } else {
           note.textContent = "❌ " + ((res && res.error) || "连不上");
@@ -1052,52 +1441,164 @@
     });
     detail.querySelectorAll("[data-save]").forEach((el) => {
       el.onclick = async () => {
-        const tier = state.prov.tier;
-        const val = (id) => (($(id) && $(id).value) || "").trim();
-        const name = val("p-name"), modelId = val("p-model"), url = val("p-url"), key = val("p-key");
         const note = $("probe-detail");
-        if (!name || !modelId || !url) {
-          note.textContent = "显示名称、模型 ID、接口地址都要填"; note.className = "is-bad"; return;
+        const f = formValue();
+        if (!f.provider || !f.url) {
+          note.textContent = "显示名称与 Base URL 都要填"; note.className = "is-bad"; return;
         }
-        const res = await call("add_custom_model", name, modelId, url, key, tier);
-        if (res && res.ok) {
-          // 留空保存时后端会沿用已存密钥——把这件事说出来，用户才知道密钥没有丢
-          toast(`已保存到「${res.tier_label || tier}」` + (res.kept_key ? "（密钥沿用已存）" : ""));
-          state.prov = { tier, name };
-          renderProv(await call("model_catalog"));
-          fillSettings();
+        let keptKey = false;
+        if (state.prov.isNew) {
+          const mid = val("pm-model"), mname = val("pm-name") || mid;
+          if (!mid) {
+            note.textContent = "先填第一个模型的 ID（供应商要挂至少一个模型才能保存）";
+            note.className = "is-bad"; return;
+          }
+          const res = await call("add_custom_model", mname, mid, f.url, f.key, f.tier,
+                                 f.provider, f.format, splitTags(val("pm-tags")));
+          if (!res || !res.ok) {
+            note.textContent = "保存失败：" + ((res && res.error) || "未知原因"); note.className = "is-bad"; return;
+          }
+          keptKey = !!res.kept_key;
+          state.prov = { tier: res.tier || f.tier, provider: f.provider, builtin: false };
+          toast(`已添加供应商「${f.provider}」（${res.tier_label || f.tier}）`
+                + (keptKey ? "（密钥沿用已存）" : ""));
         } else {
-          note.textContent = "保存失败：" + ((res && res.error) || "未知原因"); note.className = "is-bad";
+          // 已有供应商：Base URL / API 格式 / 密钥 / 供应商名对**整组**生效（表单承诺的一致配置）
+          const g = groupOf();
+          if (!g) return;
+          let bad = "";
+          for (const m of g.models) {
+            const res = await call("add_custom_model", m.name, m.model_id, f.url, f.key, f.tier,
+                                   f.provider, f.format, m.tags || []);
+            if (!res || !res.ok) { bad = (res && res.error) || "未知原因"; break; }
+            keptKey = keptKey || !!res.kept_key;
+          }
+          if (bad) { note.textContent = "保存失败：" + bad; note.className = "is-bad"; return; }
+          state.prov = { tier: f.tier, provider: f.provider, builtin: false };
+          // 留空保存时后端会沿用已存密钥——把这件事说出来，用户才知道密钥没有丢
+          toast(`已保存供应商「${f.provider}」` + (keptKey ? "（密钥沿用已存）" : ""));
         }
+        await afterChange();
       };
     });
-    detail.querySelectorAll("[data-remove]").forEach((el) => {
+    detail.querySelectorAll("[data-del]").forEach((el) => {
       el.onclick = async () => {
-        const res = await call("remove_custom_model", el.dataset.remove);
-        if (res && res.ok) {
-          toast("已删除");
-          state.prov = { tier: state.prov.tier, name: "" };
-          renderProv(await call("model_catalog"));
-          fillSettings();
-        } else toast("删除失败：" + ((res && res.error) || "未知原因"));
+        const res = await call("remove_custom_model", el.dataset.del);
+        if (!res || !res.ok) { toast("删除失败：" + ((res && res.error) || "未知原因")); return; }
+        toast("已删除模型");
+        await afterChange();
       };
     });
+    detail.querySelectorAll("[data-remove-provider]").forEach((el) => {
+      el.onclick = async () => {
+        const g = groupOf();
+        if (!g || !g.models.length) return;
+        const names = g.models.map((m) => m.name);
+        // 删供应商会连带它的模型与已存密钥，不可逆 → 必须显式确认（原生 confirm 够用，
+        // 不为此引入新组件；取消就什么都不做）
+        if (!window.confirm(`删除供应商「${g.provider}」及其 ${names.length} 个模型？本机已存的密钥会一并删除。`)) return;
+        for (const name of names) await call("remove_custom_model", name);
+        toast("已删除供应商");
+        state.prov = { tier: state.prov.tier, provider: "", builtin: false };
+        await afterChange();
+      };
+    });
+    // ── 模型编辑面板（添加 / 编辑）──
+    const panel = $("pm-panel");
+    const openPanel = (model) => {
+      if (!panel) return;
+      panel.hidden = false;
+      panel.dataset.editing = model ? model.name : "";
+      if ($("pm-title")) $("pm-title").textContent = model ? `编辑模型 · ${model.name}` : "添加模型";
+      if ($("pm-model")) $("pm-model").value = model ? (model.model_id || "") : "";
+      if ($("pm-name")) $("pm-name").value = model ? model.name : "";
+      if ($("pm-tags")) $("pm-tags").value = model ? (model.tags || []).join("，") : "";
+      const note = $("pm-note");
+      if (note) { note.textContent = ""; note.className = "medit__hint"; }
+      if ($("pm-model")) $("pm-model").focus();
+    };
+    detail.querySelectorAll("[data-addmodel]").forEach((el) => {
+      el.onclick = () => openPanel(null);
+    });
+    detail.querySelectorAll("[data-edit]").forEach((el) => {
+      el.onclick = () => {
+        const g = groupOf();
+        const m = g && g.models.find((x) => x.name === el.dataset.edit);
+        if (m) openPanel(m);
+      };
+    });
+    detail.querySelectorAll("[data-mcancel]").forEach((el) => {
+      el.onclick = () => { if (panel) panel.hidden = true; };
+    });
+    detail.querySelectorAll("[data-msave]").forEach((el) => {
+      el.onclick = async () => {
+        const f = formValue(), g = groupOf();
+        const mid = val("pm-model"), mname = val("pm-name") || mid;
+        const note = $("pm-note");
+        if (!mid) { note.textContent = "模型 ID 不能为空"; note.className = "medit__hint is-bad"; return; }
+        if (!f.url) { note.textContent = "先把上面的 Base URL 填上"; note.className = "medit__hint is-bad"; return; }
+        const editing = (panel && panel.dataset.editing) || "";
+        const res = await call("add_custom_model", mname, mid, f.url, f.key, f.tier,
+                               f.provider, f.format, splitTags(val("pm-tags")));
+        if (!res || !res.ok) {
+          note.textContent = "保存失败：" + ((res && res.error) || "未知原因");
+          note.className = "medit__hint is-bad"; return;
+        }
+        // 改了显示名称 = 换了存储键：把旧条目删掉，避免"改完名又多出一条"（存储以条目名为键）
+        if (editing && editing !== mname) await call("remove_custom_model", editing);
+        if (g) state.prov = { tier: f.tier, provider: f.provider || g.provider, builtin: false };
+        toast(`已保存模型「${mname}」`);
+        await afterChange();
+      };
+    });
+    // ── API Key「查看」（眼睛）──
+    // 现状：密钥加密存本机、界面不回显，输入框"留空＝不改动"。但没有**显式查看**的话，
+    // 用户没法确认当初存进去的是什么（磁盘上是密文，配置文件里也翻不到）。
+    // 所以提供这个显式动作，并要求服务层每次查看都写一条审计（access_control / WARNING）——
+    // 文档里"界面不回显"的旧口径随之改为"默认不回显，点「查看」可显示且留痕"（文档由负责人统一改）。
+    const eye = $("p-key-eye");
+    if (eye) {
+      eye.onclick = async () => {
+        const box2 = $("p-key");
+        if (box2.dataset.revealed === "1") {           // 再点一次 = 隐藏并回到"不改动"状态
+          box2.value = ""; box2.dataset.revealed = "0";
+          eye.textContent = "查看"; eye.title = "查看本机已存的密钥（每次查看都会写入审计）";
+          return;
+        }
+        const res = await call("custom_model_key", formValue().provider);
+        if (!res || !res.ok) { toast((res && res.error) || "没有已存的密钥"); return; }
+        box2.value = res.key || ""; box2.dataset.revealed = "1";
+        eye.textContent = "隐藏"; eye.title = "隐藏并清空输入框（回到「留空＝不改动」）";
+        toast("已显示本机存储的密钥；这次查看已写入审计");
+      };
+    }
   }
+
+  /** 输入区触发器：显示「供应商 / 当前模型」（ZCode 的形态），点开是两级弹层。
+   *  ★ 诚实优先（K）：清单没拿到 → 「检查模型…」；配置的模型**不在可用清单里** →
+   *    「请选择模型」（绝不把那个不存在的名字显示成"在用"）；都正常 → 「供应商 / 模型」。 */
   function paintModelTrigger() {
     const val = $("model-value"), dot = $("model-tier-dot");
     if (!val) return;
-    const cur = (state.settings && state.settings.model) || "";
-    val.textContent = cur || "未选择模型";
-    if (!dot) return;
-    let tier = "";
-    const cat = state.catalog;
-    if (cat && cat.tiers) {
-      for (const t of ["local", "lan", "wan"]) {
-        if ((cat.tiers[t] || []).some((m) => m.name === cur)) { tier = t; break; }
-      }
+    if (!catalogReady()) {
+      val.textContent = "检查模型…";
+      if (dot) { dot.className = "tier-dot"; dot.title = "正在读取本机可用模型…"; }
+      return;
     }
-    dot.className = "tier-dot" + (tier ? ` tier-dot--${tier}` : "");
-    dot.title = tier ? `${TIER_META[tier].label} · ${TIER_META[tier].boundary}` : "未在清单中（可能已手动指定）";
+    const cur = activeModel();
+    if (!cur) {
+      val.textContent = "请选择模型";
+      if (dot) {
+        dot.className = "tier-dot";
+        dot.title = "配置里的模型不在可用清单里（可能没装、或服务没起）——点这里选一个可用模型";
+      }
+      return;
+    }
+    const g = placementOf(cur);
+    val.textContent = g ? `${g.provider} / ${cur}` : cur;
+    if (!dot) return;
+    dot.className = "tier-dot" + (g ? ` tier-dot--${g.tier}` : "");
+    dot.title = g ? `${TIER_META[g.tier].label} · ${TIER_META[g.tier].boundary}` : "未在清单中（可能已手动指定）";
   }
 
   /* ── 安全工具（隐私健康体检 / 模型行为画像）────────────
@@ -1128,6 +1629,16 @@
     analyze_project: "分析项目", create_local_file: "创建文件", modify_local_file: "修改文件",
     replace_in_file: "替换内容", delete_local_file: "删除文件", run_local_command: "执行命令",
   };
+
+  /** 时间戳压到「MM-DD HH:MM」：后端给的是 ISO（带 T、带微秒），在右栏窄宽度里
+   *  会把整行挤到换行；定位一次操作到分钟足够，秒/微秒只是噪声。 */
+  function shortTime(value) {
+    const text = String(value || "").replace("T", " ");
+    const m = text.match(/([0-9]{4})-([0-9]{2})-([0-9]{2})[ ]([0-9]{2}):([0-9]{2})/);
+    if (m) return `${m[2]}-${m[3]} ${m[4]}:${m[5]}`;
+    const hm = text.match(/[ ]([0-9]{2}):([0-9]{2})/);
+    return hm ? `${hm[1]}:${hm[2]}` : text;
+  }
 
   const riskInfo = (score) => {
     const n = Number(score) || 0;
@@ -1205,7 +1716,7 @@
     const empty = findings.length ? "" : `<div class="tool-empty tool-empty--ok">
       <span class="tool-empty__mark">✓</span>
       <b>未发现隐私风险</b>
-      <span>已扫描 ${esc(report.scanned_files ?? 0)} 个文件，没有命中敏感文件、敏感内容或权限异常。</span>
+      <span>扫描 ${esc(report.scanned_files ?? 0)} 个文件，未见敏感文件 / 内容 / 权限异常</span>
     </div>`;
     box.innerHTML = `
       <div class="tool-metrics">
@@ -1249,7 +1760,7 @@
         <div class="anomaly__body">
           <div class="anomaly__head">
             <b>${esc(ANOMALY_TYPE[a.anomaly_type] || a.anomaly_type || "异常")}</b>
-            ${a.timestamp ? `<span class="anomaly__time">${esc(String(a.timestamp).replace("T", " ").slice(0, 19))}</span>` : ""}
+            ${a.timestamp ? `<span class="anomaly__time" title="${esc(a.timestamp)}">${esc(shortTime(a.timestamp))}</span>` : ""}
           </div>
           <div class="anomaly__desc">${esc(a.description || "—")}</div>
         </div>
@@ -1257,14 +1768,14 @@
     }).join("");
     const factors = Array.isArray(p.risk_factors) ? p.risk_factors.filter(Boolean) : [];
     box.innerHTML = `
-      <div class="tool-metrics">
+      <div class="tool-metrics" data-count="4">
         ${toolMetric(p.total_tool_calls ?? 0, "工具调用")}
         ${toolMetric(p.unique_paths ?? 0, "唯一路径")}
         ${toolMetric(p.path_jumps ?? 0, "路径跳跃")}
         ${toolMetric(p.risk_score ?? 0, "风险评分", risk.cls, risk.label)}
       </div>
       <div class="tool-target" title="${esc((range[0] || "") + " ~ " + (range[1] || ""))}">
-        ${esc(p.model_name || "模型未标记")} · ${esc(range[0] || "—")} ~ ${esc(range[1] || "—")}
+        ${esc(p.model_name || "模型未标记")} · ${esc(shortTime(range[0]) || "—")} ~ ${esc(shortTime(range[1]) || "—")}
       </div>
       <div class="tool-section">
         <div class="tool-section__title">工具调用分布 <span>共 ${esc(p.total_tool_calls ?? total)} 次</span></div>
@@ -1272,8 +1783,10 @@
       </div>
       <div class="tool-section">
         <div class="tool-section__title">操作类型分布</div>
-        <div class="tool-ops">${ops.map(([key, count]) => `
-          <span class="tool-op${count ? "" : " is-zero"}"><b>${count}</b>${OP_LABEL[key]}</span>`).join("")}</div>
+        ${ops.some(([, count]) => count)
+          ? `<div class="tool-ops">${ops.filter(([, count]) => count).map(([key, count]) => `
+          <span class="tool-op"><b>${count}</b>${OP_LABEL[key]}</span>`).join("")}</div>`
+          : `<div class="tool-section__hint">本次窗口内没有读写操作</div>`}
       </div>
       <div class="tool-section">
         <div class="tool-section__title">被访问的敏感路径 <span>${sensitive.length} 个</span></div>
@@ -1290,7 +1803,7 @@
         ${anomalies.length ? `<div class="anomaly-list">${anomalyItems}</div>` : `<div class="tool-empty tool-empty--ok">
           <span class="tool-empty__mark">✓</span>
           <b>未发现异常行为</b>
-          <span>最近审计记录未命中高频操作、敏感路径访问、路径跳跃或非工作时间规则。</span>
+          <span>最近记录未命中高频 / 敏感路径 / 路径跳跃 / 非工作时间规则</span>
         </div>`}
       </div>
       ${rawReport(res.summary)}`;
@@ -1321,89 +1834,11 @@
     }
   }
 
-  /* ── 工作流 ───────────────────────────────────── */
-  const WF_STATUS_LABEL = {
-    pending: ["待执行", ""], running: ["执行中", "wf-status--run"],
-    approved: ["已审批，待执行", "wf-status--run"],
-    completed: ["已完成", "wf-status--done"], failed: ["失败", "wf-status--fail"],
-    skipped: ["已跳过", ""], waiting_approval: ["待审批", "wf-status--wait"],
-  };
-
-  function renderWfTemplates(list) {
-    const box = $("wf-templates");
-    state.wfTemplates = Array.isArray(list) ? list : [];
-    if (!state.wfTemplates.length) { box.innerHTML = `<div class="wf-template__desc">没有可用模板</div>`; return; }
-    box.innerHTML = state.wfTemplates.map((t) => `
-      <button class="wf-template ${t.id === state.wfTemplateId ? "is-active" : ""}" data-tpl="${esc(t.id)}">
-        <span class="wf-template__name">${esc(t.name)}
-          ${t.source === "plugin" ? `<span class="plugin-badge plugin-badge--src">插件</span>` : ""}
-        </span>
-        <span class="wf-template__desc">${esc(t.description || "")}</span>
-      </button>`).join("");
-    box.querySelectorAll("[data-tpl]").forEach((btn) => {
-      btn.onclick = async () => {
-        state.wfTemplateId = btn.dataset.tpl;
-        renderWfTemplates(state.wfTemplates);
-        const res = await call("workflow_start", btn.dataset.tpl,
-                               $("wf-path").value || "", $("wf-name").value || "");
-        if (!res || !res.ok) { toast("启动失败：" + ((res && res.error) || "未知原因")); return; }
-        state.wfInstance = res.instance_id;
-        renderWf(res.status);
-      };
-    });
-  }
-
-  function renderWf(status) {
-    if (!status || status.error) { toast("工作流状态读取失败"); return; }
-    state.wfStatus = status;
-    $("wf-run").style.display = "";
-    $("wf-run-title").textContent = status.template_name || "执行";
-    const p = status.progress || {};
-    $("wf-progress").innerHTML = `<span>${p.completed || 0}/${p.total || 0} 步</span>
-      <span class="wf-progress__bar"><span class="wf-progress__fill" style="width:${p.percentage || 0}%"></span></span>
-      <span>${p.percentage || 0}%</span>`;
-    $("wf-steps").innerHTML = (status.steps || []).map((st, i) => {
-      const [label, cls] = WF_STATUS_LABEL[st.status] || [st.status, ""];
-      const ops = st.status === "waiting_approval"
-        ? `<div class="wf-step__ops">
-             <button class="btn" data-approve="${esc(st.step_id)}" data-ok="1">审批通过</button>
-             <button class="btn btn--danger" data-approve="${esc(st.step_id)}" data-ok="0">驳回</button>
-           </div>` : "";
-      const result = st.error ? `<div class="wf-step__result">⚠︎ ${esc(st.error)}</div>`
-        : (st.result ? `<div class="wf-step__result">${esc(String(st.result).slice(0, 240))}</div>` : "");
-      return `<div class="wf-step">
-        <div class="wf-step__idx">${pad(i + 1)}</div>
-        <div class="wf-step__body">
-          <div class="wf-step__name">${esc(st.name)}
-            <span class="wf-status ${cls}">${esc(label)}</span>
-            ${st.unimplemented ? `<span class="plugin-badge plugin-badge--warn">未实现</span>` : ""}
-            ${st.approval_type === "manual" ? `<span class="plugin-badge">${st.forced_approval ? "审批由内核强制" : "需审批"}</span>` : ""}
-          </div>
-          <div class="wf-step__desc">${esc(st.description || "")}</div>
-          ${result}
-        </div>
-        ${ops}
-      </div>`;
-    }).join("");
-    $("wf-steps").querySelectorAll("[data-approve]").forEach((btn) => {
-      btn.onclick = async () => {
-        const res = await call("workflow_approve", state.wfInstance, btn.dataset.approve, btn.dataset.ok === "1");
-        if (res && res.ok) { toast(btn.dataset.ok === "1" ? "已通过审批" : "已驳回"); renderWf(res.status); }
-        else toast("操作失败：" + ((res && res.error) || "该步骤当前不在待审批状态"));
-      };
-    });
-    const todo = (status.steps || []).filter((x) => x.unimplemented).length;
-    $("wf-notice").innerHTML = [
-      status.impl_notice || "",
-      todo ? `本模板含 ${todo} 个未实现步骤。` : "",
-      "工作流实例会持久化（重启后可继续执行/审批）；导出记录落盘前已脱敏。",
-    ].filter(Boolean).join(" ");
-  }
-
-  async function refreshWorkflow() {
-    if (!state.wfTemplates) renderWfTemplates(await call("workflow_templates"));
-    else renderWfTemplates(state.wfTemplates);
-  }
+  /* ── 工作流（界面入口已移除，引擎保留）───────────────────
+     界面层（右栏模板面板 / 顶部入口按钮 / 步骤台账）按负责人要求整块砍掉：`state.wf*`、
+     桥调用与面板容器一并不再存在。**引擎保留**：`core/` 的工作流模块、`agent_service`
+     的工作流服务方法、`tests/test_workflow*.py` 都是内核能力与已验证资产，随时可以再接界面
+     （接回时只需恢复面板 + 调用桥）。 */
 
   /* ── 插件（能力扩展）────────────────────────────── */
   const SOURCE_LABEL = { builtin: "内置", user: "用户安装" };
@@ -1719,7 +2154,6 @@
       renderProv(await call("model_catalog"));
     },
     audit: async () => { renderAudit(await call("audit_snapshot", 300)); },
-    workflow: async () => { await refreshWorkflow(); },
   };
 
   /* ── 三栏宽度（可拖拽调整 + 折叠，状态持久化）─────────
@@ -2047,30 +2481,15 @@
         };
         box.appendChild(btn);
       });
-    } else if (name === "workflow" && state.wfInstance) {
-      const btn = document.createElement("button");
-      btn.className = "btn btn--ghost";
-      btn.textContent = "导出记录";
-      btn.onclick = () => $("btn-wf-export").click();
-      box.appendChild(btn);
     }
   }
 
-  /** 拉取可用导出格式（审计 + 工作流），供面板动作区与工作流导出下拉使用 */
+  /** 拉取审计导出格式（内核自带 + 已启用插件贡献的），供面板动作区生成菜单 */
   async function refreshExportFormats() {
     try {
       state.auditFormats = await call("audit_export_formats");
-      state.wfFormats = await call("workflow_export_formats");
     } catch (err) {
       state.auditFormats = state.auditFormats || [];
-      state.wfFormats = state.wfFormats || [];
-    }
-    const sel = $("wf-format");
-    if (sel) {
-      const keep = sel.value;
-      sel.innerHTML = (state.wfFormats || []).map((f) =>
-        `<option value="${esc(f.format)}">${esc(f.label)}</option>`).join("");
-      if (keep) sel.value = keep;
     }
     return state.auditFormats;
   }
@@ -2105,16 +2524,31 @@
     applyLayout();
   }
 
-  /* ── 窗口控制 ─────────────────────────────────── */
-  /** 置顶按钮的状态显示：置顶中高亮（明暗两套主题各有自己的取色，见 .win-btn.is-active）。
-   *  只画状态，不改变窗口——真正的窗口动作在 window_action 里。 */
-  function paintPinState() {
-    const pin = $("btn-pin");
-    if (!pin) return;
-    const on = !!(state.settings && state.settings.topmost);
-    pin.classList.toggle("is-active", on);
-    pin.title = on ? "取消置顶" : "置顶";
-    pin.setAttribute("aria-pressed", on ? "true" : "false");
+  /* ── 窗口控制（V3.6.8：置顶 / 最小化 / 最大化 / 关闭）────────
+     状态一律以 `window_state()`（原生窗口的真实状态）为准，**不本地记账翻转**：
+     用户用系统快捷键或窗口被别的方式改过状态时，本地记账会立刻与事实不符。
+     图标：最大化 = 方框，还原 = 两个错位方框（两枚 SVG 由 body.is-maximized 切换显隐）。 */
+  async function paintWindowState(snapshot) {
+    const st = snapshot || await call("window_state");
+    if (!st) return;
+    state.settings.topmost = !!st.topmost;
+    const pin = $("btn-pin"), max = $("btn-max");
+    if (pin) {
+      pin.classList.toggle("is-active", !!st.topmost);
+      pin.title = st.topmost ? "取消置顶" : "置顶";
+      pin.setAttribute("aria-pressed", st.topmost ? "true" : "false");
+    }
+    if (max) {
+      // 折叠态（闪发浮条）下窗口几何已经被改过：最大化会卡在"看起来最大、其实是浮条"
+      // 的半个状态里，所以这里**禁用并如实提示**（服务端也会拒绝，见 window_action）。
+      max.disabled = !!st.mini;
+      max.classList.toggle("is-active", !!st.maximized);
+      max.setAttribute("aria-pressed", st.maximized ? "true" : "false");
+      max.title = st.mini ? "先退出闪发模式再最大化" : (st.maximized ? "还原窗口" : "最大化");
+      document.body.classList.toggle("is-maximized", !!st.maximized);
+    }
+    const sw = $("sw-topmost");
+    if (sw) sw.checked = !!st.topmost;
   }
 
   function bindWindowControls() {
@@ -2122,18 +2556,18 @@
     // 也就没有"改了要重启"这一说。
     document.documentElement.dataset.frameless = "1";
     placeWinCtrls();
-    paintPinState();
+    paintWindowState();                 // 只画状态，不改变窗口
     document.querySelectorAll("[data-win]").forEach((btn) => {
       btn.onclick = async () => {
         const action = btn.dataset.win;
         const ok = await call("window_action", action);
         if (action === "toggle_top") {
           if (ok === false) { toast("置顶切换失败"); return; }
-          state.settings.topmost = !state.settings.topmost;
-          paintPinState();
+          await paintWindowState();     // 用真实状态刷新高亮（而不是本地取反）
           toast(state.settings.topmost ? "已置顶显示" : "已取消置顶");
-          const sw = $("sw-topmost");
-          if (sw) sw.checked = !!state.settings.topmost;
+        } else if (action === "toggle_maximize") {
+          if (ok === false) { toast("先退出闪发模式，再最大化窗口"); await paintWindowState(); return; }
+          await paintWindowState();     // 图标与 is-active 跟着原生状态走
         }
       };
     });
@@ -2344,18 +2778,24 @@
   }
 
   /* ── 设置抽屉 ─────────────────────────────────────── */
-  /** 思考强度：胶囊 + 下拉（低 / 中 / 高 / 最高）。旧数值配置折算到最近档显示。 */
+  /* ── 思考强度（V3.6.8 收紧为 ZCode 式紧凑形态）─────────────
+     下拉里只留**档位名 + 选中态**；原来挂在选项里的解释文字全部收进 `title`
+     （悬停才看，不再每项铺两行说明）。触发器同样只留图标 + 档位词，完整口径进 title。
+     语义不变：点击仍然落库同一档（thinking_depth）。 */
   function paintThinkLevel(depth) {
     const box = $("think-select");
     if (!box) return;
     const cur = levelOf(depth);
     if ($("think-value")) $("think-value").textContent = cur.label;
+    const trg = $("think-trigger");
+    if (trg) trg.title = `思考强度：${cur.label} —— ${cur.hint}`;
     const pop = $("think-pop");
     if (pop) {
       pop.innerHTML = THINK_LEVELS.map((lv) => `
         <button type="button" class="think__opt${lv.key === cur.key ? " is-cur" : ""}"
-                role="option" aria-selected="${lv.key === cur.key}" data-level="${lv.key}">
-          <b>${esc(lv.label)}</b><span>${esc(lv.hint)}</span>
+                role="option" aria-selected="${lv.key === cur.key}" data-level="${lv.key}"
+                title="${esc(lv.hint)}">
+          <b>${esc(lv.label)}</b>${lv.key === cur.key ? '<i class="think__tick">✓</i>' : ""}
         </button>`).join("");
     }
     box.setAttribute("data-level", cur.key);
@@ -2453,6 +2893,7 @@
     $("sw-privacy").checked = !!s.privacy;
     $("sw-script-exec").checked = s.allow_script_exec !== false;
     $("sw-topmost").checked = !!s.topmost;
+    paintSandbox();                     // 可读写范围（沙箱目录）当前的生效路径与说明
     paintThinkLevel(s.thinking_depth);
     paintPermModes(s.permission);
     // 输入区胶囊显示"本对话生效档位"：后端在 bootstrap/state 里给出 session_permission，
@@ -2497,13 +2938,22 @@
     Object.assign(state.settings, patch);
     fillSettings();
     await call("save_settings", patch);
-    // ★ 切换模型后必须**重绘本页**（V3.6.7 修）：`fillSettings()` 只同步输入区胶囊等少量状态，
-    //   模型接入页的"使用中 / 选中"标记全在 `renderProv` 里。不重绘的后果是——用户点「点一下即切换」
-    //   的胶囊（或左栏模型名），后端**确实换了**，但页面上"使用中"还挂在旧模型上，
-    //   看起来就像点了没反应。只在"正在看本机档"时重绘：那里的面板没有未保存的输入，
-    //   重绘不会吞掉用户在局域网/公网页填了一半的表单。
-    if ("model" in patch && state.prov && state.prov.tier === "local" && state.catalog) {
-      renderProv(state.catalog);
+    // ★ 切换模型后"使用中"标记必须当场变（V3.6.7 修"点了没反应"）：旧实现整页重渲染
+    //   模型接入页，会把用户填了一半的表单一起吞掉；V3.6.8 改成**标记级重绘**
+    //   （paintUsage 更新绿点、paintModelTrigger 更新输入区触发器），语义一致且无副作用。
+    if ("model" in patch) {
+      // ★ 先就地更新"当前模型"的可用性判定（K）：刚在清单里点选的模型当然可用，
+      //   否则切换的一瞬间 current_available 还是旧值，触发器会闪回「请选择模型」。
+      if (state.catalog && state.catalog.tiers) {
+        state.catalog.current = String(patch.model || "");
+        state.catalog.current_available = !!placementOf(patch.model);
+      }
+      paintUsage(); paintModelTrigger();
+      // 再向后台要一次**权威**清单（换模型会重建算力，本机档/可用性可能变化）；
+      // 拿到后重绘一次，界面既不猜也不需要用户手动刷新。
+      call("model_catalog").then((cat) => {
+        if (cat && cat.tiers) { state.catalog = cat; paintUsage(); paintModelTrigger(); }
+      });
     }
   }
 
@@ -2559,16 +3009,6 @@
         if (state.busy) appendTrace(payload || {});
         break;
       case "advisories": renderAdvisories(payload); break;
-      case "workflow": {
-        if (payload && payload.phase === "start") {
-          setStatus(`工作流执行中：${payload.step || ""}`);
-        } else if (payload && payload.status) {
-          setStatus("");
-          if (payload.success === false) toast(`步骤失败：${payload.error || "未知原因"}`);
-          if (state.wfInstance === payload.instance_id) renderWf(payload.status);
-        }
-        break;
-      }
       case "approval_expired": hideApproval(); setStatus("审批超时，已按驳回处理"); break;
       case "state": {
         setBusy(!!payload.busy);
@@ -2602,6 +3042,10 @@
         if (p2.done) setStatus(p2.text || "");
         break;
       }
+      case "window_state":
+        // 原生最大化/还原/置顶事件驱动的状态推送：图标与高亮必须跟着真实窗口走
+        paintWindowState(payload || null);
+        break;
       case "llm_status": {
         state.llm = payload || state.llm;
         const ready = !!state.llm.ready;
@@ -2654,6 +3098,11 @@
                   permission: state.settings.permission,
                   session_permission: state.sessionPermission, sandbox: state.settings.sandbox });
     call("audit_snapshot", 1).then((snap) => { if (snap) { state.audit = snap; renderPosture(null); } });
+    // 算力清单也在启动时预热一次：输入区触发器要显示「供应商 / 模型」，模型选择器也要按
+    // 供应商分组——都不该等到"先打开一次设置页"才有数据（否则首屏触发器只有一个裸模型名）。
+    call("model_catalog").then((cat) => {
+      if (cat && cat.tiers) { state.catalog = cat; if (!state.prov) renderProv(cat); else paintModelTrigger(); }
+    });
     if (state.currentId) await openSession(state.currentId); else renderMessages();
     onEvent("llm_status", state.llm);
     if (!(state.llm && state.llm.ready)) {   // 还没就绪：先说明在准备，别让用户对着空界面猜
@@ -2734,20 +3183,6 @@
       state.attachments = Array.isArray(list) ? list : state.attachments;
       renderChips();
     };
-    $("btn-workflow").onclick = () => openPane("workflow");
-    $("btn-wf-exec").onclick = async () => {
-      if (!state.wfInstance) { toast("请先选择模板"); return; }
-      const res = await call("workflow_execute", state.wfInstance);
-      if (res && res.ok) setStatus(`正在执行：${res.step}`);
-      else toast((res && res.error) || "执行失败");
-    };
-    $("btn-wf-export").onclick = async () => {
-      if (!state.wfInstance) { toast("请先选择模板"); return; }
-      const fmt = ($("wf-format") && $("wf-format").value) || "md";
-      const res = await call("workflow_export", state.wfInstance, fmt);
-      toast(res && res.ok ? `已导出（${res.renderer || "内核"}）：${res.path}`
-                          : `导出失败：${(res && res.error) || "未知原因"}`);
-    };
     // 模型接入页由 renderProv() 渲染并自带事件绑定（见文件上半部分）
     $("btn-health").onclick = () => runTool("health");
     $("btn-behavior").onclick = () => runTool("behavior");
@@ -2826,6 +3261,23 @@
     $("sw-privacy").onchange = (e) => persist({ privacy: e.target.checked });
     $("sw-script-exec").onchange = (e) => persist({ allow_script_exec: e.target.checked });
     $("sw-topmost").onchange = (e) => persist({ topmost: e.target.checked });
+    // 可读写范围（沙箱目录）：选目录走原生目录选择器（桥 pick_directory），清除 = 写空串回默认。
+    // 保存后立刻重绘态势条——"沙箱 <路径>"与这里必须是同一来源，不能一个显示设置值、一个显示环境变量。
+    if ($("btn-pick-sandbox")) $("btn-pick-sandbox").onclick = async () => {
+      const res = await call("pick_directory");
+      if (!res || !res.ok) { toast((res && res.error) || "未能选择目录"); return; }
+      await persist({ sandbox_dir: res.path });
+      renderPosture(null);
+      paintSandbox();
+      toast("可读写范围已设为：" + res.path);
+    };
+    if ($("btn-clear-sandbox")) $("btn-clear-sandbox").onclick = async () => {
+      if (!String((state.settings || {}).sandbox_dir || "").trim()) { toast("当前已是默认范围"); return; }
+      await persist({ sandbox_dir: "" });
+      renderPosture(null);
+      paintSandbox();
+      toast("已回到默认可读写范围");
+    };
     // 权限四档（设置页）：这里是**新对话默认档**，点击即落库；本对话的覆盖在输入区胶囊里改。
     const permBox = $("perm-modes");
     if (permBox) {
@@ -2879,103 +3331,174 @@
       document.addEventListener("click", (e) => { if (!thinkSel.contains(e.target)) closeThinkPop(); });
       document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeThinkPop(); });
     }
-    // 模型下拉（自绘，替代原生 datalist——弹层不随主题、内网手输无回显）：
-    // 触发器开合 / 搜索过滤 / 键盘 ↑↓·Enter·Esc / 点选与手输（回车提交非匹配名=内网模型入口）/
-    // 点浮层外关闭。选择即 persist（后端立即重建算力）。
+    // 上下文容量浮层：点顶栏「上下文 x/y」开合；点外部 / Esc 关闭。
+    // 数字随一轮结束刷新（renderStats 里在浮层打开时重取，不新增轮询）。
+    const ctxPop = $("ctx-pop");
+    if (ctxPop) {
+      $("stat-tokens").onclick = () => (ctxPop.hidden ? openCtxPop() : closeCtxPop());
+      document.addEventListener("click", (e) => {
+        if (!ctxPop.hidden && !e.target.closest("#ctx-pop") && !e.target.closest("#stat-tokens")) closeCtxPop();
+      });
+      document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeCtxPop(); });
+    }
+    /* ── 模型选择器（两级：供应商 → 该供应商的模型；底部「管理模型」跳设置页）─────
+       照 ZCode 的形态重做（V3.6.8）：**没有搜索框**。旧实现靠"输入非匹配名 + 回车＝手填
+       模型名"来加内网模型——那条路已由底部「管理模型」承担（跳到「设置 → 模型接入」，
+       在那里填 Base URL / 密钥 / 模型 ID / 标签）。能力没有丢，落点反而更明确：手输的名字
+       没有地址与密钥，本来也跑不起来，只会存下一个连不上的模型。
+       交互：↑↓ 列内移动、Enter（供应商列＝进入它；模型列＝选中并关闭）、←→ 切列、
+       Esc 关闭、点浮层外关闭；默认展开当前模型所在的供应商，当前项带勾。 */
     const mSel = $("model-select"), mTrig = $("model-trigger"), mPop = $("model-pop"),
-          mSearch = $("model-search"), mList = $("model-list");
-    let mHl = -1;                                   // 键盘高亮 index
+          mProvBox = $("mpick-providers"), mModelBox = $("mpick-models");
+    let mProvKey = "";                             // 一级：当前展开的供应商 key
+    let mCol = "prov";                             // 键盘所在列：prov / model
+    let mHl = -1;                                  // 列内高亮序号
+
     const closeModelPop = () => {
       mPop.hidden = true; mTrig.setAttribute("aria-expanded", "false");
-      mSel.classList.remove("is-open"); mHl = -1;
+      mSel.classList.remove("is-open"); mHl = -1; mCol = "prov";
     };
-    const renderModelList = (kw) => {
-      const q = String(kw || "").trim().toLowerCase();
-      const cur = (state.settings && state.settings.model) || "";
-      const cat = state.catalog || { tiers: { local: [], lan: [], wan: [] } };
-      let html = "", shown = 0, firstPickable = -1;
+    const groupsAll = () => {
+      const out = [];
+      ["local", "lan", "wan"].forEach((tier) =>
+        providersOfTier(state.catalog, tier).forEach((g) => out.push(g)));
+      return out;
+    };
+    const groupByKey = (key) => groupsAll().find((g) => g.key === key) || null;
+    const colItems = () => mCol === "prov"
+      ? [...mProvBox.querySelectorAll(".mpick__prov")]
+      : [...mModelBox.querySelectorAll("[data-model]")];
+    const paintHl = () => {
+      const items = colItems();
+      items.forEach((el, i) => el.classList.toggle("is-hl", i === mHl));
+      if (items[mHl]) items[mHl].scrollIntoView({ block: "nearest" });
+    };
 
-      // 按三档分组渲染；每组带标题与边界说明，用户一眼看出"这个模型会把数据带到哪"
-      ["local", "lan", "wan"].forEach((tier) => {
-        const meta = TIER_META[tier];
-        const items = (cat.tiers[tier] || []).filter((m) => !q || m.name.toLowerCase().includes(q));
-        if (!items.length) return;
-        html += `<div class="model-group"><span class="tier-dot tier-dot--${tier}"></span>
-          <b>${esc(meta.label)}</b><span class="model-group__boundary">${esc(meta.boundary)}</span></div>`;
-        html += items.map((m) => {
-          if (firstPickable < 0) firstPickable = shown;
-          shown += 1;
-          const extra = m.source === "ollama" ? "本机已安装"
-            : (m.model_id && m.model_id !== m.name ? m.model_id : (m.base_url || ""));
-          return `<button type="button" class="model-opt${m.name === cur ? " is-cur" : ""}" role="option"
-            aria-selected="${m.name === cur}" data-model="${esc(m.name)}">
-            <span class="model-opt__name">${esc(m.name)}</span>
-            <span class="model-opt__meta">${esc(String(extra).slice(0, 42))}</span>
-            ${m.name === cur ? `<span class="model-opt__tick">✓</span>` : ""}
-          </button>`;
-        }).join("");
+    const renderModelCol = () => {
+      const g = groupByKey(mProvKey), cur = activeModel();
+      if (!g) { mModelBox.innerHTML = `<div class="model-opt model-opt--empty">先选一个供应商</div>`; return; }
+      if (!g.models.length) { mModelBox.innerHTML = `<div class="model-opt model-opt--empty">该供应商还没有模型</div>`; return; }
+      mModelBox.innerHTML = g.models.map((m) => {
+        const tags = (m.tags || []).map((t) => `<i class="mtag">${esc(t)}</i>`).join("");
+        const meta = m.source === "ollama" ? "本机已安装"
+          : (m.model_id && m.model_id !== m.name ? m.model_id : "");
+        return `<button type="button" class="model-opt${m.name === cur ? " is-cur" : ""}" role="option"
+            aria-selected="${m.name === cur}" data-model="${esc(m.name)}"
+            title="${esc(m.name + (meta ? " · " + meta : ""))}">
+          <span class="model-opt__name">${esc(m.name)}</span>
+          ${meta ? `<span class="model-opt__meta">${esc(String(meta).slice(0, 30))}</span>` : ""}
+          ${tags}
+          ${m.name === cur ? `<span class="model-opt__tick">✓</span>` : ""}
+        </button>`;
+      }).join("");
+    };
+
+    const renderProvCol = () => {
+      const cur = activeModel(), groups = groupsAll();
+      if (!mProvKey || !groupByKey(mProvKey)) {
+        // 默认展开"当前模型所在供应商"；没有当前模型就落到第一个（本机档内置供应商）
+        const place = placementOf(cur);
+        mProvKey = place ? place.key : (groups[0] ? groups[0].key : "");
+      }
+      let html = "", lastTier = "";
+      groups.forEach((g) => {
+        if (g.tier !== lastTier) {
+          lastTier = g.tier;
+          // 分组标题只放档位名：弹层窄，塞下边界说明会把标题挤成竖排（观感实测）；
+          // 边界说明移到 title（悬停即得），选择器触发器上的档位点也带着同一句。
+          html += `<div class="mpick__gt"><span class="tier-dot tier-dot--${g.tier}"></span>
+            <b>${esc(TIER_META[g.tier].label)}</b></div>`;
+        }
+        const usedBy = g.models.find((m) => m.name === cur);
+        html += `<button type="button" class="mpick__prov${g.key === mProvKey ? " is-open" : ""}" role="option"
+            aria-selected="${g.key === mProvKey}" data-pkey="${esc(g.key)}">
+          <span class="mpick__pname">${esc(g.provider)}</span>
+          <span class="mpick__pmeta">${g.models.length} 个</span>
+          ${usedBy ? usageFlag(usedBy.name, true) : ""}
+        </button>`;
       });
-
-      // 不在清单里的当前模型（例如清单尚未刷新）也要能看到
-      if (cur && !["local", "lan", "wan"].some((t) => (cat.tiers[t] || []).some((m) => m.name === cur))) {
-        html += `<div class="model-group"><b>其他</b><span class="model-group__boundary">不在当前清单中</span></div>
-          <button type="button" class="model-opt is-cur" role="option" aria-selected="true" data-model="${esc(cur)}">
-            <span class="model-opt__name">${esc(cur)}</span><span class="model-opt__tick">✓</span></button>`;
-        if (firstPickable < 0) firstPickable = 0;
-        shown += 1;
-      }
-
-      // 搜索无结果时，允许直接使用输入的名称（模型名可以手填）
-      if (q && !shown) {
-        html = `<button type="button" class="model-opt model-opt--manual" role="option" data-model="${esc(q)}"
-          >直接使用「${esc(q)}」</button>`;
-        firstPickable = 0;
-      }
-      html += `<div class="model-select__actions">
-        <button type="button" class="model-opt model-opt--act" data-open-settings="1">＋ 接入局域网 / 公网模型</button></div>`;
-      mList.innerHTML = html || `<div class="model-opt model-opt--empty">没有可用模型</div>`;
-      mHl = firstPickable;
-      [...mList.querySelectorAll(".model-opt")].forEach((el, i) => el.classList.toggle("is-hl", i === mHl));
+      mProvBox.innerHTML = html || `<div class="model-opt model-opt--empty">没有可用模型</div>`;
     };
+
+    const renderPick = () => {
+      renderProvCol();
+      renderModelCol();
+      // 一个可选模型都没有时，底部给**可行动的**提示（而不是只写"没有可用模型"）：
+      // 优先用后端给的 local_note（它知道是"连不上服务"还是"一个都没装"），再退到通用建议。
+      const total = groupsAll().reduce((n, g) => n + g.models.length, 0);
+      if ($("model-hint")) {
+        $("model-hint").textContent = total
+          ? `共 ${total} 个可用模型 · 按数据边界分三档`
+          : ((state.catalog && state.catalog.local_note)
+             || "还没有可用模型：点「管理模型」手动添加本机模型，或先 `ollama pull <模型名>` 拉一个");
+      }
+      const items = colItems(), cur = activeModel();
+      if (mHl < 0 || mHl >= items.length) {
+        mHl = items.findIndex((el) => el.dataset.model === cur || el.dataset.pkey === mProvKey);
+        if (mHl < 0) mHl = items.length ? 0 : -1;
+      }
+      paintHl();
+    };
+
     const openModelPop = () => {
       mPop.hidden = false; mTrig.setAttribute("aria-expanded", "true");
       mSel.classList.add("is-open");
-      mSearch.value = ""; renderModelList(""); mSearch.focus();
+      mCol = "prov"; mHl = -1;
+      renderPick();
+      mPop.focus();
     };
+    const pickModel = (name) => { if (name) persist({ model: name }); closeModelPop(); };
+
     mTrig.onclick = () => (mPop.hidden ? openModelPop() : closeModelPop());
-    mSearch.oninput = () => renderModelList(mSearch.value);
-    mSearch.onkeydown = (e) => {
-      const items = [...mList.querySelectorAll(".model-opt:not(.model-opt--empty)")];
+    mProvBox.onclick = (e) => {
+      const btn = e.target.closest("[data-pkey]");
+      if (!btn) return;
+      mProvKey = btn.dataset.pkey; mCol = "model"; mHl = 0;
+      renderPick();
+    };
+    mModelBox.onclick = (e) => {
+      const btn = e.target.closest("[data-model]");
+      if (btn) pickModel(btn.dataset.model);
+    };
+    $("mpick-manage").onclick = async () => {
+      // 「管理模型」＝原"手输模型名"那条路的正式落点：去设置页填地址 / 密钥 / 模型 ID / 标签
+      closeModelPop();
+      const place = placementOf(activeModel());
+      if (place) state.prov = { tier: place.tier, provider: place.provider, builtin: place.builtin };
+      openSettings("model");
+      renderProv(await call("model_catalog"));
+    };
+    mPop.onkeydown = (e) => {
+      const items = colItems();
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
         if (!items.length) return;
         mHl = (mHl + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
-        [...mList.querySelectorAll(".model-opt")].forEach((el, i) => el.classList.toggle("is-hl", i === mHl));
-        items[Math.max(0, mHl)]?.scrollIntoView({ block: "nearest" });
+        paintHl();
+      } else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+        e.preventDefault();
+        mCol = mCol === "prov" ? "model" : "prov";
+        mHl = 0;
+        renderPick();
       } else if (e.key === "Enter") {
         e.preventDefault();
-        const pick = items[Math.max(0, mHl)] || items[0];
-        const name = (pick && pick.dataset.model) || mSearch.value.trim();
-        if (name) { persist({ model: name }); closeModelPop(); }
+        const el = items[Math.max(0, mHl)];
+        if (!el) return;
+        if (mCol === "prov") { mProvKey = el.dataset.pkey; mCol = "model"; mHl = 0; renderPick(); }
+        else pickModel(el.dataset.model);
       } else if (e.key === "Escape") {
+        e.preventDefault();
         closeModelPop();
       }
-    };
-    mList.onclick = async (e) => {
-      if (e.target.closest("[data-open-settings]")) {
-        closeModelPop();
-        state.prov = { tier: "lan", name: "" };      // 直接落到「添加局域网模型」
-        openSettings("model");
-        renderProv(await call("model_catalog"));
-        return;
-      }
-      const btn = e.target.closest("[data-model]");
-      if (!btn) return;
-      persist({ model: btn.dataset.model });
-      closeModelPop();
     };
     document.addEventListener("click", (e) => {
-      if (!mSel.contains(e.target)) closeModelPop();
+      // ★ 用事件路径判断"点在外面"，而不是 `mSel.contains(e.target)`：点一级供应商时
+      //   处理函数会同步重绘两列（innerHTML），**e.target 已经被摘出 DOM**，
+      //   contains() 恒为 false —— 于是每次点供应商都会把弹层自己关掉（真机表现是
+      //   "点供应商没反应/弹层一闪而过"）。composedPath 在派发时固定，不受重绘影响。
+      const path = typeof e.composedPath === "function" ? e.composedPath() : [];
+      const inside = path.length ? path.includes(mSel) : mSel.contains(e.target);
+      if (!inside) closeModelPop();
     });
     // Ollama 地址的绑定在 renderProv() 里（该输入框随详情面板一起渲染/重建）
     // 思考强度的绑定在上面的「输入区胶囊」一段（下拉在 #think-select 里）

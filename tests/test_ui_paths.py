@@ -14,9 +14,14 @@
   5. 插件专属设置栏目：启用带设置的插件后栏目出现、停用后消失
   6. 插件专属设置页渲染：laya 三级接入表单（本机/局域网/正则）+ 保存调用
   7. 设置页六组页面渲染（模型/隐私与权限/知识库/插件/企业控制面/窗口与外观）
-  7b. 模型接入页点击逻辑：左栏本机档只一项高亮 / 点模型名真的切换并当场反映 /
-      点右栏胶囊左栏「使用中」跟着变 / 点已在用的那项不误切 / 局域网条目仍是「看配置」
-  8. 工作流面板：模板列表、启动实例、步骤渲染、"已审批，待执行"文案、实现口径提示
+  7b. 模型接入页（V3.6.8 重做）：左列按供应商聚合 / **背景高亮只表示"正在查看"**（同一时刻恰 1 个）/
+      「使用中」是绿点标记（不是背景）/ 表单三块（Base URL / API 格式 / API Key）/ 模型列表行
+      （显示名 + 模型 ID + 标签 + 编辑删除）/ 点模型名即切换 / API Key「查看」调桥
+  7c. 密钥语义：留空＝不改动（沿用已存）+ 测试连接捎上条目名
+  7d. 添加供应商 → 添加模型（写入时同一供应商归到同一 provider，带上 api_format / tags）
+  7e. 可读写范围（sandbox_dir）：设置项显示 / 选择目录 / 清除回默认 / 态势条同一来源 /
+      四档矩阵写明"越界按档位判定并写审计"
+  8. 工作流**界面入口已移除**：DOM 里没有按钮/面板/页签，源码里没有 `workflow_*` / `wf-*` 残留
   9. 闪发模式：输入与主输入同步、Enter 发送、Shift+Enter 换行（不发送）
  10. 明暗切换 / 右栏折叠 → 窗口按钮归位（topbar ↔ panel ↔ head 三态）
  11. 附件「＋」：真的触发 pick_files 并有可读反馈；桥缺失时提示「桥接未就绪」
@@ -25,6 +30,21 @@
      是"同一条气泡原地升级"（工具行 / 流式正文），不是并存两条；finished 收到空串时显示
      如实兜底文案且**不留空气泡**（已有流式正文时正文优先）；没有流式气泡时 trace 也有
      可见落点；全程无 JS 运行时错误
+ 14. 安全工具：隐私健康体检 / 模型行为画像的结构化渲染与失败路径
+ 15. 设置页内容限宽居中（1920 / 1000 两档）
+ 16. 模型选择器：两级弹层（供应商 → 模型）、**没有搜索框**、键盘 ↑↓/Enter、点外部关闭、
+     「管理模型」跳设置页
+ 17. 思考强度：下拉只留档位名（解释收进 title）、触发器紧凑、语义不变（仍落库同一档）
+ 18. 上下文容量浮层：进度条与分类占比**逐项等于后端给的值**、底部两行来自预算表、
+     不出现"缓存命中率"这类我们没有的指标
+ 19. 窗口按钮：正好四个（置顶/最小化/最大化/关闭）、点最大化调桥并切图标、置顶高亮与
+     `window_state()` 一致、折叠态下最大化按钮禁用且服务端拒绝
+ 20. 暗色滚动条：corner/track 透明、button 不显示（白块根因），宽度仍是 10px
+ 21. 脱浏览器的服务层断言：密钥「查看」返回本机明文并写 `access_control` 审计（不含密钥本身）、
+     `context_usage()` 的数字与预算表一致
+ 22. 模型可用性诚实化（K）：配置里的模型不在清单里时胶囊显示「请选择模型」（不宣称不存在的模型）、
+     本机档空态原样显示 `local_note` + 两个动作、手动添加本机模型走 `<ollama_host>/v1` + `ollama` 密钥、
+     加完能立刻切换；没有任何可选模型时选择器给可行动提示
 
 用法：python tests/test_ui_paths.py        （退出码 0 = 全部通过）
 依赖：pip install playwright && python -m playwright install chromium
@@ -46,7 +66,7 @@ WEB_DIR = ROOT / "yindun" / "app" / "web"
 from yindun.core.permission import MODE_POLICY  # noqa: E402
 
 failures = []
-LIMIT_SECONDS = 150
+LIMIT_SECONDS = 210
 
 
 def check(name, cond, detail=""):
@@ -303,130 +323,247 @@ def main() -> int:
         check("外观页有置顶开关与主题按钮",
               page.is_visible("#sw-topmost + .switch__track") and page.is_visible("#btn-theme-2"))
 
-        # ── 7b) 模型接入页的点击逻辑（负责人实测反馈"点击逻辑有问题"）──
+        # ── 7b) 模型接入页（V3.6.8 按 ZCode「模型设置」重做）──
         print("\n" + "=" * 78)
-        print("【7b】模型接入页：点模型名 / 点胶囊都真的切换，且页面当场反映")
+        print("【7b】模型接入页：供应商聚合 / 唯一背景高亮 / 使用中绿点 / 模型列表")
         print("=" * 78)
         page.click('.setnav__item[data-set="model"]')
-        page.wait_for_timeout(300)
+        page.wait_for_timeout(400)
         # 记录 save_settings 的入参：切换是真的落库了，还是只改了界面
         page.evaluate("""() => {
           window.__saved = [];
           const m = window.__YINDUN_MOCK__.api, orig = m.save_settings;
           m.save_settings = (patch) => { window.__saved.push(patch); return orig(patch); };
         }""")
-        st = lambda: page.evaluate("""() => ({
-          left: [...document.querySelectorAll('#prov-list .prov__item')].map(
-            (b) => ({ n: b.dataset.n, active: b.classList.contains('is-active'),
-                      cur: !!b.querySelector('.prov__cur') })),
-          chips: [...document.querySelectorAll('#prov-detail .prov__chip')].map(
-            (c) => ({ n: c.dataset.pick, cur: c.classList.contains('is-cur') })),
-          saved: window.__saved.slice(),
-        })""")
-        s0 = st()
-        locals_now = [i for i in s0["left"] if not i["n"] or ":" in i["n"]][:2]
-        cur0 = [i["n"] for i in s0["left"] if i["cur"]]
-        check("本机档只有「使用中」那一项被高亮（不是整档都亮）",
-              len([i for i in s0["left"] if i["active"] and i["n"] and ":" in i["n"]]) == 1,
-              str(s0["left"]))
-        other = [i["n"] for i in s0["left"] if ":" in i["n"] and not i["cur"]]
-        check("本机档至少有一个「非使用中」模型可供点击切换", bool(other) and bool(cur0),
-              f"cur={cur0} other={other}")
-        if other:
-            page.click(f'#prov-list .prov__item[data-n="{other[0]}"]')
-            page.wait_for_timeout(500)
-            s1 = st()
-            check("点左栏本机模型名 → 真的切换了模型（落库补丁正确）",
-                  s1["saved"] and s1["saved"][-1].get("model") == other[0], str(s1["saved"]))
-            check("切完左栏「使用中」移到新模型（页面当场反映，不是点了没反应）",
-                  [i["n"] for i in s1["left"] if i["cur"]] == [other[0]], str(s1["left"]))
-            check("右栏胶囊同步「使用中」",
-                  [c["n"] for c in s1["chips"] if c["cur"]] == [other[0]], str(s1["chips"]))
-            # 反向：点胶囊，左栏必须跟着变（这条正是本次修掉的核心症状）
-            back = [i["n"] for i in s1["left"] if ":" in i["n"] and not i["cur"]][0]
-            page.click(f'#prov-detail .prov__chip[data-pick="{back}"]')
-            page.wait_for_timeout(500)
-            s2 = st()
-            check("点右栏胶囊切回 → 左栏「使用中」跟着变（修掉了「只改后端不改界面」）",
-                  [i["n"] for i in s2["left"] if i["cur"]] == [back],
-                  f"{[i['n'] for i in s1['left'] if i['cur']]} → {[i['n'] for i in s2['left'] if i['cur']]}")
-            n_saved = len(s2["saved"])
-            page.click(f'#prov-list .prov__item[data-n="{back}"]')
-            page.wait_for_timeout(400)
-            s3 = st()
-            check("点「已经在用」的那一项不产生多余保存（只想回面板不会误换模型）",
-                  len(s3["saved"]) == n_saved and page.is_visible("#prov-detail .prov__chip"),
-                  f"{n_saved} → {len(s3['saved'])}")
+
+        def token(name: str) -> str:
+            """把设计 token 换算成实际颜色（用于断言"用的是品牌绿"而不是背景块）。"""
+            return page.evaluate("""(n) => {
+                const d = document.createElement('div');
+                d.style.color = `var(${n})`;
+                document.body.appendChild(d);
+                const c = getComputedStyle(d).color; d.remove(); return c; }""", name)
+
+        providers = page.evaluate("""() => [...document.querySelectorAll('#prov-list .prov__item')].map((b) => ({
+            tier: b.dataset.t, prov: b.dataset.prov, builtin: b.dataset.builtin,
+            active: b.classList.contains('is-active') }))""")
+        check("左列按**供应商**聚合（本机 Ollama / 内网地址 / 云端域名，而不是一串模型名）",
+              [(p["tier"], p["prov"]) for p in providers] ==
+              [("local", "本机 Ollama"), ("lan", "10.0.0.8:8000"), ("wan", "open.bigmodel.cn")],
+              str(providers))
+        check("本机档仍列出 Ollama 已安装模型（摊开的子项可一键切换）",
+              page.eval_on_selector_all("#prov-list .prov__sub", "els => els.map(e => e.dataset.use)") ==
+              ["qwen2.5:7b-instruct", "qwen3.5:4b"], "")
+        check("★ 背景高亮只表示「正在查看的那一项」（同一时刻恰好 1 个 is-active）",
+              page.eval_on_selector_all("#prov-list .prov__item.is-active", "els => els.length") == 1,
+              str([p["active"] for p in providers]))
+        flags = page.evaluate("""() => [...document.querySelectorAll('#prov-list [data-cur-flag]')]
+            .filter((e) => !e.hidden).map((e) => ({ cur: e.dataset.curFlag, cls: e.className }))""")
+        check("「使用中」是独立标记（绿点），与「正在查看」的高亮互不共用",
+              bool(flags) and all("usage-flag" in f["cls"] for f in flags)
+              and all("prov__item" not in f["cls"] for f in flags), str(flags))
+        dot_color = page.evaluate("""() => {
+            const d = document.querySelector('#prov-list .usage-flag--dot');
+            return d ? getComputedStyle(d).backgroundColor : ''; }""")
+        check("「使用中」用品牌绿圆点（--accent-500），不是背景色块",
+              dot_color == token("--accent-500"), f"{dot_color} vs {token('--accent-500')}")
+        active_bg = page.evaluate("""() => getComputedStyle(document.querySelector('#prov-list .prov__item.is-active')).backgroundColor""")
+        check("「正在查看」用的才是背景（与绿点标记可同时区分开）",
+              active_bg not in ("rgba(0, 0, 0, 0)", "transparent"), active_bg)
+
+        # 右侧表单三块 + 模型列表（选局域网供应商）
         page.click('#prov-list .prov__item[data-t="lan"]')
         page.wait_for_timeout(350)
-        check("点局域网条目仍显示它的配置表单（原有「看配置」语义没有回退）",
-              "公司内网" in page.inner_text("#prov-detail"))
+        check("局域网供应商的右侧表单含 Base URL / API 格式 / API Key 三块与模型列表",
+              page.is_visible("#p-url") and page.is_visible("#p-format")
+              and page.is_visible("#p-key") and page.query_selector("#p-models .mrow") is not None, "")
+        check("同一时刻只有一个背景高亮（切到局域网后仍是 1 个）",
+              page.eval_on_selector_all("#prov-list .prov__item.is-active", "els => els.length") == 1, "")
+        fmt = page.eval_on_selector_all("#p-format option", "els => els.map(e => [e.value, e.disabled, e.textContent])")
+        check("API 格式下拉：只有 OpenAI 兼容 Chat Completions 可用，其它置灰并注明「暂不支持」",
+              fmt[0][0] == "chat_completions" and fmt[0][1] is False
+              and all(f[1] is True and "暂不支持" in f[2] for f in fmt[1:]), str(fmt))
+        row = page.evaluate("""() => {
+            const r = document.querySelector('#p-models .mrow'); if (!r) return null;
+            return { name: r.dataset.mname,
+                     mid: (r.querySelector('.mrow__mid') || {}).textContent || '',
+                     tags: [...r.querySelectorAll('.mtag')].map(e => e.textContent),
+                     ops: [...r.querySelectorAll('.mrow__ops .mbtn')].map(e => e.textContent) }; }""")
+        check("模型列表每行 = 显示名 + 模型 ID + 标签 + 编辑/删除",
+              row and row["name"] == "公司内网Qwen" and row["mid"] == "qwen2.5:14b"
+              and row["tags"] == ["中文", "长文"] and row["ops"] == ["编辑", "删除"], str(row))
+        check("「＋ 添加模型」在列表底部（同一供应商加模型）",
+              page.is_visible('#prov-detail [data-addmodel]'), "")
+        # 点模型名即切换（单选式"使用中"）
+        page.click('#p-models .mrow[data-mname="公司内网Qwen"] .mrow__use')
+        page.wait_for_timeout(500)
+        saved = page.evaluate("() => window.__saved.slice()")
+        check("点模型名即切换使用（落库 patch.model）",
+              bool(saved) and saved[-1].get("model") == "公司内网Qwen", str(saved[-1:]))
+        check("切换后「使用中」绿点移到新模型（页面当场反映）",
+              page.evaluate("""() => [...document.querySelectorAll('#prov-list [data-cur-flag]')]
+                  .filter(e => !e.hidden).map(e => e.dataset.curFlag)""") == ["公司内网Qwen"], "")
+        check("★ 同一时刻只有一个「使用中」（单选式；不是 ZCode 那种多开关）",
+              page.eval_on_selector_all("#p-models .usage-flag:not([hidden])", "els => els.length") == 1, "")
+        check("输入区触发器变成「供应商 / 模型」",
+              page.inner_text("#model-value").strip() == "10.0.0.8:8000 / 公司内网Qwen",
+              page.inner_text("#model-value"))
 
-        # ── 7c) 密钥「留空＝不改动」（负责人实测：保存后密钥消失、不能再保存/测试）──
+        # ── 7c) 密钥：看（显式查看 + 审计）/ 留空＝不改动 / 探测回落到条目名 ──
         print("\n" + "=" * 78)
-        print("【7c】公网模型密钥：保存不清空、测试连接会捎上条目名（好让后端回落已存密钥）")
+        print("【7c】API Key：显式「查看」/ 留空＝不改动 / 测试连接捎上条目名")
         print("=" * 78)
+        page.click('#prov-list .prov__item[data-t="wan"]')
+        page.wait_for_timeout(300)
+        check("已存密钥时输入框不回显（占位写明「留空则沿用已存密钥」）",
+              "已配置" in (page.get_attribute("#p-key", "placeholder") or ""),
+              repr(page.get_attribute("#p-key", "placeholder")))
+        page.evaluate("""() => {
+          window.__keys = [];
+          const m = window.__YINDUN_MOCK__.api, orig = m.custom_model_key;
+          m.custom_model_key = (...args) => { window.__keys.push(args); return orig(...args); };
+        }""")
+        page.click("#p-key-eye")
+        page.wait_for_timeout(350)
+        keys = page.evaluate("() => window.__keys")
+        check("点「查看」调用桥 custom_model_key(供应商名)——显式动作，不是自动回显",
+              bool(keys) and keys[-1][0] == "open.bigmodel.cn", str(keys[-1:]))
+        check("查看后输入框里是本机已存的明文（仅本机窗口可见）",
+              page.input_value("#p-key").startswith("sk-") and page.inner_text("#p-key-eye") == "隐藏",
+              f"{page.input_value('#p-key')[:8]!r} / {page.inner_text('#p-key-eye')!r}")
+        page.click("#p-key-eye")
+        page.wait_for_timeout(250)
+        check("再点一次 = 隐藏并清空（回到「留空＝不改动」）",
+              page.input_value("#p-key") == "" and page.inner_text("#p-key-eye") == "查看", "")
         page.evaluate("""() => {
           window.__probes = [];
           const m = window.__YINDUN_MOCK__.api, orig = m.probe_model_endpoint;
           m.probe_model_endpoint = (...args) => { window.__probes.push(args); return orig(...args); };
         }""")
+        page.click('#prov-detail [data-probe="detail"]')
+        page.wait_for_timeout(450)
+        probes = page.evaluate("() => window.__probes")
+        check("「测试连接」把条目名一并交给后端（后端据此用已存密钥，而不是空密钥）",
+              bool(probes) and probes[-1][2] == "云端GLM" and str(probes[-1][1]) == "",
+              str(probes[-1] if probes else None)[:160])
+        page.click("#prov-detail [data-save]")
+        page.wait_for_timeout(700)
+        toast_text = page.eval_on_selector_all("#toast-root .toast", "els => els.map(e => e.textContent).join(' | ')")
+        check("留空保存 → 如实提示「密钥沿用已存」（不是把密钥清掉）",
+              "密钥沿用已存" in toast_text, repr(toast_text[:80]))
+        check("保存后该供应商仍在（保存真的生效，不是静默失败）",
+              page.query_selector('#prov-list .prov__item[data-prov="open.bigmodel.cn"]') is not None, "")
+
+        # ── 7d) 添加供应商 → 添加模型（同一供应商归到同一 provider）──
+        print("\n" + "=" * 78)
+        print("【7d】添加供应商 / 添加模型（provider / api_format / tags 落库）")
+        print("=" * 78)
         page.click('#prov-list .prov__add[data-addt="wan"]')
         page.wait_for_timeout(300)
-        page.fill("#p-name", "回归-云端密钥")
-        page.fill("#p-model", "glm-4-flash")
-        page.fill("#p-url", "https://open.bigmodel.cn/api/paas/v4")
-        # 假密钥按仓库约定分段拼接（避免把"像密钥的字面量"写进仓库）
-        page.fill("#p-key", "sk-" + "regress-not-a-real-key")
+        check("「＋ 添加供应商」= 空表单 + 必填的「第一个模型」（供应商不能凭空存在）",
+              page.input_value("#p-provider") == "" and page.is_visible("#pm-panel")
+              and page.input_value("#pm-model") == "", "")
+        page.fill("#p-provider", "回归-云端供应商")
+        page.fill("#p-url", "https://api.example.invalid/v1")
+        page.fill("#pm-model", "demo-model-a")
+        page.fill("#pm-tags", "中文，长文")
         page.click("#prov-detail [data-save]")
-        page.wait_for_timeout(600)
-        check("保存带密钥的条目 → 密钥输入框清空（不回显）且提示「沿用已存密钥」",
-              page.input_value("#p-key") == "" and
-              "沿用已存密钥" in (page.get_attribute("#p-key", "placeholder") or ""),
-              f"{page.input_value('#p-key')!r} / {page.get_attribute('#p-key', 'placeholder')!r}")
-        check("该条已出现在公网档列表里（保存真的生效，不是静默失败）",
-              page.query_selector('#prov-list .prov__item[data-n="回归-云端密钥"]') is not None)
-        page.click("#prov-detail [data-save]")          # 第二个"保存"：用户最容易踩的那一步
-        page.wait_for_timeout(600)
-        toast_text = page.eval_on_selector_all("#toast-root .toast", "els => els.map(e => e.textContent).join(' | ')")
-        check("留空再保存 → 如实提示「密钥沿用已存」（不是把密钥清掉）",
-              "密钥沿用已存" in toast_text, repr(toast_text[:60]))
-        check("留空再保存后该条仍是「已配置」（密钥没丢）",
-              "沿用已存密钥" in (page.get_attribute("#p-key", "placeholder") or ""),
-              repr(page.get_attribute("#p-key", "placeholder")))
-        page.click('#prov-detail [data-probe="detail"]')
-        page.wait_for_timeout(500)
-        probes = page.evaluate("() => window.__probes")
-        check("点「测试连接」把条目名一并交给后端（后端据此用已存密钥，而不是空密钥）",
-              bool(probes) and probes[-1][2] == "回归-云端密钥",
-              str(probes[-1] if probes else None)[:160])
-        check("探测时输入框是空的（密钥不回显，靠后端回落）",
-              bool(probes) and str(probes[-1][1]) == "",
-              str(probes[-1] if probes else None)[:160])
+        page.wait_for_timeout(800)
+        add_calls = calls("add_custom_model")
+        check("保存供应商 → add_custom_model 带上 provider / api_format / tags",
+              bool(add_calls) and add_calls[-1][1][5] == "回归-云端供应商"
+              and add_calls[-1][1][6] == "chat_completions"
+              and list(add_calls[-1][1][7]) == ["中文", "长文"], str(add_calls[-1][1]))
+        check("新供应商出现在左列（公网档）",
+              page.query_selector('#prov-list .prov__item[data-prov="回归-云端供应商"]') is not None, "")
+        page.click("#prov-detail [data-addmodel]")
+        page.wait_for_timeout(250)
+        check("点「＋ 添加模型」展开编辑面板", page.is_visible("#pm-panel") and page.is_visible("#pm-model"), "")
+        page.fill("#pm-model", "demo-model-b")
+        page.fill("#pm-name", "回归模型B")
+        page.click("#prov-detail [data-msave]")
+        page.wait_for_timeout(800)
+        add_calls = calls("add_custom_model")
+        check("新模型归到同一 provider（不是各挂各的）",
+              bool(add_calls) and add_calls[-1][1][0] == "回归模型B"
+              and add_calls[-1][1][5] == "回归-云端供应商", str(add_calls[-1][1]))
+        check("该供应商下现在有两个模型（列表真的多了）",
+              page.eval_on_selector_all("#p-models .mrow", "els => els.length") == 2, "")
 
-        # ── 8) 工作流面板 ──
+        # ── 7e) 可读写范围（沙箱目录）：显示 / 选择 / 清除 / 态势条同步 ──
         print("\n" + "=" * 78)
-        print("【8】工作流面板")
+        print("【7e】可读写范围（sandbox_dir）：设置项 + 态势条同一来源")
+        print("=" * 78)
+        page.click('.setnav__item[data-set="safety"]')
+        page.wait_for_timeout(300)
+        check("隐私与权限页里有「可读写范围」的路径、选择目录与清除三个控件",
+              page.is_visible("#sandbox-path") and page.is_visible("#btn-pick-sandbox")
+              and page.is_visible("#btn-clear-sandbox"), "")
+        check("未自定义时显示后端给的默认范围（与态势条同源）",
+              page.inner_text("#sandbox-path").strip() == "E:\\yindun-agent"
+              and "默认" in page.inner_text("#sandbox-note"), page.inner_text("#sandbox-path"))
+        safety_text = page.inner_text('.setpage[data-set="safety"]')
+        check("说明文案写清「越界」按档位判定 + 写入「审计」（防被改成空话）",
+              "越界" in safety_text and "审计" in safety_text
+              and "系统目录与凭据类路径" in safety_text, "")
+        check("四档对照表下方写明「沙箱外操作按同一档位判定」",
+              "可读写范围（沙箱目录）内" in safety_text and "越界" in safety_text, "")
+        page.click("#btn-pick-sandbox")
+        page.wait_for_timeout(500)
+        sandbox_saved = [c for c in calls("save_settings")
+                         if c[1] and isinstance(c[1][0], dict) and "sandbox_dir" in c[1][0]]
+        check("「选择目录…」走原生目录通道并落库 sandbox_dir",
+              bool(calls("pick_directory")) and sandbox_saved
+              and sandbox_saved[-1][1][0]["sandbox_dir"] == "E:\\yd-demo-sandbox",
+              str(sandbox_saved[-1:]))
+        check("选完立刻显示新路径（并按「已自定义」口径说明）",
+              page.inner_text("#sandbox-path").strip() == "E:\\yd-demo-sandbox"
+              and "已自定义" in page.inner_text("#sandbox-note"), page.inner_text("#sandbox-note"))
+        page.click("#set-back")
+        page.wait_for_timeout(300)
+        check("★ 态势条「沙箱」跟着设置实时变（不再是环境变量那个旧值）",
+              page.eval_on_selector("#posture-sandbox span", "e => e.textContent.trim()") == "E:\\yd-demo-sandbox",
+              page.eval_on_selector("#posture-sandbox span", "e => e.textContent"))
+        page.click("#btn-settings")
+        page.wait_for_timeout(300)
+        page.click('.setnav__item[data-set="safety"]')
+        page.wait_for_timeout(250)
+        page.click("#btn-clear-sandbox")
+        page.wait_for_timeout(500)
+        sandbox_saved = [c for c in calls("save_settings")
+                         if c[1] and isinstance(c[1][0], dict) and "sandbox_dir" in c[1][0]]
+        check("「清除（回到默认）」写空串并回到默认显示",
+              sandbox_saved[-1][1][0]["sandbox_dir"] == ""
+              and page.inner_text("#sandbox-path").strip() == "E:\\yindun-agent"
+              and "默认" in page.inner_text("#sandbox-note"),
+              str(sandbox_saved[-1:]))
+        check("清除后也有如实提示（不是静默）",
+              "默认" in page.eval_on_selector_all("#toast-root .toast", "els => els.map(e => e.textContent).join(' | ')"), "")
+
+        # ── 8) 工作流界面入口已移除（引擎保留）──
+        print("\n" + "=" * 78)
+        print("【8】工作流界面层已移除（DOM + 源码双断言，防止悄悄复活）")
         print("=" * 78)
         page.click("#set-back")
-        page.wait_for_timeout(200)
-        page.click("#btn-workflow")
-        page.wait_for_selector("#wf-templates .wf-template")
-        tpl_names = page.eval_on_selector_all("#wf-templates .wf-template__name",
-                                             "els => els.map(e => e.textContent.trim())")
-        check("模板列表渲染", len(tpl_names) >= 3, str(tpl_names))
-        page.click("#wf-templates .wf-template")
-        page.wait_for_timeout(300)
-        check("点模板启动实例（调用 workflow_start）", bool(calls("workflow_start")))
-        steps = page.eval_on_selector_all("#wf-steps .wf-step__name", "els => els.map(e => e.textContent.trim())")
-        check("步骤列表渲染", len(steps) >= 3, str(steps))
-        notice = page.inner_text("#wf-notice")
-        check("提示写明实现口径（不再出现「演示步骤」字样）",
-              "演示步骤" not in notice and ("真实执行器" in notice or "未实现" in notice), notice[:120])
-        status_text = page.inner_text("#wf-steps")
-        check("「已审批，待执行」状态文案生效", "已审批" in status_text, status_text[:200])
-        check("未实现的步骤被标注（外部模板的工具有没有实现，界面要说清）",
-              "未实现" in status_text, status_text[:200])
+        page.wait_for_timeout(250)
+        check("DOM 里不存在工作流的按钮 / 面板 / 页签 / 模板容器",
+              page.query_selector("#btn-workflow") is None
+              and page.query_selector("#pane-workflow") is None
+              and page.query_selector('.ptab[data-pane="workflow"]') is None
+              and page.query_selector("#wf-templates") is None, "")
+        # 源码级断言（grep 语义）：界面文件里不许再出现工作流面板与桥调用的残留。
+        # 为什么是这几个词而不是裸 "workflow"：插件的 workflow_template 钩子是**内核保留能力**
+        # （引擎没删），会被裸词误伤；这里只钉"界面面板 + 桥方法"。
+        sources = {name: (WEB_DIR / name).read_text(encoding="utf-8")
+                   for name in ("index.html", "app.js", "dev-mock.js")}
+        banned = ("wf-templates", "btn-workflow", "btn-wf-", "wf-format", "wf-run",
+                  "pane-workflow", "workflow_templates", "workflow_start", "workflow_status",
+                  "workflow_execute", "workflow_approve", "workflow_export")
+        leftovers = {n: [t for t in banned if t in s] for n, s in sources.items()}
+        check("index.html / app.js / dev-mock.js 里没有任何工作流界面残留引用",
+              not any(leftovers.values()), str(leftovers))
+        check("app.js 里写明「界面入口已移除、引擎保留」（以后不会被当成漏删又接回来）",
+              "引擎保留" in sources["app.js"], "")
 
         # ── 9) 闪发模式输入同步 ──
         print("\n" + "=" * 78)
@@ -923,6 +1060,17 @@ def main() -> int:
               label: (a.querySelector('.anomaly__head b') || {}).textContent || '',
             })),
             rawOpen: !!(document.querySelector('#tool-result .tool-raw') || {}).open,
+            metricsCount: (document.querySelector('#tool-result .tool-metrics') || {}).dataset
+              ? document.querySelector('#tool-result .tool-metrics').dataset.count : '',
+            metricsGrid: getComputedStyle(document.querySelector('#tool-result .tool-metrics'))
+              .gridTemplateColumns,
+            metricsCols: getComputedStyle(document.querySelector('#tool-result .tool-metrics'))
+              .gridTemplateColumns.trim().split(/[ ]+/).length,
+            targetText: (document.querySelector('#tool-result .tool-target') || {}).textContent || '',
+            anomalyTimes: [...document.querySelectorAll('#tool-result .anomaly__time')]
+              .map((e) => e.textContent),
+            anomalyTitles: [...document.querySelectorAll('#tool-result .anomaly__time')]
+              .map((e) => e.getAttribute('title') || ''),
             danger: token('--danger-500'), warn: token('--warn-500'), muted: token('--text-3'),
           };
         }""")
@@ -935,9 +1083,27 @@ def main() -> int:
               len(behavior["hbars"]) == 5 and behavior["hbars"][0]["name"] == "读取文件" and
               behavior["hbars"][0]["width"] == "100%" and "18" in behavior["hbars"][0]["num"],
               str(behavior["hbars"][:2]))
-        check("操作类型分布四项齐全（读取 26 / 写入 6 / 删除 2 / 执行 3）",
-              len(behavior["ops"]) == 4 and "26读取" in behavior["ops"] and
-              "6写入" in behavior["ops"], str(behavior["ops"]))
+        check("操作类型分布：只列真有次数的档（读取 26 / 写入 6 / 删除 2）",
+              len(behavior["ops"]) == 3 and "26读取" in behavior["ops"] and
+              "6写入" in behavior["ops"] and "2删除" in behavior["ops"],
+              str(behavior["ops"]))
+        check("★ 0 值档不渲染灰盒（mock 的 execute=0 不出现在结果里）",
+              not any("执行" in o for o in behavior["ops"]), str(behavior["ops"]))
+        check("★ 四张指标卡走 2×2 等宽网格（窄栏里不排成 3+1 孤格）",
+              behavior["metricsCount"] == "4" and behavior["metricsCols"] == 2
+              and len(set(behavior["metricsGrid"].split())) == 1,
+              str(behavior["metricsGrid"]))
+        _target = behavior["targetText"].strip()
+        check("★ 时间戳压到 MM-DD HH:MM（不再出现带 T 的 ISO 串、年份或微秒）",
+              _target.startswith("qwen") and "T" not in _target and "2026-" not in _target
+              and "09:12:00" not in _target and "10:24:08" not in _target
+              and "09:12" in _target and _target.endswith("10-16 10:24"),
+              repr(_target))
+        check("异常时间同样用短格式（MM-DD HH:MM）且完整时间放 title 备查",
+              behavior["anomalyTimes"] and all(len(t) == 11 and t[5] == " " for t in behavior["anomalyTimes"])
+              and all("2026-10-16T" in ti for ti in behavior["anomalyTitles"]),
+              str(list(zip(behavior["anomalyTimes"], behavior["anomalyTitles"]))) + " || "
+              + behavior.get("boxHead", "?"))
         check("被访问的敏感路径逐条列出（2 个）",
               len(behavior["paths"]) >= 2 and
               any("id_rsa" in p for p in behavior["paths"]), str(behavior["paths"]))
@@ -979,9 +1145,9 @@ def main() -> int:
             okMetric: !!document.querySelector('#tool-result .tool-metric--ok'),
           };
         }""")
-        check("无发现时给正面空态（未发现隐私风险 + 扫描依据），不是「0 项」一行",
+        check("无发现时给正面空态（未发现隐私风险 + 扫描依据，一行内说清）",
               empty["visible"] and "未发现隐私风险" in empty["text"] and
-              "已扫描 9 个文件" in empty["text"], str(empty))
+              "扫描 9 个文件" in empty["text"] and len(empty["text"]) < 70, str(empty))
         check("空态下不渲染空的分组容器", empty["groups"] == 0, str(empty["groups"]))
         check("无发现时问题数与风险评分如实为 0，并用安全色",
               empty["nums"] == ["9", "0", "0"] and empty["okMetric"], str(empty))
@@ -1081,10 +1247,340 @@ def main() -> int:
         page.set_viewport_size({"width": 1440, "height": 900})
         page.wait_for_timeout(200)
 
+        # ── 16) 模型选择器：两级弹层 + 无搜索框（负责人要求照 ZCode）──
+        print("\n" + "=" * 78)
+        print("【16】模型选择器：两级（供应商 → 模型）/ 无搜索框 / 管理模型")
+        print("=" * 78)
+        # §15 停在设置视图里（设置会隐藏顶栏与输入区），先回到对话视图
+        page.click("#set-back")
+        page.wait_for_timeout(300)
+        check("回到对话视图（后续交互都在输入区一带）",
+              not page.evaluate("() => document.querySelector('.app').classList.contains('is-settings-open')"), "")
+        page.click("#model-trigger")
+        page.wait_for_timeout(300)
+        check("弹层里**没有**搜索框（D：照 ZCode 的形态）",
+              page.query_selector("#model-pop input") is None
+              and page.query_selector("#model-search") is None, "")
+        src_index = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+        src_app = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+        check("源码里也不再引用 model-search / model-list（整条老路径退场）",
+              "model-search" not in src_index and "model-search" not in src_app
+              and "model-list" not in src_index, "")
+        prov_opts = page.eval_on_selector_all(".mpick__prov", "els => els.map(e => e.dataset.pkey)")
+        check("一级列出供应商，并按三档分组（保留数据边界说明）",
+              len(prov_opts) >= 3
+              and page.eval_on_selector_all(".mpick__gt", "els => els.length") >= 2, str(prov_opts))
+        check("默认展开当前模型所在供应商（一级有 is-open）",
+              page.eval_on_selector_all(".mpick__prov.is-open", "els => els.length") == 1, "")
+        check("二级里当前模型打勾（一眼看出在用哪个）",
+              page.eval_on_selector_all("#mpick-models .model-opt.is-cur .model-opt__tick",
+                                        "els => els.length") == 1, "")
+        page.click('.mpick__prov[data-pkey="wan::open.bigmodel.cn::0"]')
+        page.wait_for_timeout(250)
+        check("点一级供应商 → 弹层保持打开（重绘不会把它自己关掉）",
+              page.is_visible("#model-pop"), "")
+        sel_models = page.eval_on_selector_all(
+            "#mpick-models [data-model]", "els => els.map(e => ({n: e.dataset.model, tags: [...e.querySelectorAll('.mtag')].map(t => t.textContent)}))")
+        check("二级列出该供应商的模型，带标签",
+              any(m["n"] == "云端GLM" for m in sel_models)
+              and any(m["tags"] == ["低成本"] for m in sel_models), str(sel_models))
+        page.click('#mpick-models [data-model="云端GLM"]')
+        page.wait_for_timeout(450)
+        check("选模型 → 弹层关闭 + 触发器文案变成「供应商 / 模型」",
+              not page.is_visible("#model-pop")
+              and page.inner_text("#model-value").strip() == "open.bigmodel.cn / 云端GLM",
+              page.inner_text("#model-value"))
+        # 键盘：↑↓ 移动、Enter 进二级/选中、Esc 关闭
+        page.click("#model-trigger")
+        page.wait_for_timeout(250)
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(250)
+        check("键盘：↓ 移动 + Enter（供应商列 → 进入模型列，且有高亮项）",
+              page.eval_on_selector_all("#mpick-models .is-hl", "els => els.length") == 1, "")
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(450)
+        check("键盘 Enter 在模型列选中 → 弹层关闭", not page.is_visible("#model-pop"), "")
+        page.click("#model-trigger")
+        page.wait_for_timeout(250)
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(200)
+        check("键盘 Esc 关闭弹层", not page.is_visible("#model-pop"), "")
+        page.click("#model-trigger")
+        page.wait_for_timeout(250)
+        page.click("#posture")                      # 点弹层外部
+        page.wait_for_timeout(250)
+        check("点弹层外部关闭", not page.is_visible("#model-pop"), "")
+        page.click("#model-trigger")
+        page.wait_for_timeout(250)
+        page.click("#mpick-manage")
+        page.wait_for_timeout(600)
+        check("底部「管理模型」跳到设置页「模型接入」（原手输模型名那条路的正式落点）",
+              page.evaluate("() => document.querySelector('.app').classList.contains('is-settings-open')")
+              and page.evaluate("""() => { const p = document.querySelector('.setpage[data-set="model"]');
+                                          return !!p && p.classList.contains('is-active'); }"""), "")
+        page.click("#set-back")
+        page.wait_for_timeout(250)
+
+        # ── 17) 思考强度：紧凑形态（解释进 title）──
+        print("\n" + "=" * 78)
+        print("【17】思考强度：下拉只留档位名（解释收进 title）")
+        print("=" * 78)
+        page.click("#think-trigger")
+        page.wait_for_timeout(250)
+        opts = page.eval_on_selector_all(
+            "#think-pop .think__opt", "els => els.map(e => ({ t: e.innerText.trim(), title: e.title }))")
+        names = [o["t"].replace("✓", "").strip() for o in opts]
+        check("下拉只有档位名（低/中/高/最高），不再铺一行解释",
+              names == ["低", "中", "高", "最高"], str(names))
+        check("解释性文字收进 title（悬停才看，不是删掉不告诉）",
+              all(len(o["title"]) >= 8 for o in opts), str(opts))
+        check("触发器紧凑：只有档位词 + 小图标（含箭头），没有长说明",
+              len((page.inner_text("#think-trigger") or "").strip()) <= 4
+              and page.eval_on_selector_all("#think-trigger svg", "els => els.length") >= 2,
+              repr(page.inner_text("#think-trigger")))
+        check("触发器的 title 带着当前档说明（细看时口径还在）",
+              len(page.get_attribute("#think-trigger", "title") or "") >= 10,
+              repr(page.get_attribute("#think-trigger", "title")))
+        page.click('#think-pop [data-level="low"]')
+        page.wait_for_timeout(300)
+        depth_saved = [c for c in calls("save_settings")
+                       if c[1] and isinstance(c[1][0], dict) and "thinking_depth" in c[1][0]]
+        check("语义不变：点「低」仍落库同一档（thinking_depth=2）",
+              depth_saved and depth_saved[-1][1][0]["thinking_depth"] == 2, str(depth_saved[-1:]))
+        page.click("#think-trigger")                    # 点选后下拉自动收起，重新打开
+        page.wait_for_timeout(200)
+        page.click('#think-pop [data-level="mid"]')     # 还原成日常档，供后续用例
+
+        # ── 18) 上下文容量浮层（数字全部来自后端）──
+        print("\n" + "=" * 78)
+        print("【18】上下文容量浮层（进度条 / 分类占比 / 底部预算口径）")
+        print("=" * 78)
+        # 统计条只在右栏收起时可见（既有布局规则），点开浮层前先收起右栏
+        if not page.evaluate("() => document.querySelector('.app').classList.contains('is-right-collapsed')"):
+            page.click("#btn-toggle-right")
+            page.wait_for_timeout(300)
+        page.click("#stat-tokens")
+        page.wait_for_timeout(450)
+        check("点顶栏「上下文 x/y」打开浮层", page.is_visible("#ctx-pop"), "")
+        payload = page.evaluate("async () => await window.__YINDUN_MOCK__.api.context_usage()")
+        head = page.inner_text(".ctx__head").replace("\n", " ")
+        check("标题行给出「已用 / 上限」与百分比",
+              "已用" in head and f'{payload["percent"]}%' in head and "16.4k" in head, head)
+        check("进度条宽度 = 后端百分比（前端不自己算）",
+              page.eval_on_selector("#ctx-fill", "e => e.style.width") == f'{payload["percent"]}%',
+              page.eval_on_selector("#ctx-fill", "e => e.style.width"))
+        rows = page.eval_on_selector_all("#ctx-list .ctx__item", """els => els.map(e => ({
+            key: e.dataset.key, label: e.querySelector('.ctx__label').textContent,
+            pct: e.querySelector('.ctx__pct').textContent }))""")
+        want = [{"key": p["key"], "label": p["label"], "pct": f'{p["percent"]}%'} for p in payload["parts"]]
+        check("分类占比**逐项**与后端给的一致（用沙盘数据核对）", rows == want, f"{rows} vs {want}")
+        foot = page.inner_text("#ctx-foot")
+        check("底部两行来自预算表（历史压缩阈值 / 附件正文预算）",
+              all(line in foot for line in payload["footer"]["lines"]), repr(foot))
+        check("底部不出现我们没有的指标（如「缓存命中率」）",
+              "缓存" not in foot, repr(foot))
+        check("原来那段长 tooltip 已移除（信息进浮层）",
+              "超过" not in (page.get_attribute("#stat-tokens", "title") or ""),
+              repr(page.get_attribute("#stat-tokens", "title")))
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(200)
+        check("浮层可 Esc 关闭", not page.is_visible("#ctx-pop"), "")
+        page.click("#stat-tokens")
+        page.wait_for_timeout(250)
+        # 点浮层外部关闭：用窗口左上角（侧栏品牌区，无任何点击行为）——
+        # 浮层盖住了下方内容，点别处会被它自己接住，测试就测不出"点外部关闭"了
+        page.mouse.click(8, 8)
+        page.wait_for_timeout(250)
+        check("浮层可点外部关闭", not page.is_visible("#ctx-pop"), "")
+
+        # ── 19) 窗口按钮：置顶 / 最小化 / 最大化 / 关闭 ──
+        print("\n" + "=" * 78)
+        print("【19】窗口四按钮（状态以 window_state() 为准）")
+        print("=" * 78)
+        btns = page.eval_on_selector_all(
+            ".win-ctrls .win-btn", "els => els.map(e => [e.dataset.win, e.title])")
+        check("正好四个按钮，顺序为 置顶 / 最小化 / 最大化 / 关闭",
+              [b[0] for b in btns] == ["toggle_top", "minimize", "toggle_maximize", "close"], str(btns))
+        check("每个按钮都有 data-win 与 title", all(b[0] and b[1] for b in btns), str(btns))
+        page.click("#btn-max")
+        page.wait_for_timeout(400)
+        max_calls = [c for c in calls("window_action") if c[1][0] == "toggle_maximize"]
+        check("点最大化调用桥 window_action('toggle_maximize')", bool(max_calls), str(max_calls[-1:]))
+        check("图标切到「还原」态（body.is-maximized + 还原图标可见 + title 说清）",
+              page.evaluate("() => document.body.classList.contains('is-maximized')")
+              and page.is_visible(".win-btn__ico-restore")
+              and (page.get_attribute("#btn-max", "title") or "") == "还原窗口", "")
+        page.click("#btn-max")
+        page.wait_for_timeout(400)
+        check("再点回到「最大化」态（图标与 title 都回来）",
+              not page.evaluate("() => document.body.classList.contains('is-maximized')")
+              and (page.get_attribute("#btn-max", "title") or "") == "最大化"
+              and page.is_visible(".win-btn__ico-max"), "")
+        before_pin = page.evaluate("async () => await window.__YINDUN_MOCK__.api.window_state()")
+        page.click("#btn-pin")
+        page.wait_for_timeout(400)
+        after_pin = page.evaluate("async () => await window.__YINDUN_MOCK__.api.window_state()")
+        pin_active = page.evaluate("() => document.getElementById('btn-pin').classList.contains('is-active')")
+        check("点置顶后按钮高亮与 window_state().topmost 一致（不是本地翻转记账）",
+              after_pin["topmost"] != before_pin["topmost"] and pin_active == after_pin["topmost"],
+              f'{before_pin} → {after_pin} active={pin_active}')
+        check("外观页的置顶开关同步（窗内外无二口径）",
+              page.evaluate("() => document.getElementById('sw-topmost').checked") == after_pin["topmost"], "")
+        page.click("#btn-pin")                      # 复原，避免影响后续用例
+        page.wait_for_timeout(350)
+        # 折叠态：最大化按钮必须禁用，服务端也拒绝（别卡在"半个状态"）
+        page.click("#btn-mini")
+        page.wait_for_timeout(450)
+        max_state = page.evaluate("""() => { const b = document.getElementById('btn-max');
+            return { disabled: b.disabled, title: b.title }; }""")
+        check("折叠态下最大化按钮禁用且如实说明原因（不静默）",
+              max_state["disabled"] is True and "先退出闪发模式" in max_state["title"], str(max_state))
+        check("折叠态直接调桥也会被拒绝（返回 false，不是假装成功）",
+              page.evaluate("async () => await window.__YINDUN_MOCK__.api.window_action('toggle_maximize')") is False, "")
+        page.click("#btn-mini-expand")
+        page.wait_for_timeout(400)
+        check("展开后最大化按钮恢复可用",
+              page.evaluate("() => !document.getElementById('btn-max').disabled"), "")
+
+        # ── 20) 暗色滚动条：不留白色小方块 ──
+        print("\n" + "=" * 78)
+        print("【20】滚动条 corner / track / button（暗色白块根因）")
+        print("=" * 78)
+        for theme, label in (("dark", "暗色"), ("light", "浅色")):
+            page.evaluate("(t) => { document.documentElement.dataset.theme = t; }", theme)
+            page.wait_for_timeout(150)
+            styles = page.evaluate("""() => {
+                const el = document.querySelector('#chat');
+                return {
+                  corner: getComputedStyle(el, '::-webkit-scrollbar-corner').backgroundColor,
+                  track: getComputedStyle(el, '::-webkit-scrollbar-track').backgroundColor,
+                  button: getComputedStyle(el, '::-webkit-scrollbar-button').display,
+                  width: getComputedStyle(el, '::-webkit-scrollbar').width,
+                }; }""")
+            check(f"{label}下滚动条 corner 与 track 都是透明的（白块的根因）",
+                  styles["corner"] == "rgba(0, 0, 0, 0)" and styles["track"] == "rgba(0, 0, 0, 0)", str(styles))
+            check(f"{label}下滚动条箭头按钮不显示（Windows 原生底色）",
+                  styles["button"] == "none", str(styles))
+            check(f"{label}下滚动条宽度仍是既有的 10px（没被顺手改掉）",
+                  styles["width"] == "10px", str(styles))
+
+        # ── 22) 模型可用性诚实化（K：便携版在同学机器上宣称了一个不存在的模型）──
+        # 用另一张页面打开 #mock-noollama：本机没有任何模型、也没有自定义条目，
+        # 配置里却写着 qwen3.5:4b —— 正是负责人实测的那台机器。
+        print("\n" + "=" * 78)
+        print("【22】模型可用性诚实化 + 本机档空态 + 手动添加本机模型")
+        print("=" * 78)
+        page2 = browser.new_page(viewport={"width": 1440, "height": 900})
+        errors2 = []
+        page2.on("pageerror", lambda err: errors2.append(str(err)))
+        page2.goto(url + "-noollama", wait_until="domcontentloaded")
+        page2.wait_for_function(
+            "() => { const v = document.querySelector('#model-value');"
+            " return v && v.textContent.trim() && v.textContent.trim() !== '—'"
+            " && v.textContent.indexOf('检查模型') < 0; }", timeout=20000)
+        trigger = (page2.inner_text("#model-value") or "").strip()
+        check("★ 配置里的模型不在可用清单里 → 胶囊显示「请选择模型」（不宣称不存在的模型）",
+              trigger == "请选择模型" and "qwen3.5:4b" not in trigger, repr(trigger))
+        cat = page2.evaluate("async () => await window.__YINDUN_MOCK__.api.model_catalog()")
+        check("沙盘契约：current_available=false 且三档全空（这就是同学那台机器的状态）",
+              cat["current_available"] is False
+              and not any(cat["tiers"][t] for t in ("local", "lan", "wan")), str(cat["current"]))
+        page2.click("#model-trigger")
+        page2.wait_for_timeout(350)
+        hint = page2.inner_text("#model-hint") or ""
+        check("可选模型为空时，选择器给的是可行动提示（手动添加 / ollama pull）",
+              ("手动添加" in hint) or ("ollama pull" in hint), repr(hint[:120]))
+        page2.keyboard.press("Escape")
+        page2.click("#btn-settings")
+        page2.wait_for_timeout(800)
+        note_ui = (page2.inner_text("#local-note") or "").strip()
+        check("★ 本机档把后端给的 local_note **原样**显示（说清为什么空）",
+              note_ui == str(cat["local_note"]).strip() and "连不上本机 Ollama 服务" in note_ui,
+              repr(note_ui[:80]))
+        check("空态旁边给了两个动作：重新检测 + 手动添加本机模型",
+              page2.is_visible('#prov-detail [data-rescan]')
+              and page2.is_visible("#prov-detail [data-addlocal]"), "")
+        page2.evaluate("""() => {
+          window.__adds = [];
+          const m = window.__YINDUN_MOCK__.api, orig = m.add_custom_model;
+          m.add_custom_model = (...args) => { window.__adds.push(args); return orig(...args); };
+        }""")
+        page2.click("#prov-detail [data-addlocal]")
+        page2.wait_for_timeout(250)
+        page2.fill("#la-model", "qwen3.5:27b")
+        page2.click("#prov-detail [data-lasave]")
+        page2.wait_for_timeout(900)
+        adds = page2.evaluate("() => window.__adds")
+        check("★「＋ 手动添加本机模型」按 Ollama 通路落库：tier=local / base_url 以 /v1 结尾 / key=ollama",
+              bool(adds) and adds[-1][4] == "local"
+              and str(adds[-1][2]).endswith("/v1") and adds[-1][3] == "ollama",
+              str(adds[-1] if adds else None))
+        check("添加后本机档里出现该模型（不是「加完还是空的」）",
+              page2.eval_on_selector_all("#p-models .mrow", "els => els.map(e => e.dataset.mname)")
+              == ["qwen3.5:27b"], str(page2.eval_on_selector_all("#p-models .mrow", "els => els.map(e => e.dataset.mname)")))
+        page2.click('#p-models .mrow[data-mname="qwen3.5:27b"] .mrow__use')
+        page2.wait_for_timeout(600)
+        page2.click("#set-back")
+        page2.wait_for_timeout(300)
+        trigger2 = (page2.inner_text("#model-value") or "").strip()
+        check("添加后点一下即切换，胶囊显示「供应商 / 模型」",
+              trigger2.endswith("/ qwen3.5:27b") and "手动" in trigger2, repr(trigger2))
+        check("K 场景全程无 JS 运行时错误", not errors2, "；".join(errors2[:3]))
+        page2.close()
+
         check("全程无 JS 运行时错误", not errors, "；".join(errors[:3]))
         browser.close()
 
     httpd.shutdown()
+
+    # ── 21) 服务层（浏览器沙盘之外的真实路径）：密钥查看写审计 / 上下文口径 ──
+    # 这两条没法在沙盘里验：审计写在内核（HMAC 链），沙盘的假桥不产生审计。
+    # 所以直接用真实 AgentService + 临时配置跑一次——与 tests/test_agent_service.py 同一做法
+    # （临时目录里的配置，不碰用户的 global_config.json）。
+    print("\n" + "=" * 78)
+    print("【21】服务层：custom_model_key 写审计 / context_usage 与预算表一致")
+    print("=" * 78)
+    import tempfile                                                     # noqa: E402
+    from yindun.app.agent_service import AgentService                   # noqa: E402
+    from yindun.app.session_store import SessionStore                   # noqa: E402
+    from yindun.app.settings_store import SettingsStore                 # noqa: E402
+    from yindun.core.audit_log import AuditLog                          # noqa: E402
+
+    tmp = Path(tempfile.mkdtemp(prefix="yd_ui_key_"))
+    fake_key = "sk-" + "ui-regression-not-a-real-key"       # 分段拼：不把"像密钥的字面量"写进仓库
+    store = SettingsStore(path=tmp / "cfg.json")
+    store.load()
+    store.set("custom_models", {"回归供应商": {
+        "model_id": "demo-model", "base_url": "https://api.example.invalid/v1",
+        "api_key": fake_key, "tier": "wan"}})
+    store.save()
+    svc = AgentService(settings=store, sessions=SessionStore(path=tmp / "sessions.json"))
+    audit_before = AuditLog().get_entries() or []
+    key_res = svc.custom_model_key("回归供应商")
+    fresh = (AuditLog().get_entries() or [])[len(audit_before):]
+    check("custom_model_key 返回本机已存的明文密钥（仅本机窗口通路）",
+          bool(key_res.get("ok")) and key_res.get("key") == fake_key, str(key_res)[:40])
+    viewed = [e for e in fresh if "查看" in str(getattr(e, "message", ""))]
+    check("每次查看都写审计（access_control / warning）",
+          bool(viewed) and str(getattr(viewed[-1], "event_type", "")) == "access_control"
+          and str(getattr(viewed[-1], "severity", "")) == "warning",
+          str(viewed[-1:])[:200])
+    check("审计只记「看了哪个供应商」，不写密钥本身",
+          all(fake_key not in json.dumps(getattr(e, "details", {}) or {}, ensure_ascii=False)
+              and fake_key not in str(getattr(e, "message", "")) for e in fresh), "")
+    usage = svc.context_usage()
+    from yindun.core.context_budget import (ATTACHMENT_TOTAL_CHARS,         # noqa: E402
+                                            MODEL_WINDOW_TOKENS)
+    check("context_usage 的窗口上限与预算表一致",
+          usage.get("limit_tokens") == MODEL_WINDOW_TOKENS, str(usage.get("limit_tokens")))
+    check("context_usage 的底部两行来自预算表（附件预算写的就是内核那个数）",
+          any(str(ATTACHMENT_TOTAL_CHARS) in line for line in usage["footer"]["lines"]),
+          str(usage["footer"]))
+    check("context_usage 的每一项都带真实 token 与占比（没有占位/编造）",
+          all(isinstance(p.get("tokens"), int) and isinstance(p.get("percent"), (int, float))
+              and p.get("label") for p in usage["parts"]), str(usage["parts"]))
+
     elapsed = time.time() - started
     print("\n" + "=" * 78)
     print(f"耗时 {elapsed:.1f} 秒（上限 {LIMIT_SECONDS} 秒）")
@@ -1092,7 +1588,9 @@ def main() -> int:
     if failures:
         print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))
         return 1
-    print("✅ 界面十三条关键路径全部通过（四档权限 / 胶囊 / 思考 / 插件市场与设置页 / 模型接入点击逻辑 / 工作流 / 闪发 / 主题与布局 / 附件＋ / Markdown 表格 / 等待态与空回复兜底）")
+    print("✅ 界面关键路径全部通过（权限 / 胶囊 / 思考紧凑形态 / 插件 / 模型接入重做 / 模型选择器两级 / "
+          "上下文浮层 / 窗口四按钮 / 可读写范围 / 模型可用性诚实化 / 闪发 / 主题与布局 / 附件＋ / "
+          "Markdown 表格 / 等待态与空回复兜底 / 工作流界面已移除 / 暗色滚动条）")
     return 0
 
 

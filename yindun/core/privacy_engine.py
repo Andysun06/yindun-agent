@@ -496,7 +496,37 @@ class PrivacyEngine:
                 if any(w in pre for w in PrivacyEngine._PLATE_BLOCK_WORDS):
                     return False
             return True
+        if key == "ADDRESS":
+            # 路径片段不是地址（V3.6.8，真机落盘扫描实测）
+            if PrivacyEngine._looks_like_path_fragment(match):
+                return False
+            return True
         return True
+
+    # 强地址标记：出现任一即认为"即便在路径里也可能是真地址"，照常脱敏（宁可过度脱敏）
+    _ADDRESS_STRONG_MARKERS = (
+        "省", "市", "县", "旗", "村", "镇", "路", "街", "道", "巷", "弄",
+        "号", "幢", "栋", "单元", "室", "大厦", "广场", "大楼", "小区", "公寓",
+    )
+
+    @staticmethod
+    def _looks_like_path_fragment(text: str) -> bool:
+        """区分"路径里的目录名"与"真地址"。
+
+        实测（本机落盘扫描 + 引擎单跑都复现）：
+          `C:\\Users\\Andy\\AppData\\Local\\Temp\\yindun_fileops_mr8ezhiz\\工作区` 会被
+          ADDRESS 分支① 的「2~8 字 + 区」命中，于是**目录名连同前面一段路径**被替换成
+          `[ADDRESS_x]`。方向上是"过度脱敏"（不泄露），但会污染工具结果里的路径——
+          模型拿到的是占位符，没法照原样回填路径（"把文件放到 …/工作区" 这类指令会被改坏）。
+
+        判据（两条**同时**满足才判负；宁可漏掉路径里的地址写法，也不放宽真地址）：
+          ① 匹配段里出现路径分隔符（`\\` 或 `/`）；
+          ② 段里**没有**任何强地址标记（省/市/路/号/街…）。
+        也就是说：`D:\\客户\\北京市朝阳区建国路88号\\合同.pdf` 里的地址段照旧会被脱敏。
+        """
+        if not any(separator in text for separator in ("\\", "/")):
+            return False
+        return not any(marker in text for marker in PrivacyEngine._ADDRESS_STRONG_MARKERS)
 
     # ──────────────────────────────────────────
     # 2. 人名识别（轻量方案）

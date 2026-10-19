@@ -63,12 +63,24 @@ class JsApi:
     # ── 启动数据 ─────────────────────────────────
     def bootstrap(self) -> Dict[str, Any]:
         settings = dict(self._svc.settings.data)
-        # 态势行要展示真实运行态：沙箱目录来自环境（工具层实际使用的值）
-        settings.setdefault("sandbox", os.environ.get("SANDBOX_PATH", str(APP_ROOT)))
+        # 态势行要展示真实运行态：可读写范围按内核的解析顺序取"当前生效值"
+        # （设置 sandbox_dir > 环境变量 SANDBOX_PATH > 程序目录），不要另写一套 fallback。
+        settings["sandbox"] = self._svc.worker_sandbox_root()
+        # ★ 算力清单的关键字段放进首屏载荷（V3.6.8）：界面第一屏就要能**诚实地**显示
+        #   "请选择模型"或"当前模型不可用 + 原因"，不必再等一次异步调用、也不靠猜。
+        #   判定口径与 llm_status 同一处（llm_factory.model_catalog 的 current_available）。
+        catalog = self._svc.model_catalog()
+        model_catalog_brief = {
+            "current": catalog.get("current", ""),
+            "current_available": bool(catalog.get("current_available")),
+            "local_note": catalog.get("local_note", ""),
+            "local_detected": list(catalog.get("local_detected") or []),
+        }
         return {
             "version": __display_version__,
             "settings": settings,
             "llm": self._svc.llm_status(),
+            "model_catalog": model_catalog_brief,
             "sessions": self._svc.list_sessions(),
             "current_session_id": self._svc.current_session_id(),
         }
@@ -152,6 +164,27 @@ class JsApi:
         """直接挂载给定路径（供拖拽或自动化测试使用）。"""
         from yindun.app.attachment import normalize_paths
         return self._svc.attach_files(normalize_paths(paths))
+
+    def pick_directory(self):
+        """选择「可读写范围（沙箱目录）」。
+
+        用 pywebview 的原生目录选择器（`FOLDER_DIALOG`）；窗口未就绪、对话框不可用或用户
+        取消都**如实**返回 `{"ok": False, "error": ...}`，让界面给出可读提示而不是静默无反应。
+        这里只返回一个路径字符串，不做任何"这个路径能不能读写"的判定——判定在内核。
+        """
+        window = self._window.get("window")
+        if window is None:
+            return {"ok": False, "error": "窗口未就绪"}
+        try:
+            import webview as _wv
+            from yindun.app.attachment import normalize_paths
+            picked = window.create_file_dialog(_wv.FOLDER_DIALOG)
+        except Exception as exc:
+            return {"ok": False, "error": f"打开目录对话框失败：{exc}"}
+        paths = normalize_paths(picked)
+        if not paths:
+            return {"ok": False, "error": "未选择目录（已取消）"}
+        return {"ok": True, "path": paths[0]}
 
     def clear_attachments(self) -> bool:
         self._svc.clear_attachments()
@@ -290,6 +323,8 @@ class JsApi:
                 self._collapse_to_mini(window)
             elif action == "restore_window":
                 self._restore_from_mini(window)
+            elif action == "toggle_maximize":
+                return self._toggle_maximize(window)
             elif action == "close":
                 window.destroy()
             else:
@@ -331,6 +366,51 @@ class JsApi:
         window.move(nx, ny)
         window.resize(nw, nh)
         self._saved_geometry = None
+
+    def _toggle_maximize(self, window) -> bool:
+        """最大化 ⇄ 还原。返回是否真的执行了（折叠态下拒绝时返回 False）。
+
+        ★ 与「极简闪发折叠」共存：折叠态下窗口被改成一条浮条（尺寸与位置都动过）。
+          此时**拒绝**而不是"偷偷先展开再最大化"——展开是另一个显式动作；如果这里单方面
+          还原几何，页面的 `body.is-mini` 还停在折叠态，界面会卡在"看起来最大化了、
+          实际还是浮条/主界面仍隐藏"的半个状态里。前端会据此提示"先退出闪发模式"。
+        ★ 与无边框 + 边缘热区共存：最大化交给系统（原生 SetWindowPos + WM_GETMINMAXINFO），
+          前端热区只在非最大化时按起点几何改尺寸；最小尺寸约束来自创建窗口时的 min_size
+          （折叠态尺寸），它只限制"最小"，不会把最大化卡回小窗；还原后回到折叠前的几何。
+        ★ 降级：个别 pywebview 后端没有 maximize/restore，退回 toggle_fullscreen()，
+          并在日志里**如实**写明降级（不假装成功）。最大化状态由 pywebview 维护
+          （Window.maximized，随原生 maximized/restored 事件更新），我们不自己记账。
+        """
+        if self._saved_geometry is not None:
+            print("[WebView] 当前处于闪发折叠态，已忽略最大化请求（先展开再最大化）")
+            return False
+        try:
+            if bool(getattr(window, "maximized", False)):
+                window.restore()
+            else:
+                window.maximize()
+            return True
+        except Exception as exc:
+            print(f"[WebView] maximize/restore 不可用（{type(exc).__name__}: {exc}），退回全屏切换")
+            window.toggle_fullscreen()
+            return True
+
+    def window_state(self) -> Dict[str, Any]:
+        """窗口状态快照：{maximized, topmost, mini}（前端窗口按钮的图标/高亮用它校正）。
+
+        为什么需要：置顶与最大化按钮必须显示**真实状态**，不能靠"点一下就翻转"记账——
+        用户用系统快捷键、或窗口被别的方式改过状态时，本地记账会立刻与事实不符。
+        这里直接读原生窗口：`maximized` 由 pywebview 随原生 maximized/restored 事件维护；
+        `topmost` 读窗口的 on_top（窗口未就绪时回落已保存的设置项）；`mini` 取折叠标记
+        （折叠前保存了几何 = 当前处于闪发浮条形态）。
+        """
+        window = self._window.get("window")
+        return {
+            "maximized": bool(getattr(window, "maximized", False)) if window is not None else False,
+            "topmost": (bool(getattr(window, "on_top", False)) if window is not None
+                        else bool(self._svc.settings.get("topmost", False))),
+            "mini": self._saved_geometry is not None,
+        }
 
     # ── 边缘拖拽改尺寸（无边框模式下的 resize 入口，由前端热区驱动；单位=逻辑像素）──
     def window_bounds(self) -> Dict[str, Any]:
@@ -391,11 +471,28 @@ class JsApi:
         return self._svc.probe_model_endpoint(base_url, api_key, name)
 
     def add_custom_model(self, name: str, model_id: str, base_url: str, api_key: str,
-                         tier: str = ""):
-        return self._svc.add_custom_model(name, model_id, base_url, api_key, tier)
+                         tier: str = "", provider: str = "", api_format: str = "",
+                         tags=None):
+        """新增/覆盖外部模型。provider / api_format / tags 是 V3.6.8 起的可选供应商元数据
+        （老前端只传五个位置参数也照常工作）。"""
+        return self._svc.add_custom_model(name, model_id, base_url, api_key, tier,
+                                          provider, api_format, tags)
 
     def remove_custom_model(self, name: str):
         return self._svc.remove_custom_model(name)
+
+    def custom_model_key(self, name: str):
+        """把某个供应商已存的**明文密钥**交给界面（用户点「查看」时才调用）。
+
+        只有本机窗口能走到这里：`JsApi` 由 pywebview 挂在**回环随机 UUID** 路径上
+        （见本文件顶部威胁模型），不经任何网络出口。每次调用都会在服务层写一条
+        `access_control` WARNING 审计（记录"看了哪个供应商"，不记密钥本身）。
+        """
+        return self._svc.custom_model_key(name)
+
+    def context_usage(self):
+        """上下文容量构成（顶栏浮层用）：全部为后端真实取数，口径见服务层注释。"""
+        return self._svc.context_usage()
 
     # ── 企业控制面（V3.5.0）──────────────────────
     def control_status(self):
@@ -484,9 +581,17 @@ class JsApi:
         if not isinstance(patch, dict):
             return False
         allowed = {"model", "ollama_host", "privacy", "dark_mode", "topmost",
-                   "thinking_depth", "permission", "think_mode", "allow_script_exec"}
+                   "thinking_depth", "permission", "think_mode", "allow_script_exec",
+                   "sandbox_dir"}     # 可读写范围（V3.6.8）：空串 = 回到默认（SANDBOX_PATH → 程序目录）
+        # 可读写范围走服务层专用入口（set_sandbox_dir）：目录必须真实存在、改完立即生效、
+        # 并写一条 access_control 审计（放宽范围是有安全含义的动作）。失败如实返回 False，
+        # 让界面提示用户，而不是"看起来改成功了、其实没生效"。
+        if "sandbox_dir" in patch:
+            applied = self._svc.set_sandbox_dir(str(patch.get("sandbox_dir") or ""))
+            if not applied.get("ok"):
+                return False
         for key, value in patch.items():
-            if key in allowed:
+            if key in allowed and key != "sandbox_dir":
                 self._svc.settings.set(key, value)
         self._svc.settings.save()
         # 权限档位改了要**立刻**落到内核（工具层每次调用现读环境变量）：
@@ -515,6 +620,7 @@ class WebApp:
         self._window_holder: Dict[str, Any] = {}
         self._pending_push: list[tuple[str, Any]] = []
         self._window: Optional[Any] = None
+        self._api: Optional[JsApi] = None
 
     # ── 事件推送 ─────────────────────────────────
     def _on_service_event(self, event: str, payload: Any) -> None:
@@ -535,6 +641,15 @@ class WebApp:
         for event, payload in pending:
             self._on_service_event(event, payload)
 
+    def _on_window_native_state(self) -> None:
+        """原生最大化/还原事件 → 推给前端刷新窗口按钮（图标 / is-active / 禁用态）。"""
+        if self._api is None:
+            return
+        try:
+            self._on_service_event("window_state", self._api.window_state())
+        except Exception as exc:
+            print(f"[WebView] 推送窗口状态失败：{exc}")
+
     # ── 启动 ─────────────────────────────────────
     def run(self, driver: Optional[Any] = None) -> None:
         """启动界面。driver 为可选的回调（真实使用驱动/自动化测试用）：
@@ -545,6 +660,7 @@ class WebApp:
         self.service.set_listener(self._on_service_event)
 
         api = JsApi(self.service, self._window_holder)
+        self._api = api
         settings = self.service.settings.data
         # 无边框悬浮是**产品形态本身**（不是可选项）：窗口无系统边框，由前端顶栏承担拖拽与窗口控制。
         # V3.5.0 起移除了该开关——它只能在创建窗口时生效、改了要重启，与"所有设置立即生效"冲突；
@@ -588,6 +704,16 @@ class WebApp:
             self._window.events.loaded += _on_loaded
         except Exception:
             pass
+
+        # 最大化 / 还原由**原生事件**驱动：pywebview 内部已经维护 Window.maximized，
+        # 这里再订阅一次是为了**主动通知前端**刷新窗口按钮图标——用户用系统手段最大化
+        # （双击标题栏、Win+↑ 等）时，界面不能停在旧图标上。订阅失败不影响功能
+        # （下一次点按钮时 window_state() 仍会读到真实状态）。
+        for event_name in ("maximized", "restored"):
+            try:
+                getattr(self._window.events, event_name).__iadd__(self._on_window_native_state)
+            except Exception as exc:
+                print(f"[WebView] 订阅原生窗口事件 {event_name} 失败：{exc}")
 
         if driver is not None:
             webview.start(driver, self._window, debug=bool(os.environ.get("YINDUN_WEB_DEBUG")))

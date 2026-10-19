@@ -958,7 +958,7 @@ def _load_workflow_llm_config():
             cfg = json.load(_f)
     except Exception:
         pass
-    model = cfg.get("model") or "qwen3.5:4b"
+    model = cfg.get("model") or _os.environ.get("YINDUN_MODEL") or ""
     host = cfg.get("ollama_host") or _os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434"
     return model, host
 
@@ -977,6 +977,10 @@ def _get_workflow_llm():
     """
     global _wf_llm, _wf_llm_signature
     model, host = _load_workflow_llm_config()
+    if not model:
+        # 没选模型就如实失败（可行动话术），绝不拿一个写死的模型名去碰运气
+        # （旧实现兜底 "qwen3.5:4b"，在没有该模型的机器上会把失败原因引向错误的方向）
+        raise RuntimeError("未选择模型：请先在「设置 → 模型接入」里选一个模型，再执行工作流")
     sig = (model, host)
     if _wf_llm is not None and _wf_llm_signature == sig:
         return _wf_llm

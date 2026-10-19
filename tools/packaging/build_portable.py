@@ -144,13 +144,27 @@ def _ocr_status() -> str:
 
     ★ 为什么写在"使用前提"里：这里静默降级过一次——spec 装不到 OCR 包时只打一行日志，
     构建完谁也没注意，交付出去才发现"图片/扫描件读不到文字"。这行字把结论摆到人眼前。
+    ★ 判据必须与 spec 一致（本轮修正）：**主路径是 Windows 内置 OCR（winrt 包）**，
+    rapidocr 只是可选加成。旧实现只看 rapidocr，于是明明打了 winrt 也报"⚠ 不含 OCR"——
+    对着交付的人撒谎（方向是悲观，但同样是撒谎）。两条件都报，且说清各自能力。
     """
     import importlib.util
+    winrt_ok = importlib.util.find_spec("winrt") is not None
+    rapid_label = ""
     for name, label in (("rapidocr_onnxruntime", "rapidocr-onnxruntime"), ("rapidocr", "rapidocr")):
         if importlib.util.find_spec(name) is not None:
-            return f"✅ 含 OCR（{label}）→ 图片与扫描件 PDF 可提取文字"
+            rapid_label = label
+            break
+    if winrt_ok and rapid_label:
+        return (f"✅ 含 OCR（Windows 内置 OCR + {rapid_label}）→ 图片与扫描件 PDF 可提取文字")
+    if winrt_ok:
+        return ("✅ 含 OCR（Windows 内置 OCR：用系统已装语言包，不额外下载、约 4MB）"
+                "→ 图片与扫描件 PDF 可提取文字")
+    if rapid_label:
+        return f"✅ 含 OCR（{rapid_label}）→ 图片与扫描件 PDF 可提取文字"
     return ("⚠ 不含 OCR → 图片附件与扫描件 PDF **读不到文字**（会如实提示“需要 OCR 组件”）；"
-            "如需支持：pip install rapidocr 后重新构建（模型随包离线自带）")
+            "如需支持：pip install winrt-runtime winrt-Windows-Media-Ocr（约 4MB，推荐）"
+            "或 pip install rapidocr（约 150MB）后重新构建")
 
 
 

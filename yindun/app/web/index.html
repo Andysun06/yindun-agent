@@ -56,9 +56,6 @@
           <span class="session-item__meta" id="llm-label" title="算力状态">未就绪</span>
         </div>
         <div style="display:flex;gap:2px">
-          <button class="btn btn--ghost" id="btn-workflow" title="工作流编排">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h6M14 6h6M4 12h4M12 12h8M4 18h10"/><path d="M10 4v4M8 10v4M14 16v4"/></svg>
-          </button>
           <button class="btn btn--ghost" id="btn-audit" title="审计黑匣子">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14v16H5z"/><path d="M8 9h8M8 13h8M8 17h4"/></svg>
           </button>
@@ -94,7 +91,21 @@
           <span class="stats__sep"></span>
           <span class="stats__item" id="stat-tools">工具 0</span>
           <span class="stats__sep"></span>
-          <span class="stats__item" id="stat-tokens">上下文 0</span>
+          <!-- 上下文容量：数字本身还是后端预算表的真实占用；点开是**构成明细浮层**
+               （消息 / 系统提示词 / 附件 / 工具结果各占多少），原来那段长 tooltip 文案已删。 -->
+          <div class="ctx">
+            <button class="stats__item stats__item--btn" id="stat-tokens" type="button"
+                    aria-haspopup="dialog" aria-expanded="false">上下文 —</button>
+            <div class="ctx__pop" id="ctx-pop" role="dialog" aria-label="上下文容量" hidden>
+              <div class="ctx__head">
+                <b>上下文容量</b>
+                <span class="ctx__head-num"><span id="ctx-used">—</span><span id="ctx-pct">—</span></span>
+              </div>
+              <div class="ctx__bar"><i id="ctx-fill"></i></div>
+              <div class="ctx__list" id="ctx-list"></div>
+              <div class="ctx__foot" id="ctx-foot"></div>
+            </div>
+          </div>
         </div>
         <div class="seg" id="mode-switch">
           <button class="seg__btn is-active" data-mode="快速回答" title="快速：不让模型先做内部推理（本机实测同一问题 40~90 秒 → 数秒）">快速</button>
@@ -108,13 +119,19 @@
             <path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>
           </svg>
         </button>
-        <!-- 窗口控制：右栏展开时由 setRightCollapsed 移入右栏头部（贴窗口右上角），折叠时回到这里 -->
+        <!-- 窗口控制：置顶 / 最小化 / 最大化 / 关闭（右栏展开时由 setRightCollapsed 移入右栏头部，
+             贴窗口右上角；折叠时回到这里）。图标与 is-active 一律由 window_state() 校正，
+             不在本地"点一下就翻转"记账。 -->
         <div class="win-ctrls" id="win-ctrls">
-          <button class="win-btn" data-win="minimize" title="最小化">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg>
-          </button>
           <button class="win-btn" data-win="toggle_top" id="btn-pin" title="置顶 / 取消置顶">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h6l-1 6 3 3H7l3-3-1-6zM12 13v7"/></svg>
+          </button>
+          <button class="win-btn" data-win="minimize" title="最小化到任务栏">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg>
+          </button>
+          <button class="win-btn" data-win="toggle_maximize" id="btn-max" title="最大化 / 还原">
+            <svg class="win-btn__ico-max" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="1.5"/></svg>
+            <svg class="win-btn__ico-restore" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="8" width="11" height="11" rx="1.5"/><path d="M9 8V6.5A1.5 1.5 0 0110.5 5H18a1 1 0 011 1v7.5A1.5 1.5 0 0117.5 15H17"/></svg>
           </button>
           <button class="win-btn win-btn--close" data-win="close" title="关闭">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
@@ -156,23 +173,32 @@
                 </button>
                 <div class="perm__pop" id="perm-pop" role="listbox" hidden></div>
               </div>
-              <!-- 模型胶囊：三档分组下拉（本机 / 局域网 / 公网） -->
+              <!-- 模型胶囊：两级下拉（一级供应商 → 二级该供应商的模型）；
+                   照 ZCode 的形态，**没有搜索框**——原"手输非匹配名＝内网模型入口"改由
+                   弹层底部「管理模型」跳设置页承担（见 app.js 注释）。 -->
               <div class="model-select" id="model-select">
-                <button type="button" id="model-trigger" class="pill pill--model" aria-haspopup="listbox" aria-expanded="false" title="切换模型（按数据边界分三档）">
+                <button type="button" id="model-trigger" class="pill pill--model" aria-haspopup="listbox" aria-expanded="false" title="切换模型（供应商 / 模型；数据边界按三档分组）">
                   <span class="tier-dot" id="model-tier-dot"></span>
                   <span class="model-select__value" id="model-value"></span>
                   <svg class="model-select__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
                 </button>
-                <div class="model-select__pop" id="model-pop" hidden>
-                  <input type="text" id="model-search" placeholder="搜索模型…" autocomplete="off" spellcheck="false">
-                  <div class="model-select__list" id="model-list" role="listbox" aria-labelledby="model-label"></div>
+                <div class="model-select__pop" id="model-pop" tabindex="-1" hidden>
+                  <div class="mpick">
+                    <div class="mpick__col mpick__col--prov" id="mpick-providers" role="listbox" aria-label="供应商"></div>
+                    <div class="mpick__col" id="mpick-models" role="listbox" aria-label="供应商下的模型"></div>
+                  </div>
                   <div class="model-select__foot" id="model-hint">—</div>
+                  <button type="button" class="mpick__manage" id="mpick-manage">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M4 7h4M14 7h6M4 17h6M16 17h4"/></svg>
+                    管理模型
+                  </button>
                 </div>
               </div>
-              <!-- 思考强度：胶囊 + 下拉（低 / 中 / 高 / 最高） -->
+              <!-- 思考强度：胶囊 + 下拉（低 / 中 / 高 / 最高）。
+                   照 ZCode 的紧凑形态：触发器只显示档位词 + 图标，解释性文字全部进 title。 -->
               <div class="think" id="think-select">
-                <button type="button" id="think-trigger" class="think__trigger" aria-haspopup="listbox" aria-expanded="false" title="思考强度：越高推理轮次越多、耗时越长">
-                  <span class="think__label">思考</span>
+                <button type="button" id="think-trigger" class="think__trigger" aria-haspopup="listbox" aria-expanded="false" title="思考强度">
+                  <svg class="think__ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4a3 3 0 00-3 3 3 3 0 00-1 5.8V16a3 3 0 003 3h1v1h5v-1h1a3 3 0 003-3v-3.2A3 3 0 0017 7a3 3 0 00-3-3 3 3 0 00-5 0z"/></svg>
                   <span class="think__value" id="think-value">中</span>
                   <svg class="think__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
                 </button>
@@ -268,6 +294,23 @@
                       <tr data-op="execute"><th>执行命令</th><td data-decision="deny">禁止</td><td data-decision="confirm">每次确认</td><td data-decision="confirm">每次确认</td><td data-decision="confirm">每次确认</td></tr>
                     </tbody>
                   </table>
+                  <!-- 「本机操作」指的是什么、越界怎么办，必须写在这儿：只写本机操作会让人以为
+                       "沙箱外一律拒绝"（负责人实测：完全访问档下数桌面文件仍被拒，就是一例）。
+                       口径由内核给，界面只做说明，不在这里做任何判定。 -->
+                  <div class="setrow__hint">表里的「本机操作」指<b>可读写范围（沙箱目录）内</b>的文件与命令；
+                    <b>越界</b>（范围外）的读写 / 删除 / 执行按<b>同一档位</b>判定（拒绝 / 逐次确认 / 放行），
+                    并且一律写入<b>审计</b>——放宽档位不等于越界免检。系统目录与凭据类路径无论哪一档都不放行。</div>
+                </div>
+                <div class="setrow setrow--stack">
+                  <div class="setrow__text"><b>可读写范围（沙箱目录）</b>
+                    <span>助手只能读写这个目录及其子目录；<b>越界操作</b>会按当前权限档判定（计划档拒绝、变更前确认档逐次询问、
+                      自主 / 完全访问档放行），并且都会记进<b>审计</b>；系统目录与凭据类路径无论如何都不放行。</span></div>
+                  <div class="setrow__ctrl">
+                    <span class="sbx-path" id="sandbox-path" title="当前生效的可读写范围">—</span>
+                    <button class="btn" id="btn-pick-sandbox" type="button">选择目录…</button>
+                    <button class="btn" id="btn-clear-sandbox" type="button">清除（回到默认）</button>
+                  </div>
+                  <div class="setrow__hint" id="sandbox-note"></div>
                 </div>
                 <div class="setrow">
                   <div class="setrow__text"><b>允许执行本地脚本</b>
@@ -396,12 +439,11 @@
     </main>
     <div class="col-resizer" data-resize="right" role="separator" aria-orientation="vertical"
          tabindex="0" title="拖动调整面板宽度（双击复位，方向键微调）"></div>
-    <!-- ── 右侧面板：设置 / 审计 / 工作流（与中栏并排，可折叠） ── -->
+    <!-- ── 右侧面板：审计（与中栏并排，可折叠） ── -->
     <aside class="side side--right" id="panel">
       <div class="panel__inner">
         <div class="panel__tabs">
           <button class="ptab" data-pane="audit">审计</button>
-          <button class="ptab" data-pane="workflow">工作流</button>
           <span class="panel__spacer"></span>
           <span class="panel__actions" id="panel-actions"></span>
           <button class="btn btn--ghost" id="btn-panel-collapse" title="收起面板">
@@ -429,30 +471,6 @@
       </div>
 
       <div class="audit-list" id="audit-list"></div>
-          </section>
-
-          <section class="pane" id="pane-workflow">
-      <div class="field">
-        <div class="field__label">选择模板</div>
-        <div class="wf-templates" id="wf-templates"></div>
-      </div>
-      <div class="field">
-        <label class="field__label" for="wf-path">文档 / 项目路径（可选）</label>
-        <input type="text" id="wf-path" placeholder="留空则使用当前沙箱目录">
-        <div class="field__hint">合同审查取合同文件路径；代码安全检查取项目目录；插件模板按其声明的路径变量填入</div>
-        <input type="text" id="wf-name" placeholder="实例名称（可选，便于区分多次运行）">
-      </div>
-      <div class="field" id="wf-run" style="display:none">
-        <div class="field__label" id="wf-run-title">执行</div>
-        <div class="wf-progress" id="wf-progress"></div>
-        <div class="wf-steps" id="wf-steps"></div>
-        <div style="display:flex;gap:var(--sp-3);margin-top:var(--sp-4);align-items:center">
-          <button class="btn btn--primary" id="btn-wf-exec">执行下一步</button>
-          <select id="wf-format" style="width:auto" title="导出格式：内核格式始终可用，插件格式需启用对应插件"></select>
-          <button class="btn" id="btn-wf-export">导出记录</button>
-        </div>
-        <div class="field__hint" id="wf-notice"></div>
-      </div>
           </section>
 
         </div>

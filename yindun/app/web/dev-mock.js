@@ -125,7 +125,9 @@
       read_local_file: 18, search_in_files: 8, create_local_file: 6,
       run_local_command: 3, delete_local_file: 2,
     },
-    operation_breakdown: { read: 26, write: 6, delete: 2, execute: 3 },
+    // execute 刻意留 0：真实会话里常常没有执行类操作，mock 覆盖这种形态，
+    // 界面才能被断言「不渲染 0 值灰盒」
+    operation_breakdown: { read: 26, write: 6, delete: 2, execute: 0 },
     unique_paths: 14,
     accessed_paths: [
       "E:/yindun-agent/workspace/合同/供应商服务合同_示例.md",
@@ -255,48 +257,15 @@
       hooks: { workflow_template: { ok: true, error: "" } } },
   ] };
 
-  const wfTemplates = [
-    { id: "wf_contract_review", name: "合同审查工作流", description: "自动解析合同、提取关键条款、生成审查意见、导出报告",
-      source: "builtin", plugin_id: "", forced_approvals: 0, steps: 5 },
-    { id: "wf_weekly_report", name: "周报生成工作流", description: "收集工作记录、整理结构、生成周报草稿、人工审核、导出",
-      source: "builtin", plugin_id: "", forced_approvals: 0, steps: 5 },
-    { id: "wf_security_check", name: "代码安全检查工作流", description: "扫描代码仓库、识别安全漏洞、风险评估、生成报告",
-      source: "builtin", plugin_id: "", forced_approvals: 0, steps: 5 },
-    { id: "ext_office_code_audit", name: "代码安全体检（增强版）",
-      description: "分析项目 → 安全扫描 → 风险定级 → 生成修复建议 → 汇总报告 → 导出。全部为真实步骤；最后一步的审批由内核强制。",
-      source: "plugin", plugin_id: "office_wf", forced_approvals: 1, steps: 6 },
-  ];
-  const wfStatus = {
-    instance_id: "5021f4c2", template_name: "合同审查工作流", source_plugin: "",
-    is_complete: false, has_failed: false,
-    progress: { total: 5, completed: 2, waiting_approval: 1, failed: 0, percentage: 40.0 },
-    impl_notice: "内核内置模板的每一步都有真实执行器（含数据采集/清洗/分析/出图与人工审核留痕）。",
-    steps: [
-      { step_id: "s1", name: "读取合同文件", description: "读取待审查的合同文档内容", tool_name: "read_local_file",
-        approval_type: "auto", status: "completed", unimplemented: false,
-        result: "{'ok': True, 'tool': 'read_local_file', 'summary': '已读取《供应商服务合同_示例.md》（18422 字符）'}" },
-      { step_id: "s2", name: "提取关键条款", description: "从合同中提取付款条款、违约条款、保密条款等关键信息",
-        tool_name: "analyze_contract", approval_type: "auto", status: "completed", unimplemented: false,
-        result: "{'ok': True, 'summary': '已提取 6 条关键条款（本地模型）'}" },
-      { step_id: "s3", name: "风险点分析", description: "识别合同中的潜在风险和不利条款",
-        tool_name: "analyze_contract", approval_type: "auto", status: "waiting_approval", unimplemented: false, result: null },
-      // 沙盘里保留一个"已审批、待执行"的步骤：这是"审批通过 → 执行下一步"的中间态，
-      // 界面文案是「已审批，待执行」（V3.6.0 修的真实卡死点就卡在这个状态上）
-      { step_id: "s4", name: "生成审查意见", description: "基于分析结果生成专业的审查意见书",
-        tool_name: "generate_report", approval_type: "manual", status: "approved",
-        reviewer: "张三", unimplemented: false, result: null },
-      { step_id: "s5", name: "导出PDF报告", description: "将审查意见导出为PDF文件",
-        tool_name: "export_file", approval_type: "manual", forced_approval: true,
-        status: "pending", unimplemented: false, result: null },
-      // 外部模板里的未实现工具：界面应标「未实现」，而不是假装能跑
-      { step_id: "s6", name: "外呼通知（第三方模板）", description: "来自外部配置的步骤，内核没有对应执行器",
-        tool_name: "notify_vendor", approval_type: "auto", status: "pending",
-        unimplemented: true, result: null },
-    ],
-  };
 
   // 沙盘里的自定义模型（预览用状态）：保存/删除会真的改它，三档列表跟着变
   const mockCustomModels = new Map();
+  // 窗口状态沙盘（V3.6.8 四按钮）：window_action 真的改它、window_state 读它，
+  // 这样"点最大化 → 图标切到还原态 / 点置顶 → is-active 与状态一致"在预览里就能验。
+  const mockWindow = { maximized: false, topmost: true, mini: false };
+  const hostOf = (url) => {
+    try { return new URL(url, "http://x").host || "未命名供应商"; } catch (e) { return "未命名供应商"; }
+  };
 
   const api = {
     bootstrap: () => Promise.resolve({
@@ -306,7 +275,8 @@
       settings: {
         model: "qwen3.5:4b", ollama_host: "http://127.0.0.1:11434", privacy: true, allow_script_exec: true,
         dark_mode: location.hash.indexOf("light") < 0, topmost: true,
-        thinking_depth: 7, permission: "ask", think_mode: "深度思考", sandbox: "E:\yindun-agent",
+        thinking_depth: 7, permission: "ask", think_mode: "深度思考",
+        sandbox: "E:\\yindun-agent", sandbox_dir: "",
         ollama_models_cache: ["qwen2.5:7b-instruct", "nomic-embed-text:latest"],
       },
       llm: {
@@ -331,23 +301,18 @@
     kb_status: () => Promise.resolve(kb),
     custom_models: () => Promise.resolve([
       { name: "公司内网Qwen", model_id: "qwen2.5:14b", base_url: "http://10.0.0.8:8000/v1",
-        tier: "lan", has_key: false, key_invalid: false },
+        tier: "lan", provider: "10.0.0.8:8000", api_format: "chat_completions", tags: ["中文", "长文"],
+        has_key: false, key_invalid: false },
       { name: "云端GLM", model_id: "glm-4-flash", base_url: "https://open.bigmodel.cn/api/paas/v4",
-        tier: "wan", has_key: true, key_invalid: false },
+        tier: "wan", provider: "open.bigmodel.cn", api_format: "chat_completions", tags: ["低成本"],
+        has_key: true, key_invalid: false },
     ]),
-    model_catalog: () => Promise.resolve({
-      current: "qwen2.5:7b-instruct",
-      ollama_host: "http://127.0.0.1:11434",
-      local_detected: ["qwen2.5:7b-instruct", "qwen3.5:4b"],
-      tier_labels: { local: "本机模型", lan: "局域网模型", wan: "公网模型" },
-      tier_boundary: {
-        local: "数据不出这台电脑",
-        lan: "数据出这台电脑，但不出企业内网",
-        wan: "数据出企业内网；送出前内容已在本机脱敏",
-      },
+    model_catalog: () => Promise.resolve((() => {
       // ★ 沙盘里的自定义模型是**有状态的**（V3.6.7）：保存/删除要能真的反映到三档列表上，
       //   否则预览里点「保存」看不到结果、"密钥留空＝不改动"这条语义也无从验证。
-      tiers: {
+      //   V3.6.8：按模型自己的 tier 分档（不再全塞进公网档），并带上 provider /
+      //   api_format / tags —— 与后端 model_catalog 的补字段行为一致。
+      const base = {
         local: [
           { name: "qwen2.5:7b-instruct", model_id: "qwen2.5:7b-instruct", tier: "local",
             source: "ollama", base_url: "http://127.0.0.1:11434", kind: "ollama", note: "本机 Ollama 已安装" },
@@ -356,31 +321,95 @@
         ],
         lan: [
           { name: "公司内网Qwen", model_id: "qwen2.5:14b", tier: "lan", source: "custom",
-            base_url: "http://10.0.0.8:8000/v1", kind: "openai", has_key: false, key_invalid: false, note: "" },
+            base_url: "http://10.0.0.8:8000/v1", kind: "openai", has_key: false, key_invalid: false,
+            provider: "10.0.0.8:8000", api_format: "chat_completions", tags: ["中文", "长文"], note: "" },
         ],
         wan: [
           { name: "云端GLM", model_id: "glm-4-flash", tier: "wan", source: "custom",
-            base_url: "https://open.bigmodel.cn/api/paas/v4", kind: "openai", has_key: true, key_invalid: false, note: "" },
-          ...[...mockCustomModels.entries()].map(([name, m]) => ({
-            name, model_id: m.model_id, tier: m.tier, source: "custom",
-            base_url: m.base_url, kind: "openai", has_key: !!m.has_key, key_invalid: false, note: "",
-          })),
+            base_url: "https://open.bigmodel.cn/api/paas/v4", kind: "openai", has_key: true, key_invalid: false,
+            provider: "open.bigmodel.cn", api_format: "chat_completions", tags: ["低成本"], note: "" },
         ],
-      },
-    }),
-    // 保存/删除自来模型（预览沙盘）：与真实后端**同一套契约**——
-    // 密钥留空＝沿用已存的那把（回报 kept_key），新建时留空就是空。
-    add_custom_model: (name, model_id, base_url, api_key, tier) => {
+      };
+      // 预览"本机一个模型都没有"这一态：加 #mock-noollama。
+      // 现场是负责人反馈的那台机器：配置里写着 qwen3.5:4b 但那台机器根本没有；
+      // 这正是 K 要修的场景（胶囊不许宣称不存在的模型 + 本机档空态要给出两条出路）。
+      // 注意：清空必须在"合并自定义条目"**之前**——手动添加的本机模型也要能出现在空态里
+      // （否则用户按提示手动加完，列表还是空的，等于死路）。
+      const noOllama = location.hash.indexOf("noollama") >= 0;
+      const tiers = {
+        local: noOllama ? [] : [...base.local],
+        lan: noOllama ? [] : [...base.lan],
+        wan: noOllama ? [] : [...base.wan],
+      };
+      mockCustomModels.forEach((m, name) => {
+        const tier = ["local", "lan", "wan"].includes(m.tier) ? m.tier : "wan";
+        // 同名条目按后端语义"以自定义配置为准"：先清掉各档里的旧位置，再放进新档
+        ["local", "lan", "wan"].forEach((t) => { tiers[t] = tiers[t].filter((x) => x.name !== name); });
+        tiers[tier].push({
+          name, model_id: m.model_id, tier, source: "custom", base_url: m.base_url, kind: "openai",
+          has_key: !!m.has_key, key_invalid: false, provider: m.provider || hostOf(m.base_url),
+          api_format: m.api_format || "chat_completions", tags: m.tags || [], note: "",
+        });
+      });
+      const all = tiers.local.concat(tiers.lan, tiers.wan);
+      // 配置里"写着"的模型名（初始 = qwen3.5:4b，正是那台机器上不存在的那个）；
+      // 切过模型后由 save_settings 更新，别把 noollama 变体钉死成初始值。
+      const curName = mockWindow.currentModel || "qwen3.5:4b";
+      return {
+        current: curName,
+        current_available: all.some((e) => e.name === curName),
+        ollama_host: "http://127.0.0.1:11434",
+        local_detected: noOllama ? [] : ["qwen2.5:7b-instruct", "qwen3.5:4b"],
+        // local_note：**为什么本机列表是这样**（空的时候尤其重要，界面原样显示给用户）
+        local_note: noOllama
+          ? "没有检测到可对话的本机模型：连不上本机 Ollama 服务（http://127.0.0.1:11434），"
+            + "可能是服务没启动或模型装在别的位置；也可以点「＋ 手动添加本机模型」直接填模型名。"
+          : "已检测到本机模型（来自 Ollama 服务）；另有 1 个向量/嵌入模型（不能对话，未列出）。",
+        tier_labels: { local: "本机模型", lan: "局域网模型", wan: "公网模型" },
+        tier_boundary: {
+          local: "数据不出这台电脑",
+          lan: "数据出这台电脑，但不出企业内网",
+          wan: "数据出企业内网；送出前内容已在本机脱敏",
+        },
+        tiers,
+      };
+    })()),
+    // 保存/删除自定义模型（预览沙盘）：与真实后端**同一套契约**——
+    // 密钥留空＝沿用已存的那把（回报 kept_key），provider / api_format / tags 一并保存。
+    add_custom_model: (name, model_id, base_url, api_key, tier, provider, api_format, tags) => {
       const key = String(api_key || "").trim();
-      const before = mockCustomModels.get(name);
+      // 基础沙盘里已有两个自定义条目（云端GLM 有密钥）：留空保存要能"沿用已存"，
+      // 所以除了 mockCustomModels 还要看这份底表——否则预览里第一次留空保存会误报"没密钥"。
+      const baseHasKey = { "公司内网Qwen": false, "云端GLM": true };
+      const before = mockCustomModels.get(name)
+        || (name in baseHasKey ? { has_key: baseHasKey[name] } : null);
       const kept = !key && !!(before && before.has_key);
       mockCustomModels.set(name, { model_id, base_url, tier: tier || "wan",
+                                   provider: provider || hostOf(base_url),
+                                   api_format: api_format || "chat_completions",
+                                   tags: Array.isArray(tags) ? tags : [],
                                    has_key: kept || !!key });
       return Promise.resolve({ ok: true, tier: tier || "wan",
         tier_label: { local: "本机模型", lan: "局域网模型", wan: "公网模型" }[tier || "wan"],
+        provider: provider || hostOf(base_url),
         kept_key: kept, models: [...mockCustomModels.keys()] });
     },
     remove_custom_model: (name) => Promise.resolve({ ok: mockCustomModels.delete(name), models: [] }),
+    // 密钥「查看」（眼睛）：真实运行时后端每次都会写一条 access_control 审计；
+    // 沙盘只回一个明显是假的值，审计留痕由服务层保证（tests/test_ui_paths.py 末段校验）。
+    custom_model_key: (name) => Promise.resolve({
+      ok: true, key: "sk-" + "mock-not-a-real-key", provider: String(name || "") }),
+    context_usage: () => Promise.resolve({
+      limit_tokens: 16384, used_tokens: 2048, percent: 12.5,
+      parts: [
+        { key: "history", label: "消息（历史）", tokens: 900, percent: 5.5 },
+        { key: "system", label: "系统提示词", tokens: 748, percent: 4.6 },
+        { key: "attach", label: "附件", tokens: 300, percent: 1.8 },
+        { key: "tools", label: "工具结果", tokens: 100, percent: 0.6 },
+      ],
+      footer: { lines: ["历史超过 5000 token 就摘要压缩（压到约 900）",
+                        "单轮附件正文预算 4000 字，超出部分改给检索指引"] },
+    }),
     // 探测回报"收到的参数"，这样界面有没有把条目名捎上（好让后端回落已存密钥）在预览里就能验
     probe_model_endpoint: (url, api_key, name) => Promise.resolve(
       { ok: true, style: "openai", models: ["qwen2.5:14b", "qwen2.5:32b"], count: 2,
@@ -405,19 +434,9 @@
     kb_pick_and_add: () => Promise.resolve({ ok: true, status: kb }),
     kb_add_paths: () => Promise.resolve({ ok: true, status: kb }),
     kb_remove: () => Promise.resolve({ ok: true, status: kb }),
-    workflow_templates: () => Promise.resolve(wfTemplates),
-    workflow_start: () => Promise.resolve({ ok: true, instance_id: "5021f4c2", status: wfStatus }),
-    workflow_status: () => Promise.resolve(wfStatus),
-    workflow_execute: () => Promise.resolve({ ok: true, step: "风险点分析" }),
-    workflow_approve: () => Promise.resolve({ ok: true, status: wfStatus }),
-    workflow_export: () => Promise.resolve({ ok: true, renderer: "内核",
-      path: "workflow_reports/20261004_合同审查工作流_执行记录.md" }),
-    workflow_export_formats: () => Promise.resolve([
-      { format: "md", label: "Markdown", source: "内核", plugin_id: "" },
-      { format: "html", label: "HTML", source: "内核", plugin_id: "" },
-      { format: "docx", label: "Word（兼容格式）", source: "内核", plugin_id: "" },
-      { format: "html_card", label: "卡片式 HTML（插件：导出格式扩展）", source: "导出格式扩展", plugin_id: "export_pack" },
-    ]),
+    // 可读写范围（沙箱目录）：目录选择通道用真实桥方法名 pick_directory；
+    // 沙盘固定回一个演示目录（真实运行由系统对话框决定，取消/失败会如实回报 ok:false）
+    pick_directory: () => Promise.resolve({ ok: true, path: "E:\\yd-demo-sandbox" }),
     plugins_list: () => Promise.resolve(plugins),
     laya_status: () => Promise.resolve(layaStatus),
     laya_save: (cfg) => Promise.resolve({ ok: true, config: Object.assign({}, layaStatus.config, cfg || {}), detail: "已保存（预览模式）" }),
@@ -457,7 +476,24 @@
       { format: "html", label: "HTML", source: "内核", plugin_id: "" },
       { format: "markdown", label: "Markdown 表格（插件：导出格式扩展）", source: "导出格式扩展", plugin_id: "export_pack" },
     ]),
-    save_settings: noop, send: noop, cancel: noop, approve: noop,
+    save_settings: (patch) => {
+      if (patch && patch.model) mockWindow.currentModel = patch.model;   // 预览里切模型能反映到清单
+      return Promise.resolve(true);
+    },
+    // 窗口四按钮（V3.6.8）：window_action 真的改沙盘状态，window_state 读它——
+    // 预览里点最大化/置顶，图标与 is-active 的变化与真实后端同源（不再本地翻转记账）。
+    window_action: (action) => {
+      if (action === "toggle_top") mockWindow.topmost = !mockWindow.topmost;
+      else if (action === "toggle_maximize") {
+        if (mockWindow.mini) return Promise.resolve(false);   // 折叠态拒绝（与服务端一致）
+        mockWindow.maximized = !mockWindow.maximized;
+      } else if (action === "mini") mockWindow.mini = true;
+      else if (action === "restore_window") mockWindow.mini = false;
+      return Promise.resolve(true);
+    },
+    window_state: () => Promise.resolve({ maximized: mockWindow.maximized,
+                                          topmost: mockWindow.topmost, mini: mockWindow.mini }),
+    send: noop, cancel: noop, approve: noop,
     delete_session: noop, rename_session: noop,
   };
 
@@ -475,14 +511,9 @@
     setTimeout(() => document.getElementById("btn-audit").click(), 500);
   }
 
-  // 预览工作流面板：加 #mock-workflow
-  if (location.hash.indexOf("workflow") >= 0) {
-    setTimeout(async () => {
-      document.getElementById("btn-workflow").click();
-      await new Promise((r) => setTimeout(r, 400));
-      const tpl = document.querySelector("[data-tpl]");
-      tpl && tpl.click();
-    }, 500);
+  // 预览模型接入页：加 #mock-settings 之外还可加 #mock-model（直接落到模型接入）
+  if (location.hash.indexOf("model") >= 0) {
+    setTimeout(() => document.getElementById("btn-settings").click(), 400);
   }
 
   // 预览闪发浮条：加 #mock-mini（折叠态；真实运行时窗口本身会缩成浮条）

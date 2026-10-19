@@ -310,6 +310,12 @@ for fp in SCAN_FILES:
                 #    ——开发期用桩工具跑过真实 Worker，这类 repr 会进审计链；它显然是误报
                 if _pre[-2:].lower() == "0x" or "at 0x" in _pre or "object at" in _pre:
                     continue
+            # 路径片段不是地址（V3.6.8，与引擎 `_validate_entity` 的 ADDRESS 精验同一口径）：
+            # 本机测试临时目录 `…\Temp\yindun_xxx\工作区` 会被「2~8 字 + 区」命中，
+            # 扫成"落盘敏感明文"——那是目录名，不是地址（无省/市/路/号，且含路径分隔符）。
+            # 属于扫描器误报修正，不是放宽泄露判定（真地址仍会被扫出来）。
+            if key == "ADDRESS" and PrivacyEngine._looks_like_path_fragment(val):
+                continue
             # 手机号/银行卡精验，减少误报
             if key == "PHONE" and not PrivacyEngine._is_valid_phone(val):
                 continue

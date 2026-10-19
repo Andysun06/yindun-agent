@@ -55,7 +55,8 @@ WORKER_EVENTS = (
 #   小模型的注意力就这么点，常驻的长规则会把"现在该干什么"淹没。
 # ──────────────────────────────────────────────
 _SYSTEM_PROMPT = (
-    "你是「隐盾」，一个在**本机沙箱内**工作的中文智能助手。\n\n"
+    "你是「隐盾」，一个在**本机**工作的中文智能助手（有默认的「可读写范围」，"
+    "范围之外的操作按当前权限档位判定，见下方实时说明）。\n\n"
     "【三条硬规则（最高优先级，任何情况下都要遵守）】\n"
     "1. **对话历史里已经有的信息，直接用**——用户上一轮告诉过你、或你上一轮答过的内容，"
     "直接回答，禁止说'请上传文件 / 请提供资料 / 我没有记忆'。\n"
@@ -68,14 +69,22 @@ _SYSTEM_PROMPT = (
     "3. create_local_file(filename, content, target_directory) —— 新建文件\n"
     "4. modify_local_file(filename, content, target_directory) —— 修改文件\n"
     "5. delete_local_file(filename, target_directory) —— 删除文件\n"
-    "6. run_local_command(command) —— 执行白名单内的本地命令\n"
-    "7. analyze_project(target) —— 递归分析项目结构与关键代码\n"
-    "8. search_in_files(keyword, target_directory) —— 在文件中搜索内容\n"
-    "9. search_knowledge_base(query, top_k=4) —— 在本地知识库做语义检索（合同/报表/规章等）\n"
-    "10. read_attachment_chunk(file, question/keyword/char_start) —— 读取长附件的指定片段\n\n"
+    "6. move_local_file(source, target, overwrite=false) —— 移动文件/目录（target 给目录=移进去保留原名；单个 source 给完整路径=移动并改名；source 可为列表批量移动）\n"
+    "7. copy_local_file(source, target, overwrite=false) —— 复制（备份/留副本用这个，源文件不动）\n"
+    "8. rename_local_file(filename, new_name, target_directory) —— 就地改名（new_name 只填文件名，不带路径）\n"
+    "9. batch_rename_local_files(target_directory, match, replace, file_pattern='*') —— 批量改文件名/后缀：把文件名里的 match **子串**替换成 replace（如 match='.jpeg', replace='.jpg'）\n"
+    "10. make_local_dir(path, target_directory) —— 新建目录（绝对路径可一次建多级）\n"
+    "11. run_local_command(command) —— 执行白名单内的本地命令\n"
+    "12. analyze_project(target) —— 递归分析项目结构与关键代码\n"
+    "13. search_in_files(keyword, target_directory) —— 在文件中搜索内容\n"
+    "14. search_knowledge_base(query, top_k=4) —— 在本地知识库做语义检索（合同/报表/规章等）\n"
+    "15. read_attachment_chunk(file, question/keyword/char_start) —— 读取长附件的指定片段\n\n"
     "【工具使用要点】\n"
     "1. 用户给了**完整绝对路径**（如 E:\\qwen\\a.txt）就原样填进 target_directory；"
     "只给文件名时 target_directory 留空（默认当前工作目录）。\n"
+    "   ★ 路径即使**不在**默认可读写范围内也要**照原样填**：能不能访问由安全策略按档位判定，"
+    "被拦下/被驳回就如实告诉用户（并说明可把「可读写范围」改到该目录），"
+    "**不要**自己偷偷换成别的目录——那等于把工具结果替换成别处的内容。\n"
     "2. 可以连续调用多个工具（例如先列目录、再读文件、最后总结）；拿到结果后再给结论。\n"
     "3. 知识库检索用 search_knowledge_base(query='用户的原话问题')；"
     "它返回的内容已脱敏（形如 [KB_PHONE_0]），你照常作答即可，占位符会自动还原给用户。\n\n"
@@ -219,6 +228,14 @@ class Worker:
         """
         self._approved.clear()
         payload = {"name": name, "args": args, "path": path}
+        # ★ 越界审批必须让人看明白"这是范围外的路径"：path 是 realpath 后的**完整绝对路径**，
+        #   再带上范围与是否越界的布尔，界面可以据此把"越界"显性化（不做静默放行的一环）。
+        try:
+            from yindun.core.permission import is_within_sandbox, sandbox_root
+            payload["sandbox"] = sandbox_root()
+            payload["outside"] = bool(path) and not is_within_sandbox(str(path))
+        except Exception:
+            pass
         # 防盲签（红队评审整改）：`python x.py` 这类命令，弹窗只显示命令串看不出脚本做什么——
         # 审批前把脚本开头一段读出来一并展示（读不到就不加该字段，绝不影响审批流程）。
         try:
@@ -866,8 +883,11 @@ class Worker:
           forced_tool_result/forced_tool_name: 在进入循环前已强制执行的工具结果
                                           （用于快速模式下 LLM 不肯调用工具的问题
         """
-        # 快速模式：禁止写操作工具
-        _WRITE_TOOLS = {"create_local_file", "modify_local_file", "delete_local_file", "run_local_command"}
+        # 快速模式：禁止写操作工具（含文件管理族——移动/改名在多轮推敲下容易改错，
+        # 快速档只做"看一眼就给答案"的事；要动手就切到深度思考，语义与以前一致）
+        _WRITE_TOOLS = {"create_local_file", "modify_local_file", "delete_local_file",
+                        "move_local_file", "copy_local_file", "rename_local_file",
+                        "batch_rename_local_files", "make_local_dir", "run_local_command"}
         is_quick_mode = "深度" not in self.think_mode
         # 最低思考轮数：确保深度思考不会过早退出（未达此轮数时强制继续分析）
         min_rounds = max(2, int(self.think_depth * 0.8)) if "深度" in self.think_mode else 0
@@ -879,8 +899,11 @@ class Worker:
         #   从"该调工具了"上引开（同一问题：常驻时长规则 → 一次工具都不调；精简后 → 正常调用）。
         _attachment_index = self._build_attachment_index()
         _system_content = _SYSTEM_PROMPT
+        # ★ 当前可读写范围 + 越界判定，每轮现读现写：设置里改了范围/档位，模型下一轮就知道，
+        #   不会拿着旧范围去猜"为什么读不到"（这是"改了立即生效"在提示词层的体现）。
+        _system_content = _system_content + self._range_notice()
         if _attachment_index or getattr(self, "attachment_fulltext", None):
-            _system_content = _SYSTEM_PROMPT + _ATTACHMENT_RULES
+            _system_content = _SYSTEM_PROMPT + _ATTACHMENT_RULES + self._range_notice()
         if _attachment_index:
             _system_content = _system_content + "\n" + _attachment_index
         messages = [SystemMessage(content=_system_content)]
@@ -1133,6 +1156,9 @@ class Worker:
                         for k, v in tool_args.items()
                     }
 
+                # 0. 参数净化：丢掉模型传入的内部/越界授权类参数（越界放行只能由宿主授予）
+                tool_args = self._sanitize_tool_args(tool_name, tool_args)
+
                 # 1. 路径解析：从工具参数中提取并净化路径
                 target_path = self._resolve_target_path(tool_args)
 
@@ -1142,8 +1168,9 @@ class Worker:
                 policy_result = pm.check(tool_name, target_path)
 
                 if policy_result == "deny":
-                    # ★ 策略直接拒绝：不询问用户，直接驳回
-                    tool_result = f"已拦截：安全策略禁止在 {target_path} 执行 {tool_display_name}"
+                    # ★ 策略直接拒绝：不询问用户，直接驳回（给可行动的下一步，别让模型反复撞墙）
+                    tool_result = (f"已拦截：安全策略禁止在 {target_path} 执行 {tool_display_name}"
+                                   + self._deny_hint(target_path))
                     tool_msg = ToolMessage(content=self._with_failure_directive(tool_result),
                                            tool_call_id=tool_call_id)
                     messages.append(tool_msg)
@@ -1163,6 +1190,8 @@ class Worker:
                         f"[思考 {round_count}/{max_rounds}] 🚨 检测到敏感操作 "
                         f"{tool_display_name}，等待人工审批..."
                     )
+                    # ★ 弹窗必须显示**完整真实路径**：越界时的审批是"你同意这次越界"，
+                    #   只给文件名或相对路径等于让人盲签（payload 里 path 就是解析后的绝对路径）。
                     if not self._request_approval(tool_display_name, tool_args, target_path):
                         # 用户驳回 / 取消 / 超时
                         tool_result = f"已驳回：敏感操作被人工拦截（尝试在 {target_path} 执行 {tool_display_name}）"
@@ -1183,6 +1212,10 @@ class Worker:
                             f"{tool_display_name}({tool_name})", target_path, approved=True)
                     except Exception:
                         pass
+
+                # 2b. 越界放行（宿主令牌）：目标在可读写范围之外且策略层已允许（approve 或人工批准）
+                #     时，由**宿主**授予本次调用的越界令牌；范围之外必留状态/轨迹痕迹。
+                self._grant_outside_for(tool_name, target_path, policy_result)
 
                 # 3. 执行工具
                 self.status.emit(
@@ -1241,6 +1274,10 @@ class Worker:
                     AuditLog().log_tool_result(tool_name, False, str(e))
                     self._trace("tool", tool_display_name, str(e)[:80], "fail",
                                 ms=int((time.time() - _t_tool) * 1000))
+                finally:
+                    # 越界令牌用完即撤：令牌是"这一次调用"的授权，绝不能残留到下一次
+                    # （否则同一线程里后续的工具调用会凭空获得越界放行）。
+                    self._revoke_outside_grants()
 
                 # 4. 将工具执行结果追加到消息列表
                 #    成功/失败分流：成功过就记下来（反编造兜底据此判断），
@@ -1304,11 +1341,12 @@ class Worker:
                         f"（本轮共推理 {round_count} 次）。\n"
                         + (f"最近一次工具返回：{_hint}\n" if _hint else "")
                         + "可能的原因：\n"
-                        "1. 目标不在我的沙箱目录内——越界路径会被安全策略挡下（这是设计如此，不会绕过）；\n"
+                        "1. 目标在当前可读写范围之外——越界操作会按权限档位判定"
+                        "（计划模式拒绝、确认档需人工批准），被拒/被驳回的路径不会自动放开；\n"
                         "2. 我的工具箱里没有能完成这件事的能力（例如「统计某个目录里有几张图片」这类专门统计）；\n"
                         "3. 模型给出的工具参数不可用（例如目录名不存在）。\n"
-                        "可以试试：把文件放到沙箱目录（或告诉我沙箱内的准确路径）、把问题问得更具体，"
-                        "或者换一个更大的模型再试。"
+                        "可以试试：把文件放进可读写范围（或在设置页把「可读写范围」改到目标目录）、"
+                        "把问题问得更具体，或者换一个更大的模型再试。"
                     )
                     chain = messages[round_start_idx:]
                     memory.update_with_full_chain(chain)
@@ -1331,7 +1369,7 @@ class Worker:
             final_reply = (
                 f"抱歉，我在 {round_count} 轮推理内没有拿到可用的结果，已停止。\n"
                 "可能原因：模型一直没给出最终回答（本机小模型偶发空回复），"
-                "或目标内容不在沙箱目录内因而被安全策略挡下。\n"
+                "或目标内容在当前可读写范围之外、且当前档位不允许越界访问。\n"
                 "可以试试：再发一次、把问题问得更具体、切换到「深度思考」模式，或换用更大的模型。"
             )
         # 保存完整消息链
@@ -1445,6 +1483,107 @@ class Worker:
         return "\n".join(lines)
 
     # ──────────────────────────────────────────
+    # 越界（可读写范围之外）访问的宿主放行与参数净化（V3.6.8）
+    #   背景：沙箱从"绝对墙"降级为"默认可读写范围"，越界操作按**档位**判定
+    #   （plan 拒绝 / ask 人工确认 / auto·full 放行，见 core/permission.OUTSIDE_FLOOR）。
+    #   由此带来两条必须由宿主守住的红线，都在这里实现：
+    #     ① 放行令牌**只能**由宿主授予——模型传入的任何"允许越界"参数一律丢弃；
+    #     ② 放行必定留痕——状态栏 + 过程轨迹可见，工具层再写一条 access_control 审计
+    #        （含工具名/真实路径/档位/判定结果），任何一次越界都没有静默通道。
+    # ──────────────────────────────────────────
+
+    def _range_notice(self) -> str:
+        """给模型的「当前可读写范围」实时说明（拼进系统提示，每轮现读）。
+
+        ★ 范围可能是**多个根**（默认＝程序目录 + 桌面/文档/下载），所以用
+          `sandbox_scope_text()` 把全部根列出来——只报主根会让模型以为桌面不在范围内，
+          明明能做却自己先推掉（与工具侧判定必须同一口径）。
+        """
+        try:
+            from yindun.core.permission import (LABELS, OUTSIDE_HINTS, permission_mode,
+                                                sandbox_scope_text)
+            mode = permission_mode()
+            scope = sandbox_scope_text(chr(10) + "    · ")
+            return (f"\n【当前可读写范围】（默认范围，不是禁做清单——以下目录都能直接读写）\n"
+                    f"    · {scope}\n"
+                    f"  范围之外的操作按当前档位【{LABELS.get(mode, mode)}】判定："
+                    f"{OUTSIDE_HINTS.get(mode, '')}。"
+                    f"被拒绝或被驳回时如实告知用户（并说明可在设置页改「可读写范围」），"
+                    f"不要用同一个路径反复重试，也不要偷偷换成别的目录。\n"
+                    f"  ★ 用户让你数文件、整理目录、移动/改名/批量改后缀时，先列目录再动手——"
+                    f"这是本职工作，不要推辞、也不要先讲一堆限制；"
+                    f"工具说目标已存在就先问一句要不要覆盖，别编造「已完成」。\n")
+        except Exception:
+            return ""
+
+    # 内部/授权类参数：语言层不该出现，出现即视为"模型想给自己放行"
+    _INTERNAL_ARG_KEYS = ("_outside_ok", "outside_ok", "allow_outside", "_allow_outside",
+                          "_granted", "_approved")
+
+    def _sanitize_tool_args(self, tool_name: str, args: dict) -> dict:
+        """丢弃模型传入的内部/越界授权类参数（并留痕：这是"模型试图自授权"的证据）。"""
+        clean = dict(args or {})
+        stripped = [k for k in list(clean.keys())
+                    if str(k).startswith("_") or str(k) in self._INTERNAL_ARG_KEYS]
+        for key in stripped:
+            clean.pop(key, None)
+        if stripped:
+            self.status.emit(
+                f"⚠️ 已丢弃模型传入的内部参数：{', '.join(stripped)}"
+                f"（越界放行只能由安全策略授予，模型无权自授权）"
+            )
+            try:
+                AuditLog().log_access_control(
+                    f"参数净化：{tool_name} 试图传入 {','.join(stripped)}", "", approved=False)
+            except Exception:
+                pass
+        return clean
+
+    def _grant_outside_for(self, tool_name: str, target_path: str, decision: str) -> bool:
+        """策略层已允许（approve / 人工批准）且目标在可读写范围之外时，授予本次调用令牌。
+
+        返回是否越界放行。★ 判定为 deny 的越界不会走到这里（调用方已拦截）。
+        """
+        try:
+            from yindun.core import file_tools as _ft
+            from yindun.core.permission import LABELS, is_within_sandbox, permission_mode
+            if not target_path or is_within_sandbox(str(target_path)):
+                return False
+            _ft.grant_outside_access(target_path)
+            mode_label = LABELS.get(permission_mode(), permission_mode())
+            self.status.emit(f"⚠️ 可读写范围外操作（{mode_label}档，判定：{decision}）：{target_path}")
+            self._trace("judge", "越界访问已放行",
+                        f"{tool_name} → {target_path}（在当前可读写范围之外，已留审计）", "ok")
+            return True
+        except Exception:
+            # 放行链路出异常时**不放行**（fail-closed）：工具层拿不到令牌就会拒绝并写明原因
+            return False
+
+    @staticmethod
+    def _revoke_outside_grants() -> None:
+        """撤销本线程的越界令牌（工具调用结束即失效）。"""
+        try:
+            from yindun.core import file_tools as _ft
+            _ft.revoke_outside_grants()
+        except Exception:
+            pass
+
+    def _deny_hint(self, target_path: str) -> str:
+        """拒绝时给模型/用户一句可行动的下一步（越界被拒时尤其需要，否则只会反复撞墙）。"""
+        try:
+            from yindun.core.permission import (LABELS, is_within_sandbox, permission_mode,
+                                                sandbox_scope_text)
+            if not target_path or is_within_sandbox(str(target_path)):
+                # 范围内被规则拒绝（系统目录/凭据/控制面规则）——不给"换档位/改范围"的错误建议
+                return ""
+            mode = permission_mode()
+            return (f"。原因：该路径在当前可读写范围（{sandbox_scope_text()}）之外，"
+                    f"当前档位【{LABELS.get(mode, mode)}】不越界访问。"
+                    f"可在设置页把「可读写范围」改到该目录（立即生效），或把权限档位切到更高档。")
+        except Exception:
+            return ""
+
+    # ──────────────────────────────────────────
     # 工具执行层：统一处理所有工具的调用
     # ──────────────────────────────────────────
     def _execute_with_approval(self, tool_name: str, args: dict) -> str:
@@ -1452,8 +1591,11 @@ class Worker:
 
         强制工具分支与 ReAct 循环复用同一审批通道，确保不存在绕过审批的第二调用路径。
         策略：deny → 直接拦截；confirm → emit need_confirm 等待人工审批，通过后才执行；
-        approve（只读工具在沙箱内）→ 免审批放行。
+        approve（范围内只读、或高档位的越界操作）→ 免审批放行。
         """
+        # 参数净化：模型传入的内部/越界授权类参数在这里同样被丢弃
+        # （这条通道以前只走审批，现在也是"越界"能进来的入口之一，净化不能漏）
+        args = self._sanitize_tool_args(tool_name, args)
         target_path = self._resolve_target_path(args)
         tool_display_name = self._map_tool_display_name(tool_name)
         pm = PolicyManager()
@@ -1467,7 +1609,8 @@ class Worker:
                     f"{tool_display_name}({tool_name})", target_path, approved=False)
             except Exception:
                 pass
-            return f"已拦截：安全策略禁止在 {target_path} 执行 {tool_display_name}"
+            return (f"已拦截：安全策略禁止在 {target_path} 执行 {tool_display_name}"
+                    + self._deny_hint(target_path))
 
         # confirm：需人工审批
         if policy_result == "confirm":
@@ -1490,9 +1633,13 @@ class Worker:
             except Exception:
                 pass
 
-        # approve 或已通过人工审批：正常执行工具
+        # approve 或已通过人工审批：越界则授予令牌，然后执行工具（令牌用完即撤）
+        self._grant_outside_for(tool_name, target_path, policy_result)
         self.status.emit(f"执行工具: {tool_display_name}")
-        return self._execute_tool(tool_name, args)
+        try:
+            return self._execute_tool(tool_name, args)
+        finally:
+            self._revoke_outside_grants()
 
     # ──────────────────────────────────────────
     # 模型利用率与工具链完善（V3.5.0）
@@ -1526,8 +1673,9 @@ class Worker:
         kind = type(exc).__name__
         text = str(exc)
         if isinstance(exc, PermissionError) or "沙箱" in text or "越界" in text or "拒绝" in text:
-            return (f"[工具执行失败] {tool_name}：目标路径不在允许的沙箱目录内，已被安全策略拒绝。"
-                    f"请改用沙箱根目录下的路径，或向用户确认文件位置；不要重复调用同一路径。")
+            return (f"[工具执行失败] {tool_name}：目标路径不在当前可读写范围内，已被安全策略拒绝。"
+                    f"请改用可读写范围内的路径，或告诉用户可在设置页把「可读写范围」改到目标目录；"
+                    f"不要重复调用同一路径。")
         if isinstance(exc, FileNotFoundError) or "No such file" in text:
             return (f"[工具执行失败] {tool_name}：文件或目录不存在。"
                     f"请先用 list_local_files 列出目录确认名称（注意扩展名与层级），再重试；不要凭猜测重复调用。")
@@ -1566,6 +1714,30 @@ class Worker:
                 if path.exists():
                     return ("[事实校验] 该工具声称已删除，但 " + target
                             + " 仍然存在；请如实告知用户删除未生效。")
+            elif tool_name in ("move_local_file", "rename_local_file"):
+                # 移动/改名的"成功"必须**两端都成立**：目标出现、源消失。
+                # 只在能无歧义推断目标时校验（单源 + 明确目标路径 / 就地改名）；
+                # 批量与目录语义交给工具自己的逐条报告，不在这里二次猜测。
+                from yindun.core.file_tools import _resolve_target_dir
+                pairs = []
+                if tool_name == "move_local_file":
+                    source = (args or {}).get("source")
+                    target_value = str((args or {}).get("target") or "")
+                    if isinstance(source, str) and source.strip() and target_value:
+                        if not os.path.isdir(target_value) and not target_value.endswith(("\\", "/")):
+                            pairs.append((source.strip(), target_value))
+                else:
+                    filename = str((args or {}).get("filename") or "")
+                    new_name = str((args or {}).get("new_name") or "")
+                    if filename and new_name:
+                        folder = _resolve_target_dir((args or {}).get("target_directory") or "")
+                        pairs.append((os.path.join(folder, os.path.basename(filename)),
+                                      os.path.join(folder, os.path.basename(new_name))))
+                for source_path, destination_path in pairs:
+                    if not Path(destination_path).exists() and Path(source_path).exists():
+                        return ("[事实校验] 该工具声称已完成，但 " + destination_path
+                                + " 不存在、源文件仍在原处。请勿据此声称「已完成」；"
+                                "请用 list_local_files 核实后如实告知用户。")
         except Exception:
             return ""            # 校验本身失败时保持沉默，不影响主流程
         return ""
@@ -1693,8 +1865,11 @@ class Worker:
         effective_args = dict(args)
 
         # 如果用户输入中包含明确路径，强制覆盖模型传的任何路径
+        #   ★ 但工具要的是"目录"：用户说的若是**文件**（如「把 D:\资料\a.txt 改名」），
+        #     直接塞文件路径会让工具在 `a.txt/a.txt` 上找文件——实测报"文件不存在"，
+        #     而磁盘上明明有。取它的父目录才对（文件名由 filename/source 参数给）。
         if user_path:
-            effective_args["target_directory"] = user_path
+            effective_args["target_directory"] = self._as_directory_hint(user_path)
         else:
             # 用户没给路径，才使用模型传的或回退到默认
             if not effective_args.get("target_directory") or effective_args.get("target_directory") in ("", "当前沙箱目录"):
@@ -2126,6 +2301,11 @@ class Worker:
             "read_local_file": "读取文件",
             "modify_local_file": "修改文件",
             "delete_local_file": "删除文件",
+            "move_local_file": "移动文件",
+            "copy_local_file": "复制文件",
+            "rename_local_file": "重命名",
+            "batch_rename_local_files": "批量重命名",
+            "make_local_dir": "新建目录",
             "run_local_command": "执行命令",
             "analyze_project": "分析项目",
             "search_in_files": "文件搜索",
@@ -2174,7 +2354,12 @@ class Worker:
             return os.path.abspath(os.path.normpath(path_match.group(1)))
 
         # 匹配 "在桌面"、"到桌面"、"桌面的"、"桌面目录"、"桌面文件夹" 等
-        if re.search(r"(?:在|到|从)\s*桌面|桌面(?:上|中|下|的|目录|文件夹)", text):
+        # ★ V3.6.8：放宽为"只要出现『桌面』就当作系统桌面"。原因：模型实测会把
+        #   「我的桌面有几张图片」的 target_directory 填成"系统物理桌面"（工具层认这个值），
+        #   而旧正则要求"在/到/从 桌面"或"桌面+方位词"，匹配不到 → 路径解析回落到沙箱，
+        #   于是策略层按"范围内"判定、工具层却站在桌面执行，两层判定错位。
+        #   工具的 _resolve_target_dir 本来就是"含『桌面』即桌面"，这里与它对齐（同一套语义）。
+        if "桌面" in text:
             return os.path.join(os.path.expanduser("~"), "Desktop")
 
         # 匹配 "E盘"、"D盘的文档"、"C:\Users" 等
@@ -2195,6 +2380,29 @@ class Worker:
             return os.path.abspath(f"{d}:\\")
 
         return None
+
+    @staticmethod
+    def _as_directory_hint(path: str) -> str:
+        """把"用户提到的路径"收敛成工具要的**目录**。
+
+        判据顺序（宁可不改，不要改错）：
+          ① 本来就是目录（含新建目录的意图）→ 原样返回；
+          ② 带扩展名（`a.txt`、`报告.docx`）→ 返回其父目录；
+        只在能明确判断时改，其余原样返回——工具层自己还有一套越界/落点校验兜着。
+        """
+        try:
+            text = str(path or "").strip()
+            if not text:
+                return path
+            if os.path.isdir(text):
+                return text
+            name = os.path.basename(os.path.normpath(text))
+            if os.path.splitext(name)[1]:
+                parent = os.path.dirname(os.path.normpath(text))
+                return parent or text
+            return text
+        except Exception:
+            return path
 
     @staticmethod
     def _is_sens(path):

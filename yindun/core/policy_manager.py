@@ -21,12 +21,18 @@ import os
 from pathlib import Path
 from typing import Literal, Optional, Dict, List
 
-from yindun.core.permission import base_decision, stricter
+from yindun.core.permission import base_decision, is_within_sandbox, outside_decision, stricter
 
 
 # ── 操作类型映射 ──
 READ_OPERATIONS = {"read_local_file", "search_in_files", "analyze_project", "list_local_files"}
-WRITE_OPERATIONS = {"create_local_file", "modify_local_file", "replace_in_file"}
+# 文件管理族（V3.6.8）按"写"归类：它们的副作用是**改变磁盘上的东西**，档位判定
+# 因此与创建/修改一致（plan 拒绝 / ask 人工确认 / auto·full 放行）。
+# ★ 覆盖式移动（overwrite=true）在工具内部另行要求调用方**显式**传参、默认拒绝覆盖——
+#   策略层看不到工具参数，这条兜底只能落在工具里，故在此备注不让它变成隐形行为。
+WRITE_OPERATIONS = {"create_local_file", "modify_local_file", "replace_in_file",
+                    "make_local_dir", "move_local_file", "copy_local_file",
+                    "rename_local_file", "batch_rename_local_files"}
 DELETE_OPERATIONS = {"delete_local_file"}
 EXEC_OPERATIONS = {"run_local_command"}
 
@@ -104,11 +110,12 @@ APPROVE_READ_WHITELIST = {
     "analyze_project",
 }
 
-# 沙箱根目录：优先读环境变量 SANDBOX_PATH，否则回退到项目根目录。
-# ★ V3.6.3：必须**每次判定时解析**——服务层会在运行时按设置写入 SANDBOX_PATH，
-#   模块级常量只算一次会让"策略判定"与"用户实际沙箱"错位（真机 E2E 实测撞到）。
+# 沙箱根（可读写范围）：**唯一实现搬到了 core/permission.py**（那里同时管档位矩阵，
+# 越界判定要用到档位；两处各写一份必然漂移）。此处保留同名 wrapper 供既有引用使用。
+# 解析顺序：设置 sandbox_dir > 环境变量 SANDBOX_PATH > 应用根目录。
 def sandbox_root() -> str:
-    return os.path.abspath(os.environ.get("SANDBOX_PATH", str(APP_ROOT)))
+    from yindun.core.permission import sandbox_root as _root
+    return _root()
 
 
 # 兼容旧引用：保留导入时快照
@@ -219,15 +226,19 @@ class PolicyManager:
     # ── 审批检查 ────────────────────────────
 
     def check(self, tool_name: str, target_path: str) -> Literal["approve", "confirm", "deny"]:
-        """检查操作是否需要审批（四档权限模型 + 只能收紧的规则）。
+        """检查操作是否需要审批（四档权限模型 + 越界判定 + 只能收紧的规则）。
 
-        判定分两层，顺序不能颠倒：
+        判定分三层，顺序不能颠倒：
           ① **档位基础判定**（`core/permission.py`）：计划模式直接拒绝变更类操作；
              变更前确认 / 自主模式 / 完全访问 的差别在于"哪些要人工确认"。
              ★ 执行命令在**所有档位**都是 confirm —— 这是硬底线，写死在 MODE_POLICY 里。
-          ② **规则只能在此基础上更严**：命中的第一条规则与基础判定取更严
-             （deny > confirm > approve）。因此控制面与自定义规则**不可能**把
-             档位已经要求的人工确认降级掉。
+          ② **越界判定**：目标在「可读写范围」（sandbox_root()）之外时，按 `OUTSIDE_FLOOR`
+             取更严者——计划拒绝 / 确认档每次人工确认 / 自主·完全放行（放行也要留审计，
+             由调用方负责，见 file_tools 与 agent_worker）。越界不是"另一种拒绝"，而是
+             同一类操作在范围外的严格度差异；不再有"一律拒绝"或"静默回退"。
+          ③ **规则只能在此基础上更严**：命中的第一条规则与前面的判定取更严
+             （deny > confirm > approve）。因此控制面、自定义规则**不可能**把
+             档位已经要求的判定（含越界下限）降级掉。
 
         参数：
             tool_name: 工具名（如 "create_local_file"）
@@ -246,7 +257,12 @@ class PolicyManager:
             operation = "write"          # 未知工具按"可能的变更"处理，绝不默认放行
         decision = base_decision(operation)
 
-        # ② 规则只能收紧：第一条命中的规则与基础判定取更严（保持"首条命中优先"语义）
+        # ② 越界判定：范围之外按档位判定（同一张矩阵，只取更严）
+        #    ★ 判定用 realpath 后的几何关系（符号链接/junction 逃逸会被判为越界，从严处理）。
+        if target_path and not is_within_sandbox(str(target_path)):
+            decision = outside_decision(operation)
+
+        # ③ 规则只能收紧：第一条命中的规则与前面的判定取更严（保持"首条命中优先"语义）
         for rule in self._approval_rules:
             if self._match_rule(rule, tool_name, normalized_path):
                 decision = stricter(decision, str(rule.get("policy") or "confirm"))
@@ -426,13 +442,8 @@ class PolicyManager:
 
     @staticmethod
     def _within_sandbox(path: str) -> bool:
-        """判定路径是否位于沙箱根目录内（先解析符号链接/junction，再做 commonpath 归一化比较）"""
-        try:
-            base = os.path.normcase(os.path.realpath(sandbox_root()))
-            real = os.path.normcase(os.path.realpath(path))
-            return os.path.commonpath([base, real]) == base
-        except (ValueError, TypeError):
-            return False
+        """判定路径是否位于可读写范围（沙箱根）内——实现统一在 core/permission.py。"""
+        return is_within_sandbox(path)
 
     @staticmethod
     def get_operation_category(tool_name: str) -> str:

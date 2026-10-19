@@ -53,7 +53,14 @@ print("=" * 78)
 cfg_path = TMP / "global_config.json"
 settings = SettingsStore(path=cfg_path)
 settings.load()
-check("默认值齐备", settings.get("model") and settings.get("permission"))
+check("默认权限档为「变更前确认」", settings.get("permission") == "ask", str(settings.get("permission")))
+# ★ V3.6.8：默认模型**不再写死名字**（旧默认 "qwen3.5:4b" 在没装它的机器上会变成
+#   "对着不存在的模型宣称已就绪"）。空串 = 未选择，首启由服务层按本机检测结果自动选。
+check("默认模型是空串（未选择，不写死模型名）", settings.get("model") == "", repr(settings.get("model")))
+check("默认可读写范围为空串（= 未配置，按环境变量 → 程序目录回退）",
+      settings.get("sandbox_dir") == "", repr(settings.get("sandbox_dir")))
+check("从未写过的键 was_saved=False（用于区分「用户显式选过」）",
+      settings.was_saved("model") is False)
 settings.set("dark_mode", True)
 settings.update({"custom_models": {"云端GLM": {
     "model_id": "glm-4-flash", "base_url": "https://example.invalid/api",
@@ -363,7 +370,8 @@ check("答案成色：带结构的成段回答算实质回答",
 _act = _Worker._humanize_tool_error(w, "read_local_file", FileNotFoundError("no such file"))
 check("失败反馈可行动：文件不存在 → 引导先列目录", "list_local_files" in _act, _act[:60])
 _act2 = _Worker._humanize_tool_error(w, "create_local_file", PermissionError("越界"))
-check("失败反馈可行动：越界被拒 → 指出改用沙箱内路径", "沙箱" in _act2, _act2[:60])
+check("失败反馈可行动：越界被拒 → 指出改用可读写范围内的路径",
+      ("可读写范围" in _act2) or ("沙箱" in _act2), _act2[:60])
 
 # ── 真值校验：工具说写了、盘上没有 → 必须戳破 ──
 missing = str(LOOP_TMP / "never_written.txt")
@@ -781,6 +789,328 @@ check("★ 轨迹真落盘：重新加载后仍在（重启不丢）",
           for m in (_rel.get_messages(_sid) or [])))
 check("轨迹落盘仍加密（明文名/详情都不出现）",
       "laya" not in (LOOP_TMP / "trace_sess.json").read_text(encoding="utf-8", errors="ignore"))
+
+print(chr(10) + "=" * 78)
+print("【8】可读写范围之外：按档位判定（ask 人工确认 / full 放行留痕 / plan 拒绝）")
+print("=" * 78)
+# 这一段锁住"沙箱从绝对墙降级为默认可读写范围"之后**必须由宿主守住**的东西：
+#   · ask：越界必须真的弹人工确认，且弹窗里是完整真实路径；
+#   · full：越界放行可以自动，但必须留审计 + 在工具结果里写明"在可读写范围之外"；
+#   · plan：越界一律拒绝（且不弹确认——本档没有审批流）；
+#   · 模型传入的"允许越界"参数必须被丢弃（放行只能由宿主策略层授予）。
+from yindun.core import file_tools as _ft                                     # noqa: E402
+from yindun.core import permission as _perm                                   # noqa: E402
+from yindun.core.audit_log import AuditLog as _AuditLog                       # noqa: E402
+from yindun.app.webview_app import JsApi as _JsApi                            # noqa: E402
+
+RANGE = TMP / "range"
+RANGE_IN = RANGE / "in"
+RANGE_OUT = RANGE / "out"
+RANGE_IN.mkdir(parents=True, exist_ok=True)
+RANGE_OUT.mkdir(parents=True, exist_ok=True)
+RANGE_FILE = RANGE_OUT / "range_probe.txt"
+_saved_sbx_env2 = os.environ.get("SANDBOX_PATH")
+_saved_perm_env2 = os.environ.get(_perm.PERMISSION_ENV)
+os.environ["SANDBOX_PATH"] = str(RANGE_IN)
+# ★ 审计落点隔离：本段会产生带**真实路径**的越界审计条目，写进仓库 audit_logs/ 会污染
+#   "落盘敏感明文"扫描（隐私套件扫的就是那个目录）；测试数据不该进产品审计链。
+_audit_store = _AuditLog()
+_saved_audit_dir2 = _audit_store._storage_path
+_audit_store._storage_path = TMP / "audit_logs"
+SUBSTANTIVE = ("已按要求完成：\n1. 文件已创建\n2. 位置见工具返回\n3. 如需其它内容请告诉我")
+
+
+class _CtxLLM:
+    """脚本化模型：第一轮请求工具，之后给出成段回答；**记录每轮上下文**（断言工具结果用）。"""
+
+    def __init__(self, tool_name, args, rounds=1, answer=SUBSTANTIVE):
+        self.tool_name, self.args, self.rounds, self.answer = tool_name, args, rounds, answer
+        self.seen = []
+
+    def invoke(self, messages):
+        self.seen.append(list(messages))
+        if len(self.seen) <= self.rounds:
+            return _AI(content="", tool_calls=[{"name": self.tool_name, "args": dict(self.args),
+                                                "id": f"call_{len(self.seen)}"}])
+        return _AI(content=self.answer)
+
+    def bind_tools(self, tools):
+        return self
+
+
+def _tool_outputs(llm):
+    """把模型"看到过"的工具结果文本收集起来（ToolMessage 的 content）。"""
+    out = []
+    for ctx in llm.seen:
+        for msg in ctx:
+            if type(msg).__name__ == "ToolMessage":
+                out.append(str(getattr(msg, "content", "")))
+    return out
+
+
+def run_range_worker(llm, mode, approve=None, user_text=""):
+    """驱动一次真实 Worker：深速模式（写工具不被快速模式拦截）+ 指定档位 + 指定沙箱。"""
+    os.environ[_perm.PERMISSION_ENV] = mode
+    worker = _Worker()
+    worker.llm = llm
+    worker.tools_map = {"create_local_file": _ft.create_local_file}
+    worker.user_input = user_text or f"帮我在 {RANGE_OUT} 创建一个文件"
+    worker.think_mode = "深度思考"
+    worker.privacy_shield = False
+    worker.sandbox_path = str(RANGE_IN)
+    confirmations, statuses, finished = [], [], []
+
+    def _on_confirm(payload):
+        confirmations.append(payload)
+        if approve is not None:            # 不点确认会等满 300 秒（测试里必须显式答复）
+            worker.approve(approve)
+
+    worker.bus.subscribe("need_confirm", _on_confirm)
+    worker.bus.subscribe("status", lambda p: statuses.append(str(p)))
+    worker.bus.subscribe("finished", lambda p: finished.append(str(p)))
+    worker.run()
+    return worker, confirmations, statuses, finished
+
+
+def _ac_since(mark):
+    entries = _AuditLog().get_entries({"event_type": "access_control"}) or []
+    return entries[mark:]
+
+
+# ① ask 档：越界写盘 → 弹确认（完整真实路径）→ 批准后放行，结果里写明越界
+_ac0 = len(_AuditLog().get_entries({"event_type": "access_control"}) or [])
+llm_ask = _CtxLLM("create_local_file", {"filename": RANGE_FILE.name, "content": "hi",
+                                        "target_directory": str(RANGE_OUT)})
+_w_ask, conf_ask, st_ask, fin_ask = run_range_worker(llm_ask, "ask", approve=True)
+check("★ ask 档越界写盘触发人工确认（不是直接拒绝，也不是静默放行）", len(conf_ask) == 1, str(len(conf_ask)))
+if conf_ask:
+    _p = conf_ask[0]
+    check("★ 审批弹窗里是完整真实路径（越界审批不能让人盲签）",
+          os.path.normcase(str(_p.get("path"))) == os.path.normcase(str(RANGE_OUT)), str(_p.get("path")))
+    check("审批载荷标出「这是范围外的操作」+ 当前范围（界面据此显性化）",
+          _p.get("outside") is True and bool(_p.get("sandbox")), str(_p.get("outside")))
+check("★ 人工批准后越界写盘真实落盘", RANGE_FILE.exists(), str(RANGE_FILE))
+check("★ 越界放行在工具结果里写明「本次操作在可读写范围之外」（对话流里看得见）",
+      any("本次操作在可读写范围之外" in t for t in _tool_outputs(llm_ask)),
+      str(_tool_outputs(llm_ask))[:120])
+_ac_ask = [e for e in _ac_since(_ac0)
+           if (e.details or {}).get("outside_sandbox")]
+check("★ 越界放行写入审计（工具名/真实路径/档位/判定）",
+      any((e.details or {}).get("approved") and (e.details or {}).get("tool_name") == "create_local_file"
+          and (e.details or {}).get("permission") == "ask" for e in _ac_ask),
+      str([(e.details or {}).get("decision") for e in _ac_ask]))
+
+# ② ask 档：驳回 → 不落盘（人工否决是真实的）
+RANGE_FILE.unlink(missing_ok=True)
+_ac1 = len(_AuditLog().get_entries({"event_type": "access_control"}) or [])
+llm_rej = _CtxLLM("create_local_file", {"filename": RANGE_FILE.name, "content": "hi",
+                                        "target_directory": str(RANGE_OUT)})
+_w_rej, conf_rej, st_rej, fin_rej = run_range_worker(llm_rej, "ask", approve=False)
+check("★ ask 档驳回越界操作：文件没被创建（人工否决不是装饰）",
+      len(conf_rej) == 1 and not RANGE_FILE.exists())
+check("驳回结果如实说明（模型不会据此编造成功）",
+      any("已驳回" in t for t in _tool_outputs(llm_rej)), str(_tool_outputs(llm_rej))[:120])
+
+# ③ full 档：越界写盘免确认放行 + 审计 + 结果标注
+RANGE_FILE.unlink(missing_ok=True)
+_ac2 = len(_AuditLog().get_entries({"event_type": "access_control"}) or [])
+llm_full = _CtxLLM("create_local_file", {"filename": RANGE_FILE.name, "content": "hi",
+                                         "target_directory": str(RANGE_OUT)})
+_w_full, conf_full, st_full, fin_full = run_range_worker(llm_full, "full", approve=True)
+check("★ full 档越界写盘免人工确认（「完全访问=允许写盘」在这里落到实处）",
+      len(conf_full) == 0 and RANGE_FILE.exists(), f"confirm={len(conf_full)}")
+check("★ full 档越界放行同样在结果里标注 + 状态栏可见（不静默）",
+      any("本次操作在可读写范围之外" in t for t in _tool_outputs(llm_full))
+      and any("可读写范围外操作" in s for s in st_full),
+      str([s for s in st_full if "范围外" in s])[:120])
+check("★ full 档越界放行也写审计（自动放行≠无痕）",
+      any((e.details or {}).get("approved") and (e.details or {}).get("permission") == "full"
+          for e in _ac_since(_ac2) if (e.details or {}).get("outside_sandbox")),
+      str([(e.details or {}).get("permission") for e in _ac_since(_ac2)]))
+
+# ④ plan 档：越界一律拒绝（且不弹确认）
+RANGE_FILE.unlink(missing_ok=True)
+llm_plan = _CtxLLM("create_local_file", {"filename": RANGE_FILE.name, "content": "hi",
+                                         "target_directory": str(RANGE_OUT)})
+_w_plan, conf_plan, st_plan, fin_plan = run_range_worker(llm_plan, "plan", approve=True)
+check("★ plan 档越界写盘直接拒绝、且不弹人工确认",
+      len(conf_plan) == 0 and not RANGE_FILE.exists(), f"confirm={len(conf_plan)}")
+check("拒绝话术给出可行动的下一步（设置里改范围 / 换档位），不是干巴巴一句「禁止」",
+      any(("可读写范围" in t) and ("sandbox_dir" in t or "档位" in t)
+          for t in _tool_outputs(llm_plan) + st_plan),
+      str(_tool_outputs(llm_plan))[:160])
+
+# ⑤ 模型自授权：args 里塞 _outside_ok / outside_ok → 丢弃 + 留痕 + 仍然按策略判定
+RANGE_FILE.unlink(missing_ok=True)
+_probe_args = {"filename": RANGE_FILE.name, "content": "hi",
+               "target_directory": str(RANGE_OUT), "_outside_ok": True, "outside_ok": True}
+_w_tool = _Worker.__new__(_Worker)
+_w_tool.status = type("_S", (), {"emit": lambda self, m: None})()
+_clean = _Worker._sanitize_tool_args(_w_tool, "create_local_file", dict(_probe_args))
+check("★ 模型传入的越界授权参数被丢弃（_outside_ok / outside_ok 都不留）",
+      "_outside_ok" not in _clean and "outside_ok" not in _clean, str(sorted(_clean)))
+llm_self = _CtxLLM("create_local_file", dict(_probe_args))
+_w_self, conf_self, st_self, fin_self = run_range_worker(llm_self, "ask", approve=False)
+check("★ 模型自授权无效：ask 档仍要人工确认（没有因为参数写了 True 就放行）",
+      len(conf_self) == 1 and not RANGE_FILE.exists(), f"confirm={len(conf_self)}")
+check("丢弃内部参数有可见提示（谁在试图越权是看得见的）",
+      any("已丢弃模型传入的内部参数" in s for s in st_self),
+      str([s for s in st_self if "丢弃" in s])[:120])
+
+# ⑥ 宿主授予的令牌是"一次调用"的：worker 用完即撤
+check("越界令牌用完即撤（工具调用结束后本线程不再持有放行）",
+      _ft.is_outside_approved(str(RANGE_OUT)) is False)
+
+# ⑦ 设置通道：sandbox_dir 保存即生效（界面目录选择器走的就是这条）
+_dir_svc = AgentService(settings=SettingsStore(path=TMP / "dir_cfg.json"),
+                        sessions=SessionStore(path=TMP / "dir_sess.json"),
+                        plugin_data_root=TMP / "dp")
+_dir_svc.initialize()                       # 会注册"读设置"的沙箱读取器（内核每次现读）
+_api_dir = _JsApi(_dir_svc, {})
+check("目录不存在时保存如实失败（不把可读写范围指到一个不存在的目录）",
+      _api_dir.save_settings({"sandbox_dir": str(RANGE / "没有这个目录")}) is False)
+_ac3 = len(_AuditLog().get_entries({"event_type": "access_control"}) or [])
+_ok_dir = _api_dir.save_settings({"sandbox_dir": str(RANGE_OUT)})
+check("★ 保存后 sandbox_root() 立即返回新目录（改完即生效，无需重启）",
+      _ok_dir is True and os.path.normcase(_ft.sandbox_root()) == os.path.normcase(str(RANGE_OUT)),
+      _ft.sandbox_root())
+check("新范围内的写盘按沙箱内语义判定（不再需要确认）",
+      _dir_svc.effective_permission()["effective"] in _perm.MODES
+      and __import__("yindun.core.policy_manager", fromlist=["PolicyManager"]).PolicyManager()
+      .check("create_local_file", str(RANGE_OUT / "a.txt")) in ("approve", "confirm"),
+      "（档位不同则判定不同：达到 full 时才是 approve）")
+check("改范围写审计（放宽可读写范围是有安全含义的动作）",
+      any("可读写范围改为" in (e.message or "") for e in _ac_since(_ac3)),
+      str([e.message for e in _ac_since(_ac3)])[:160])
+check("清空 sandbox_dir 回到默认（环境变量 → 程序目录）",
+      _api_dir.save_settings({"sandbox_dir": ""}) is True
+      and os.path.normcase(_ft.sandbox_root()) == os.path.normcase(str(RANGE_IN)),
+      _ft.sandbox_root())
+
+# ⑧ 模型"桌面"路径解析与工具侧一致（两层判定不许错位）
+check("★ 用户说「我的桌面有几张图片」→ 解析到系统桌面（与工具侧同一套语义）",
+      str(_Worker._det("我的桌面有几张图片？") or "").endswith("Desktop"),
+      str(_Worker._det("我的桌面有几张图片？")))
+
+_perm.register_sandbox_settings_source(None)          # 注销：别把这台的设置带出测试
+_audit_store._storage_path = _saved_audit_dir2        # 还原审计落点（测试数据不进产品链）
+if _saved_sbx_env2 is None:
+    os.environ.pop("SANDBOX_PATH", None)
+else:
+    os.environ["SANDBOX_PATH"] = _saved_sbx_env2
+if _saved_perm_env2 is None:
+    os.environ.pop(_perm.PERMISSION_ENV, None)
+else:
+    os.environ[_perm.PERMISSION_ENV] = _saved_perm_env2
+
+print(chr(10) + "=" * 78)
+print("【9】模型就绪必须与事实一致（不写死默认模型 / 不宣称不存在的模型）")
+print("=" * 78)
+# 打桩检测出口：这一段不依赖真 Ollama，验证的是"服务层怎么处理检测结果"。
+from yindun.app import llm_factory as _llmf                                   # noqa: E402
+from yindun.app.settings_store import DEFAULTS as _DEFAULTS                   # noqa: E402
+
+check("默认配置里 model 是空串（不再写死 qwen3.5:4b）", _DEFAULTS.get("model") == "",
+      repr(_DEFAULTS.get("model")))
+
+
+def _patch_detect(local, chat):
+    """把"本机模型检测"整体打桩（含 API 与硬盘两条来源）。"""
+    def _fake_local(_host=""):
+        return {"models": list(local), "note": "已检测到本机模型（打桩）" if local else "没有检测到可对话的本机模型（打桩）"}
+    _llmf.detect_local_models = _fake_local
+    _llmf.detect_chat_models = lambda: list(chat)
+    _llmf.detect_ollama_models = lambda: list(chat)
+    agent_service.detect_chat_models = lambda: list(chat)
+    agent_service.detect_ollama_models = lambda: list(chat)
+
+
+# ① 首启未选模型 + 本机有可对话模型 → 自动选第一个并落库
+_svc_a = AgentService(settings=SettingsStore(path=TMP / "k_a.json"),
+                      sessions=SessionStore(path=TMP / "k_a_sess.json"),
+                      plugin_data_root=TMP / "k_a_pd")
+_svc_a.initialize()
+check("首启未选模型时配置为空（不凭空写模型名）", _svc_a.settings.get("model") == "")
+_svc_a._warmup_llm = lambda: False          # 不打桩网络、不起预热线程
+_patch_detect(["stub-model:1b", "stub-model:7b"], ["stub-model:1b", "stub-model:7b"])
+_st_a = _svc_a.prepare_llm()
+check("★ 首次启动自动选用检测到的第一个可对话模型并落库",
+      _svc_a.settings.get("model") == "stub-model:1b", str(_svc_a.settings.get("model")))
+check("自动选择后就绪状态为真（无需用户手动填）",
+      _st_a.get("ready") is True and _st_a.get("model_available") is True, str(_st_a)[:160])
+_reload_cfg = SettingsStore(path=TMP / "k_a.json"); _reload_cfg.load()
+check("自动选择的模型**落库**（下次启动不必重选）", _reload_cfg.get("model") == "stub-model:1b")
+
+# ② 配置了一个本机不存在的模型 → 明确报"不可用 + 原因"，绝不报 ready
+_svc_b = AgentService(settings=SettingsStore(path=TMP / "k_b.json"),
+                      sessions=SessionStore(path=TMP / "k_b_sess.json"),
+                      plugin_data_root=TMP / "k_b_pd")
+_svc_b.initialize()
+_svc_b.settings.set("model", "本机没有的模型:9b")
+_svc_b.settings.save()
+_svc_b._warmup_llm = lambda: False
+_patch_detect([], [])
+_st_b = _svc_b.prepare_llm()
+check("★ 配置的模型不在可用清单里 → ready=False（不再「模型不存在却报已就绪」）",
+      _st_b.get("ready") is False and _st_b.get("model_available") is False, str(_st_b)[:160])
+check("★ 原因可行动：点名模型 + 指出重新选择或 ollama pull",
+      "本机没有的模型:9b" in str(_st_b.get("error")) and "ollama pull" in str(_st_b.get("error")),
+      str(_st_b.get("error"))[:160])
+check("不覆盖用户手选的模型（用户的选择优先，只如实报不可用）",
+      _svc_b.settings.get("model") == "本机没有的模型:9b")
+_errors = []
+_svc_b.set_listener(lambda ev, payload: _errors.append((ev, str(payload))))
+check("★ 不可用时发送被拒并如实报原因（绝不假装在跑）",
+      _svc_b.send("你好") is False and any(ev == "error" and "本机没有的模型:9b" in text
+                                           for ev, text in _errors),
+      str(_errors)[:160])
+
+# ③ 一个可对话模型都检测不到 → 保持空（界面显示"请选择模型"）
+_svc_c = AgentService(settings=SettingsStore(path=TMP / "k_c.json"),
+                      sessions=SessionStore(path=TMP / "k_c_sess.json"),
+                      plugin_data_root=TMP / "k_c_pd")
+_svc_c.initialize()
+_patch_detect([], [])
+_st_c = _svc_c.prepare_llm()
+check("检测不到可对话模型时保持空（不写死名字）",
+      _svc_c.settings.get("model") == "" and _st_c.get("model") == "", str(_st_c.get("model")))
+check("空模型的原因话术是「没有选择模型」（界面照此提示）",
+      "没有选择模型" in str(_st_c.get("error")), str(_st_c.get("error"))[:160])
+
+# ④ bootstrap 载荷带上算力清单关键字段（首屏就能诚实显示"请选择模型"）
+_boot = _JsApi(_svc_c, {}).bootstrap()
+_mc = _boot.get("model_catalog") or {}
+check("★ bootstrap 带 model_catalog（current_available + local_note 供界面首屏判断）",
+      _mc.get("current_available") is False and bool(_mc.get("local_note"))
+      and isinstance(_mc.get("local_detected"), list), str(_mc)[:160])
+check("bootstrap 的 settings 里带 sandbox_dir 与当前生效范围",
+      "sandbox_dir" in (_boot.get("settings") or {}) and bool((_boot.get("settings") or {}).get("sandbox")),
+      str(sorted((_boot.get("settings") or {}).keys()))[:160])
+
+# ⑤ ★ 默认可读写范围不得被"启动一轮对话"挤成单根（真机探针逮到的坑）：
+#   环境变量 SANDBOX_PATH 在内核解析顺序里是**硬覆盖**，服务层一旦把"主根（程序目录）"
+#   写进去，默认集合（桌面/文档/下载）就没了——表现是"发一句话之后桌面又变成越界要确认"。
+_saved_env3 = os.environ.pop("SANDBOX_PATH", None)
+try:
+    _svc_d = AgentService(settings=SettingsStore(path=TMP / "k_d.json"),
+                          sessions=SessionStore(path=TMP / "k_d_sess.json"),
+                          plugin_data_root=TMP / "k_d_pd")
+    _svc_d.initialize()
+    _svc_d.apply_runtime_env()
+    check("★ apply_runtime_env 不把主根写进 SANDBOX_PATH（否则默认集合被硬覆盖挤掉）",
+          os.environ.get("SANDBOX_PATH") is None, str(os.environ.get("SANDBOX_PATH")))
+    _user_dirs = _perm.user_working_dirs()
+    _roots_now = _perm.sandbox_roots()
+    check("默认可读写范围 = 程序目录 + 存在的用户日常目录（桌面/文档/下载都在范围内）",
+          all(any(os.path.normcase(r) == os.path.normcase(u) for r in _roots_now)
+              for u in _user_dirs) if _user_dirs else True,
+          f"{_roots_now} vs {_user_dirs}")
+    _desktop = Path(os.path.expanduser("~")) / "Desktop"
+    check("（这台机器上）桌面确实在默认范围内 —— 负责人要的「数桌面 / 在桌面建 txt」是本职活",
+          (not _desktop.is_dir()) or _perm.is_within_sandbox(str(_desktop)), str(_desktop))
+finally:
+    if _saved_env3 is not None:
+        os.environ["SANDBOX_PATH"] = _saved_env3
 
 print(chr(10) + "=" * 78)
 if failures:

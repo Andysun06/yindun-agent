@@ -76,7 +76,11 @@ svc_src = (ROOT / "yindun" / "app" / "agent_service.py").read_text(encoding="utf
 js_src = (ROOT / "yindun" / "app" / "web" / "app.js").read_text(encoding="utf-8")
 check("状态载荷带 context_note / context_ratio / context_will_compress",
       all(k in svc_src for k in ("context_note", "context_ratio", "context_will_compress")))
-check("看板优先显示后端给的说明（payload.context_note）", "payload.context_note" in js_src)
+# V3.6.8（负责人要求）：顶栏那段长 tooltip 已移除，说明与构成改由**可点开的浮层**承载——
+# 浮层数据来自服务层 context_usage()（底部两行取的就是本表的压缩阈值与附件预算），
+# 所以"界面不复述预算数字"这条口径没变，只是换了落点（断言跟着换成新落点）。
+check("看板不再把预算说明塞进 tooltip，改成浮层（数据仍来自后端 context_usage）",
+      "payload.context_note" not in js_src and 'call("context_usage")' in js_src)
 check("看板不再自己写死阈值文案（5000 只作为兜底出现在 fallback 里）",
       js_src.count("|| 5000") <= 1, str(js_src.count("|| 5000")))
 

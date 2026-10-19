@@ -44,7 +44,10 @@ CLIENT_SYMBOLS: Dict[str, Sequence[str]] = {
                              "_h_generate_chart", "_h_human_review", "_default_executor",
                              "has_execution_handler", "wf_data_pipeline", "workflow_outputs"],
     "yindun.core.privacy_engine": ["restore_kb_placeholders"],
-    "yindun.core.permission": ["permission_mode", "base_decision", "stricter"],
+    "yindun.core.permission": ["permission_mode", "base_decision", "stricter",
+                              # 默认可读写范围（V3.6.8）＝程序目录 + 桌面/文档/下载：
+                              # 这两个符号缺任何一个，说明包里还是"只有程序目录"的旧范围
+                              "sandbox_roots", "sandbox_scope_text"],
     "yindun.app.agent_service": ["_warmup_llm", "impl_notice", "set_session_permission",
                                  # 密钥「留空＝沿用已存」（V3.6.7）：这两个符号缺任何一个，
                                   # 说明打进包里的还是"空串覆盖密钥"的旧逻辑
@@ -53,6 +56,9 @@ CLIENT_SYMBOLS: Dict[str, Sequence[str]] = {
     # 公网模型接入（V3.6.4）：地址归一化与多候选探测必须真的在包里
     "yindun.app.llm_factory": ["normalize_base_url", "probe_candidates", "probe_endpoint"],
     "yindun.plugins.host": ["module_attr", "preload"],
+    # 工作线程的工具面（V3.6.8）：文件管理族与"路径是文件→取父目录"的收敛必须在包里，
+    # 否则用户拿到的是"能看见工具名、实际调不通"的旧行为
+    "yindun.worker.agent_worker": ["_as_directory_hint", "_range_notice", "_verify_tool_outcome"],
     "yindun.utils.logger": ["setup_logging"],
     # ★ 插件是**按文件路径动态加载**的（plugins/host.py 的 spec_from_file_location），
     #   PyInstaller 的静态分析进不去那些 plugin.py —— 插件独有的 import 只能靠"碰巧被别的模块带进来"。
@@ -64,7 +70,12 @@ CLIENT_SYMBOLS: Dict[str, Sequence[str]] = {
     "xlrd": ["open_workbook"],
     # 附件解析能力（V3.6.8）：PPTX 分支 / 旧版 .xls 分支 / 图片 OCR / 失败判定必须真的在包里。
     # 这些符号缺任何一个，都说明打进包的是"图片与 pptx 读不出内容、且失败被当成正文"的旧解析器。
-    "yindun.utils.document_parser": ["PptxParser", "is_parse_failure", "_extract_xls",
+    # 文件管理族（V3.6.8）：五个工具完全缺失 → 用户一句"帮我批量改后缀"就做不了
+    "yindun.core.file_tools": ["move_local_file", "copy_local_file",
+                               "rename_local_file", "batch_rename_local_files",
+                               "make_local_dir", "_plan_transfer"],
+    "yindun.utils.document_parser": ["_html_to_text", "_HtmlTextExtractor",   # HTML 去标签（V3.6.8）
+                                     "PptxParser", "is_parse_failure", "_extract_xls",
                                      "_extract_image", "_ocr_engine"],
 }
 

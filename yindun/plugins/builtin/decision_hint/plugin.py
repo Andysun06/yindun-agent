@@ -117,6 +117,10 @@ def advisory_for_approval(context: Dict[str, Any]) -> Optional[Dict[str, str]]:
         return None
 
     if not parsed:
+        # 不静默失效（插件开发规范第 5 条）：模型答了、但没能给出可解析的结论时留一行日志——
+        # 否则用户看到的是"启用了却从来不提示"，排障时无从下手（本机实测：小模型会把契约
+        # 那段 JSON 写成散文，解析自然落空）。
+        print(f"[decision_hint] 模型输出无法解析，本次不给出提示：{str(content)[:120]!r}")
         return None
 
     verdict, reason = parsed["verdict"], parsed["reason"]

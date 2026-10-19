@@ -1,11 +1,15 @@
+import fnmatch
 import os
 import re
 import shlex
+import shutil
 import subprocess
+import threading
 from pathlib import Path
+from typing import List, Union
 
 from yindun import APP_ROOT
-from yindun.core.permission import gate_reason
+from yindun.core.permission import gate_reason, sandbox_roots, sandbox_scope_text
 from yindun.utils.logger import get_logger
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
@@ -16,41 +20,176 @@ log = get_logger("tools")
 
 
 # ──────────────────────────────────────────
-# 沙箱根目录与越界校验
-# 所有能解析出可访问路径的工具，解析出 base_dir 后都必须经 _enforce_sandbox 校验，
-# 防止绕过沙箱读取/写入系统任意目录。
+# 可读写范围（沙箱根）与越界校验
+#
+# ★ V3.6.8 语义变更（负责人演示需求）：沙箱不再是"绝对墙"，而是"**默认可读写范围**"。
+#   历史实现里每个工具开头就 `_enforce_sandbox`，越界一律拒绝（读操作还静默回退），
+#   于是"开了完全访问档也什么都做不了"——数桌面文件、在桌面建 txt 全被挡，
+#   与设置页四档能力表（完全访问=允许新建/修改/删除）自相矛盾。
+#   现在越界操作由**策略层按当前档位**判定：plan 拒绝 / ask 每次人工确认 /
+#   auto·full 放行（放行也要留审计 + 在工具结果里标注，不允许静默）。
+#
+# 本模块保留两道**与档位无关**的硬校验（不得弱化）：
+#   ① 最终落点的 realpath+commonpath 校验（_safe_write_path）：防符号链接/junction 逃逸；
+#   ② 越界放行必须携带**宿主令牌**（grant_outside_access）：模型无法自授权，
+#      令牌只由 worker 在策略层判定通过后发放，且用完即撤（见 revoke_outside_grants）。
 # ──────────────────────────────────────────
 
 def sandbox_root() -> str:
-    """沙箱根目录：**每次调用都从环境变量解析**（优先 SANDBOX_PATH，否则应用根目录）。
+    """当前「可读写范围」的绝对路径（解析顺序：设置 sandbox_dir > 环境变量 > 应用根目录）。
 
-    ★ 为什么必须"每次解析"（V3.6.3 真机实测出来的缺陷）：
-      服务层会在**运行时**把设置里的沙箱目录写进 `SANDBOX_PATH`（用户可以在设置里改沙箱），
-      而模块级的 `SANDBOX` 常量只在**导入时**算一次。两者一旦不一致，就会出现
-      "工具默认目录指向新沙箱、沙箱判定仍按旧根" → **自己的文件被自己的沙箱判定拒掉**
-      （报"路径超出安全沙箱"）。真机 E2E 就是这么撞上的。
-      沙箱边界本身没变松：判定仍然要求 realpath 落在 root 内，只是 root 取"当前生效值"。
+    **每次调用现解析**：设置一改立即生效，不会出现"工具默认目录指向新范围、越界判定仍按旧根"
+    的错位（V3.6.3 真机 E2E 撞过的缺陷）。唯一实现在 core/permission.py（那里同时管档位矩阵）。
     """
-    return os.path.abspath(os.environ.get("SANDBOX_PATH", str(APP_ROOT)))
+    from yindun.core.permission import sandbox_root as _root
+    return _root()
 
 
 # 兼容旧引用：保留导入时快照（仅供老代码读取），新代码一律用 sandbox_root()
 SANDBOX = sandbox_root()
 
 
+# ── 越界放行令牌（宿主专有，模型不可伪造）──
+# 为什么用线程本地令牌而不是工具参数：工具参数会经 LangChain 的 pydantic 校验，
+# 多余键被丢弃——但更关键的是**参数是模型可写的**。若把"允许越界"做成参数，
+# 模型（或被提示注入的内容）只要传 `_outside_ok=True` 就能给自己放行。
+# 令牌只在 worker 线程内有效、由策略层判定通过后发放，模型侧完全看不到它的存在。
+class _OutsideGrant(threading.local):
+    """本线程当前持有的越界放行目标（realpath 后，含其子树）。"""
+
+    def __init__(self):
+        self.paths: list = []
+
+
+_OUTSIDE_GRANT = _OutsideGrant()
+
+
+def grant_outside_access(path) -> None:
+    """宿主在**策略层判定通过后**授予本次调用对 path（及其子树）的越界放行。
+
+    只在 worker 的审批/策略通道里调用；调用方负责在同一次工具调用结束前撤销
+    （revoke_outside_grants），避免令牌跨调用残留。
+    """
+    if not path:
+        return
+    try:
+        real = os.path.realpath(str(path))
+    except Exception:
+        return
+    if real and real not in _OUTSIDE_GRANT.paths:
+        _OUTSIDE_GRANT.paths.append(real)
+
+
+def revoke_outside_grants() -> None:
+    """撤销本线程全部越界放行令牌（每次工具调用结束后必须调用）。"""
+    _OUTSIDE_GRANT.paths = []
+
+
+def is_outside_approved(path) -> bool:
+    """path 是否落在某个已授予的越界目标内（realpath + commonpath，符号链接逃逸不认）。"""
+    if not path:
+        return False
+    try:
+        real = os.path.realpath(str(path))
+    except Exception:
+        return False
+    for base in list(getattr(_OUTSIDE_GRANT, "paths", []) or []):
+        try:
+            if os.path.commonpath([os.path.normcase(base), os.path.normcase(real)]) == os.path.normcase(base):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def outside_note(path) -> str:
+    """给模型的"越界已放行"标注（工具结果里必须带，让对话流里也看得见）。"""
+    return f"\n（本次操作在可读写范围之外：{path}）"
+
+
+def outside_refusal(path, tool_display: str = "本次操作") -> str:
+    """越界被拒时的可行动话术：说清"在哪之外 / 当前范围是什么 / 怎么改"。"""
+    from yindun.core.permission import LABELS, OUTSIDE_HINTS, permission_mode
+    mode = permission_mode()
+    return (
+        f"❌ 安全拦截：{tool_display}的目标路径在**当前可读写范围之外**（{path}）。\n"
+        f"当前可读写范围：{sandbox_scope_text()}\n"
+        f"档位判定：{LABELS.get(mode, mode)} —— {OUTSIDE_HINTS.get(mode, '不越界访问')}。\n"
+        f"怎么改：① 在设置页把「可读写范围」改到该目录（设置键 sandbox_dir，改完立即生效）；"
+        f"或 ② 把文件放进当前范围再操作；或 ③ 把权限档位切到「自主模式 / 完全访问」。"
+    )
+
+
+def _audit_outside(tool_name: str, path: str, decision: str, allowed: bool) -> None:
+    """越界操作留痕（放行与拒绝都要写）。
+
+    为什么在**工具层**也写一遍：这是"磁盘访问真的发生了"的那一层——即便调用方
+    （worker / 插件 / 脚本）忘了记，审计里也不会出现越界无痕的洞。事件类型沿用
+    access_control（与审批留痕同一口径），详情含工具名、真实路径、档位、判定结果。
+    """
+    try:
+        from yindun.core.audit_log import AuditEventType, AuditSeverity, AuditLog
+        from yindun.core.permission import permission_mode
+        try:
+            real_path = os.path.realpath(str(path))
+        except Exception:
+            real_path = str(path)
+        AuditLog().add_entry(
+            AuditEventType.ACCESS_CONTROL,
+            AuditSeverity.SECURITY if allowed else AuditSeverity.CRITICAL,
+            f"可读写范围外{'放行' if allowed else '拒绝'}: {tool_name} {real_path}",
+            {
+                "tool_name": tool_name,
+                "path": real_path,
+                "outside_sandbox": True,
+                "sandbox_root": sandbox_root(),
+                "permission": permission_mode(),
+                "decision": decision,
+                "approved": allowed,
+            },
+        )
+    except Exception:
+        pass          # 审计失败不阻断工具本身，但绝不因此跳过判定
+
+
+def _check_outside(base_dir: str, tool_name: str, tool_display: str):
+    """越界统一判定：返回 (拦截话术 or "", 是否越界已放行)。
+
+    · 范围内 → ("", False)：按老路径执行；
+    · 范围外且带宿主令牌 → ("", True)：执行并**必须**在结果里带「在可读写范围之外」标注；
+    · 范围外且无令牌 → (拒绝话术, False)：写审计后拒绝（不静默回退！）。
+      ★ 为什么这里还能拦下"策略层已放行但没给令牌"的调用：令牌是宿主的承诺，
+        没令牌就是没批准（例如模型伪造参数、或插件绕过审批直调工具）。
+    """
+    _, within = _enforce_sandbox(base_dir)
+    if within:
+        return "", False
+    if is_outside_approved(base_dir):
+        _audit_outside(tool_name, base_dir, "outside_allowed", True)
+        return "", True
+    _audit_outside(tool_name, base_dir, "outside_refused", False)
+    return outside_refusal(base_dir, tool_display), False
+
+
 def _enforce_sandbox(path: str):
     """
-    将路径解析为真实物理路径，并判定其是否位于沙箱根目录内。
+    将路径解析为真实物理路径，并判定其是否位于可读写范围（沙箱根）内。
     返回 (resolved, within)：resolved 为 realpath 后的绝对路径，
-    within 布尔值表示是否在沙箱内（用 commonpath 归一化比较，先破解符号链接/junction）。
+    within 布尔值表示是否在范围内（用 commonpath 归一化比较，先破解符号链接/junction）。
+
+    ★ 范围可能是**多个根**（默认＝应用根目录 + 桌面/文档/下载），任一命中即范围内。
+      拿单根去比会把"桌面"误判成越界 —— 这正是"什么都拒绝"的老毛病。
     """
     real = os.path.realpath(path)
-    base = os.path.realpath(sandbox_root())
-    try:
-        within = os.path.commonpath([os.path.normcase(base), os.path.normcase(real)]) == os.path.normcase(base)
-    except ValueError:
-        within = False
-    return real, within
+    normalized = os.path.normcase(real)
+    for root in sandbox_roots():
+        try:
+            base = os.path.normcase(os.path.realpath(str(root)))
+            if os.path.commonpath([base, normalized]) == base:
+                return real, True
+        except (ValueError, TypeError):
+            continue
+    return real, False
 
 
 def _safe_write_path(file_path, base_dir):
@@ -88,17 +227,19 @@ def _resolve_target_dir(target_directory: str, default_dir=None) -> str:
         default_dir = sandbox_root()
     if not target_directory or target_directory == "当前沙箱目录":
         return default_dir
-    
+
     p = target_directory.strip()
-    
+
     # ★★★ 优先判断是否是绝对路径（最可靠）
     if os.path.isabs(p):
         return os.path.abspath(p)
-    
-    # 然后处理中文描述
+
+    # 然后处理中文描述。"桌面" 走**外壳真实路径**（注册表）：
+    # 被 OneDrive 重定向的机器上 `~/Desktop` 是不存在的旧位置，拼它必然落空。
     if "桌面" in target_directory:
-        return os.path.join(os.path.expanduser("~"), "Desktop")
-    
+        desktop = _shell_folder_dirs().get("Desktop")
+        return desktop or os.path.join(os.path.expanduser("~"), "Desktop")
+
     drive_match = re.search(r"^([A-Za-z])\s*[盘盘]\s*(.*)", p)
     if drive_match:
         drive_letter = drive_match.group(1).upper()
@@ -106,8 +247,25 @@ def _resolve_target_dir(target_directory: str, default_dir=None) -> str:
         if rest:
             return os.path.abspath(f"{drive_letter}:\\" + re.sub(r"^(?:的|这个|那个|该|此)\s*", "", rest))
         return os.path.abspath(f"{drive_letter}:\\")
-    
+
     return default_dir
+
+
+def _shell_folder_dirs() -> dict:
+    """外壳"已知文件夹"（桌面/文档/下载）的真实路径；取不到的那项不出现在结果里。
+
+    与 `permission.user_working_dirs()` 同源同口径：可读写范围收哪些目录，
+    这里就必须解析到哪些目录，否则会出现"范围内允许、工具却拼错路径"的错位。
+    """
+    from yindun.core.permission import user_working_dirs
+    out: dict = {}
+    wanted = {"Desktop": ("桌面",), "Documents": ("文档",), "Downloads": ("下载",)}
+    for directory in user_working_dirs():
+        name = os.path.basename(directory)
+        for key, aliases in wanted.items():
+            if name in aliases or key.lower() == name.lower():
+                out.setdefault(key, directory)
+    return out
 
 
 def _read_file_text(file_path: str, max_bytes: int = 20000) -> str:
@@ -147,8 +305,9 @@ def preview_command_script(command: str, sandbox: str = "") -> str:
             within = os.path.commonpath([os.path.normcase(base), os.path.normcase(real)]) == os.path.normcase(base)
         except ValueError:
             within = False
-        if not within:
-            return "(脚本解析后不在沙箱内——执行时会被命令白名单拦截)"
+        if not within and not is_outside_approved(real):
+            # 工作目录本身越界时，脚本也在范围外——执行时同样需要宿主放行（见 _check_outside）
+            return "(脚本解析后不在当前可读写范围/已放行目录内——执行时会被安全策略拦住)"
         if not os.path.isfile(real):
             return "(脚本不存在)"
         text = Path(real).read_text(encoding="utf-8", errors="replace")
@@ -183,6 +342,85 @@ class DeleteFileInput(BaseModel):
     target_directory: str = Field(
         default="当前沙箱目录", 
         description="目标位置描述，默认填'当前沙箱目录'。由系统网关自动继承，无需AI擅自修改。"
+    )
+
+
+class MakeDirInput(BaseModel):
+    path: str = Field(
+        ...,
+        description="要创建的目录：给名称（如 '备份'）就在当前目录下建；给绝对路径（如 'D:\\\\项目\\\\素材'）按绝对路径建，可多级。"
+    )
+    target_directory: str = Field(
+        default="当前沙箱目录",
+        description="path 是相对名称时的基准目录，默认填'当前沙箱目录'。"
+    )
+
+
+class MoveFileInput(BaseModel):
+    source: Union[str, List[str]] = Field(
+        ...,
+        description="要移动的源路径（必须是完整路径，如 'C:\\\\Users\\\\me\\\\Desktop\\\\a.txt'）；批量移动时给列表。"
+    )
+    target: str = Field(
+        ...,
+        description="目标：既有目录（或带结尾斜杠）= 移动进去并保留原名；否则当作完整目标路径（单个源时可借此改名）。"
+    )
+    overwrite: bool = Field(
+        default=False,
+        description="目标已存在时是否覆盖。默认 false = 拒绝并说明；只有用户明确要求覆盖时才填 true。"
+    )
+
+
+class CopyFileInput(BaseModel):
+    source: Union[str, List[str]] = Field(
+        ...,
+        description="要复制的源路径（完整路径）；批量复制时给列表。"
+    )
+    target: str = Field(
+        ...,
+        description="目标：既有目录（或带结尾斜杠）= 复制进去并保留原名；否则当作完整目标路径（单个源时可借此改名）。"
+    )
+    overwrite: bool = Field(
+        default=False,
+        description="目标已存在时是否覆盖。默认 false = 拒绝并说明。"
+    )
+
+
+class RenameFileInput(BaseModel):
+    filename: str = Field(
+        ...,
+        description="要改名的文件（或目录）名，例如 'report_v1.docx'。"
+    )
+    new_name: str = Field(
+        ...,
+        description="新名字，**只填文件名**（如 'report_final.docx'），不许带路径分隔符；换目录请用 move_local_file。"
+    )
+    target_directory: str = Field(
+        default="当前沙箱目录",
+        description="文件所在目录，默认填'当前沙箱目录'。"
+    )
+
+
+class BatchRenameInput(BaseModel):
+    target_directory: str = Field(
+        default="当前沙箱目录",
+        description="要批量改名的目录，默认填'当前沙箱目录'。"
+    )
+    match: str = Field(
+        ...,
+        description="要被替换的旧文字（**子串匹配，不是正则**），例如改后缀填 '.jpeg'。"
+    )
+    replace: str = Field(
+        default="",
+        description="替换成的新文字，例如 '.jpg'；留空 = 直接删掉 match 这段文字。"
+    )
+    file_pattern: str = Field(
+        default="*",
+        description="只处理匹配这个通配符的文件名，默认 '*'（全部文件）。"
+    )
+    include_dirs: bool = Field(
+        default=False,
+        description="是否连子目录名一起改，默认 false（只改文件）。"
     )
 
 class ListFilesInput(BaseModel):
@@ -267,22 +505,23 @@ class SearchInFilesInput(BaseModel):
 
 @tool(args_schema=ListFilesInput)
 def list_local_files(target_directory: str = "当前沙箱目录") -> str:
-    """获取指定安全沙箱目录下的所有文件和文件夹列表。"""
-    # 只读操作在四档权限（计划/确认/自主/完全）中一律放行，沙箱边界照旧
-    # —— 硬闸只拦"变更类"，见 core/permission.py 的设计表。
-        
+    """获取指定目录（默认可读写范围）下的所有文件和文件夹列表。"""
+    # 只读操作在四档权限（计划/确认/自主/完全）中一律放行；**越界**则由策略层按档位判定
+    # （plan 拒绝 / ask 人工确认 / auto·full 放行并标注），本函数不再静默回退到默认目录。
+
     base_dir = _resolve_target_dir(target_directory)
-    _, within = _enforce_sandbox(base_dir)
-    if not within:
-        return "⚠️ 指定路径超出安全沙箱，已回退到默认目录。"
+    blocked, outside_ok = _check_outside(base_dir, "list_local_files", "列出目录")
+    if blocked:
+        return blocked
     try:
         if not os.path.exists(base_dir):
             os.makedirs(base_dir, exist_ok=True)
         files = os.listdir(base_dir)
         folder_name = os.path.basename(base_dir) if os.path.basename(base_dir) else base_dir
-        return f"✅ 成功读取目录！当前目标沙箱 [{folder_name}] 内的文件有：{', '.join(files)}"
+        result = f"✅ 成功读取目录！目录 [{folder_name}] 内的文件有：{', '.join(files)}"
+        return result + (outside_note(base_dir) if outside_ok else "")
     except Exception as e:
-        return f"❌ 访问沙箱文件列表失败：{str(e)}"
+        return f"❌ 访问文件列表失败：{str(e)}"
 
 
 @tool(args_schema=CreateFileInput)
@@ -299,12 +538,14 @@ def create_local_file(filename: str, content: str = "", target_directory: str = 
         return _blocked
 
     base_dir = _resolve_target_dir(target_directory)
-    _, within = _enforce_sandbox(base_dir)
-    if not within:
-        return f"❌ 安全拦截：目标路径超出安全沙箱（{base_dir}），已拒绝执行，未写入任何文件。"
-    
+    blocked, outside_ok = _check_outside(base_dir, "create_local_file", "创建文件")
+    if blocked:
+        return blocked
+
     # 🛡️ 边界防御：文件名强制 basename 化（丢弃目录成分），再与授权目录拼接；
     #    随后对最终落点做 realpath+commonpath 二次校验，拦截符号链接跟随式越界。
+    #    ★ 这道校验与档位无关、永不放松：越界放行的是"用户指定的那个目录"，
+    #      不是"该目录里任何链接指向的地方"。
     safe_filename = os.path.basename(filename)
     file_path, ok = _safe_write_path(Path(base_dir) / safe_filename, base_dir)
     if not ok:
@@ -315,48 +556,368 @@ def create_local_file(filename: str, content: str = "", target_directory: str = 
             os.makedirs(base_dir, exist_ok=True)
         file_path.write_text(content, encoding="utf-8")
         folder_name = os.path.basename(base_dir) if os.path.basename(base_dir) else base_dir
-        return f"✅ 权限验证通过！成功在当前授权沙箱 [{folder_name}] 下物理创建文件：{safe_filename}。"
+        result = f"✅ 权限验证通过！成功在授权目录 [{folder_name}] 下物理创建文件：{safe_filename}。"
+        return result + (outside_note(base_dir) if outside_ok else "")
     except Exception as e:
         return f"❌ 物理写盘失败：{str(e)}"
 
 
 @tool(args_schema=DeleteFileInput)
 def delete_local_file(filename: str, target_directory: str = "当前沙箱目录") -> str:
-    """在指定的安全沙箱目录下删除、移除或清理一个已存在的文本文件。"""
+    """在指定目录（默认可读写范围）下删除、移除或清理一个已存在的文本文件。"""
     _blocked = gate_reason("delete", "删除文件")
     if _blocked:
         return _blocked
 
     base_dir = _resolve_target_dir(target_directory)
-    _, within = _enforce_sandbox(base_dir)
-    if not within:
-        return f"❌ 安全拦截：目标路径超出安全沙箱（{base_dir}），已拒绝执行，未删除任何文件。"
+    blocked, outside_ok = _check_outside(base_dir, "delete_local_file", "删除文件")
+    if blocked:
+        return blocked
     safe_filename = os.path.basename(filename)
     file_path = os.path.join(base_dir, safe_filename)
-    
+
     try:
         if os.path.exists(file_path):
             os.remove(file_path)
             folder_name = os.path.basename(base_dir) if os.path.basename(base_dir) else base_dir
-            return f"✅ 物理删除成功！已从沙箱 [{folder_name}] 中彻底移除文件：{safe_filename}。"
+            result = f"✅ 物理删除成功！已从目录 [{folder_name}] 中彻底移除文件：{safe_filename}。"
+            return result + (outside_note(base_dir) if outside_ok else "")
         else:
             return f"❌ 删除失败：在当前工作路径中未找到文件 {safe_filename}。"
     except Exception as e:
         return f"❌ 物理删除失败：{str(e)}"
 
 
+# ──────────────────────────────────────────
+# 文件管理（移动 / 复制 / 重命名 / 批量改名 / 建目录）
+# ------------------------------------------------------------------
+# 为什么单开这一族（V3.6.8，负责人实测反馈）："帮我移动几个文件、批量把后缀改一下"
+# 是桌面智能体的**本职工作**，但此前工具集里根本没有移动/改名/复制能力，模型只能用
+# "读出来 + 新建 + 删掉"硬拼（还容易丢内容）。于是用户看到的是"这个智能体没用"。
+#
+# 三条共同约定（与既有工具同口径，不新立规矩）：
+#   ① 越界判定复用 `_check_outside`：范围外按档位判定（plan 拒绝 / ask 人工确认 /
+#      auto·full 放行并留审计），**两端路径都要判**（源在范围内、目标在范围外也得判）；
+#   ② 不改语义地拒绝危险情形：目标已存在且未显式 overwrite=true 时**拒绝**，绝不静默覆盖；
+#   ③ 批量操作**先整批预检再动手**：任一环节不合法就一条都不做（不许做一半）。
+# ──────────────────────────────────────────
+
+def _has_separator(text: str) -> bool:
+    """是否含路径分隔符（`\\`、`/`）。用于强制"new_name 是纯文件名"。"""
+    return bool(re.search(r"[\\/]", str(text or "")))
+
+
+def _looks_like_dir(target: str) -> bool:
+    """target 是否应被理解为"目录"（既有目录，或以分隔符结尾）。
+
+    这是移动/复制的关键语义开关：`D:\\存档`（存在）→ 移进去并保留原名；
+    `D:\\存档\\a.txt` → 当作完整目标路径（可改名）。
+    """
+    if not target:
+        return False
+    if os.path.isdir(target):
+        return True
+    text = str(target).strip()
+    return text.endswith(("\\", "/"))
+
+
+def _plan_transfer(source, target: str, tool_name: str, tool_display: str, verb: str):
+    """移动/复制共用的**整批预检**：返回 (transform 列表, 拦截话术, 是否越界放行)。
+
+    一次把所有检查做完（存在性 / 源=目标 / 目录移入自身子树 / 目标占用 / 两端越界），
+    任何一条不通过就整批不动手 —— 批量操作最怕"改了一半"。
+    """
+    items = [source] if isinstance(source, (str, os.PathLike)) else list(source or [])
+    items = [str(item).strip() for item in items if str(item or "").strip()]
+    if not items:
+        return [], f"❌ {verb}失败：没有给出要{verb}的路径（source 为空）。", False
+    if not target or not str(target).strip():
+        return [], f"❌ {verb}失败：没有给出目标位置（target 为空）。", False
+
+    target_as_dir = len(items) > 1 or _looks_like_dir(target)
+    if len(items) > 1 and not os.path.isdir(target):
+        # 多源只有一个去处：必须是一个**已存在**的目录（否则"移到哪"这件事没定义）。
+        return [], (f"❌ {verb}失败：一次{verb}多个路径时，target 必须是一个**已存在的目录**"
+                    f"（当前给的是 {target}）。请先用 make_local_dir 建目录，"
+                    f"或 list_local_files 确认目标路径。"), False
+
+    pairs = []
+    for item in items:
+        source_abs = os.path.abspath(item)
+        if not os.path.exists(source_abs):
+            return [], (f"❌ {verb}失败：源路径不存在 {source_abs}。"
+                        f"请先用 list_local_files 列出目录、按真实名字重试。"), False
+        if target_as_dir:
+            destination_abs = os.path.join(os.path.abspath(target),
+                                           os.path.basename(source_abs.rstrip("\\/")))
+        else:
+            destination_abs = os.path.abspath(target)
+        if os.path.normcase(source_abs) == os.path.normcase(destination_abs):
+            return [], f"❌ {verb}失败：源和目标是同一个路径（{source_abs}），不需要{verb}。", False
+        if os.path.isdir(source_abs):
+            source_real = os.path.normcase(os.path.realpath(source_abs))
+            destination_real = os.path.normcase(os.path.realpath(destination_abs))
+            if destination_real.startswith(source_real + os.sep):
+                return [], (f"❌ {verb}失败：不能把目录{verb}到它自己的子目录里"
+                            f"（{source_abs} → {destination_abs}）。"), False
+        parent = os.path.dirname(destination_abs)
+        if not os.path.isdir(parent):
+            return [], (f"❌ {verb}失败：目标所在目录不存在 {parent}。"
+                        f"先用 make_local_dir 建目录，或确认目标路径是否写错。"), False
+        pairs.append((source_abs, destination_abs))
+
+    outside_ok = False
+    for source_abs, destination_abs in pairs:
+        for path in (source_abs, destination_abs):
+            blocked, granted = _check_outside(path, tool_name, tool_display)
+            if blocked:
+                return [], blocked, False
+            outside_ok = outside_ok or granted
+    return pairs, "", outside_ok
+
+
+def _apply_transfer(pairs, overwrite: bool, verb: str, tool_name: str,
+                    outside_ok: bool = False, copier=None) -> str:
+    """执行已在 `_plan_transfer` 里预检通过的移动/复制，并如实报告每一条结果。
+
+    `copier` 为 None 表示移动（shutil.move），否则是复制函数（shutil.copy2/copytree）。
+    覆盖只在 `overwrite=True` 时发生，且**覆盖了什么会写进结果**，不静默。
+    """
+    done: List[str] = []
+    overwritten: List[str] = []
+    for source_abs, destination_abs in pairs:
+        existed = os.path.exists(destination_abs)
+        if existed and not overwrite:
+            return (f"❌ {verb}失败：目标已存在 {destination_abs}。"
+                    f"如需覆盖请在调用时明确 overwrite=true；不想覆盖就换个名字或目录。"
+                    + (f"\n（本次已有 {len(done)} 项完成：{('；'.join(done))}）" if done else ""))
+        try:
+            if existed and overwrite:
+                if os.path.isdir(destination_abs) and not os.path.isdir(source_abs):
+                    return (f"❌ {verb}失败：目标是目录、源是文件，不能覆盖（{destination_abs}）。"
+                            + (f"\n（本次已有 {len(done)} 项完成：{('；'.join(done))}）" if done else ""))
+                if os.path.isdir(destination_abs):
+                    shutil.rmtree(destination_abs)
+                else:
+                    os.remove(destination_abs)
+                overwritten.append(os.path.basename(destination_abs))
+            if copier is None:
+                shutil.move(source_abs, destination_abs)
+            elif os.path.isdir(source_abs):
+                shutil.copytree(source_abs, destination_abs)
+            else:
+                shutil.copy2(source_abs, destination_abs)
+        except Exception as exc:                                        # noqa: BLE001
+            return (f"❌ {verb}失败：{source_abs} → {destination_abs}：{exc}"
+                    + (f"\n（本次已完成 {len(done)} 项：{('；'.join(done))}）" if done else ""))
+        done.append(f"{os.path.basename(source_abs)} → {destination_abs}")
+
+    if not done:
+        return f"❌ {verb}失败：没有可执行的项目。"
+    head = f"✅ 已{verb} {len(done)} 项"
+    if overwritten:
+        head += f"（其中覆盖了已存在的：{('、'.join(overwritten))}）"
+    body = "\n  " + "\n  ".join(done) if len(done) > 1 else f"：{done[0]}"
+    return head + body + (outside_note(pairs[0][1]) if outside_ok else "")
+
+
+@tool(args_schema=MakeDirInput)
+def make_local_dir(path: str, target_directory: str = "当前沙箱目录") -> str:
+    """在本地磁盘上新建一个目录（可多级，如 `D:\\项目\\素材`）。目录已存在时如实说明，不报假成功。"""
+    _blocked = gate_reason("write", "新建目录")
+    if _blocked:
+        return _blocked
+
+    base_dir = _resolve_target_dir(target_directory)
+    raw = str(path or "").strip()
+    if not raw:
+        return "❌ 新建目录失败：没有给出目录名（path 为空）。"
+    if _has_separator(raw) and not os.path.isabs(raw) and ".." in raw.split(os.sep):
+        return "❌ 新建目录失败：相对路径里不允许带 '..'，请给名称或完整绝对路径。"
+    candidate = os.path.abspath(raw) if os.path.isabs(raw) else os.path.join(base_dir, raw)
+
+    blocked, outside_ok = _check_outside(candidate, "make_local_dir", "新建目录")
+    if blocked:
+        return blocked
+    if os.path.isdir(candidate):
+        return f"ℹ️ 目录已存在，无需创建：{candidate}"
+    if os.path.exists(candidate):
+        return f"❌ 新建目录失败：同名文件已存在（{candidate}），不能把它当目录。"
+    try:
+        os.makedirs(candidate, exist_ok=True)
+    except Exception as exc:                                            # noqa: BLE001
+        return f"❌ 新建目录失败：{candidate}：{exc}"
+    return (f"✅ 已创建目录：{candidate}"
+            + (outside_note(candidate) if outside_ok else ""))
+
+
+@tool(args_schema=MoveFileInput)
+def move_local_file(source: Union[str, List[str]], target: str, overwrite: bool = False) -> str:
+    """移动或重命名本地文件/目录（支持一次移动多个到同一目录）。
+
+    · target 给**既有目录**（或以 `\\`、`/` 结尾）→ 移动进去并保留原文件名；
+    · 单个源 + target 给完整路径 → 移动并改名（等价于"换个地方并改名"）。
+    目标已存在时默认**拒绝**（不静默覆盖）；只有用户明确要求覆盖才传 overwrite=true。
+    """
+    _blocked = gate_reason("write", "移动文件")
+    if _blocked:
+        return _blocked
+    pairs, blocked, outside_ok = _plan_transfer(source, target, "move_local_file", "移动文件", "移动")
+    if blocked:
+        return blocked
+    return _apply_transfer(pairs, overwrite, "移动", "move_local_file", outside_ok, copier=None)
+
+
+@tool(args_schema=CopyFileInput)
+def copy_local_file(source: Union[str, List[str]], target: str, overwrite: bool = False) -> str:
+    """复制本地文件/目录（支持一次复制多个到同一目录）。目标已存在时默认拒绝覆盖。
+
+    什么时候用复制而不是移动：用户说"备份一份""留个副本""复制到…"时用复制，
+    "挪过去""移动"才用 move_local_file。
+    """
+    _blocked = gate_reason("write", "复制文件")
+    if _blocked:
+        return _blocked
+    pairs, blocked, outside_ok = _plan_transfer(source, target, "copy_local_file", "复制文件", "复制")
+    if blocked:
+        return blocked
+    return _apply_transfer(pairs, overwrite, "复制", "copy_local_file", outside_ok, copier=shutil.copy2)
+
+
+@tool(args_schema=RenameFileInput)
+def rename_local_file(filename: str, new_name: str, target_directory: str = "当前沙箱目录") -> str:
+    """就地重命名一个文件或目录（只改名字，不换目录；换目录用 move_local_file）。
+
+    new_name 只接受**纯文件名**（不含 `\\`、`/`），防止被用来把文件挪出当前目录。
+    目标名已存在时拒绝（不静默覆盖）；只改大小写的改名允许（Windows 上合法）。
+    """
+    _blocked = gate_reason("write", "重命名")
+    if _blocked:
+        return _blocked
+
+    clean_new = str(new_name or "").strip()
+    if not clean_new or clean_new in (".", ".."):
+        return "❌ 重命名失败：new_name 不能为空、也不能是 '.' 或 '..'。"
+    if _has_separator(clean_new):
+        return ("❌ 重命名失败：new_name 只能是**文件名**（不能带路径分隔符）。"
+                "要换目录请改用 move_local_file(source, target)。")
+
+    base_dir = _resolve_target_dir(target_directory)
+    blocked, outside_ok = _check_outside(base_dir, "rename_local_file", "重命名")
+    if blocked:
+        return blocked
+    source_abs = os.path.join(base_dir, os.path.basename(filename))
+    destination_abs = os.path.join(base_dir, clean_new)
+    if os.path.normcase(source_abs) == os.path.normcase(destination_abs) and \
+            os.path.basename(filename) != clean_new:
+        pass                                    # 只改大小写：允许
+    elif os.path.normcase(source_abs) == os.path.normcase(destination_abs):
+        return f"❌ 重命名失败：新名字和原名一样（{clean_new}）。"
+    if not os.path.exists(source_abs):
+        return (f"❌ 重命名失败：{os.path.basename(filename)} 不存在于 {base_dir}。"
+                f"请先用 list_local_files 看真实文件名。")
+    if os.path.exists(destination_abs) and \
+            os.path.normcase(source_abs) != os.path.normcase(destination_abs):
+        return (f"❌ 重命名失败：目标名已存在 {clean_new}。"
+                f"换一个名字，或确认要覆盖时先删除/移动原文件。")
+    try:
+        os.rename(source_abs, destination_abs)
+    except Exception as exc:                                            # noqa: BLE001
+        return f"❌ 重命名失败：{os.path.basename(filename)} → {clean_new}：{exc}"
+    return (f"✅ 已重命名：{os.path.basename(filename)} → {clean_new}（目录 {base_dir}）"
+            + (outside_note(base_dir) if outside_ok else ""))
+
+
+@tool(args_schema=BatchRenameInput)
+def batch_rename_local_files(target_directory: str = "当前沙箱目录", match: str = "",
+                             replace: str = "", file_pattern: str = "*",
+                             include_dirs: bool = False) -> str:
+    """批量重命名：把目录下匹配的文件名里的旧文字（match，**子串**不是正则）替换成新文字（replace）。
+
+    典型用法：批量改后缀 `match='.jpeg', replace='.jpg'`；批量改前缀/编号同理。
+    改名前先整批预检：只要出现"改名后撞车"就**整批拒绝**，绝不改一半；一个都没匹配上时如实说明。
+    """
+    _blocked = gate_reason("write", "批量重命名")
+    if _blocked:
+        return _blocked
+
+    old_text = str(match or "")
+    if not old_text:
+        return ("❌ 批量重命名失败：match 不能为空 —— 它是要替换的旧文字"
+                "（例如批量把后缀 jpeg 改成 jpg 时 match='.jpeg'）。")
+
+    base_dir = _resolve_target_dir(target_directory)
+    blocked, outside_ok = _check_outside(base_dir, "batch_rename_local_files", "批量重命名")
+    if blocked:
+        return blocked
+    if not os.path.isdir(base_dir):
+        return f"❌ 批量重命名失败：目录不存在 {base_dir}。"
+    try:
+        names = sorted(os.listdir(base_dir))
+    except Exception as exc:                                            # noqa: BLE001
+        return f"❌ 批量重命名失败：读不到目录 {base_dir}：{exc}"
+
+    pattern = str(file_pattern or "*")
+    planned: List = []
+    for name in names:
+        full = os.path.join(base_dir, name)
+        if not include_dirs and not os.path.isfile(full):
+            continue
+        if pattern not in ("", "*") and not fnmatch.fnmatch(name.lower(), pattern.lower()):
+            continue
+        if old_text not in name:
+            continue
+        new_name = name.replace(old_text, str(replace or ""))
+        if not new_name or new_name in (".", "..") or _has_separator(new_name):
+            return (f"❌ 批量重命名失败：{name} 替换后的名字不合法（{new_name!r}）。"
+                    f"请调整 match/replace，别让替换结果带上路径分隔符或变空。")
+        if new_name != name:
+            planned.append((name, new_name))
+
+    if not planned:
+        return (f"ℹ️ 没有匹配到需要改名的文件：目录 {base_dir}，文件名匹配 {pattern}、"
+                f"替换 {old_text!r} → {str(replace or '')!r} 后没有变化。"
+                f"请先 list_local_files 看真实文件名，再决定 match 该写什么。")
+
+    existing = {os.path.normcase(name) for name in names}
+    targets: set = set()
+    collisions: List[str] = []
+    for old_name, new_name in planned:
+        key = os.path.normcase(new_name)
+        if key in targets or (key in existing and os.path.normcase(old_name) != key):
+            collisions.append(f"{old_name} → {new_name}")
+        targets.add(key)
+    if collisions:
+        return ("❌ 批量重命名已整批拒绝（会撞车，不能改一半）：\n  "
+                + "\n  ".join(collisions)
+                + "\n 请把 match/replace 写得更具体（例如带上扩展名或前缀）后重试。")
+
+    changed: List[str] = []
+    for old_name, new_name in planned:
+        try:
+            os.rename(os.path.join(base_dir, old_name), os.path.join(base_dir, new_name))
+            changed.append(f"{old_name} → {new_name}")
+        except Exception as exc:                                        # noqa: BLE001
+            return (f"⚠️ 批量重命名中途失败：{old_name} → {new_name}：{exc}\n"
+                    f"已完成 {len(changed)} 项：\n  " + "\n  ".join(changed))
+    return (f"✅ 已批量重命名 {len(changed)} 个文件（目录 {base_dir}）：\n  "
+            + "\n  ".join(changed)
+            + (outside_note(base_dir) if outside_ok else ""))
+
+
 @tool(args_schema=ReadFileInput)
 def read_local_file(filename: str, target_directory: str = "当前沙箱目录") -> str:
-    """读取指定安全沙箱目录下的文件内容，用于分析、总结或修改文件。"""
-    # 只读一律放行（四档权限均如此）；审批与否由策略引擎按档位判定
-    
+    """读取指定目录（默认可读写范围）下的文件内容，用于分析、总结或修改文件。"""
+    # 只读一律放行（四档权限均如此）；越界与否由策略层按档位判定
+    # —— 越界不再"静默回退到默认目录"（那会让模型拿着别的目录的内容当答案）。
+
     base_dir = _resolve_target_dir(target_directory)
-    _, within = _enforce_sandbox(base_dir)
-    if not within:
-        return "⚠️ 指定路径超出安全沙箱，已回退到默认目录。"
+    blocked, outside_ok = _check_outside(base_dir, "read_local_file", "读取文件")
+    if blocked:
+        return blocked
     safe_filename = os.path.basename(filename)
     file_path = os.path.join(base_dir, safe_filename)
-    
+
     try:
         if not os.path.exists(file_path):
             return f"❌ 读取失败：文件 {safe_filename} 不存在。"
@@ -366,7 +927,8 @@ def read_local_file(filename: str, target_directory: str = "当前沙箱目录")
         size_note = ""
         if file_size > max_bytes:
             size_note = f"\n\n（文件过大，已截断至前 {len(content)} 字符 / 原始 {file_size} 字节。可分段读取。）"
-        return f"✅ 成功读取文件！\n\n文件名：{safe_filename}\n内容：\n{content}{size_note}"
+        result = f"✅ 成功读取文件！\n\n文件名：{safe_filename}\n内容：\n{content}{size_note}"
+        return result + (outside_note(base_dir) if outside_ok else "")
     except Exception as e:
         return f"❌ 读取失败：{str(e)}"
 
@@ -383,10 +945,11 @@ def modify_local_file(filename: str, old_content: str = "", new_content: str = "
         return _blocked
     
     base_dir = _resolve_target_dir(target_directory)
-    _, within = _enforce_sandbox(base_dir)
-    if not within:
-        return f"❌ 安全拦截：目标路径超出安全沙箱（{base_dir}），已拒绝执行，未修改任何文件。"
-    # 文件名 basename 化 + 最终落点 realpath+commonpath 校验（拦截符号链接跟随式越界）
+    blocked, outside_ok = _check_outside(base_dir, "modify_local_file", "修改文件")
+    if blocked:
+        return blocked
+    # 文件名 basename 化 + 最终落点 realpath+commonpath 校验（拦截符号链接跟随式越界；
+    # 与档位无关，越界放行也不放松这道校验）
     safe_filename = os.path.basename(filename)
     file_path, ok = _safe_write_path(Path(base_dir) / safe_filename, base_dir)
     if not ok:
@@ -409,7 +972,8 @@ def modify_local_file(filename: str, old_content: str = "", new_content: str = "
         
         folder_name = os.path.basename(base_dir) if os.path.basename(base_dir) else base_dir
         action = "替换内容" if old_content else "追加内容"
-        return f"✅ 成功{action}！文件 {safe_filename} 已更新。"
+        result = f"✅ 成功{action}！文件 {safe_filename} 已更新。"
+        return result + (outside_note(base_dir) if outside_ok else "")
     except Exception as e:
         return f"❌ 修改失败：{str(e)}"
 
@@ -534,9 +1098,9 @@ def run_local_command(command: str, target_directory: str = "当前沙箱目录"
         return _blocked
     
     base_dir = _resolve_target_dir(target_directory)
-    _, within = _enforce_sandbox(base_dir)
-    if not within:
-        return f"❌ 安全拦截：工作目录超出安全沙箱（{base_dir}），已拒绝执行命令。"
+    blocked, outside_ok = _check_outside(base_dir, "run_local_command", "执行命令的工作目录")
+    if blocked:
+        return blocked
     
     # 白名单许可：仅命令名 basename 命中时才允许执行
     allowed_commands = {"python", "python3", "pip", "git", "echo"}
@@ -586,27 +1150,30 @@ def run_local_command(command: str, target_directory: str = "当前沙箱目录"
         if not allow_interp:
             return ("❌ 安全拦截：严格模式已禁用解释器执行（可在设置页开启「允许执行本地脚本」）。"
                     "当前仅允许只读命令（git 只读子命令 / echo）。")
-        # 只允许直接执行沙箱内的 .py 脚本文件
+        # 只允许直接执行授权目录（默认可读写范围）内的 .py 脚本文件
         script = next((a for a in args_rest if not a.startswith("-")), None)
         if script is None:
             return ("❌ 安全拦截：python 不支持内联代码（-c/-m/- 标准输入），"
-                    "请改为在沙箱内放置 .py 脚本文件后再执行。")
+                    "请改为把 .py 脚本文件放进工作目录后再执行。")
         if args_rest[0].startswith("-"):
             return ("❌ 安全拦截：python 脚本执行前不允许附加解释器开关"
                     f"（如 -c/-m/-u，收到 '{args_rest[0]}'），已拒绝执行。")
         if not script.lower().endswith(".py"):
             return f"❌ 安全拦截：python 仅允许执行 .py 脚本（收到 '{script}'），已拒绝执行。"
         # ★ 脚本归属校验（红队评审整改）：仅校验"后缀是 .py"不足以防越界——
-        #   沙箱内的符号链接/junction 可指向外部脚本，盘符相对路径（C:evil.py）可穿过
-        #   绝对路径检查。这里按 realpath 解析后强制落在沙箱内，并把传给解释器的路径
-        #   替换为解析后的绝对路径（同时消除 CWD 歧义与 TOCTOU 空间）。
+        #   目录内的符号链接/junction 可指向外部脚本，盘符相对路径（C:evil.py）可穿过
+        #   绝对路径检查。这里按 realpath 解析后强制落在**可读写范围内或本次已放行的
+        #   工作目录内**，并把传给解释器的路径替换为解析后的绝对路径
+        #   （同时消除 CWD 歧义与 TOCTOU 空间）。
+        #   ★ 与档位的关系：越界放行只覆盖"用户点过确认的那个工作目录"，不会因为
+        #     "工作目录被放行"就顺带允许执行链接指向外部的脚本。
         script_abs = os.path.realpath(os.path.join(base_dir, script))
         _, script_within = _enforce_sandbox(script_abs)
-        if not script_within:
-            return (f"❌ 安全拦截：脚本 '{script}' 解析后不在安全沙箱内"
+        if not script_within and not is_outside_approved(script_abs):
+            return (f"❌ 安全拦截：脚本 '{script}' 解析后不在可读写范围内"
                     f"（realpath={script_abs}），已拒绝执行（符号链接/越界路径不允许）。")
         if not os.path.isfile(script_abs):
-            return f"❌ 安全拦截：脚本 '{script}' 不存在（按沙箱内解析为 {script_abs}）。"
+            return f"❌ 安全拦截：脚本 '{script}' 不存在（按工作目录解析为 {script_abs}）。"
         parts[parts.index(script, 1)] = script_abs
 
     elif cmd_name == "pip":
@@ -656,9 +1223,10 @@ def run_local_command(command: str, target_directory: str = "当前沙箱目录"
         out_trim = "（已截断）" if stdout and len(stdout) > 3000 else ""
         err_trim = "（已截断）" if stderr and len(stderr) > 3000 else ""
         if rc == 0:
-            return f"✅ 命令执行成功！\n\n输出：\n{output}{out_trim}"
+            return f"✅ 命令执行成功！\n\n输出：\n{output}{out_trim}" + (outside_note(base_dir) if outside_ok else "")
         else:
-            return f"❌ 命令执行失败（退出码 {rc}）！\n\n标准输出：\n{output}{out_trim}\n\n错误输出：\n{error}{err_trim}"
+            return (f"❌ 命令执行失败（退出码 {rc}）！\n\n标准输出：\n{output}{out_trim}\n\n"
+                    f"错误输出：\n{error}{err_trim}" + (outside_note(base_dir) if outside_ok else ""))
     except subprocess.TimeoutExpired:
         return f"❌ 命令执行超时（超过60秒），已终止。"
     except Exception as e:
@@ -842,13 +1410,13 @@ def analyze_project(target_directory: str = "当前沙箱目录", max_depth: int
     
     适用于回答"这个项目是做什么的"、"项目结构"、"技术栈"等问题。
     """
-    # 只读操作（分析 / 检索）在四档权限中一律放行，沙箱边界照旧
+    # 只读操作（分析 / 检索）在四档权限中一律放行；越界由策略层按档位判定（不再静默回退）
     
     # 优先使用传入的 target_directory 参数，其次使用环境变量，最后使用当前目录
     base_dir = _resolve_target_dir(target_directory)
-    _, within = _enforce_sandbox(base_dir)
-    if not within:
-        return "⚠️ 指定路径超出安全沙箱，已回退到默认目录。"
+    blocked, outside_ok = _check_outside(base_dir, "analyze_project", "分析项目")
+    if blocked:
+        return blocked
     
     depth = max(1, min(5, max_depth))
     
@@ -899,8 +1467,8 @@ def analyze_project(target_directory: str = "当前沙箱目录", max_depth: int
         # 截断过长输出
         if len(result) > 8000:
             result = result[:8000] + "\n\n...（输出已截断，建议使用 search_in_files 查询具体内容）"
-        
-        return result
+        # 越界已放行：结果里必须显式标注（对话流里看得见，模型不会当成"范围内的普通读取"）
+        return result + (outside_note(base_dir) if outside_ok else "")
     except Exception as e:
         return f"❌ 项目分析失败：{str(e)}"
 
@@ -911,12 +1479,12 @@ def search_in_files(pattern: str, file_pattern: str = "*", target_directory: str
     在指定目录的所有文件中搜索文本模式（类似 grep）。
     支持文件名过滤（如 *.py），支持正则表达式。
     """
-    # 只读操作（分析 / 检索）在四档权限中一律放行，沙箱边界照旧
+    # 只读操作（分析 / 检索）在四档权限中一律放行；越界由策略层按档位判定（不再静默回退）
     
     base_dir = _resolve_target_dir(target_directory)
-    _, within = _enforce_sandbox(base_dir)
-    if not within:
-        return "⚠️ 指定路径超出安全沙箱，已回退到默认目录。"
+    blocked, outside_ok = _check_outside(base_dir, "search_in_files", "文件搜索")
+    if blocked:
+        return blocked
     max_n = max(1, min(100, max_results))
     
     import fnmatch
@@ -972,7 +1540,7 @@ def search_in_files(pattern: str, file_pattern: str = "*", target_directory: str
             return f"🔍 在 {base_dir} 中未找到匹配 '{pattern}' 的内容。"
 
         header = f"🔍 搜索结果：'{pattern}'（文件模式: {file_pattern}，共 {len(results)} 条）\n\n"
-        return header + "\n".join(results)
+        return header + "\n".join(results) + (outside_note(base_dir) if outside_ok else "")
     except Exception as e:
         return f"❌ 搜索失败：{str(e)}"
 

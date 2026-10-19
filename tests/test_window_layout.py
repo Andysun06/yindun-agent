@@ -327,8 +327,11 @@ check("界面既不声称「置顶需重启」、也不再挂「立即生效」�
       and 'title="置顶 / 取消置顶"' in html)
 check("切换后按实际结果提示（含失败时的诚实降级）",
       '"已置顶显示"' in js and "置顶切换失败" in js)
-check("置顶按钮自身显示状态（明暗主题各有取色，不写死颜色）",
-      "function paintPinState" in js and ".win-btn.is-active {" in css
+check("置顶/最大化按钮的状态显示（明暗主题各有取色，不写死颜色）",
+      # V3.6.8：置顶与最大化的高亮统一由 paintWindowState() 用 window_state() 的真实状态校正
+      # （旧的 paintPinState 只在本地取反记账，窗口被别的方式改过就显示错）。
+      "function paintWindowState" in js and "call(\"window_state\")" in js
+      and ".win-btn.is-active {" in css
       and "color: var(--accent-600)" in css.split(".win-btn.is-active {")[1][:120])
 check("设置面板的置顶开关同样即时生效（断言随行式布局对齐，意图不变）",
       'id="sw-topmost"' in html and "重启" not in html.split('id="sw-topmost"')[0][-300:]
@@ -361,9 +364,12 @@ check("选择器带无障碍语义（radiogroup + 每档一个 radio）",
 check("切换即落库（不再挂「立即生效」字样；「重启后生效」这类话也不允许出现）",
       'persist({ permission: mode })' in js and "立即生效" not in js and "重启后生效" not in js)
 check("后端把档位立刻下发到内核环境变量（不是只写配置文件）",
+      # 窗口从 900 放宽到 2000：save_settings 里现在还要处理 sandbox_dir（可读写范围）等
+      # 新增设置项的专用入口，方法体变长是正常的；这里钉的是"确有立即下发"这件事，
+      # 不是"下发调用必须出现在前 N 个字符内"。
       "def apply_runtime_env" in service_src and "os.environ[PERMISSION_ENV] = mode" in service_src
       and '"permission" in patch' in webview_src
-      and "apply_runtime_env()" in webview_src.split("def save_settings")[1][:900])
+      and "apply_runtime_env()" in webview_src.split("def save_settings")[1][:2000])
 check("启动即下发（界面画出来之前工具层已按设置行事）",
       "apply_runtime_env()" in service_src.split("def initialize")[1][:600])
 check("思考强度是胶囊 + 下拉（低 / 中 / 高 / 最高），旧的 1–10 下拉已移除",
