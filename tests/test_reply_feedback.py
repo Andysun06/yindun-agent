@@ -345,6 +345,89 @@ check("创作型请求不被劫持（写代码 + 几张图片 ≠ 清点文件�
       str(all_of(_events55b, "status"))[:160])
 
 print("\n" + "=" * 78)
+print("【5.6】自纠错：没调工具就宣布「我读不到 / 没权限」→ 叫回来重做（对任何问法生效）")
+print("=" * 78)
+# 负责人质疑：「不提关键词就不能调工具了吗，主流 agent 怎么做？」
+# 主流是原生 function calling + tool_choice 强制；但 **Ollama 不支持 tool_choice**，
+# 于是 harness 层补一条**按症状触发**的纠错：判据看模型答成了什么样（推诿话术），
+# 而不是猜用户的问法 —— 这样"桌面有多少文件""下载里存了啥"这类不带动作动词的问法同样被救回来。
+_WAFFLE = "我无法直接访问您的桌面（Desktop）文件夹。根据当前权限范围，我只能查看以下目录：…"
+_llm56 = ScriptedLLM([
+    {"content": _WAFFLE},                                   # 第 1 轮：不调工具、只讲权限（事故原话）
+    {"content": "", "tool_calls": [                         # 第 2 轮：被纠正后真的去列目录
+        {"name": "list_local_files", "args": {"target_directory": "系统物理桌面"}, "id": "call_1"}]},
+    {"content": "桌面上一共 12 个条目：3 张图片、9 个文档。"},   # 第 3 轮：拿到真实清单后作答
+])
+_worker56 = make_worker(_llm56, {"list_local_files": FakeTool("list_local_files",
+                                                             lambda args: "a.png b.jpg c.docx")},
+                        "我桌面有什么")               # ★ 特意用**不含任何动作动词**的问法
+_events56, _elapsed56, _stuck56 = run_worker(_worker56)
+_fin56 = last_of(_events56, "finished")
+check("有限时间内结束", not _stuck56, f"耗时 {_elapsed56:.1f}s 仍未结束")
+check("★ 识别出推诿话术后要求模型重做（状态里可见）",
+      any("[纠正]" in str(p) and "要求它改用工具真做" in str(p)
+          for p in all_of(_events56, "status")),
+      str(all_of(_events56, "status"))[:200])
+check("★ 纠正之后工具真的被调用了（问法里没有任何'列出/查看'之类动词）",
+      _llm56.calls >= 3 and any("list_local_files" in str(t) for t in _llm56.seen[1]),
+      f"invoke={_llm56.calls}")
+check("纠正指令里点名了工具与用法（不是空喊'请重试'）",
+      any("list_local_files" in str(getattr(m, "content", "")) for m in _llm56.seen[-1]),
+      str([str(getattr(m, 'content', ''))[:40] for m in _llm56.seen[-1]])[:200])
+check("最终回答是拿到工具结果之后的那段（不是推诿那段）",
+      _fin56 == "桌面上一共 12 个条目：3 张图片、9 个文档。", repr(str(_fin56)[:120]))
+
+# 负例：正常闲聊不该被这条纠正打扰（否则每句寒暄都要多跑一轮）
+_llm57 = ScriptedLLM([{"content": "你好，我是隐盾，可以帮你脱敏、整理文件与做本地检索。"}])
+_worker57 = make_worker(_llm57, {"list_local_files": FakeTool("list_local_files", lambda a: "x")},
+                        "你好")
+_events57, _, _ = run_worker(_worker57)
+check("闲聊不会被自纠错误伤（只跑一轮、无纠正状态、无工具调用）",
+      _llm57.calls == 1
+      and not [p for p in all_of(_events57, "status") if "一次工具都没调用" in str(p)],
+      f"invoke={_llm57.calls} status={str(all_of(_events57, 'status'))[:120]}")
+
+print("\n" + "=" * 78)
+print("【5.7】假成功：声称「已成功创建」但一次工具都没调 → 纠正 + 事实核对（负责人实测）")
+print("=" * 78)
+# 原始症状（截图 + 审计链双重确认）：用户说「我帮aaa.txt桌面创建文件」，模型回
+# 「文件 "aaa.txt" 已成功创建在你的桌面上。」——审计里那轮**没有任何 tool_call**，
+# 桌面上也没有文件；而且"没弹审批"（审批只在真的执行工具时才弹）。
+_FAKE_OK = '文件 "aaa.txt" 已成功创建在你的桌面上。'
+_llm58 = ScriptedLLM([
+    {"content": _FAKE_OK},                                   # 假成功
+    {"content": "", "tool_calls": [                          # 被纠正后真做
+        {"name": "create_local_file", "args": {"filename": "aaa.txt", "content": "hi"}, "id": "c1"}]},
+    {"content": "已在桌面创建 aaa.txt（内容：hi）。"},
+])
+_worker58 = make_worker(_llm58, {"create_local_file": FakeTool("create_local_file",
+                                                              lambda a: "✅ 物理创建成功")},
+                        "帮我在桌面创建一个 aaa.txt")
+_events58, _, _stuck58 = run_worker(_worker58)
+_fin58 = last_of(_events58, "finished")
+check("有限时间内结束", not _stuck58)
+check("★ 识别「已完成但没调工具」并要求改用工具真做",
+      any("[纠正]" in str(p) and "已经做完" in str(p) for p in all_of(_events58, "status")),
+      str(all_of(_events58, "status"))[:200])
+check("纠正之后 create_local_file 真的被调用了",
+      any("create_local_file" in str(t) for t in _llm58.seen[1]),
+      str([str(getattr(m, 'content', ''))[:30] for m in _llm58.seen[1]])[:160])
+check("最终回答是工具执行后的如实说明（不再是假成功）",
+      _fin58 == "已在桌面创建 aaa.txt（内容：hi）。", repr(str(_fin58)[:100]))
+
+_llm59 = ScriptedLLM([{"content": _FAKE_OK}])                # 纠正也不改口：压根不支持工具调用
+_worker59 = make_worker(_llm59, {"create_local_file": FakeTool("create_local_file", lambda a: "x")},
+                        "帮我在桌面创建一个 aaa.txt")
+_events59, _, _ = run_worker(_worker59)
+_fin59 = str(last_of(_events59, "finished") or "")
+check("★ 模型始终不调工具时，最终回答里带「事实核对：本轮一次工具都没有调用」",
+      "⚠️ 事实核对" in _fin59 and "并没有真的执行" in _fin59, repr(_fin59[-200:]))
+check("事实核对里说明「审批也不会弹」（正是负责人遇到的现象）",
+      "审批也不会弹" in _fin59, repr(_fin59[-160:]))
+check("事实核对给了下一步（换支持工具调用的模型）",
+      "function calling" in _fin59 and "模型接入" in _fin59, repr(_fin59[-160:]))
+
+print("\n" + "=" * 78)
 print("【6】失败路径：错误必须变成用户可见的回复文本并落库（不再删掉用户提问）")
 print("=" * 78)
 _worker6 = make_worker(RaisingLLM(RuntimeError("Connection refused: 无法连接模型服务")),
@@ -426,8 +509,44 @@ check("★ 失败本轮也留下「提问 + 说明」（旧实现会把提问一
       str([(m.get("role"), len(str(m.get("content") or ""))) for m in _msgs8[-4:]]))
 
 print("\n" + "=" * 78)
+
+print("\n" + "=" * 78)
+print("【5.8】截断：只吐 2-3 个字就「已完成」→ 重生成一次 + 如实标注（组员评审 BUG-0003）")
+print("=" * 78)
+# 原始症状：同一段输入，回答只输出「我需要」/「您好」/「为了」，气泡却标「已完成」；
+# 审计佐证模型侧 content_length 就是 2~3。**静默半句话 + 已完成** 是本次要根治的。
+_llm60 = ScriptedLLM([
+    {"content": "我需要"},                                   # 被截断的开头
+    {"content": "这份客户资料包含 6 类敏感信息：姓名、手机、邮箱、身份证、地址、统一社会信用代码。"
+                "其中电话与身份证已在本机脱敏后再送模型，回答返回时自动还原。"},
+])
+_worker60 = make_worker(_llm60, {}, "讲讲这份客户资料的要点与风险")
+_events60, _, _stuck60 = run_worker(_worker60)
+_fin60 = str(last_of(_events60, "finished") or "")
+check("有限时间内结束", not _stuck60)
+check("★ 识别「疑似被截断」并要求重写完整回答",
+      any("[纠正]" in str(p) and "截断" in str(p) for p in all_of(_events60, "status")),
+      str(all_of(_events60, "status"))[:200])
+check("最终回答是重生成后的完整内容（不再是半句话）",
+      "6 类敏感信息" in _fin60 and not _fin60.strip().startswith("我需要"),
+      repr(_fin60[:90]))
+check("重生成只做一次（invoke 计数=2，不会反复追问）", _llm60.calls == 2, f"invoke={_llm60.calls}")
+
+_llm61 = ScriptedLLM([{"content": "我需要"}])                # 重生成后仍然断句
+_worker61 = make_worker(_llm61, {}, "讲讲这份客户资料的要点与风险")
+_events61, _, _ = run_worker(_worker61)
+_fin61 = str(last_of(_events61, "finished") or "")
+check("★ 重生成后仍被截断时，如实标注（不假装已完成）",
+      "⚠️ 提示" in _fin61 and "被截断" in _fin61, repr(_fin61[-160:]))
+check("标注里给了下一步（再发一次 / 换更大模型）",
+      "再发一次" in _fin61 and "更大的模型" in _fin61, repr(_fin61[-160:]))
+check("寒暄不受影响（「谢谢」这类短答不该被判截断）",
+      not Worker._looks_truncated_answer("好的", "谢谢")
+      and not Worker._looks_truncated_answer("42", "1+1 等于几"), "")
+
 if failures:
     print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))
     sys.exit(1)
 print("✅ 全部通过：不再有空气泡 / 工具调用不再被吞 / 无进展会收尾 / 失败有回复且被持久化 / 等待期间有状态事件")
 sys.exit(0)
+

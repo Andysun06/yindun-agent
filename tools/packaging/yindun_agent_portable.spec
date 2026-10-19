@@ -16,6 +16,7 @@ import os
 # ★ 路径基准必须锚定"仓库根目录"：PyInstaller 解析 spec 内的相对路径时，
 #   基准是 spec 文件所在目录（tools/packaging/），不是当前工作目录。
 _ROOT = os.path.normpath(os.path.join(SPECPATH, "..", ".."))
+_ICON_NAME = "yindun-client.ico"
 _ENTRY = os.path.join(_ROOT, "run.py")
 
 datas = []
@@ -221,6 +222,13 @@ a = Analysis(
 pyz = PYZ(a.pure)
 
 # onefile：binaries/datas 全部塞进 EXE（不生成 COLLECT 目录）
+# 图标缺失时给一句人话（PyInstaller 自己抛的是裸路径异常）
+_ICON_FILE = os.path.join(_ROOT, "assets", "icons", _ICON_NAME)
+if not os.path.exists(_ICON_FILE):
+    print("[spec] ⚠ 找不到定制图标 %s——先跑 python tools/packaging/make_icons.py"
+          "（不传 icon= 会退回 PyInstaller 默认图标，产物看着像半成品）" % _ICON_FILE)
+_ICON_PATH = _ICON_FILE if os.path.exists(_ICON_FILE) else None
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -228,6 +236,10 @@ exe = EXE(
     a.datas,
     [],
     name="YindunPortable",
+    # ★ 定制图标（V3.6.10，负责人要求）：不传 icon= 时 PyInstaller 会用**它自带的默认图标**，
+    #   和产品毫无关系、看着就像半成品。图标由 tools/packaging/make_icons.py 生成
+    #   （盾牌+对勾；客户端用品牌绿以便一眼区分两个程序）。
+    icon=_ICON_PATH or str(_ROOT / "assets" / "icons" / "yindun-client.ico"),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

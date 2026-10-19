@@ -350,6 +350,42 @@ class AgentService:
         except Exception as exc:
             print(f"[AgentService] 权限改动写审计失败：{exc}")
 
+    def audit_anchor_health(self) -> Dict[str, Any]:
+        """审计链锚点健康度（供界面/状态事件如实展示"锚点是否生效、落在哪"）。
+
+        为什么服务层要转发一层：内核（audit_log）必须与界面无关，界面拿不到内核对象；
+        由服务层把这个只读结论递出去，顶栏「审计链」与审计面板据此显示
+        "已迁移（待重建锚点）"/"锚点未生效（降级）"，而不是一律红字。
+        """
+        try:
+            from yindun.core.audit_log import AuditLog
+            return AuditLog().anchor_health()
+        except Exception as exc:
+            return {"state": "unknown", "valid": False, "degraded": False, "fallback": False,
+                    "dir": "", "path": "", "migration_source": "",
+                    "reason": f"锚点健康检查失败：{type(exc).__name__}: {exc}"}
+
+    def _emit_anchor_advisory(self) -> None:
+        """锚点降级/回退/迁移时，走**既有 status 事件**让用户在界面上看到（不是只写日志）。
+
+        为什么必须发出来：锚点写不进去时，"尾部截断 / 降级改写"就重新不可发现，
+        而旧实现只在日志里刷 ERROR —— 用户对"防篡改已失效"毫不知情（BUG-0002）。
+        """
+        try:
+            health = self.audit_anchor_health()
+        except Exception:
+            return
+        state = str(health.get("state") or "")
+        if state == "degraded":
+            self._emit("status", "⚠️ 审计链锚点未生效（防篡改能力降级）："
+                                 + (health.get("reason") or "锚点写不进去，尾部截断将无法被发现"))
+        elif state == "migrated":
+            self._emit("status", "检测到审计目录已迁移（待重建锚点）："
+                                 "请在「审计」面板点「重建锚点」恢复校验")
+        elif health.get("fallback"):
+            self._emit("status", "审计链锚点已回退到备用位置："
+                                 f"{health.get('dir') or '未知位置'}（首选位置不可写，防篡改仍生效）")
+
     def _emit(self, event: str, payload: Any = None) -> None:
         listener = self._listener
         if listener is None:
@@ -368,6 +404,9 @@ class AgentService:
         #   以前这三段全静默，用户看到的是"界面出来了但点了没反应"，容易以为是坏的。
         self._emit("startup", {"phase": "probe", "done": False,
                                "text": "正在检测本机算力与模型…"})
+        # ★ 审计锚点自检（V3.6.x，BUG-0002）：锚点写不进去 / 已迁移 / 回退到备用位置，
+        #   都要在启动时**主动告诉用户**，而不是等他自己去翻审计面板或日志。
+        self._emit_anchor_advisory()
         # ★ 本地回环与内网地址都绕过系统代理（Clash/V2Ray 会劫持 127.0.0.1 与内网段的请求，
         #   导致 langchain-ollama 调本地/内网 Ollama 时 502）。内网地址从设置里取。
         host_cfg = str(self.settings.get("ollama_host") or "http://127.0.0.1:11434")

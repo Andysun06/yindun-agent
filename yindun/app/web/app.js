@@ -331,8 +331,7 @@
     ];
     return `<div class="chat__empty">
       <h1>让大模型看不见敏感数据，也能把活干完</h1>
-      <p>文本在内存中被替换成占位符后才送进模型；模型全程只见占位符，回答返回时在本机还原。
-         文件读写走沙箱，命令走白名单，高危操作需你确认，全过程写入审计链。</p>
+      <p>送模型的文本先在本机脱敏，回答在本机还原；文件走沙箱、执行命令需确认，全程写入审计链。</p>
       <div class="starters">${starters.map(([text, path]) => `
         <button class="starter" data-starter="${esc(text)}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="${path}"/></svg>
@@ -505,7 +504,7 @@
    *  界面照画一个**空气泡**——用户既没有回答、也没有任何解释，重启后那轮还消失了。
    *  宁可给一句如实说明，也不让这轮在界面上变成空白。 */
   const EMPTY_REPLY_NOTE =
-    "模型这一轮没有给出内容（可能被中断或调用工具后没有总结），可以再问一次或换个说法";
+    "模型这一轮没有给出内容，可以再问一次或换个说法";
 
   /** 思考中的临时条目。**发送时立刻建**（不依赖后端第一条事件）：
    *  按下发送到模型吐出第一个字之间有实打实的空窗期，此前这段对话区毫无变化，
@@ -720,6 +719,13 @@
     if (!text) return;
     appendUser(text);
     state.startedAt = Date.now();
+    // ★ 记下**这一轮发出时**的模式与思考强度（组员评审 BUG-0006）：气泡底部的模式标签
+    //   原先在 `finished` 时才去读 `state.settings.think_mode`——期间用户改了模式（或某次
+    //   设置回填把 `state.settings` 覆盖回默认），已发出的那一轮就会被贴上**别的**模式标签
+    //   （实测：顶栏/输入区是「思考 最高」，气泡却写「快速 2s」）。按轮次快照，标签只反映
+    //   这一轮实际用的模式。
+    state.turnMode = state.settings.think_mode || "快速回答";
+    state.turnDepth = state.settings.thinking_depth;
     setBusy(true);
     // ★ 发送即建"等在那儿"的等待气泡：不等后端第一条事件（直答快路径以前一条都不发，
     //   整段生成期对话区毫无变化——用户看到的正是"点了没反应、也没有思考动画"）。
@@ -815,7 +821,7 @@
     const badge = $("audit-chain");
     badge.className = "chain-badge " + (ok ? "chain-badge--ok" : "chain-badge--bad");
     badge.textContent = ok
-      ? "✔ 哈希链完整性验证通过（HMAC-SHA256 链式校验 + 链锚点）"
+      ? "✔ 哈希链完整性通过（HMAC-SHA256 + 链锚点）"
       : "⚠︎ 哈希链校验未通过";
     // 校验未通过时给出**人话原因**，并在"锚点缺失"这一种情况下给出可执行动作。
     // 只显示 ❌ 会让人无从下手：是数据坏了、还是刚升级需要重建锚点，必须说清楚。
@@ -911,11 +917,11 @@
      每张卡自带「边界说明 + 现有条目 + 添加表单」，用户不必在字段之间猜关系。 */
   const TIER_META = {
     local: { label: "本机模型", boundary: "数据不出这台电脑", cls: "tier--local",
-             hint: "本机运行的 Ollama（默认 127.0.0.1:11434）" },
+             hint: "本机运行的 Ollama，默认 127.0.0.1:11434" },
     lan: { label: "局域网模型", boundary: "数据出这台电脑，但不出企业内网", cls: "tier--lan",
-           hint: "公司内网的推理服务 / Ollama，填内网地址（10.x / 192.168.x / 内网主机名）" },
+           hint: "公司内网的推理服务，填内网地址" },
     wan: { label: "公网模型", boundary: "数据出企业内网；送出前内容已在本机脱敏", cls: "tier--wan",
-           hint: "云端 OpenAI 兼容接口（https://…/v1）；密钥加密存本机、不回显" },
+           hint: "云端 OpenAI 兼容接口" },
   };
 
   /* ══ 思考强度四档 ═══════════════════════════════════════════
@@ -1015,7 +1021,7 @@
     });
     if (state.catalog && $("prov-list")) {
       renderProvList();
-      bindProvListEvents(state.catalog);      // innerHTML 重绘会带走 onclick，必须重绑
+      bindProvListEvents();      // 事件委托绑在容器上；重绘后仍有效，这里调用只为幂等保证
     }
   }
 
@@ -1079,8 +1085,8 @@
       : (builtin
          // 本机档的空态文案要指向**真实存在的**出口（本机档没有"＋ 添加模型"按钮，
          // 出口在下面那句说明与「重新检测 / ＋ 手动添加本机模型」上，别指着不存在的按钮）
-         ? `<div class="mlist mlist--empty">还没有检测到可对话的本机模型——看下面的说明，或用「重新检测 / ＋ 手动添加本机模型」</div>`
-         : `<div class="mlist mlist--empty">这个供应商还没有模型——点下面的「＋ 添加模型」加一个</div>`);
+         ? `<div class="mlist mlist--empty">还没有检测到可对话的本机模型，可用下面的「重新检测」或「＋ 手动添加本机模型」</div>`
+         : `<div class="mlist mlist--empty">这个供应商还没有模型，点下面「＋ 添加模型」添加</div>`);
     // 添加模型只对自定义供应商开放（本机 Ollama 的模型来自安装，不是手工添加的对象）；
     // 本机档的手动添加入口在"空态说明"旁边（data-addlocal），见 renderProv。
     return body + (builtin ? "" : `<button class="prov__add" type="button" data-addmodel="1">＋ 添加模型</button>`);
@@ -1102,7 +1108,7 @@
         <button class="btn btn--primary" type="button" data-msave="1">保存模型</button>
         <button class="btn" type="button" data-mcancel="1">取消</button></div>`}
       <div class="medit__hint" id="pm-note">${isNew
-        ? "供应商要挂至少一个模型才能写入本机配置：填好模型 ID，点上面的「保存」一起落盘。"
+        ? "供应商需挂至少一个模型才能保存：填好模型 ID 后点上面的「保存」。"
         : ""}</div>
     </div>`;
   }
@@ -1114,12 +1120,12 @@
     const first = (g && g.models[0]) || {};
     const hasKey = !!(g && g.models.some((m) => m.has_key));
     const keyHint = hasKey
-      ? "已在本机加密保存（不回显；留空＝不改动，不会清空。要看已存的那把点「查看」）"
-      : (sel.tier === "lan" ? "内网通常可留空；只在本机加密保存" : "只在本机加密保存");
+      ? "已在本机加密保存；留空＝不改动，不会清空"
+      : (sel.tier === "lan" ? "内网通常可留空，只在本机加密保存" : "只在本机加密保存");
     return `
       <h3 class="prov__title">${esc(isNew ? "添加" + meta.label : g.provider)}
         <span class="prov__badge">${esc(meta.boundary)}</span></h3>
-      <p class="prov__desc">${esc(meta.hint)}；出网内容在本机脱敏之后才发送，密钥加密存本机、不回显。</p>
+      <p class="prov__desc">${esc(meta.hint)}；出网内容先在本机脱敏，密钥加密存本机、不回显。</p>
       <div class="setcard">
         <div class="setrow"><div class="setrow__text"><b>显示名称</b>
             <span>供应商名：左列分组与模型选择器里显示的名字</span></div>
@@ -1132,14 +1138,14 @@
             value="${esc(isNew ? "" : (first.base_url || ""))}"
             placeholder="${sel.tier === "lan" ? "http://10.0.0.8:8000/v1" : "https://…/v1"}"></div></div>
         <div class="setrow"><div class="setrow__text"><b>API 格式</b>
-            <span>目前只有 OpenAI 兼容 Chat Completions 接了通路，其它格式暂不支持</span></div>
+            <span>仅 OpenAI 兼容 Chat Completions 可用，其它格式暂不支持</span></div>
           <div class="setrow__ctrl"><select id="p-format">${formatOptions(first.api_format || "chat_completions")}</select></div></div>
         <div class="setrow"><div class="setrow__text"><b>API Key</b><span>${keyHint}</span></div>
           <div class="setrow__ctrl">
             <input type="text" id="p-key" value="" spellcheck="false" autocomplete="off"
               placeholder="${hasKey ? "已配置（留空则沿用已存密钥）" : "未配置"}">
             <button class="btn" type="button" id="p-key-eye"
-              title="查看本机已存的密钥（每次查看都会写入审计）">查看</button>
+              title="查看本机已存密钥（写入审计）">查看</button>
           </div></div>
         <div class="setrow"><div class="setrow__text"><b>连通性</b><span id="probe-detail">尚未测试</span></div>
           <div class="setrow__ctrl">
@@ -1154,6 +1160,22 @@
       ${modelEditPanelHtml(isNew)}`;
   }
 
+  /** 左列用的分组：**本机档永远有一个可进入的「本机 Ollama」条目**，
+   *  即便 Ollama 连不上 / 一个模型都没装（`tiers.local` 为空）。
+   *  为什么必须有（负责人反馈三次的那条缺陷的根因）：本机档的右栏承载
+   *  「重新检测 / ＋ 手动添加本机模型」这两条**出路**，而左列是唯一的档位导航——
+   *  本机档一旦没有条目，用户点了别的档（例如「＋ 添加供应商」进了局域网草稿）之后
+   *  就再也回不到本机档，真机表现就是「点了添加局域网模型之后就点不动添加本地模型了」。
+   *  只影响左列（模型选择器弹层仍按真实模型聚合，不凭空多一个空组）。 */
+  function groupsForList(cat, tier) {
+    const groups = providersOfTier(cat, tier);
+    if (tier === "local" && !groups.some((g) => g.builtin)) {
+      groups.unshift({ key: `local::${OLLAMA_PROVIDER}::1`, tier: "local",
+                       provider: OLLAMA_PROVIDER, builtin: true, models: [] });
+    }
+    return groups;
+  }
+
   /** 左列（三档分组 → 供应商 + 本机档摊开的模型子项）单独成函数：
    *  切模型时只需重绘它（见 paintUsage），右栏未保存的表单不受影响。 */
   function renderProvList() {
@@ -1162,13 +1184,13 @@
     const cur = activeModel() || cat.current || "";
     box.innerHTML = ["local", "lan", "wan"].map((tier) => {
       const meta = TIER_META[tier];
-      const rows = providersOfTier(cat, tier).map((g) => {
+      const rows = groupsForList(cat, tier).map((g) => {
         // 「正在查看」＝唯一允许背景高亮的状态（规则 ①）
         const active = !sel.isNew && sel.tier === tier && sel.provider === g.provider
           && !!sel.builtin === !!g.builtin;
         const usedBy = g.models.find((m) => m.name === cur);
         const info = g.builtin
-          ? `${g.models.length} 个已安装模型`
+          ? (g.models.length ? `${g.models.length} 个已安装模型` : "还没有检测到模型")
           : `${g.models.length} 个模型 · ${String((g.models[0] || {}).base_url || "").replace(/^https?:\/\//, "")}`;
         // 本机档额外摊开 Ollama 已安装模型（点一下即切换）：本机模型就那几个，少一步点击；
         // 局域网/公网可能挂很多模型，不摊开（避免左列变成一长串），数量在 meta 里写明。
@@ -1183,9 +1205,12 @@
             <span class="prov__meta">${esc(info)}</span>
           </button>${subs}`;
       }).join("");
-      // 本机档没有"添加供应商"：本机模型由 Ollama 安装决定，探测得到，不是手工添加的对象
-      const add = tier === "local" ? "" :
-        `<button class="prov__add" type="button" data-addt="${tier}">＋ 添加供应商</button>`;
+      // 每一档都有**同一处**的「＋ 添加…」入口（"添加"通路与档位解耦）：本机档的"添加"
+      // 不是加供应商，而是手动填一个本机模型——入口仍放在本机群组里，点了就进本机档并
+      // 当场展开手动添加面板，不必再"先点回本机档、再去右栏找按钮"。
+      const add = tier === "local"
+        ? `<button class="prov__add" type="button" data-addt="local">＋ 手动添加本机模型</button>`
+        : `<button class="prov__add" type="button" data-addt="${tier}">＋ 添加供应商</button>`;
       return `<div class="prov__group">
         <div class="prov__gtitle"><span class="tier-dot tier-dot--${tier}"></span>
           <b>${meta.label}</b><em>${meta.boundary}</em></div>
@@ -1229,8 +1254,7 @@
       const g = findGroup(sel) || { provider: OLLAMA_PROVIDER, models: [] };
       detail.innerHTML = `
         <h3 class="prov__title">${esc(OLLAMA_PROVIDER)}<span class="prov__badge">${esc(TIER_META.local.boundary)}</span></h3>
-        <p class="prov__desc">本机安装的 Ollama 服务。把地址改成别的机器，数据就会出这台电脑——
-          那种情况请改用「局域网模型」显式配置。</p>
+        <p class="prov__desc" title="把地址改成别的机器，数据就会出这台电脑；那种情况请改用「局域网模型」">本机安装的 Ollama 服务</p>
         <div class="setcard">
           <div class="setrow">
             <div class="setrow__text"><b>服务地址</b><span>默认 http://127.0.0.1:11434</span></div>
@@ -1238,7 +1262,7 @@
               autocomplete="off" placeholder="http://127.0.0.1:11434"></div>
           </div>
           <div class="setrow">
-            <div class="setrow__text"><b>连通性</b><span id="probe-local">点右侧按钮发一次探测（地址只取自本页输入框）</span></div>
+            <div class="setrow__text"><b>连通性</b><span id="probe-local" title="只取本页输入框里的地址">尚未测试</span></div>
             <div class="setrow__ctrl">
               <button class="btn" type="button" data-probe="local">测试连接</button>
               <button class="btn" type="button" data-rescan="1">重新检测</button>
@@ -1265,47 +1289,70 @@
             <button class="btn btn--primary" type="button" data-lasave="1">添加</button>
             <button class="btn" type="button" data-lacancel="1">取消</button>
           </div>
-          <div class="medit__hint" id="la-note">填的模型名会走 Ollama 的 OpenAI 兼容接口
-            （<span class="mono" id="la-base">—</span>，密钥固定填 <span class="mono">ollama</span>）——
-            这样"手动填的"与"自动探测到的"在下游是同一条通路，不用另建一套客户端。</div>
+          <div class="medit__hint" id="la-note">走 Ollama 的 OpenAI 兼容接口
+            （<span class="mono" id="la-base">—</span>，密钥固定填 <span class="mono">ollama</span>）。</div>
         </div>`;
     } else {
       detail.innerHTML = provFormHtml(findGroup(sel), sel);
     }
-    bindProvEvents(cat);
+    bindProvEvents();
     paintUsage();
     paintModelTrigger();
   }
 
-  /** 左列事件（单独成函数：paintUsage 会重绘左列，必须能重新绑定）。 */
-  function bindProvListEvents(cat) {
-    const box = $("prov-list");
-    if (!box) return;
-    // 点供应商 = "正在查看"它（背景高亮的唯一出口）；本机档摊开的模型子项点一下即切换
-    box.querySelectorAll("[data-use]").forEach((el) => {
-      el.onclick = (ev) => {
-        ev.stopPropagation();
-        state.prov = { tier: el.dataset.t, provider: el.dataset.prov, builtin: el.dataset.builtin === "1" };
-        if (el.dataset.use && el.dataset.use !== activeModel()) persist({ model: el.dataset.use });
-        else renderProv(state.catalog || cat);
-      };
-    });
-    box.querySelectorAll("[data-t]").forEach((el) => {
-      el.onclick = () => {
-        state.prov = { tier: el.dataset.t, provider: el.dataset.prov, builtin: el.dataset.builtin === "1" };
-        renderProv(cat);
-      };
-    });
-    box.querySelectorAll("[data-addt]").forEach((el) => {
-      el.onclick = () => {
-        // 新供应商是"草稿"：存储粒度是"一条模型一行"，所以必须先有第一个模型才能落盘
-        state.prov = { tier: el.dataset.addt, provider: "", builtin: false, isNew: true };
-        renderProv(cat);
-      };
-    });
+  /** 展开本机档的「＋ 手动添加本机模型」面板并聚焦模型名输入框。
+   *  左列的添加入口与右栏的空态按钮共用这一个出口，行为必须一致。 */
+  function openLocalAddPanel() {
+    const la = $("local-add");
+    if (!la) return;
+    la.hidden = false;
+    const m = $("la-model");
+    if (m) m.focus();
   }
 
-  function bindProvEvents(cat) {
+  /** 左列事件：**事件委托**（`#prov-list` 容器本身从不被替换，只有 innerHTML 会变）。
+   *  旧实现把 onclick 逐个绑到渲染出来的按钮上，有两个隐患：
+   *  ① paintUsage() 会重绘左列，重绘后旧节点连同 handler 一起被摘掉（"用过一次就失效"）；
+   *  ② `.prov__sub`（本机档摊开的模型子项）同时带 `data-t` 与 `data-use`，后绑的 `[data-t]`
+   *     会把 `[data-use]` 的处理函数**覆盖**掉 → 点本机档的模型名"点了没反应"（切换不生效）。
+   *  委托只认容器上的一个 onclick，优先级 data-use > data-t > data-addt，重绘多少次都有效。
+   *  用 `box.onclick = ...`（赋值而非 addEventListener）：重复调用只是替换，不会叠加监听。 */
+  function bindProvListEvents() {
+    const box = $("prov-list");
+    if (!box) return;
+    box.onclick = (ev) => {
+      const el = ev.target.closest("[data-use],[data-t],[data-addt]");
+      if (!el || !box.contains(el)) return;
+      // ①「＋ 添加…」：本机档 = 进本机档并当场展开手动添加面板；局域网 / 公网 = 新供应商草稿
+      if (el.dataset.addt) {
+        if (el.dataset.addt === "local") {
+          state.prov = { tier: "local", provider: OLLAMA_PROVIDER, builtin: true };
+          renderProv(state.catalog);
+          openLocalAddPanel();
+          return;
+        }
+        // 新供应商是"草稿"：存储粒度是"一条模型一行"，所以必须先有第一个模型才能落盘
+        state.prov = { tier: el.dataset.addt, provider: "", builtin: false, isNew: true };
+        renderProv(state.catalog);
+        return;
+      }
+      // ② 本机档摊开的模型子项：点一下即切换（必须在 data-t 之前判断，子项两个属性都有）
+      if (el.dataset.use) {
+        ev.stopPropagation();
+        state.prov = { tier: el.dataset.t, provider: el.dataset.prov, builtin: el.dataset.builtin === "1" };
+        if (el.dataset.use !== activeModel()) persist({ model: el.dataset.use });
+        else renderProv(state.catalog);
+        return;
+      }
+      // ③ 点供应商条目 = "正在查看"它（背景高亮的唯一出口）
+      if (el.dataset.t) {
+        state.prov = { tier: el.dataset.t, provider: el.dataset.prov, builtin: el.dataset.builtin === "1" };
+        renderProv(state.catalog);
+      }
+    };
+  }
+
+  function bindProvEvents() {
     const box = $("prov-list"), detail = $("prov-detail");
     if (!box || !detail) return;
     const val = (id) => (($(id) && $(id).value) || "").trim();
@@ -1335,8 +1382,8 @@
       fillSettings();
     };
 
-    // 左列：点供应商 = "正在查看"它（背景高亮的唯一出口）；本机档摊开的模型子项点一下即切换
-    bindProvListEvents(cat);
+    // 左列：事件委托（容器 #prov-list 常驻，重绘不失效；见 bindProvListEvents 注释）
+    bindProvListEvents();
     // 右栏模型列表：点模型名 = 切换（单选式"使用中"）；编辑/删除是显式动作
     detail.querySelectorAll(".mrow__use").forEach((el) => {
       el.onclick = () => { if (el.dataset.use !== activeModel()) persist({ model: el.dataset.use }); };
@@ -1371,10 +1418,7 @@
       };
       if ($("la-base")) $("la-base").textContent = ollamaBase();
       detail.querySelectorAll("[data-addlocal]").forEach((el) => {
-        el.onclick = () => {
-          localAdd.hidden = false;
-          if ($("la-model")) $("la-model").focus();
-        };
+        el.onclick = () => openLocalAddPanel();      // 与左列添加入口共用同一出口
       });
       detail.querySelectorAll("[data-lacancel]").forEach((el) => {
         el.onclick = () => { localAdd.hidden = true; };
@@ -1384,7 +1428,7 @@
           const note = $("la-note");
           const mid = val("la-model"), mname = val("la-name") || mid;
           if (!mid) {
-            note.textContent = "模型名不能为空（本机已装的话可以先用 `ollama list` 看一眼）";
+            note.textContent = "模型名不能为空（本机已装可先用 `ollama list` 查看）";
             note.className = "medit__hint is-bad"; return;
           }
           const res = await call("add_custom_model", mname, mid, ollamaBase(), "ollama",
@@ -1562,13 +1606,13 @@
         const box2 = $("p-key");
         if (box2.dataset.revealed === "1") {           // 再点一次 = 隐藏并回到"不改动"状态
           box2.value = ""; box2.dataset.revealed = "0";
-          eye.textContent = "查看"; eye.title = "查看本机已存的密钥（每次查看都会写入审计）";
+          eye.textContent = "查看"; eye.title = "查看本机已存密钥（写入审计）";
           return;
         }
         const res = await call("custom_model_key", formValue().provider);
         if (!res || !res.ok) { toast((res && res.error) || "没有已存的密钥"); return; }
         box2.value = res.key || ""; box2.dataset.revealed = "1";
-        eye.textContent = "隐藏"; eye.title = "隐藏并清空输入框（回到「留空＝不改动」）";
+        eye.textContent = "隐藏"; eye.title = "隐藏并清空（回到「留空＝不改动」）";
         toast("已显示本机存储的密钥；这次查看已写入审计");
       };
     }
@@ -1913,7 +1957,7 @@
       const settingsHint = hasSettings
         ? (p.enabled
             ? `<div class="plugin-item__ops"><button class="btn btn--primary" data-open-settings="${esc(p.id)}">打开「${esc(p.name)}」设置</button></div>`
-            : `<div class="pcard__desc">启用后，左侧设置栏的「插件」分组里会出现它的专属设置。</div>`)
+            : `<div class="pcard__desc">启用后，左侧「插件」分组会出现它的专属设置。</div>`)
         : `<div class="pcard__desc">这个插件没有可调项：启用即生效。</div>`;
       // 运行状态：回答"启用之后它到底有没有在工作"——只有真正被调用过才算数
       const rt = p.runtime || {};
@@ -1921,7 +1965,7 @@
       if (!p.enabled) {
         runText = "未启用"; runCls = "is-idle";
       } else if (!rt.calls) {
-        runText = "等待触发（出现相关场景时自动运行）"; runCls = "is-idle";
+        runText = "等待触发"; runCls = "is-idle";
       } else {
         const t = rt.ts ? new Date(rt.ts * 1000).toLocaleTimeString("zh-CN", { hour12: false }) : "—";
         const st = rt.status === "ok" ? "正常"
@@ -1946,7 +1990,7 @@
         </div>
         <div class="pcard__state">${badges}</div>
         <div class="pcard__detail" data-detail="${esc(p.id)}" hidden>
-          <div class="plugin-item__runtime ${runCls}" title="只统计实际被调用的次数；未触发的插件不代表失效，而是还没遇到对应场景">运行状态：${runText}</div>
+          <div class="plugin-item__runtime ${runCls}" title="未触发不代表失效；出现相关场景时自动运行">运行状态：${runText}</div>
           ${capList ? `<div class="plugin-caps">${capList}</div>` : ""}
           ${(p.missing && p.missing.length) ? `<div class="pcard__desc">${p.missing.map(esc).join("<br>")}</div>` : ""}
           ${settingsHint}
@@ -2004,7 +2048,7 @@
      通用设置页由 config_files 生成（文本配置），有专属界面的插件
      （如 laya 的三级接入）注册在 PLUGIN_SETTINGS_RENDERERS 里覆盖。 */
   const PLUGIN_SETTINGS_RENDERERS = {
-    laya_risk: { render: renderLayaSettings, subtitle: "审批弹窗的风险提示：本机模型 / 局域网服务 / 正则规则回退" },
+    laya_risk: { render: renderLayaSettings, subtitle: "审批弹窗的风险分级来源：本机 / 局域网 / 正则" },
   };
 
   /** 当前该显示哪些插件设置栏目：启用 + 有设置（config_files 或专属渲染器） */
@@ -2403,7 +2447,7 @@
     control: ["企业控制面", "接入公司控制面：只上传掩码事件，只接受收紧策略"],
     safety: ["隐私与权限", "脱敏网关、AI 权限四档与执行严格模式"],
     kb: ["本地知识库", "入库即脱敏的本地检索（脱敏 RAG）"],
-    plugin: ["插件", "启用 / 停用能力扩展；带设置的插件启用后会在左侧出现专属栏目"],
+    plugin: ["插件", "启用 / 停用插件；带设置的插件启用后出现在左侧栏"],
     appearance: ["窗口与外观", "悬浮窗行为与明暗主题"],
   };
   async function openSettings(page) {
@@ -2611,11 +2655,11 @@
      页面只做三件事：说清当前生效的是哪一级、让你配另外两级、真连通一次给你看。 */
   const LAYA_SOURCES = {
     local: { label: "本机 laya 模型", boundary: "数据不出这台电脑",
-             hint: "本机已安装 laya（pip install laya，依赖 torch）。首次加载可能需要联网下载权重——涉密环境请预先离线导入权重目录。" },
+             hint: "本机已安装 laya；首次加载可能需要联网下载权重。" },
     lan: { label: "局域网 laya 服务", boundary: "数据出这台电脑，但不出企业内网",
-           hint: "公司内网部署的 laya 推理服务。需要暴露一个 OpenAI 兼容接口（/chat/completions）；地址只用于本机发起的探测与打分请求，不经过任何第三方。" },
+           hint: "内网部署的 laya 服务，需提供 OpenAI 兼容接口。" },
     regex: { label: "正则规则（回退）", boundary: "全离线，不依赖任何模型",
-             hint: "没有 laya 时使用。规则可在下方直接编辑：每行一条「级别|正则|说明」。规则只产生弹窗提示，不改变任何放行判定。" },
+             hint: "没有 laya 时使用；每行一条「级别|正则|说明」，只产生提示、不参与放行判定。" },
   };
 
   async function renderLayaSettings(host) {
@@ -2633,10 +2677,8 @@
         <div class="prov__list" id="laya-list"></div>
         <div class="prov__detail" id="laya-detail"></div>
       </div>
-      <p class="setfoot">laya 只做一件事：在人工审批弹窗里补一行风险分级（高危 / 中危 / 低危），
-        <b>不参与任何放行判定</b>——判定权永远在内核。三级来源按「数据边界」分档：
-        本机 laya 模型（数据不出本机）→ 局域网 laya 服务（出机器、不出企业）→ 本机正则规则（全离线回退）。
-        每次提示都会写明本次来源，不冒充。</p>`;
+      <p class="setfoot">laya 只在审批弹窗里补一行风险分级（高 / 中 / 低危），<b>不参与任何放行判定</b>。
+        三级来源按数据边界分档：本机模型（数据不出本机）→ 局域网服务 → 本机正则规则。</p>`;
     // 顶部：当前生效后端 + 最近一次分级的来源（"到底有没有在工作"的直接证据）
     const dot = $("laya-dot");
     if (dot) dot.className = "laya__tierdot " + (cur.active_backend === "regex" ? "is-off" : "is-ok");
@@ -2696,19 +2738,19 @@
             <div class="setrow__ctrl"><button class="btn" data-laya="probe-local" type="button">重新检测</button></div>
           </div>
         </div>
-        <div class="laya__probe"><span class="laya__result" id="laya-result">${info.available ? "本机 laya 可用：审批弹窗将用模型打分" : "本机未检测到 laya：将按下一条可用来源（局域网 → 正则）"}</span></div>`;
+        <div class="laya__probe"><span class="laya__result" id="laya-result">${info.available ? "本机 laya 可用，审批弹窗将用模型打分" : "本机未检测到 laya，将用下一条可用来源"}</span></div>`;
     }
     const info = cur.lan || {};
     const cfg = cur.config || {};
     return head + `
       <div class="setcard">
-        <div class="setrow"><div class="setrow__text"><b>服务地址</b><span>内网地址，例如 http://10.0.0.8:8080/v1</span></div>
+        <div class="setrow"><div class="setrow__text"><b>服务地址</b><span>内网 laya 服务地址</span></div>
           <div class="setrow__ctrl"><input type="text" id="laya-endpoint" value="${esc(cfg.endpoint || "")}" placeholder="http://10.0.0.8:8080/v1" spellcheck="false"></div>
         </div>
-        <div class="setrow"><div class="setrow__text"><b>模型名</b><span>该服务上提供分级能力的模型名（可留空，由服务端默认）</span></div>
+        <div class="setrow"><div class="setrow__text"><b>模型名</b><span>分级模型名（可留空，由服务端默认）</span></div>
           <div class="setrow__ctrl"><input type="text" id="laya-model" value="${esc(cfg.model || "")}" placeholder="laya" spellcheck="false"></div>
         </div>
-        <div class="setrow"><div class="setrow__text"><b>连通性</b><span>${esc(info.detail || "点右侧按钮发一次真实探测（地址只取本页输入框）")}</span></div>
+        <div class="setrow"><div class="setrow__text"><b>连通性</b><span>${esc(info.detail || "尚未测试")}</span></div>
           <div class="setrow__ctrl">
             <button class="btn" data-laya="probe-lan" type="button">测试连接</button>
             <button class="btn" data-laya="try-lan" type="button">试打分</button>
@@ -2717,8 +2759,8 @@
         </div>
       </div>
       <div class="laya__probe"><span class="laya__result" id="laya-result"></span></div>
-      <p class="setfoot">「试打分」会真发一次分级请求并回显它返回的级别——不是"声称能连上"，而是把一次真实结果给你看。
-        接口口径：OpenAI 兼容的 <code>/chat/completions</code>，回复里需要出现 0–1 的概率或「高危/中危/低危」字样；解析不出就如实报错并回退正则。</p>`;
+      <p class="setfoot">「试打分」会真发一次分级请求并回显结果。接口为 OpenAI 兼容的 <code>/chat/completions</code>；
+        解析不出时如实报错并回退正则。</p>`;
   }
 
   function bindLayaDetail(tier, host) {
@@ -2889,7 +2931,6 @@
     paintModelTrigger();
     if (!models.length) $("model-hint").textContent = "未检测到本机模型：装好 Ollama 后点上面的「重新检测」";
     else $("model-hint").textContent = `共 ${models.length} 个可用模型 · 按数据边界分三档`;
-
     $("sw-privacy").checked = !!s.privacy;
     $("sw-script-exec").checked = s.allow_script_exec !== false;
     $("sw-topmost").checked = !!s.topmost;
@@ -2987,7 +3028,10 @@
         }
         break;
       case "finished": {
-        const tag = (state.settings.think_mode || "").includes("深度") ? "思考" : "快速";
+        // ★ 用**本轮开始时的模式快照**（没有快照时退回当前设置）：标签必须反映这一轮
+        //   实际用的模式，而不是此刻的设置值（组员评审 BUG-0006）。
+        const modeNow = state.turnMode || state.settings.think_mode || "快速回答";
+        const tag = modeNow.includes("深度") ? "思考" : "快速";
         finalizeBubble(payload || "", tag); setStatus(""); break;
       }
       case "error":
@@ -3430,7 +3474,7 @@
         $("model-hint").textContent = total
           ? `共 ${total} 个可用模型 · 按数据边界分三档`
           : ((state.catalog && state.catalog.local_note)
-             || "还没有可用模型：点「管理模型」手动添加本机模型，或先 `ollama pull <模型名>` 拉一个");
+             || "还没有可用模型：点「管理模型」手动添加，或先 `ollama pull <模型名>`");
       }
       const items = colItems(), cur = activeModel();
       if (mHl < 0 || mHl >= items.length) {

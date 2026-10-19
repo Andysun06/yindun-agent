@@ -40,6 +40,7 @@ os.makedirs(_TEST_AUDIT_DIR, exist_ok=True)
 
 # 动态修改 AuditLog 的存储路径（通过 monkey patch）
 from yindun.core.audit_log import AuditLog, AuditEventType, AuditSeverity
+import yindun.core.audit_log as _al          # 用于打桩锚点候选落点（隔离真实用户目录/程序目录）
 
 # 强制重新初始化单例，指向测试目录
 AuditLog._instance = None
@@ -54,9 +55,48 @@ def _patched_init(self):
     self._current_session_id = None
     import threading
     self._lock = threading.RLock()  # ★ 与生产 __init__ 保持一致，否则 add_entry 的 with self._lock 报错
+    # ★ 锚点运行态（与生产 __init__ 一致）
+    self._anchor_write_state = {}
+    self._anchor_write_signature = None
+    self._anchor_read_path = None
     self._load_logs()
     self._initialized = True
 AuditLog.__init__ = _patched_init
+
+# ★ 锚点候选落点隔离：默认实现会回退到「程序目录/cache」与「用户主目录」——测试绝不能
+#   往仓库或真实用户目录写锚点，这里统一换成临时目录，并且每条锚点用例都显式重设。
+_ANCHOR_PRIMARY = os.path.join(_TEST_APPDATA, "Yindun")
+_ANCHOR_FALLBACK = os.path.join(tempfile.gettempdir(), "yindun_test_anchor_fallback")
+
+
+def _set_anchor_dirs(*dirs):
+    """打桩锚点候选落点（顺序即优先级）。"""
+    from pathlib import Path
+    _al._anchor_dirs = lambda: [Path(d) for d in dirs]
+
+
+def _default_anchor_dirs():
+    _set_anchor_dirs(_ANCHOR_PRIMARY, _ANCHOR_FALLBACK)
+
+
+def _clear_anchor_files(*dirs):
+    """清掉指定目录里的锚点文件/占位目录（避免用例之间互相干扰）。"""
+    from pathlib import Path
+    for raw in dirs:
+        directory = Path(raw)
+        if not directory.is_dir():
+            continue
+        for path in directory.glob("audit_chain.anchor.*.json"):
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path, ignore_errors=True)
+                else:
+                    path.unlink()
+            except OSError:
+                pass
+
+
+_default_anchor_dirs()
 
 
 def test_01_singleton_and_persistence():
@@ -416,11 +456,71 @@ def test_19_reanchor_after_explicit_confirmation():
 
 
 
+def test_20_fresh_run_does_not_alarm():
+    """测试20：首次运行（没有任何锚点）不该报「疑似篡改」——组员评审 BUG-0001 的反面。"""
+    _clear_anchor_files(_ANCHOR_PRIMARY, _ANCHOR_FALLBACK)
+    _default_anchor_dirs()
+    log = _al.AuditLog()
+    log.add_entry(list(_al.AuditEventType)[0], _al.AuditSeverity.INFO, "首次运行")
+    health = log.anchor_health()
+    assert health.get("state") == "ok", health
+    assert health.get("valid") is True, health
+    assert health.get("degraded") is False, health
+    assert "篡改" not in str(health.get("reason") or ""), health
+    print(f"✅ 测试20通过: 首次运行锚点状态 ok / 无篡改告警 —— {health.get('path')}")
+
+
+def test_21_migration_is_reported_as_migration_not_tamper():
+    """测试21：审计目录迁移（当前指纹锚点缺失、但存在与本链自洽的旧指纹锚点）→ 应判「迁移」。
+
+    这是 BUG-0001 的正面用例：合法迁移不能再被呈现成「疑似被篡改」，且必须给可操作指引。
+    """
+    import shutil as _shutil
+    from pathlib import Path as _Path
+    _clear_anchor_files(_ANCHOR_PRIMARY, _ANCHOR_FALLBACK)
+    _set_anchor_dirs(_ANCHOR_PRIMARY)
+    log = _al.AuditLog()
+    log.add_entry(list(_al.AuditEventType)[0], _al.AuditSeverity.INFO, "迁移前的链")
+    anchors = list(_Path(_ANCHOR_PRIMARY).glob("audit_chain.anchor.*.json"))
+    assert anchors, "前置条件：应当已生成锚点"
+    real = anchors[0]
+    legacy = real.with_name("audit_chain.anchor.deadbeef.json")
+    _shutil.copy2(real, legacy)          # 造出「旧路径指纹」的锚点
+    real.unlink()                        # 当前指纹的锚点缺失
+    health = _al.AuditLog().anchor_health()
+    assert health.get("state") == "migrated", health
+    reason = str(health.get("reason") or "")
+    assert "迁移" in reason, health
+    assert "重建" in reason, health      # 必须给出可操作指引
+    print(f"✅ 测试21通过: 迁移态被判为 migrated 且给出重建指引 —— {reason[:56]}…")
+
+
+def test_22_anchor_write_falls_back_and_reports_it():
+    """测试22：首选位置不可写时回退到备用位置，并**如实上报实际落点**（BUG-0002）。"""
+    from pathlib import Path as _Path
+    _clear_anchor_files(_ANCHOR_PRIMARY, _ANCHOR_FALLBACK)
+    # 首选指向一个不存在的盘符：目录都建不出来，写必然失败
+    _set_anchor_dirs("Z:/definitely_no_such_dir", _ANCHOR_FALLBACK)
+    try:
+        log = _al.AuditLog()
+        log.add_entry(list(_al.AuditEventType)[0], _al.AuditSeverity.INFO, "回退用例")
+        health = log.anchor_health()
+        assert health.get("fallback") is True, health
+        assert health.get("degraded") is False, health
+        actual = str(health.get("path") or "").replace("\\", "/")
+        assert _ANCHOR_FALLBACK.replace("\\", "/") in actual, health
+        assert list(_Path(_ANCHOR_FALLBACK).glob("audit_chain.anchor.*.json")), "备用位置里应当有锚点"
+        print(f"✅ 测试22通过: 锚点回退到备用位置且如实上报 —— {health.get('path')}")
+    finally:
+        _default_anchor_dirs()
+
 if __name__ == "__main__":
     print("=" * 60)
     print("隐盾全链路审计黑匣子 - 功能验证测试")
     print("=" * 60)
     print()
+
+
     tests = [
         test_01_singleton_and_persistence,
         test_02_all_event_types,
@@ -441,6 +541,9 @@ if __name__ == "__main__":
         test_17_tail_truncation_is_detected,
         test_18_anchor_tamper_is_detected,
         test_19_reanchor_after_explicit_confirmation,
+        test_20_fresh_run_does_not_alarm,
+        test_21_migration_is_reported_as_migration_not_tamper,
+        test_22_anchor_write_falls_back_and_reports_it,
     ]
     passed = 0
     failed = 0

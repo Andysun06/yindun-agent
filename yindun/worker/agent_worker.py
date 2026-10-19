@@ -60,7 +60,10 @@ _SYSTEM_PROMPT = (
     "【三条硬规则（最高优先级，任何情况下都要遵守）】\n"
     "1. **对话历史里已经有的信息，直接用**——用户上一轮告诉过你、或你上一轮答过的内容，"
     "直接回答，禁止说'请上传文件 / 请提供资料 / 我没有记忆'。\n"
-    "2. **涉及文件、目录、项目、命令的任务，必须先调用工具再回答**，不要凭猜测或常识作答。\n"
+    "2. **答案取决于本机的东西（文件/目录/内容/数量）就必须先调用工具**"
+    "——不看用户用了什么动词（「桌面有多少文件」也算）。"
+    "**不要用「我无法访问 / 没有权限 / 请你自己上传」代替调工具**；"
+    "只有工具真的报错（被拒绝、路径不存在）才如实说明原因。\n"
     "3. **工具失败或返回警告/错误时，如实告诉用户失败原因和下一步建议**，"
     "严禁编造文件内容、数据或执行结果。读不到就说读不到。\n\n"
     "【你能调用的工具】\n"
@@ -742,14 +745,32 @@ class Worker:
             if self.privacy_shield and (box or self._box_mapping):
                 # ★ 合并跨轮映射表：用「历史映射 + 本轮映射」还原，避免历史占位符无法还原
                 merged_mapping = {**self._box_mapping, **box}
-                final_reply = engine.deanonymize(final_reply, merged_mapping)
+                # ★ 用带统计的还原（V3.6.10，组员评审 BUG-0005）：
+                #   ① **容错**——模型常把 `[NAME_0_x]` 写成 `` `NAME_0_x` `` 或裸的
+                #      `NAME_0_x`，精确替换会整条漏掉，用户看到裸占位符、却又被告知"已还原"；
+                #   ② **如实计数**——返回值里的"实际替换处数"才是审计该记的数（旧实现拿映射表
+                #      条数当"已还原 6 处"，而实际只还原了 1 处，审计口径失真）。
+                final_reply, _restored_hits, _restore_left = engine.deanonymize_with_stats(
+                    final_reply, merged_mapping)
+                if _restore_left:
+                    # 与知识库占位符同一口径：宁可少还原也不猜错，但**必须告诉用户**
+                    final_reply += (f"\n\n（提示：有 {_restore_left} 处占位符未能还原——"
+                                    "模型改写了占位符写法、无法唯一确定对应实体。可在审计面板核对本轮映射。）")
                 if box:
                     self._box_mapping.update(box)  # 累积本轮映射，供后续轮次还原
                 # ★ 审计：记录隐私还原（统计还原的实体类型数）
                 try:
                     # box 结构：{占位符: 真实值}，统计各类型数量
+                    # ★ 只统计**真的出现在回答里、并被替换掉**的占位符（V3.6.10，组员评审 BUG-0005）：
+                    #   旧实现拿映射表条数当"已还原 N 处"，于是出现"审计说还原 6 处、用户却看到
+                    #   5 个裸占位符"——审计统计与用户所见不一致，等于谎报。判据用还原前的文本
+                    #   （`_reply_before_restore` 是脱敏态副本）：占位符或其裸形式在里面出现过，
+                    #   才算这一轮真的还原了它。
                     _type_counts = {}
                     for _ph in box.keys():
+                        _bare = str(_ph).strip("[]")
+                        if str(_ph) not in _reply_before_restore and _bare not in _reply_before_restore:
+                            continue
                         _m = _NEW_PLACEHOLDER_RE.match(_ph)  # 新格式 [TYPE_N_nonce]
                         if _m:
                             _t = _m.group(1)
@@ -779,6 +800,17 @@ class Worker:
                 bool(getattr(self, "_turn_tool_success", False)),
                 list(getattr(self, "_turn_tool_names", []) or []),
             )
+            # ★ 反"假成功"兜底（V3.6.10，负责人实测）：模型**一次工具都没调**却回答
+            #   「文件 aaa.txt 已成功创建在你的桌面上」——桌面上什么都没有，审批也没弹
+            #   （审批只在真的执行工具时才弹）。用户看到的是彻头彻尾的假话。
+            #   自纠错重试（循环内）已经给它一次机会；如果它还是只说不做，
+            #   这里就把事实摆在用户眼前：**没执行**，以及下一步怎么办。
+            final_reply = self._guard_unexecuted_action(
+                final_reply,
+                list(getattr(self, "_turn_tool_names", []) or []),
+            )
+            # ★ 反"半句话当完成"（V3.6.10，组员评审 BUG-0003）：重生成后仍是断句就如实说明
+            final_reply = self._guard_truncated_answer(final_reply)
             # ★ 审计：记录最终还原后的 LLM 输出（展示给用户的版本）
             try:
                 AuditLog().log_llm_output(_reply_before_restore, preview=_reply_before_restore[:200])
@@ -1003,6 +1035,12 @@ class Worker:
         self._tool_fp_cache = {}
         self._deepen_used = False
         self._text_call_retried = False   # "把工具调用写成了文字"只重试一次，再犯就如实标注
+        self._trunc_retried = False       # "回答疑似被截断"只重生成一次（V3.6.10，组员评审 BUG-0003）
+        self._tool_retry_used = False     # "一次工具没调却只讲权限"只纠正一次（见下方自纠错说明）
+        # ★ 本轮"到底用没用过工具"的判据基线：强制分支（在循环之前跑的）已经加过计数，
+        #   所以要在这里取一次快照，后面按"计数是否超过基线"判断，而不是看绝对值。
+        _tool_baseline = self.tool_call_count
+        self._tool_baseline_count = _tool_baseline
         last_tool_result = ""  # 初始化，防止循环结束时 NameError
 
         while round_count < max_rounds:
@@ -1048,6 +1086,73 @@ class Worker:
                 if content and isinstance(content, str) and content.strip():
                     self.intermediate_result.emit(self._clean(content))
 
+                # ──────────────────────────────────────────
+                # ★ 自纠错：一次工具都没调，却开始讲"我读不到 / 没权限 / 请你上传"
+                #   （V3.6.9，负责人质疑："我不提关键词就不能调工具了吗，主流 agent 怎么做"）
+                #
+                #   主流做法是让模型自己决定调工具（原生 function calling）+ 用 `tool_choice`
+                #   强制这一轮必须调。但 **Ollama 不支持 tool_choice**（langchain-ollama 里
+                #   明说该参数被忽略），本地模型这条路走不通，于是必须在 harness 层补：
+                #   判据不看**用户怎么问**（关键词永远会漏，比如"桌面有多少文件"既没有"列出"
+                #   也没有"查看"），而看**模型答成了什么样**——回答里出现"读不到/无法访问/
+                #   请你提供文件/超出权限"这类**推诿症状**，且这一轮一次工具都没用过，
+                #   就把它叫回来重做一次：明确告知可用的工具与判据。只纠正一次，不循环。
+                #   这条与下面那几条"关键词强制分支"的分工是：关键词是**兜底网**（弱模型
+                #   连推诿都不说、直接编内容时用），这里是**主纠错通路**（对任何问法都生效）。
+                if (not getattr(self, "_tool_retry_used", False)
+                        and self.tool_call_count <= _tool_baseline
+                        and isinstance(content, str)
+                        and (self._waffles_about_local_access(content)
+                             or self._claims_action_done(content))):
+                    self._tool_retry_used = True
+                    _why = ("回答里说读不到/没有权限" if self._waffles_about_local_access(content)
+                            else "回答里说已经做完，但一次工具都没调用")
+                    self.status.emit(f"[纠正] {_why} —— 要求它改用工具真做…")
+                    messages.append(HumanMessage(
+                        content=(
+                            "你还没有调用任何工具就回答了" +
+                            ("，而且回答里说读不到 / 没有权限 / 要用户自己提供文件。\n"
+                             "本机是**可以**直接读的，请现在用工具核实，不要凭印象或权限说明作答：\n"
+                             "· 看目录里有什么、有多少个 → list_local_files(target_directory=…)\n"
+                             "· 看某个文件里写了什么 → read_local_file(filename=…, target_directory=…)\n"
+                             "· 找内容 → search_in_files(pattern=…)\n"
+                             "如果确实不需要工具（纯知识问答、闲聊），请直接给出答案，不要讲权限。"
+                             if self._waffles_about_local_access(content) else
+                             "，但回答里已经声称操作完成。\n"
+                             "**没有调用工具就不可能真的完成任何文件操作**——请现在用工具真做：\n"
+                             "· 新建文件 → create_local_file(filename=…, content=…, target_directory=…)\n"
+                             "· 改内容 → modify_local_file / 替换 → replace_in_file\n"
+                             "· 删除 → delete_local_file；移动/改名 → move_local_file / rename_local_file\n"
+                             "· 建目录 → make_local_dir\n"
+                             "做完之后，按工具返回的真实结果回答（成功就说成功、失败就说失败）。\n"
+                             "如果这次请求本来就不需要动盘（例如只是问知识），请直接回答，不要提「已完成」。")
+                        ),
+                        additional_kwargs={"internal": True}))
+                    continue
+
+                # ★ 回答疑似被截断 → 让它把完整回答写完（V3.6.10，组员评审 BUG-0003）：
+                #   实测现象：同一段输入，回答只吐「我需要」「您好」「为了」2~3 个字就结束，
+                #   气泡仍标「已完成」；审计佐证模型侧真实产出就只有 2~3 字符（llm_output
+                #   content_length=3/2/2）。**静默给半句话还打上已完成**，用户/评委无从判断
+                #   是模型错觉还是产品故障。这里先判定"刚起头就断了"（`_looks_truncated_answer`：
+                #   很短 + 无句末标点 + 用户这轮问的确实是实质问题），再让它**重写一遍完整回答**；
+                #   只重生成一次，避免死循环。重生成后仍很短的话，由末尾的
+                #   `_guard_truncated_answer` 如实标注（绝不假装"已完成"）。
+                if (not getattr(self, "_trunc_retried", False)
+                        and isinstance(content, str)
+                        and self._looks_truncated_answer(content, self.user_input)):
+                    self._trunc_retried = True
+                    self.status.emit(f"[纠正] 回答疑似被截断（只输出 {len(content.strip())} 个字）"
+                                     f"—— 要求它把完整回答写完…")
+                    messages.append(HumanMessage(
+                        content=("你上一条回答只输出了 " + repr(content.strip()[:20]) +
+                                 "，看起来**生成被截断了**。请重新完整地回答用户的问题：\n"
+                                 "· 不要重复那句开头，直接给**完整**内容；\n"
+                                 "· 如果内容较长，先说结论再分点展开（列表/表格都可以）；\n"
+                                 "· 需要本机信息就调用工具，不要凭印象。"),
+                        additional_kwargs={"internal": True}))
+                    continue
+
                 if has_executed_tool and round_count < min_rounds:
                     # ★ 已有实质答案就别再逼它"继续深入"：多跑一轮既慢，实测还常把
                     #   已经正确的答案改写坏（小模型在深化轮会丢细节）。每轮最多强制一次。
@@ -1059,11 +1164,20 @@ class Worker:
                         # 未达到最低思考轮数，强制继续深入分析
                         self._deepen_used = True
                         self.status.emit(f"[深化 {round_count}/{min_rounds}] 未达最低思考轮数，强制继续分析...")
+                        # ★ 深化指令必须**锚定用户最初的问题**（V3.6.10 实测教训）：
+                        #   旧文案是写死的"解读关键文件实现逻辑 / 总结项目技术亮点与风险"——
+                        #   那是为"分析项目"设计的，套到简单问题上会把模型带跑偏。
+                        #   真机实测（云端 glm4）：只需回答"这个目录里有多少文件"，
+                        #   它被这段指令带去分析项目，最终答成"未找到代码文件，因此无法解读
+                        #   关键文件的具体实现逻辑"——**用户的问题一个字都没答**。
+                        #   现在把原问题原样写进去，并明确"不要跑题、答完就给最终答案"。
+                        _question = str(self.user_input or "").strip()[:200]
                         deepen_prompt = (
-                            "\n\n请基于以上工具执行结果，继续深入分析："
-                            "1. 重点解读关键文件的具体实现逻辑\n"
-                            "2. 总结项目的核心功能、技术亮点和潜在风险\n"
-                            "3. 如果有遗漏的重要文件，请调用工具继续读取分析"
+                            f"\n\n继续完成用户最初的问题：「{_question}」\n"
+                            "要求：\n"
+                            "1. 只围绕上面这个问题作答，**不要跑题**（不要说「未找到代码文件」这类与问题无关的话）；\n"
+                            "2. 如果上面已经有工具结果，就以工具结果为准把答案说完整、具体到数字/名字/路径；\n"
+                            "3. 如果还需要更多信息，调用工具继续取（不要凭印象）。"
                         )
                         # ★ 这三行必须在 else 里（V3.6.9 修复真实崩溃）：
                         #   原先它们比 else 体浅一层，于是"已得到实质回答、跳过深化轮"那支
@@ -1580,6 +1694,48 @@ class Worker:
         except Exception:
             return self.sandbox_path or ""
 
+    # 推诿症状词：模型"没调工具就宣布做不到"时几乎总会说这几句（实测 2b/4b 都如此）。
+    # ★ 判据盯的是**模型的回答**，不是用户的问法——这正是"不靠关键词"的关键：
+    #   用户怎么问都可能漏（"桌面有多少文件"就没有任何动作动词），但"我读不到/没权限"
+    #   这种推诿话术是稳定的失败信号。
+    _WAFFLE_MARKERS = (
+        "无法访问", "不能访问", "没有权限", "无权限", "权限不足", "受限于",
+        "读不到", "读取不到", "无法读取", "不能读取", "看不到", "无法查看", "不能查看",
+        "请上传", "请提供文件", "请你提供", "需要你提供", "请把文件", "我无法直接",
+        "只能查看以下", "只能查看这些", "超出我", "不在我的",
+    )
+
+    # 假成功症状词：模型**没调工具**却宣布"已完成"（负责人实测：说"文件 aaa.txt 已成功
+    # 创建在你的桌面上"，而桌面上什么都没有，轨迹里连一条工具记录都没有）。
+    _ACTION_CLAIM_MARKERS = (
+        "已创建", "创建成功", "已经创建", "已完成创建", "已成功创建",
+        "已保存", "保存成功", "已写入", "已生成", "写入成功",
+        "已删除", "删除成功", "已移除", "已移动", "移动成功",
+        "已重命名", "重命名成功", "已改名", "已执行", "执行成功",
+    )
+    # 这些工具才是"真的改了磁盘"的操作；只有它们**成功过**才能说"已完成"
+    _ACTION_TOOLS = frozenset({
+        "create_local_file", "modify_local_file", "delete_local_file",
+        "move_local_file", "copy_local_file", "rename_local_file",
+        "batch_rename_local_files", "make_local_dir", "run_local_command",
+    })
+
+    @classmethod
+    def _claims_action_done(cls, text: str) -> bool:
+        """回答里是否宣称"某个文件操作已经做完"。"""
+        body = str(text or "")
+        if not body:
+            return False
+        return any(marker in body for marker in cls._ACTION_CLAIM_MARKERS)
+
+    @classmethod
+    def _waffles_about_local_access(cls, text: str) -> bool:
+        """回答里是否是"没调工具就宣布自己做不到"的推诿话术。"""
+        body = str(text or "")
+        if not body:
+            return False
+        return any(marker in body for marker in cls._WAFFLE_MARKERS)
+
     @staticmethod
     def _count_note(directory: str) -> str:
         """宿主自己数一遍目录（文件数 / 子目录数 / 合计），给模型一组**可照抄的数字**。
@@ -1952,6 +2108,38 @@ class Worker:
         if len(body) >= 90:
             return True
         return has_structure and len(body) >= 30
+
+    # 句末标点／收尾标记：有它说明这句"说完了"，没有则很可能是被截断的开头
+    _SENTENCE_END = ("。", "！", "？", "…", ".", "!", "?", "；", ";", "：", ":", "）", "]", ")", "```")
+
+    @classmethod
+    def _looks_truncated_answer(cls, text: str, user_input: str = "") -> bool:
+        """回答是不是**刚起了个头就断了**（组员评审 BUG-0003：只吐「我需要」「您好」「为了」却标已完成）。
+
+        判据（三条同时满足才判截断，宁可不判、也别误伤正常短答）：
+          ① 可见长度很短（< 15 字）；
+          ② **没有任何句末标点 / 收尾标记**（"是。"这类完整短答通常带标点，被这一条放过）；
+          ③ 这一轮用户问的是**实质问题**（够长、带问号、或像任务指令）——"在吗/谢谢"这类寒暄
+             本来就该得到短答，不该被当成截断。
+        纯数字与纯符号也放过：「42」常常就是答案本身。
+        """
+        body = str(text or "").strip()
+        if not body or len(body) >= 15:
+            return False
+        if body.endswith(cls._SENTENCE_END):
+            return False
+        if not any(ch.isalnum() or ("\u4e00" <= ch <= "\u9fff") for ch in body):
+            return False                     # 纯符号／纯 emoji：不判
+        if body.replace(".", "").replace("-", "").isdigit():
+            return False                     # 纯数字：可能就是答案
+        question = str(user_input or "").strip()
+        # ③ 用户这一轮是不是"在提实质要求"：够长（≥8 字）、带问号、或含任务/疑问词。
+        #    "在吗 / 谢谢 / 好的"这类寒暄长度与词面都够不上 → 放过（短答本来正常）。
+        return (len(question) >= 8 or "?" in question or "？" in question
+                or any(word in question for word in
+                       ("什么", "怎么", "为什么", "如何", "多少", "哪些", "帮我", "请",
+                        "写", "总结", "分析", "整理", "创建", "改成", "讲讲", "说明",
+                        "介绍", "列一下", "看一下", "核对", "检查")))
 
     def _execute_tool(self, tool_name: str, args: dict) -> str:
         """根据工具名调用对应的工具对象，返回工具执行结果"""
@@ -2670,6 +2858,39 @@ class Worker:
         return (str(reply).rstrip() +
                 f"\n\n⚠️ 提示：{detail}，**以上内容未经核实**（可能是模型自行生成的示例），"
                 "请先让我读取文件后再确认。")
+
+    def _guard_truncated_answer(self, reply: str) -> str:
+        """最后一道网：重生成之后**仍然**是半句话时，如实标注（不假装"已完成"）。
+
+        组员评审 BUG-0003 的原始症状就是"只吐 2~3 个字，气泡标已完成"——用户没法判断
+        是模型答不出还是产品坏了。这里不替模型编内容，只把事实说清楚并给出下一步。
+        """
+        if not isinstance(reply, str) or not self._looks_truncated_answer(reply, self.user_input):
+            return reply
+        return (reply.rstrip() +
+                "\n\n⚠️ 提示：模型这次的输出疑似**被截断**（只给出上面这一小段）。"
+                "可以再发一次，或换用更大的模型（2B 这类小模型在长回答上容易早停）。")
+
+    def _guard_unexecuted_action(self, reply: str, tool_names: list) -> str:
+        """反"假成功"最后一道网：声称做完文件操作，但这轮**没有成功的写类工具**。
+
+        与 `_guard_ungrounded_dump` 同一思路（都是"模型说了、机器没做"时必须点破），
+        区别在于这里管的是**动作**而不是内容：编造"已创建/已删除/已移动"比编造内容更危险，
+        因为用户会去桌面上找文件、找不到才知道被骗（负责人实测就是这么发现的）。
+        """
+        if not reply or not isinstance(reply, str):
+            return reply
+        if any(name in self._ACTION_TOOLS for name in (tool_names or [])):
+            return reply                     # 真的动过盘（成功过才会进 _turn_tool_names）
+        if not self._claims_action_done(reply):
+            return reply
+        detail = ("本轮一次工具都没有调用" if not tool_names
+                  else f"本轮只调用过 {('、'.join(tool_names[:3]))}，没有执行任何写盘/删除/移动操作")
+        return (reply.rstrip() +
+                f"\n\n⚠️ 事实核对：{detail}，所以上面「已完成」的说法**并没有真的执行**"
+                "（审批也不会弹——审批只在真的执行操作时才出现）。"
+                "请再发一次；若反复如此，说明当前模型不支持工具调用，"
+                "可在设置页「模型接入」换一个支持 function calling 的模型（本机 qwen 系列、云端 glm 系列都可以）。")
 
     @staticmethod
     def _clean(text):

@@ -14,7 +14,7 @@ import threading
 from pathlib import Path
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 from enum import Enum
 
 from yindun.utils.logger import get_logger
@@ -38,6 +38,32 @@ def _audit_key_file() -> Path:
         base = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
         return base / "Yindun" / ".audit_hmac_key"
     return Path.home() / ".config" / "yindun" / ".audit_hmac_key"
+
+
+def _anchor_dirs() -> List[Path]:
+    """链锚点的**候选落点**（按优先级，越靠前越优先）。
+
+    为什么要有回退：首选位置（用户目录）在某些现场是**只读**的（组策略收权、
+    AppData 被同步/加锁、便携版从只读介质运行），此时写锚点会持续报
+    `[Errno 13] Permission denied`；若因此干脆不写锚点，防篡改（尾部截断 / 降级改写）
+    就事实上失效，而用户毫不知情 —— 这是 BUG-0002。宁可换一个位置写，也不能不写。
+
+      1) 密钥所在的用户目录（首选：与密钥同处，删锚点得先攻破用户目录）；
+      2) 程序（exe）目录下的 cache（与审计目录同机、但**不是**审计目录本身）；
+      3) 用户主目录下的隐藏目录（便携版在只读介质上运行时仍能留下锚点）。
+
+    实际落在哪个位置必须**如实上报**（见 `AuditLog.anchor_health()`），不能默默换地方。
+    """
+    candidates = [_audit_key_file().parent, Path(APP_ROOT) / "cache", Path.home() / ".yindun_anchors"]
+    out: List[Path] = []
+    seen = set()
+    for directory in candidates:
+        marker = str(directory)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        out.append(directory)
+    return out
 
 
 def _get_hmac_key() -> Optional[bytes]:
@@ -221,6 +247,11 @@ class AuditLog:
         self._current_session_id = None
         # 并发安全锁（RLock：add_entry 会在持锁状态下调用 _save_logs）
         self._lock = threading.RLock()
+        # 锚点运行态：最近一次写入结果（含实际落点/是否回退/是否降级）与最近读到的落点，
+        # 供 anchor_health() 如实上报"锚点在哪、是否生效"。
+        self._anchor_write_state: Dict[str, Any] = {}
+        self._anchor_write_signature = None
+        self._anchor_read_path: Optional[Path] = None
         self._load_logs()
         self._initialized = True
 
@@ -248,9 +279,21 @@ class AuditLog:
     #   文件名带审计目录指纹：同一台机器上可能有多份便携副本，各自的链互不干扰。
     #   残余局限（如实记录）：能同时改写用户目录的攻击者（≈本机已被完全控制）
     #   仍可连锚点一起重做——任何纯本地审计都挡不住这一层。
+    _ANCHOR_PREFIX = "audit_chain.anchor."
+    _ANCHOR_SUFFIX = ".json"
+
+    def _anchor_fingerprint(self) -> str:
+        """审计目录的路径指纹（同一台机器上的多份便携副本据此各用各的锚点）。"""
+        return hashlib.sha256(str(self._storage_path).encode("utf-8")).hexdigest()[:8]
+
+    def _anchor_candidate_paths(self) -> List[Path]:
+        """当前链在各候选落点上的锚点文件路径（按优先级）。"""
+        name = f"{self._ANCHOR_PREFIX}{self._anchor_fingerprint()}{self._ANCHOR_SUFFIX}"
+        return [directory / name for directory in _anchor_dirs()]
+
     def _anchor_path(self) -> Path:
-        fingerprint = hashlib.sha256(str(self._storage_path).encode("utf-8")).hexdigest()[:8]
-        return _audit_key_file().parent / f"audit_chain.anchor.{fingerprint}.json"
+        """首选锚点落点（密钥旁边）。实际落点可能因回退而不同，见 `anchor_health()`。"""
+        return self._anchor_candidate_paths()[0]
 
     @staticmethod
     def _anchor_payload(count: int, head: str, legacy_prefix: int) -> str:
@@ -259,32 +302,199 @@ class AuditLog:
                            "legacy_prefix": int(legacy_prefix)},
                           ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
-    def _read_anchor(self) -> Optional[dict]:
-        """读取并校验锚点。返回 None 表示"没有锚点"；返回 {"tampered": True} 表示锚点本身不可信。"""
-        path = self._anchor_path()
-        if not path.exists():
-            return None
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            log.warning("锚点文件解析失败：%s: %s", type(exc).__name__, exc)
-            return {"tampered": True, "reason": f"锚点文件损坏：{exc}"}
-        key = _get_hmac_key()
-        if key is None:
-            return {"tampered": True, "reason": "密钥缺失，无法校验锚点"}
-        payload = self._anchor_payload(data.get("count", -1), data.get("head", ""),
-                                      data.get("legacy_prefix", 0))
-        expected = hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(str(data.get("mac", "")), expected):
-            return {"tampered": True, "reason": "锚点签名不匹配（可能被改写）"}
-        return {"count": int(data.get("count", 0)), "head": str(data.get("head", "")),
-                "legacy_prefix": int(data.get("legacy_prefix", 0))}
+    @staticmethod
+    def _anchor_target_usable(path: Path) -> bool:
+        """这个锚点落点现在**能不能写**（非破坏性判断，绝不碰真锚点、也不创建目录）。
 
-    def _write_anchor(self) -> None:
-        """按当前链状态刷新锚点（追加条目后调用）。"""
+        为什么不直接试写：直接试写会"顺手"把一条尚未校验过的链锚定下来，
+        等于把"锚点缺失"这条告警自己抹掉 —— 那正是要防的事。所以只做无副作用检查：
+          · 落点是不是被一个**目录**占住了（此时 write_text 必然 Errno 13）；
+          · 现有落点文件是否可写（只读文件占位 → 不可写）；
+          · 落点不存在时，最近一个已存在的祖先目录是否可写（**不实际创建**目录）。
+        """
+        try:
+            if path.exists():
+                if path.is_dir():
+                    return False                       # 落点被目录占住 → 一定写不进
+                return os.access(str(path), os.W_OK)
+        except OSError:
+            return False
+        probe = path.parent
+        while True:
+            try:
+                if probe.exists():
+                    return os.access(str(probe), os.W_OK)
+            except OSError:
+                return False
+            parent = probe.parent
+            if parent == probe:
+                return False                            # 走到盘根都不存在（如不存在的盘符）
+            probe = parent
+
+    def _anchor_writable_anywhere(self) -> bool:
+        """是否还有任何一个候选落点可写（用来区分"锚点真的没了"与"根本写不进去"）。"""
+        return any(self._anchor_target_usable(path) for path in self._anchor_candidate_paths())
+
+    def _read_anchor(self) -> Optional[dict]:
+        """读取并校验锚点（按候选落点优先级遍历）。
+
+        返回：
+          · None                        —— 所有候选落点都没有锚点；
+          · {"tampered": True, ...}     —— 锚点存在但**不可信**（签名不符 / 内容损坏）；
+          · {"unreadable": True, ...}   —— 锚点存在但**读不了**（权限 / 落点被占）：
+                                           这属于环境问题，不能当成"被篡改"吓唬用户。
+          · {"count","head","legacy_prefix","path"} —— 校验通过的锚点（path = 实际落点）。
+
+        多个候选都有效时取**条数最大**的那个（最不容易被"退回到更早状态"绕过）；
+        读到的落点记在 self._anchor_read_path，供界面如实展示"锚点在哪"。
+        """
+        key = _get_hmac_key()
+        best: Optional[dict] = None
+        problems: List[dict] = []
+        for path in self._anchor_candidate_paths():
+            try:
+                if not path.exists():
+                    continue
+            except OSError:
+                continue
+            try:
+                if path.is_dir():
+                    raise IsADirectoryError(f"锚点落点被目录占住：{path}")
+                raw = path.read_text(encoding="utf-8")
+            except OSError as exc:
+                log.warning("锚点文件无法读取：%s: %s", type(exc).__name__, exc)
+                problems.append({"unreadable": True, "path": str(path),
+                                 "reason": f"锚点文件无法读取：{exc}"})
+                continue
+            try:
+                data = json.loads(raw)
+            except Exception as exc:
+                log.warning("锚点文件解析失败：%s: %s", type(exc).__name__, exc)
+                problems.append({"tampered": True, "path": str(path),
+                                 "reason": f"锚点文件损坏：{exc}"})
+                continue
+            if key is None:
+                problems.append({"tampered": True, "path": str(path),
+                                 "reason": "密钥缺失，无法校验锚点"})
+                continue
+            payload = self._anchor_payload(data.get("count", -1), data.get("head", ""),
+                                           data.get("legacy_prefix", 0))
+            expected = hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(str(data.get("mac", "")), expected):
+                problems.append({"tampered": True, "path": str(path),
+                                 "reason": "锚点签名不匹配（可能被改写）"})
+                continue
+            found = {"count": int(data.get("count", 0)), "head": str(data.get("head", "")),
+                     "legacy_prefix": int(data.get("legacy_prefix", 0)), "path": str(path)}
+            if best is None or found["count"] > best["count"]:
+                best = found
+        if best is not None:
+            self._anchor_read_path = Path(best["path"])
+            return best
+        if problems:
+            return problems[0]
+        return None
+
+    def _find_foreign_anchor(self) -> Optional[dict]:
+        """找**旧路径指纹**的锚点，且它必须与当前链自洽 —— 这是合法迁移/拷贝的证据。
+
+        不能只凭"存在别的锚点文件"就判迁移：同一台机器上可以有多份便携副本，
+        它们的锚点本来就落在同一个用户目录里互不干扰。只有那个旧锚点的
+        （条数, 链头）能对上当前链，才说明"这条链是从那个路径迁过来的"。
+        """
         key = _get_hmac_key()
         if key is None:
-            return
+            return None
+        mine = {path.name for path in self._anchor_candidate_paths()}
+        for directory in _anchor_dirs():
+            try:
+                if not directory.is_dir():
+                    continue
+                candidates = sorted(directory.glob(f"{self._ANCHOR_PREFIX}*{self._ANCHOR_SUFFIX}"))
+            except OSError:
+                continue
+            for path in candidates:
+                if path.name in mine:
+                    continue
+                try:
+                    if path.is_dir():
+                        continue
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                payload = self._anchor_payload(data.get("count", -1), data.get("head", ""),
+                                               data.get("legacy_prefix", 0))
+                expected = hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+                if not hmac.compare_digest(str(data.get("mac", "")), expected):
+                    continue                       # 别的副本的锚点 / 被改写 → 不作证据
+                count = int(data.get("count", 0))
+                head = str(data.get("head", ""))
+                if len(self._entries) < count:
+                    continue                       # 连条数都对不上 → 不是这条链的
+                if count and self._entries[count - 1].entry_hash != head:
+                    continue                       # 锚点位置那条对不上 → 不是这条链的
+                return {"path": str(path), "count": count,
+                        "fingerprint": path.name[len(self._ANCHOR_PREFIX):-len(self._ANCHOR_SUFFIX)]}
+        return None
+
+    def _classify_anchor_absent(self, read_problem: Optional[dict] = None) -> dict:
+        """锚点"找不到"时的定性。把原先笼统的"锚点缺失但链非空"拆成四类：
+
+          · empty    —— 还没有任何审计条目（首次运行）：静默，无需告警；
+          · migrated —— 当前路径没有锚点，但**另一路径的旧锚点与本链自洽**：
+                        这是合法迁移/拷贝，提示 + 一键重建，不按可疑处理；
+          · degraded —— 锚点缺失且**所有候选位置都写不进去**（含锚点读不了的情形）：
+                        如实报"锚点未生效（防篡改能力降级）"，并指出该怎么修；
+          · missing  —— 锚点真的不见了而链非空：维持现状的可疑告警（可用「重建锚点」确认）。
+        """
+        if not self._entries:
+            return {"state": "empty", "anchor": "absent", "reason": ""}
+        foreign = self._find_foreign_anchor()
+        if foreign:
+            return {"state": "migrated", "anchor": "migrated",
+                    "reason": ("检测到审计目录已迁移（当前路径下锚点缺失，但发现另一路径 "
+                               f"{Path(foreign['path']).parent} 的旧锚点与本链一致，"
+                               f"旧指纹 {foreign['fingerprint']}）—— 这是合法迁移，"
+                               "点「重建锚点」确认接受当前链即可恢复校验"),
+                    "migration_source": foreign["path"]}
+        if not self._anchor_writable_anywhere():
+            reason = ("锚点未生效（防篡改能力降级）：锚点缺失，且所有候选位置都写不进去 —— "
+                      "尾部截断与降级改写将无法被发现；请检查用户目录 / 程序目录的写权限")
+            if read_problem:
+                reason += f"（{read_problem.get('reason')}）"
+            return {"state": "degraded", "anchor": "degraded", "reason": reason}
+        return {"state": "missing", "anchor": "absent",
+                "reason": ("锚点缺失但审计链非空 —— 审计目录可能被整体替换、锚点被删除，"
+                           "或这是首次升级（可在审计面板点「重建锚点」确认接受当前链）")}
+
+    def _set_anchor_write_state(self, state: dict) -> dict:
+        """记录锚点写入状态；**仅在状态发生变化时**记日志（避免每条审计刷一行 ERROR）。"""
+        previous = getattr(self, "_anchor_write_state", None)
+        self._anchor_write_state = state
+        signature = (bool(state.get("ok")), str(state.get("dir") or ""), bool(state.get("degraded")))
+        if signature == getattr(self, "_anchor_write_signature", None):
+            return state
+        self._anchor_write_signature = signature
+        if state.get("degraded"):
+            log.error("审计链锚点未生效（防篡改能力降级：尾部截断 / 降级改写将无法被发现）：%s",
+                      state.get("reason"))
+        elif state.get("fell_back"):
+            log.warning("审计链锚点已回退到备用位置：%s（首选位置不可写）", state.get("path"))
+        elif previous is not None and not previous.get("ok"):
+            log.info("审计链锚点写入已恢复：%s", state.get("path"))
+        return state
+
+    def _write_anchor(self) -> dict:
+        """按当前链状态刷新锚点（追加条目后调用）；首选落点不可写时**按候选顺序回退**。
+
+        写入结果（含"锚点如今落在哪、是否降级"）记进 `_anchor_write_state`，
+        由 `anchor_health()` 交给界面如实展示 —— 回退与失败都不能只留在日志里。
+        """
+        key = _get_hmac_key()
+        if key is None:
+            return self._set_anchor_write_state(
+                {"ok": False, "degraded": True, "path": "", "dir": "",
+                 "reason": "密钥缺失，锚点无法写入（防篡改能力降级）"})
         count = len(self._entries)
         head = self._entries[-1].entry_hash if count else ""
         legacy_prefix = 0
@@ -294,15 +504,61 @@ class AuditLog:
             legacy_prefix += 1
         payload = self._anchor_payload(count, head, legacy_prefix)
         mac = hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
-        try:
-            path = self._anchor_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                json.dumps({"count": count, "head": head, "legacy_prefix": legacy_prefix, "mac": mac},
-                           ensure_ascii=False, indent=2),
-                encoding="utf-8")
-        except Exception as exc:
-            log.error("锚点写入失败（下次启动将无法发现截断）：%s", exc)
+        body = json.dumps({"count": count, "head": head, "legacy_prefix": legacy_prefix, "mac": mac},
+                          ensure_ascii=False, indent=2)
+        errors: List[str] = []
+        for index, path in enumerate(self._anchor_candidate_paths()):
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(body, encoding="utf-8")
+            except Exception as exc:
+                errors.append(f"{path.parent}：{type(exc).__name__}: {exc}")
+                continue
+            return self._set_anchor_write_state(
+                {"ok": True, "degraded": False, "fell_back": index > 0,
+                 "path": str(path), "dir": str(path.parent), "reason": ""})
+        return self._set_anchor_write_state(
+            {"ok": False, "degraded": True, "fell_back": False, "path": "", "dir": "",
+             "reason": "锚点未生效（防篡改能力降级）：所有候选位置都写不进去 —— " + "；".join(errors)})
+
+    def _anchor_active_path(self) -> Optional[Path]:
+        """锚点**实际**落在哪个候选路径（优先最近一次写入/读取到的那个）。"""
+        write_state = getattr(self, "_anchor_write_state", None) or {}
+        if write_state.get("path"):
+            return Path(write_state["path"])
+        read_path = getattr(self, "_anchor_read_path", None)
+        if read_path:
+            return Path(read_path)
+        for path in self._anchor_candidate_paths():
+            try:
+                if path.exists():
+                    return path
+            except OSError:
+                continue
+        return None
+
+    def anchor_health(self) -> dict:
+        """锚点健康度：锚点是否生效、落在哪、是否需要重建（界面直接展示，不让人猜）。"""
+        detail = self.verify_chain_detail()
+        state = str(detail.get("state") or "unknown")
+        write_state = getattr(self, "_anchor_write_state", None) or {}
+        active = self._anchor_active_path()
+        fell_back = bool(write_state.get("fell_back"))
+        if not fell_back and active is not None:
+            try:
+                fell_back = active != self._anchor_path()
+            except Exception:
+                fell_back = False
+        return {
+            "state": state,
+            "valid": bool(detail.get("valid")),
+            "degraded": state == "degraded",
+            "fallback": fell_back,
+            "dir": str(active.parent) if active else "",
+            "path": str(active) if active else "",
+            "reason": str(detail.get("reason") or ""),
+            "migration_source": str(detail.get("migration_source") or ""),
+        }
 
     def reanchor(self, reason: str = "") -> dict:
         """显式重建锚点（用于迁移/拷贝审计目录后的确认动作）。
@@ -313,14 +569,19 @@ class AuditLog:
         detail = self.verify_chain_detail(allow_missing_anchor=True)
         if not detail.get("valid"):
             return {"ok": False, "error": detail.get("reason") or "链本身不自洽，拒绝重建锚点"}
-        self._write_anchor()
+        write_state = self._write_anchor()
+        if not write_state.get("ok"):
+            # 重建也写不进去 → 如实回报"降级"，绝不假装成功
+            return {"ok": False, "error": write_state.get("reason") or "锚点写入失败（防篡改能力降级）"}
         try:
             self.add_entry(AuditEventType.ACCESS_CONTROL, AuditSeverity.WARNING,
                            "审计链锚点已重建（确认接受当前链为新的信任起点）",
                            {"reason": reason or "", "count": len(self._entries)})
         except Exception:
             pass
-        return {"ok": True, "count": len(self._entries)}
+        return {"ok": True, "count": len(self._entries),
+                "anchor_path": str(write_state.get("path") or ""),
+                "anchor_dir": str(write_state.get("dir") or "")}
 
     def _save_logs(self):
         log_file = self._storage_path / "audit_chain.json"
@@ -545,29 +806,50 @@ class AuditLog:
              攻击者抹掉 hash_algo 再重算整链即可"通过校验"（降级改写）。现在这样做会因
              "legacy 条数超过锚定的历史前缀"被判无效；
           5. 锚点存在时：条数少于锚点记录 → 尾部被截断；锚点位置那条的哈希对不上 → 尾部被替换；
-          6. 锚点缺失但链非空 → 无效（审计目录被整体替换、或锚点被删）。
-             迁移/拷贝审计目录属于合法场景，用 `reanchor()` 显式确认后重建锚点。
+          6. 锚点缺失但链非空 → 不再一律当可疑：先按 `_classify_anchor_absent()` 细分为
+             迁移（旧路径指纹的锚点仍与本链自洽 → 提示迁移 + 一键重建）、
+             降级（所有候选位置都写不进去 → 如实报"锚点未生效"，不算被篡改）、
+             可疑缺失（锚点真的不见了且还能写 → 维持现状告警）。
              `allow_missing_anchor=True` 供 reanchor 自身使用（此时跳过第 6 条）。
+
+        返回的 detail 里带 `state` 字段（ok / empty / migrated / degraded / missing /
+        tampered / no_key / accepted），界面据此区分"迁移待重建"与"校验未通过"。
         """
         detail = {"valid": False, "total": len(self._entries), "legacy": 0,
-                  "legacy_prefix": 0, "anchor": "none", "reason": ""}
+                  "legacy_prefix": 0, "anchor": "none", "state": "ok", "reason": ""}
         key = _get_hmac_key()
         if key is None:
+            detail["state"] = "no_key"
             detail["reason"] = "密钥缺失，无法校验审计链（无法证明条目未被篡改）"
             log.warning("审计链无法校验（密钥缺失）")
             return detail
 
         anchor = self._read_anchor()
+        read_problem = None
         if anchor is not None and anchor.get("tampered"):
             detail["anchor"] = "tampered"
+            detail["state"] = "tampered"
             detail["reason"] = anchor.get("reason") or "锚点不可信"
             log.warning("审计链校验失败：%s", detail['reason'])
             return detail
+        if anchor is not None and anchor.get("unreadable"):
+            # 锚点读不了（权限 / 落点被占）：先当"没有锚点"，由分类器决定是降级还是可疑缺失
+            read_problem = anchor
+            anchor = None
 
         if anchor is None and self._entries and not allow_missing_anchor:
-            detail["reason"] = ("锚点缺失但审计链非空 —— 审计目录可能被整体替换、锚点被删除，"
-                               "或这是首次升级（可在审计面板点「重建锚点」确认接受当前链）")
-            log.warning("审计链校验失败：%s", detail['reason'])
+            verdict = self._classify_anchor_absent(read_problem)
+            detail["state"] = verdict["state"]
+            detail["anchor"] = verdict["anchor"]
+            detail["reason"] = verdict["reason"]
+            if verdict.get("migration_source"):
+                detail["migration_source"] = verdict["migration_source"]
+            if verdict["state"] == "degraded":
+                log.error("审计链锚点未生效（防篡改能力降级）：%s", detail["reason"])
+            elif verdict["state"] == "migrated":
+                log.warning("审计链校验：检测到审计目录迁移（待重建锚点）—— %s", verdict["reason"])
+            else:
+                log.warning("审计链校验失败：%s", detail['reason'])
             return detail
 
         legacy_total = sum(1 for e in self._entries if e.legacy)
@@ -608,9 +890,18 @@ class AuditLog:
                 return detail
 
         detail["valid"] = True
-        if anchor is None and self._entries:
-            # 仅 reanchor 路径会走到这里：显式确认后由调用方写入锚点
-            detail["anchor"] = "accepted_without_anchor"
+        if anchor is None:
+            if self._entries:
+                # 仅 reanchor 路径会走到这里：显式确认后由调用方写入锚点
+                detail["anchor"] = "accepted_without_anchor"
+                detail["state"] = "accepted"
+            else:
+                # 首次运行（链还空着）：静默，不产生任何告警
+                detail["anchor"] = "absent"
+                detail["state"] = "empty"
+        else:
+            detail["anchor"] = "verified"
+            detail["state"] = "ok"
         if legacy_total:
             detail["reason"] = (f"链自洽，但含 {legacy_total} 条旧版（无 HMAC）历史条目，"
                                 f"其真实性弱于 HMAC 条目")

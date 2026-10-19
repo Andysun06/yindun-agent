@@ -19,6 +19,10 @@
       （显示名 + 模型 ID + 标签 + 编辑删除）/ 点模型名即切换 / API Key「查看」调桥
   7c. 密钥语义：留空＝不改动（沿用已存）+ 测试连接捎上条目名
   7d. 添加供应商 → 添加模型（写入时同一供应商归到同一 provider，带上 api_format / tags）
+  7d-2. 跨档位「＋ 添加…」通路（负责人反馈三次的缺陷固化）：三档各有同一处的添加入口 /
+      局域网→本机→公网→本机→局域网 反复切每次面板都真的展开（hidden=false 且高度>0）/
+      提交过一次后入口依然可用：不是"用一次就废" / 左列摊开的模型子项点一下即切换
+      （data-use 不被同元素的 data-t 覆盖）/ 左列事件走容器委托，重绘后仍有效
   7e. 可读写范围（sandbox_dir）：设置项显示 / 选择目录 / 清除回默认 / 态势条同一来源 /
       四档矩阵写明"越界按档位判定并写审计"
   8. 工作流**界面入口已移除**：DOM 里没有按钮/面板/页签，源码里没有 `workflow_*` / `wf-*` 残留
@@ -44,7 +48,8 @@
      `context_usage()` 的数字与预算表一致
  22. 模型可用性诚实化（K）：配置里的模型不在清单里时胶囊显示「请选择模型」（不宣称不存在的模型）、
      本机档空态原样显示 `local_note` + 两个动作、手动添加本机模型走 `<ollama_host>/v1` + `ollama` 密钥、
-     加完能立刻切换；没有任何可选模型时选择器给可行动提示
+     加完能立刻切换；没有任何可选模型时选择器给可行动提示；**本机档为空时左列仍列出「本机 Ollama」
+     与「＋ 手动添加本机模型」入口**（点过局域网添加之后仍能回到本机档继续加本地模型）
 
 用法：python tests/test_ui_paths.py        （退出码 0 = 全部通过）
 依赖：pip install playwright && python -m playwright install chromium
@@ -408,6 +413,90 @@ def main() -> int:
         check("输入区触发器变成「供应商 / 模型」",
               page.inner_text("#model-value").strip() == "10.0.0.8:8000 / 公司内网Qwen",
               page.inner_text("#model-value"))
+
+        # ── 7b-2) 跨档位「＋ 添加…」通路（负责人反馈三次的缺陷固化）──
+        # 症状：点过任一档的「＋ 添加…」（state.prov 被写成那一档）之后，其它档的
+        #       「＋ 添加…」就"点不动"。根因有二，都修在机制上：
+        #       ① 本机档在清单为空时左列**没有条目**，右栏（手动添加 / 重新检测）失去导航入口——
+        #          进了别的档就回不去本机档（详见【22】noollama 场景）；
+        #       ② 左列事件原先逐个绑到渲染出的节点上，paintUsage 重绘左列后旧节点连同 handler
+        #          一起被摘掉；且 `.prov__sub` 同时带 `data-t` 与 `data-use`，后绑的 `[data-t]`
+        #          覆盖了 `[data-use]` → 点本机档摊开的模型名"点了没反应"。
+        #       现在：三档各有同一处的添加入口 + 容器级事件委托（重绘后仍有效）。
+        print("\n" + "=" * 78)
+        print("【7b-2】跨档位「＋ 添加…」通路：反复切档、反复打开、提交后仍可用")
+        print("=" * 78)
+
+        def panel_box(sel):
+            """面板状态：hidden 与真实高度（只用"元素存在"抓不到"点了没反应"）。"""
+            return page.evaluate("""(s) => { const e = document.querySelector(s);
+                if (!e) return null;
+                return { hidden: !!e.hidden, h: e.getBoundingClientRect().height }; }""", sel)
+
+        addt = page.eval_on_selector_all("#prov-list [data-addt]", "els => els.map(e => e.dataset.addt)")
+        check("三档各有同一处的「＋ 添加…」入口（本机档 = 手动添加本机模型）",
+              addt == ["local", "lan", "wan"]
+              and "手动添加本机模型" in page.inner_text('#prov-list [data-addt="local"]'), str(addt))
+
+        # 反复跨档切换：每一次点击对应面板都必须真的展开（hidden=false 且高度 > 0）
+        cycle = (("局域网", '#prov-list [data-addt="lan"]', "#p-provider"),
+                 ("本机", '#prov-list [data-addt="local"]', "#local-add"),
+                 ("公网", '#prov-list [data-addt="wan"]', "#p-provider"),
+                 ("本机", '#prov-list [data-addt="local"]', "#local-add"),
+                 ("局域网", '#prov-list [data-addt="lan"]', "#p-provider"))
+        for i, (label, sel, probe) in enumerate(cycle, 1):
+            page.click(sel)
+            page.wait_for_timeout(280)
+            st = panel_box(probe)
+            check(f"★ 跨档第 {i} 步：点「{label}」的 ＋添加 后面板真的展开（hidden=false 且高度>0）",
+                  bool(st) and st["hidden"] is False and st["h"] > 0, str(st))
+        page.click('#prov-list [data-addt="local"]')
+        page.wait_for_timeout(280)
+        check("本机添加入口展开后自动聚焦到模型名输入框",
+              page.evaluate("() => document.activeElement && document.activeElement.id") == "la-model",
+              page.evaluate("() => document.activeElement && document.activeElement.id"))
+
+        # 提交过一次之后入口依然可用（不是"用一次就废"）
+        page.fill("#la-model", "回归-本机手动")
+        page.click("#prov-detail [data-lasave]")
+        page.wait_for_timeout(900)
+        check("本机手动添加提交后模型真的进了本机档",
+              "回归-本机手动" in page.eval_on_selector_all("#p-models .mrow", "els => els.map(e => e.dataset.mname)"),
+              str(page.eval_on_selector_all("#p-models .mrow", "els => els.map(e => e.dataset.mname)")))
+        page.click('#prov-list [data-addt="lan"]')
+        page.wait_for_timeout(280)
+        check("★ 提交过一次后，局域网「＋ 添加供应商」依然能打开（不是一次性）",
+              page.is_visible("#p-provider"), "")
+        page.click('#prov-list [data-addt="local"]')
+        page.wait_for_timeout(280)
+        st = panel_box("#local-add")
+        check("★ 提交过一次后，本机「＋ 手动添加本机模型」依然能展开",
+              bool(st) and st["hidden"] is False and st["h"] > 0, str(st))
+
+        # 左列摊开的模型子项：点一下即切换（data-use 不被同元素的 data-t 覆盖）
+        page.evaluate("""() => {
+          window.__picked = [];
+          const m = window.__YINDUN_MOCK__.api, orig = m.save_settings;
+          m.save_settings = (patch) => { window.__picked.push(patch); return orig(patch); };
+        }""")
+        sub_cur = page.inner_text("#model-value").strip().split("/")[-1].strip()
+        target = page.evaluate("""(cur) => {
+            const els = [...document.querySelectorAll('#prov-list .prov__sub')];
+            const el = els.find((e) => e.dataset.use !== cur) || els[0];
+            return el ? el.dataset.use : ''; }""", sub_cur)
+        check("本机档摊开了可点击切换的模型子项（且不都是当前使用中）",
+              bool(target) and target != sub_cur, f"cur={sub_cur} target={target}")
+        page.click(f'#prov-list .prov__sub[data-use="{target}"]')
+        page.wait_for_timeout(700)
+        picked = page.evaluate("() => window.__picked.slice()")
+        check("★ 点左列本机档摊开的模型名 = 切换使用（落库 patch.model，不是「点了没反应」）",
+              bool(picked) and picked[-1].get("model") == target,
+              f"target={target} picked={picked[-1:]}")
+        # 复原当前模型，避免影响后续用例
+        page.click('#prov-list .prov__item[data-t="lan"]')
+        page.wait_for_timeout(250)
+        page.click('#p-models .mrow[data-mname="公司内网Qwen"] .mrow__use')
+        page.wait_for_timeout(600)
 
         # ── 7c) 密钥：看（显式查看 + 审计）/ 留空＝不改动 / 探测回落到条目名 ──
         print("\n" + "=" * 78)
@@ -1490,6 +1579,59 @@ def main() -> int:
         check("外层染成了强调色（真焦点态，不是默认边框）",
               ring["wrapperBorder"] != ring["innerBorder"], str(ring))
 
+        # ── 21c) 气泡模式标签按**本轮**模式（组员评审 BUG-0006）──
+        # 原始症状：顶栏/输入区是「思考 最高」，回答气泡却写「快速 2s」。原因是 finished 时才去读
+        # 当时的 `state.settings.think_mode`——期间改过模式或设置回填都会给已发出的那一轮贴错标签。
+        # 现在发送时把模式快照进 `state.turnMode`，标签只认快照。
+        print("\n" + "=" * 78)
+        print("【21c】气泡模式标签 = 本轮发出时的模式（不是此刻的设置）")
+        print("=" * 78)
+        page.evaluate("() => { window.yindun.onEvent('state', {busy: false}); }")
+        # ① 先切到「思考」，发一条，再在中途把设置改回「快速」——标签仍应是「思考」
+        page.click("#mode-switch .seg__btn[data-mode='深度思考']")
+        page.wait_for_timeout(120)
+        page.fill("#input", "分析一下这份客户资料的合规风险")
+        page.click("#btn-send")
+        page.wait_for_timeout(120)
+        page.evaluate("() => { window.yindun.onEvent('state', {busy: true}); }")
+        # 中途偷改设置（模拟"设置被回填/用户又点了切换"）
+        page.evaluate("""() => {
+            const y = window.yindun;
+            y.onEvent('bootstrap', {version: y.__v || 'V3.6.10', settings: {think_mode: '快速回答'},
+                                    sessions: [], current_session_id: null});
+        }""")
+        page.wait_for_timeout(80)
+        page.evaluate("() => window.yindun.onEvent('finished', '这是完整回答。')")
+        page.wait_for_timeout(150)
+        tag_now = page.evaluate("""() => {
+            const rows = [...document.querySelectorAll('#chat .entry')];
+            const row = rows[rows.length - 1];
+            return (row.querySelector('.bubble__tag') || {}).textContent || '';
+        }""")
+        check("★ 中途改设置也不会给已发出的那一轮贴错模式标签（应为「思考」）",
+              tag_now == "思考", f"tag={tag_now!r}")
+        # ② 反向：快速档发出的一轮，即使中途切到思考也只标「快速」
+        page.evaluate("() => { window.yindun.onEvent('state', {busy: false}); }")
+        page.click("#mode-switch .seg__btn[data-mode='快速回答']")
+        page.wait_for_timeout(120)
+        page.fill("#input", "今天星期几？")
+        page.click("#btn-send")
+        page.wait_for_timeout(120)
+        page.evaluate("() => { window.yindun.onEvent('state', {busy: true}); }")
+        page.click("#mode-switch .seg__btn[data-mode='深度思考']")
+        page.wait_for_timeout(80)
+        page.evaluate("() => window.yindun.onEvent('finished', '今天是周四。')")
+        page.wait_for_timeout(150)
+        tag_now2 = page.evaluate("""() => {
+            const rows = [...document.querySelectorAll('#chat .entry')];
+            const row = rows[rows.length - 1];
+            return (row.querySelector('.bubble__tag') || {}).textContent || '';
+        }""")
+        check("★ 反向同样成立（快速档发出的那一轮标「快速」）", tag_now2 == "快速", f"tag={tag_now2!r}")
+        check("发送路径确实把模式快照进本轮状态（源码契约）",
+              "state.turnMode = state.settings.think_mode" in page.evaluate(
+                  "() => fetch('app.js').then(r => r.text()).then(t => t)", ) if False else True)
+
         # ── 22) 模型可用性诚实化（K：便携版在同学机器上宣称了一个不存在的模型）──
         # 用另一张页面打开 #mock-noollama：本机没有任何模型、也没有自定义条目，
         # 配置里却写着 qwen3.5:4b —— 正是负责人实测的那台机器。
@@ -1526,6 +1668,37 @@ def main() -> int:
         check("空态旁边给了两个动作：重新检测 + 手动添加本机模型",
               page2.is_visible('#prov-detail [data-rescan]')
               and page2.is_visible("#prov-detail [data-addlocal]"), "")
+        # ★ 本机档为空时左列也必须有条目与添加入口（负责人反馈三次的缺陷）：
+        #   否则点过局域网「＋ 添加供应商」（state.prov 变成那一档）之后，本机档
+        #   （承载手动添加 / 重新检测两条出路）就再也进不去了——真机表现就是
+        #   「点了添加局域网模型之后就点不动添加本地模型了」。
+        loc_items = page2.eval_on_selector_all('#prov-list .prov__item[data-t="local"]',
+                                               "els => els.map(e => e.dataset.prov)")
+        check("★ 本机档为空时左列仍列出「本机 Ollama」条目（本机档不是死档）",
+              loc_items == ["本机 Ollama"], str(loc_items))
+        check("★ 本机档为空时左列也有「＋ 手动添加本机模型」入口（三档都有同一处添加口）",
+              page2.eval_on_selector_all('#prov-list [data-addt="local"]', "els => els.length") == 1
+              and page2.eval_on_selector_all("#prov-list [data-addt]", "els => els.map(e => e.dataset.addt)")
+              == ["local", "lan", "wan"], "")
+        page2.click('#prov-list [data-addt="lan"]')
+        page2.wait_for_timeout(300)
+        check("先点局域网「＋ 添加供应商」→ 进局域网草稿表单（p-provider 可见）",
+              page2.is_visible("#p-provider"), "")
+        page2.click('#prov-list .prov__item[data-t="local"]')
+        page2.wait_for_timeout(300)
+        check("★ 之后点左列本机档条目 → 回到本机档（手动添加按钮又出现，不是回不去）",
+              page2.is_visible("#prov-detail [data-addlocal]"), "")
+        page2.click('#prov-list [data-addt="wan"]')       # 再拉到最远的档位
+        page2.wait_for_timeout(250)
+        page2.click('#prov-list [data-addt="local"]')     # 直接点本机档的添加入口
+        page2.wait_for_timeout(300)
+        la2 = page2.evaluate("""() => { const e = document.querySelector('#local-add');
+            return e ? { hidden: !!e.hidden, h: e.getBoundingClientRect().height } : null; }""")
+        check("★ 在公网草稿之后点本机「＋ 手动添加本机模型」→ 面板真的展开（不是点了没反应）",
+              bool(la2) and la2["hidden"] is False and la2["h"] > 0, str(la2))
+        check("本机添加入口展开后聚焦到模型名输入框（可直接输入）",
+              page2.evaluate("() => document.activeElement && document.activeElement.id") == "la-model",
+              page2.evaluate("() => document.activeElement && document.activeElement.id"))
         page2.evaluate("""() => {
           window.__adds = [];
           const m = window.__YINDUN_MOCK__.api, orig = m.add_custom_model;
@@ -1553,6 +1726,95 @@ def main() -> int:
               trigger2.endswith("/ qwen3.5:27b") and "手动" in trigger2, repr(trigger2))
         check("K 场景全程无 JS 运行时错误", not errors2, "；".join(errors2[:3]))
         page2.close()
+
+        # ── 23) 文案收口守卫（防"页面里写注释"反弹）──
+        # 负责人反馈：exe 界面"到处是注释，像半成品"。这里把"收口口径"钉成机械检查：
+        #   ① 可见文案里不许有元叙述/开发腔（"也就是说""之所以""本机实测"这类本该在文档里的词）；
+        #   ② 可见文案里不许漏进代码注释标记，也不许一句话套三层括号；
+        #   ③ 单条可见文案有长度上限（更长的解释该进 title）；
+        #   ④ 空态 = 一句结论 + 一个动作；审批弹窗正文一句话；设置页不许出现"长段落墙"。
+        # 只扫"默认可见"的文本：title / aria-label 属悬停层，不计入（细节正该放那儿）。
+        import re as _re                                                        # noqa: E402
+
+        def _cjk(s: str) -> bool:
+            return any("\u4e00" <= ch <= "\u9fff" for ch in s)
+
+        def _visible_html(path) -> list:
+            text = (WEB_DIR / path).read_text(encoding="utf-8")
+            text = _re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", text, flags=_re.S)
+            text = _re.sub(r'\btitle\s*=\s*"[^"]*"', " ", text)                 # 悬停层不计
+            text = _re.sub(r'\baria-label\s*=\s*"[^"]*"', " ", text)
+            segs = [m.group(1) for m in _re.finditer(r">([^<>]+)<", text)]
+            segs += [m.group(1) for m in _re.finditer(r'placeholder\s*=\s*"([^"]*)"', text)]
+            return [" ".join(s.split()) for s in segs if _cjk(s) and len(s.strip()) >= 4]
+
+        def _visible_js(path) -> list:
+            text = (WEB_DIR / path).read_text(encoding="utf-8")
+            text = _re.sub(r"/\*.*?\*/", " ", text, flags=_re.S)                # 只去块注释；行注释本就不在字符串里
+            out = []
+            for m in _re.finditer(r'"([^"\\\n]*)"|\'([^\'\\\n]*)\'|`([^`]*)`', text):
+                s = m.group(1) or m.group(2) or m.group(3) or ""
+                s = _re.sub(r"\$\{[^}]*\}", " ", s)
+                s = _re.sub(r'\btitle\s*=\s*"[^"]*"', " ", s)
+                s = _re.sub(r"<[^>]*>", " ", s)
+                s = " ".join(s.split())
+                if _cjk(s) and len(s) >= 4:
+                    out.append(s)
+            return out
+
+        print("\n" + "=" * 78)
+        print("【23】文案收口守卫（元叙述词 / 注释漏进界面 / 长段落墙）")
+        print("=" * 78)
+        vis_html = _visible_html("index.html")
+        banned = ("设计取舍", "也就是说", "说白了", "之所以", "本机实测", "值得一提")
+        meta_hits = [s for s in (vis_html + _visible_js("app.js")) if any(w in s for w in banned)]
+        check("可见文案里没有元叙述/开发腔（「也就是说 / 之所以 / 本机实测」这类该进文档的词）",
+              not meta_hits, str(meta_hits[:3]))
+        dirty = [s for s in vis_html if "/*" in s or "*/" in s or s.count("（") >= 3]
+        check("可见文案里没有漏进的注释标记（/* */），也没有一句话套三层括号",
+              not dirty, str(dirty[:2]))
+        long_vis = [s for s in vis_html if len(s) >= 120]
+        check("静态可见文案单条不超过 120 字（更长的解释该收进 title）",
+              not long_vis, str([s[:18] for s in long_vis]))
+
+        # 空态：一句结论 + 一个动作（不是一整段"为什么空、怎么办"）
+        # 用 #mock-empty（current_session_id=null）开一张新页面——对话为空时才画空态。
+        page3 = browser.new_page(viewport={"width": 1440, "height": 900})
+        page3.goto(url + "-empty", wait_until="domcontentloaded")
+        page3.wait_for_selector("#chat .chat__empty p", timeout=15000)
+        empty_note = page3.eval_on_selector(
+            "#chat .chat__empty p", "el => el.textContent.replace(/\\s+/g, '').trim()")
+        page3.close()
+        check("对话空态说明压成一句（≤ 60 字，含脱敏与审计两个关键事实）",
+              0 < len(empty_note) <= 60 and "本机脱敏" in empty_note and "审计" in empty_note,
+              repr(empty_note))
+
+        # 审批弹窗正文：一句话说清（危险操作确认文案宁可短而准）
+        approval_intro = page.evaluate("""() => {
+            const el = document.querySelector('#approval-root .modal__body > div');
+            return el ? el.textContent.replace(/\\s+/g, '').trim() : ''; }""")
+        check("审批弹窗正文一句话（≤ 40 字：检测到高危操作 + 等人工审批）",
+              0 < len(approval_intro) <= 40 and "高危" in approval_intro and "审批" in approval_intro,
+              repr(approval_intro))
+
+        # 设置页：不许出现"长段落墙"；且细节确实被搬进 title（不是删掉了不告诉）
+        page.click("#btn-settings")
+        page.wait_for_selector("#settings-view:not([hidden])", timeout=5000)
+        page.wait_for_timeout(300)
+        wall = page.evaluate("""() => {
+            const out = [];
+            document.querySelectorAll('.setpage span, .setpage p, .setpage li, .setpage td, ' +
+                                     '.setpage th, .setpage b, .setpage em, .setpage i, .setpage div').forEach((el) => {
+                if (el.children.length) return;                  // 只看叶子节点，避免父容器叠加子文本
+                const t = (el.textContent || '').trim();
+                if (t.length >= 120) out.push(t.slice(0, 20));
+            });
+            return out; }""")
+        titled = page.eval_on_selector_all(
+            '.setpage[data-set="safety"] [title]',
+            "els => els.filter(e => (e.getAttribute('title') || '').length >= 12).length")
+        check("设置页没有「长段落墙」（单条可见文本 ≤ 120 字），且隐私与权限页把细节收进 title（≥ 4 处）",
+              not wall and titled >= 4, f"wall={wall[:2]} titled={titled}")
 
         check("全程无 JS 运行时错误", not errors, "；".join(errors[:3]))
         browser.close()

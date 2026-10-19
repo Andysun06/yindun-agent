@@ -35,6 +35,17 @@ def check(name, cond, detail=""):
         failures.append(name)
 
 
+def _ico_sizes(path) -> int:
+    """ICO 目录里的图像条数（`ICONDIR` 的 idCount 字段：偏移 4，2 字节小端）。"""
+    try:
+        raw = path.read_bytes()
+        if len(raw) < 6 or raw[:4] != b"\x00\x00\x01\x00":
+            return 0
+        return int.from_bytes(raw[4:6], "little")
+    except Exception:
+        return 0
+
+
 VERSION = yindun.__version__
 DISPLAY = yindun.__display_version__
 
@@ -109,6 +120,25 @@ for script, marker in (("tools/packaging/build_portable.py", "隐盾安全智能
     check(f"{script} 用 __display_version__ 生成文件名",
           "__display_version__" in body and marker in body)
     check(f"{script} 没有把版本当数据写死（注释里的改动标记不算）", DISPLAY not in body)
+
+print("\n" + "=" * 78)
+print("【4b】打包脚本：定制图标（别退回 PyInstaller 的默认图标）")
+print("=" * 78)
+# 负责人要求：「exe 图标能不能定制一个，比如 🛡️，控制端就换个颜色，不要用 python 默认的图标」。
+# 这里只在**源码层**把关（图标文件在、两个 spec 都引用了它）；exe 内部有没有真的带上，
+# 由 tools/packaging/verify_archive.py 在**打包后**核对（那才是最终判据）。
+for script, icon_name in (("tools/packaging/yindun_agent_portable.spec", "yindun-client.ico"),
+                          ("tools/packaging/yindun_control.spec", "yindun-control.ico")):
+    spec_text = (ROOT / script).read_text(encoding="utf-8")
+    icon_file = ROOT / "assets" / "icons" / icon_name
+    check(f"{script} 配了定制图标（icon=…{icon_name}）",
+          "icon=" in spec_text and icon_name in spec_text, script)
+    check(f"{icon_name} 存在且是多尺寸 ICO（小尺寸不糊）",
+          icon_file.exists() and _ico_sizes(icon_file) >= 5,
+          f"{icon_file.exists()} sizes={_ico_sizes(icon_file) if icon_file.exists() else 0}")
+check("两个产物的图标是**不同**的（一眼分得清客户端与控制端）",
+      (ROOT / "assets" / "icons" / "yindun-client.ico").read_bytes()
+      != (ROOT / "assets" / "icons" / "yindun-control.ico").read_bytes())
 
 print("\n" + "=" * 78)
 print("【5】文档跟得上 bump（漏改会在这里报红）")

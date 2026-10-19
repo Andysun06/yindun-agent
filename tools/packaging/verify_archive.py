@@ -345,6 +345,115 @@ def _check_plugin_deps(reader, zr, source_root: Path) -> List[str]:
             f"检查 tools/packaging/yindun_agent_portable.spec 的 hiddenimports 收集）"]
 
 
+def _icon_frames(ico: Path) -> Dict[tuple, "object"]:
+    """把 .ico 里各尺寸帧读成 RGBA 图（{(宽,高): Image}）。"""
+    from PIL import Image
+    frames: Dict[tuple, object] = {}
+    with Image.open(ico) as image:
+        for size in sorted(set(image.info.get("sizes", [])), reverse=True):
+            one = Image.open(ico)
+            one.size = size
+            frames[(size[0], size[1])] = one.convert("RGBA")
+    return frames
+
+
+def _sample_points(width: int, height: int) -> list:
+    """取样点：都取在**盾牌主体内部**（避开顶部尖角与中间的对勾），颜色才稳定可比。
+
+    第一版把点取在 (宽/2, 1) —— 那正好是盾牌顶点之外的透明区，于是永远比不中（假阴性）。
+    """
+    return [(width // 2, height // 3), (width // 4, height // 2),
+            (width // 2, height - max(2, height // 5))]
+
+
+def _check_icon(exe: Path, source_root: Path, kind: str = "client") -> List[str]:
+    """exe 内嵌的图标是不是我们的**定制图标**（而不是 PyInstaller 自带的默认图标）。
+
+    为什么要在归档校验里查这件事（V3.6.10，负责人要求「别用 python 默认的图标」）：
+    源码里写了 `icon=` 不等于产物里真的有——spec 回退、图标文件被挪走都会**静默**退回默认图标，
+    而「图标不对」没人会在发版前专门点开看。所以这里读 PE 资源来判。
+
+    判据（结构感知，不是在全文件里搜字节——3 字节探针在 156MB 里必然偶然命中）：
+      ① 用 pefile 取出 RT_ICON 各帧；**两种编码都要认**——实测 PyInstaller 把各尺寸帧
+         统一存成 **PNG**（其他工具可能存 DIB/BMP），第一版只解析 DIB，于是把明明带着
+         定制图标的产物判成了「没有」（假阴性，这次真踩到了）；
+      ② 按尺寸找到 .ico 里对应的帧，在盾牌主体内部取几个点比 RGB（容差 ±8）与 alpha（±32）；
+      ③ 任一帧对得上即通过。
+    """
+    problems: List[str] = []
+    # 由调用方指定 kind：产物文件名是**中文**（隐盾控制端_…），按文件名猜"control"必然猜错
+    ico = source_root / "assets" / "icons" / (
+        "yindun-control.ico" if kind == "control" else "yindun-client.ico")
+    if not ico.exists():
+        return [f"定制图标文件缺失：{ico}（先跑 python tools/packaging/make_icons.py）"]
+    try:
+        import io as _io
+
+        import pefile
+        from PIL import Image
+    except Exception:
+        return []                     # 工具缺了就跳过（不误报；requirements 里有这两个）
+    try:
+        ours = _icon_frames(ico)
+
+        pe = pefile.PE(str(exe), fast_load=True)
+        pe.parse_data_directories(
+            directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_RESOURCE"]])
+        blobs = []
+        for entry in getattr(pe, "DIRECTORY_ENTRY_RESOURCE", []).entries:
+            if entry.id != pefile.RESOURCE_TYPE["RT_ICON"]:
+                continue
+            for level in entry.directory.entries:
+                for leaf in level.directory.entries:
+                    blobs.append(pe.get_data(leaf.data.struct.OffsetToData,
+                                             leaf.data.struct.Size))
+        pe.close()
+
+        for blob in blobs:
+            frame = None
+            try:
+                if blob[:8] == b"\x89PNG\r\n\x1a\n":                 # 实测 PyInstaller 走这条
+                    frame = Image.open(_io.BytesIO(blob)).convert("RGBA")
+                elif len(blob) >= 40:                                # 兼容 DIB/BMP 形态
+                    width = int.from_bytes(blob[4:8], "little", signed=True)
+                    height = int.from_bytes(blob[8:12], "little", signed=True) // 2
+                    bits = int.from_bytes(blob[14:16], "little")
+                    if bits in (24, 32) and (width, height) in ours:
+                        px = bits // 8
+                        stride = ((width * px + 3) // 4) * 4
+                        offset = 4 + int.from_bytes(blob[0:4], "little")
+                        frame = Image.new("RGBA", (width, height))
+                        for y in range(height):
+                            row = offset + (height - 1 - y) * stride
+                            for x in range(width):
+                                pos = row + x * px
+                                alpha = blob[pos + 3] if px == 4 else 255
+                                frame.putpixel((x, y),
+                                               (blob[pos + 2], blob[pos + 1], blob[pos], alpha))
+            except Exception:
+                continue
+            if frame is None:
+                continue
+            expected = ours.get(frame.size)
+            if expected is None:
+                continue
+            matched = True
+            for x, y in _sample_points(*frame.size):
+                got, want = frame.getpixel((x, y)), expected.getpixel((x, y))
+                if max(abs(got[i] - want[i]) for i in range(3)) > 8 or abs(got[3] - want[3]) > 32:
+                    matched = False
+                    break
+            if matched:
+                return problems
+
+        problems.append(
+            f"{exe.name}：PE 资源里找不到定制图标（{ico.name}）的对应像素 → "
+            f"很可能退回了 PyInstaller 默认图标（检查 spec 的 icon= 与 assets/icons/*.ico）")
+        return problems
+    except Exception as exc:                                        # noqa: BLE001
+        return [f"{exe.name}：图标校验失败（{type(exc).__name__}: {exc}）"]
+
+
 def verify_client(exe: Path = None, source_root: Path = None) -> List[str]:
     """校验客户端 exe；返回问题列表（空 = 全部一致）。"""
     source_root = Path(source_root or _SRC)
@@ -362,6 +471,7 @@ def verify_client(exe: Path = None, source_root: Path = None) -> List[str]:
     problems += _check_required_modules(reader, zr, CLIENT_REQUIRED_MODULES)
     problems += _check_plugin_deps(reader, zr, source_root)
     problems += _check_version(zr, __display_version__)
+    problems += _check_icon(exe, source_root, "client")
     return problems
 
 
@@ -378,6 +488,7 @@ def verify_control(exe: Path = None, source_root: Path = None) -> List[str]:
                                "yindun/control/web")
     problems += _check_symbols(zr, CONTROL_SYMBOLS, "控制端 exe")
     problems += _check_version(zr, __display_version__)
+    problems += _check_icon(exe, source_root, "control")
     # 控制台页面必须留占位符（版本由服务端注入；写死会在版本一致性套件里报红）
     files = _carchive_files(reader)
     entry = files.get("yindun/control/web/index.html")

@@ -471,7 +471,7 @@ function paintNetwork(net) {
     : `仅本机 ${net.listen_host}:${net.listen_port}`;
   $("pair-lan-note").textContent = net.external
     ? (urls.length > 1 ? `局域网地址：${urls.join("　")}` : "局域网内的机器可用上面的地址打开控制台。")
-    : "当前只有本机能访问。开启上面的开关后，局域网内的其他人才能用这个地址打开控制台。";
+    : "当前只有本机能访问；开启开关后局域网内可访问。";
   if (net.firewall_hint) $("pair-fw").textContent = net.firewall_hint;
 }
 
@@ -577,7 +577,7 @@ function bindPairModal() {
     e.preventDefault();
     const code = $("pair-custom-code").value.trim().toUpperCase();
     if (!CODE_RE.test(code)) {
-      pairMsg("自定义码只能是 4–12 位字母、数字或连字符（例如 A1B2C3、HR-2026）。", "bad");
+      pairMsg("自定义码只能是 4–12 位字母、数字或连字符。", "bad");
       return;
     }
     if (await submitPairCode({ code, ttl_minutes: PAIR_TTL_MINUTES, note: "控制台自定义" },
@@ -1126,8 +1126,7 @@ async function renderPolicy(box) {
 
         <div class="form-row">
           <label>追加敏感路径 <span class="chip" id="p-path-count">未选</span></label>
-          <p class="hint">勾一个业务场景＝替你把对应的 glob 写进策略（与手写走同一条通路）。
-            与端点本地规则取<b>并集</b>——只会让更多路径需要人工确认，不会减少。</p>
+          <p class="hint">勾一个场景＝替你把对应 glob 写进策略，与端点本地规则取<b>并集</b>。</p>
           <div class="presets" id="p-presets">${presetLibraryHtml()}</div>
           <details class="fold" id="p-adv">
             <summary>自定义路径（高级）：确实要自己写 glob 时用
@@ -1148,14 +1147,13 @@ async function renderPolicy(box) {
                 <span>${esc(o.label)}</span>
               </label>`).join("")}
           </div>
-          <p class="hint">只能<b>提高</b>严格度：不改变 ＜ 至少人工确认（confirm：每次操作都要点确认）
-            ＜ 一律拒绝（deny：应急熔断）。端点本地更严时保持端点自身设置。</p>
+          <p class="hint">只能<b>提高</b>严格度：不改变 ＜ 至少人工确认 ＜ 一律拒绝；端点更严时保持端点设置。</p>
         </div>
 
         <div class="form-row">
           <label>允许使用的模型</label>
-          <p class="hint">候选来自各端点上报的用量（括号＝有几台端点用过；标"外部"的是公网模型）。
-            点选＝加入允许集，与端点本地允许集取<b>交集</b>：写过之后端点只能用这里列出的模型。</p>
+          <p class="hint">候选来自端点上报用量（括号＝几台用过；"外部"为公网模型）。
+            点选＝加入允许集，与端点本地取<b>交集</b>。</p>
           <div class="pick-host" id="p-models-host"></div>
           <div class="inline manual">
             <input class="input" id="p-models-add" spellcheck="false"
@@ -1166,8 +1164,7 @@ async function renderPolicy(box) {
 
         <div class="form-row">
           <label>允许启用的插件</label>
-          <p class="hint">同样取<b>交集</b>：不在列表内的插件在端点侧会被停用（只缩不扩）。
-            候选来自各端点上报的插件清单。</p>
+          <p class="hint">同样取<b>交集</b>：不在列表内的插件在端点侧会被停用（只缩不扩）。</p>
           <div class="pick-host" id="p-plugins-host"></div>
           <div class="inline manual">
             <input class="input" id="p-plugins-add" spellcheck="false"
@@ -1184,7 +1181,7 @@ async function renderPolicy(box) {
         <div class="form-row">
           <label>下发范围（可多选）</label>
           <label class="scope scope--all"><input type="checkbox" id="p-scope-global" checked>
-            <span><b>全部端点</b>（签发一条全局策略：现有端点与以后新接入的机器都取到）</span></label>
+            <span><b>全部端点</b>（现有与以后新接入的机器都取到）</span></label>
           ${state.endpoints.length ? `
             <div class="scope__sep">或逐台下发（后端一次只接受一个范围，前端会<b>逐台</b>签发并汇总结果）</div>
             <div class="scope__grid">${state.endpoints.map((e) => `
@@ -1200,11 +1197,10 @@ async function renderPolicy(box) {
 
         <div class="submit-row">
           <button class="btn btn--primary" id="p-submit">签发并下发（全部端点）</button>
-          <span class="hint">下发前请核对下面「本次将下发」——那就是真正发出去的内容。</span>
+          <span class="hint">下发前请核对下面「本次将下发」。</span>
         </div>
         <div class="preview" id="p-preview"></div>
-        <p class="hint">本页只能<b>收紧</b>：敏感路径取并集、审批下限取更严、允许集取交集；
-          控制面没有任何"放宽 / 豁免 / 放行"的通路。</p>
+        <p class="hint">本页只能<b>收紧</b>：路径取并集、审批取更严、允许集取交集；没有放宽 / 豁免 / 放行的通路。</p>
       </div>
 
       ${dispatchResultHtml()}
@@ -1430,8 +1426,7 @@ async function renderUsage(box) {
 
     <p class="hint" style="color:var(--text-3);font-size:var(--fs-meta);line-height:1.8">
       控制面<b>不代理模型流量</b>：提示词与回答从不经过这里，看到的只是计数与体量。
-      当前内核的 LLM 审计事件未标注模型名，故端点上报告的是<b>端点级聚合</b>；
-      按模型细分需要内核在 LLM 事件里带上模型名（已列入路线图）。
+      当前内核事件未标注模型名，故这里显示的是<b>端点级聚合</b>。
     </p>
   </section>`;
 }
@@ -1511,7 +1506,7 @@ const MOCK_DATA = {
   network: { listen_host: "127.0.0.1", listen_port: 8787, external: false,
              lan_urls: ["http://192.168.96.148:8787/", "http://10.0.4.21:8787/"],
              primary_url: "http://127.0.0.1:8787/",
-             firewall_hint: "首次开启局域网访问时 Windows 会弹出防火墙询问，请选择「允许访问」（专用网络）。" },
+             firewall_hint: "首次开启时 Windows 会弹出防火墙询问，请选择「允许访问」。" },
   policy: { history: [
     { scope: "global", version: 3, updated_at: "2026-10-15T17:22:00" },
     { scope: "ep-hr-04", version: 5, updated_at: "2026-10-15T19:40:00" },

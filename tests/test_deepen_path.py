@@ -168,7 +168,7 @@ check("工具真的被调用过（不是没跑工具的空转）",
       any("列出目录文件" in str(s) or "list_local_files" in str(s) for s in of(events_a, "status")),
       str(of(events_a, "status"))[:200])
 check("没有把深化指令追加给模型（跳过就该真跳过）",
-      not any("继续深入分析" in text for text in llm_a.texts()),
+      not any("继续完成用户最初的问题" in text for text in llm_a.texts()),
       str([t[:40] for t in llm_a.texts()])[:200])
 
 print("\n" + "=" * 78)
@@ -185,8 +185,9 @@ llm_b = ScriptedLLM([
 worker_b = make_worker(llm_b, "我桌面有多少文件", depth=8)
 events_b, seconds_b, hung_b = run_worker(worker_b)
 check("一轮跑完没卡住（<30s）", not hung_b, f"{seconds_b:.1f}s 仍在跑")
-check("★ 深化指令真的追加给了模型（`continue` 之前没有任何未赋值引用）",
-      any("继续深入分析" in text for text in llm_b.texts()),
+check("★ 深化指令真的追加给了模型（且**锚定用户原问题**，V3.6.10 起不是写死的分析模板）",
+      any("继续完成用户最初的问题" in text for text in llm_b.texts()),
+      
       str([t[:60] for t in llm_b.texts()])[:240])
 check("深化之后拿到了实质回答", "12 个文件" in reply_text(worker_b), reply_text(worker_b)[:120])
 check("状态里写了「深化」这一步（不是悄悄跳过）",

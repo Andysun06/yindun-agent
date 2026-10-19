@@ -83,7 +83,7 @@
         <div class="topbar__title" id="chat-title">新对话</div>
         <span class="band__id" id="session-id-mark"></span>
         <div class="topbar__spacer pywebview-drag-region"></div>
-        <button class="btn btn--ghost" id="btn-mini" title="折叠为闪发浮条（浮条内输入回车即自动展开并发送）">
+        <button class="btn btn--ghost" id="btn-mini" title="折叠为闪发浮条（回车自动展开并发送）">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h16M4 16h16"/></svg>
         </button>
         <div class="stats" id="stats-strip" title="数据看板">
@@ -108,8 +108,8 @@
           </div>
         </div>
         <div class="seg" id="mode-switch">
-          <button class="seg__btn is-active" data-mode="快速回答" title="快速：不让模型先做内部推理（本机实测同一问题 40~90 秒 → 数秒）">快速</button>
-          <button class="seg__btn" data-mode="深度思考" title="思考：允许模型先做内部推理，更慢但更适合复杂判断">思考</button>
+          <button class="seg__btn is-active" data-mode="快速回答" title="快速回答：不做内部推理，更快">快速</button>
+          <button class="seg__btn" data-mode="深度思考" title="思考：先做内部推理，更慢但更适合复杂判断">思考</button>
         </div>
         <button class="btn btn--ghost" id="btn-toggle-right" title="折叠 / 展开右侧面板">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"/><path d="M15 5v14"/></svg>
@@ -264,7 +264,7 @@
               <div class="setcard">
                 <div class="setrow">
                   <div class="setrow__text"><b>隐私隔离网关</b>
-                    <span>敏感实体在本机替换为占位符后才交给模型；关掉它等于让模型直接读原文</span></div>
+                    <span title="关闭后模型会直接读到敏感原文">敏感实体在本机替换为占位符后再交给模型</span></div>
                   <div class="setrow__ctrl"><label class="switch"><input type="checkbox" id="sw-privacy"><span class="switch__track"></span></label></div>
                 </div>
                 <div class="setrow">
@@ -282,7 +282,7 @@
                 </div>
                 <div class="setrow setrow--stack">
                   <div class="setrow__text"><b>四档能力对照</b>
-                    <span>只影响本机文件变更与命令执行；切换后下一个操作立即按新档位判定</span></div>
+                    <span title="切换后下一个操作立即按新档位判定">只影响本机文件变更与命令执行</span></div>
                   <table class="permmatrix" id="perm-matrix">
                     <thead>
                       <tr><th>本机操作</th><th>计划模式</th><th>变更前确认</th><th>自主模式</th><th>完全访问</th></tr>
@@ -298,13 +298,12 @@
                        "沙箱外一律拒绝"（负责人实测：完全访问档下数桌面文件仍被拒，就是一例）。
                        口径由内核给，界面只做说明，不在这里做任何判定。 -->
                   <div class="setrow__hint">表里的「本机操作」指<b>可读写范围（沙箱目录）内</b>的文件与命令；
-                    <b>越界</b>（范围外）的读写 / 删除 / 执行按<b>同一档位</b>判定（拒绝 / 逐次确认 / 放行），
-                    并且一律写入<b>审计</b>——放宽档位不等于越界免检。系统目录与凭据类路径无论哪一档都不放行。</div>
+                    <b>越界</b>操作按<b>同一档位</b>判定（拒绝 / 确认 / 放行）并写入<b>审计</b>。
+                    系统目录与凭据类路径任何档位都不放行。</div>
                 </div>
                 <div class="setrow setrow--stack">
                   <div class="setrow__text"><b>可读写范围（沙箱目录）</b>
-                    <span>助手只能读写这个目录及其子目录；<b>越界操作</b>会按当前权限档判定（计划档拒绝、变更前确认档逐次询问、
-                      自主 / 完全访问档放行），并且都会记进<b>审计</b>；系统目录与凭据类路径无论如何都不放行。</span></div>
+                    <span title="越界操作按当前权限档判定并记入审计；系统目录与凭据类路径任何档位都不放行">助手只能读写这个目录及其子目录</span></div>
                   <div class="setrow__ctrl">
                     <span class="sbx-path" id="sandbox-path" title="当前生效的可读写范围">—</span>
                     <button class="btn" id="btn-pick-sandbox" type="button">选择目录…</button>
@@ -314,18 +313,17 @@
                 </div>
                 <div class="setrow">
                   <div class="setrow__text"><b>允许执行本地脚本</b>
-                    <span>关闭即「严格模式」：只保留只读命令，Python 等解释器一律禁用</span></div>
+                    <span title="严格模式：Python 等解释器一律禁用">关闭即严格模式，只保留只读命令</span></div>
                   <div class="setrow__ctrl"><label class="switch"><input type="checkbox" id="sw-script-exec"><span class="switch__track"></span></label></div>
                 </div>
                 <div class="setrow">
                   <div class="setrow__text"><b>思考强度</b>
-                    <span>四档：低 / 中 / 高 / 最高（对应推理轮次约 2 / 4 / 7 / 10）。控件在输入框下方，对话时随手切。
-                      这里的"轮次"指 Agent 最多做几轮"思考—调工具"。<b>要不要让模型先做内部推理，由顶栏的「快速 / 思考」决定</b>——快速模式下不给模型思考时间（实测一句简单提问 40~90 秒 → 数秒）</span></div>
+                    <span title="四档约对应 2 / 4 / 7 / 10 轮推理；是否先做内部推理由顶栏的「快速 / 思考」决定">低 / 中 / 高 / 最高四档，控件在输入框下方</span></div>
                   <div class="setrow__ctrl"><span class="setrow__ro">见输入区</span></div>
                 </div>
               </div>
-              <p class="setfoot">判定权（脱敏 / 放行 / 审批 / 审计写入）永远在内核，不对外开放——插件与控制面都只能"管得更严"；
-                四档权限只放宽"本机文件变更"，<b>执行命令在任何档位都要确认</b>，沙箱与审计链与档位无关。</p>
+              <p class="setfoot">判定权（脱敏 / 放行 / 审批 / 审计）永远在内核，插件与控制面只能更严；
+                四档权限只放宽"本机文件变更"，<b>执行命令在任何档位都要确认</b>。</p>
             </div>
 
             <!-- laya 风险分级的设置页不再写死在这里：它是 laya_risk 插件的专属设置，
@@ -364,8 +362,8 @@
                   <div class="setrow__ctrl"><button class="btn" id="btn-plugin-check" type="button">运行自检</button></div>
                 </div>
               </div>
-              <p class="setfoot">有专属设置的插件在<b>启用之后</b>会在左侧设置栏的「插件」分组里出现对应栏目，停用后隐藏、能力同时收回。
-                插件只能做加法：补充识别、扩展解析、工作流模板、导出格式；脱敏豁免 / 白名单 / 审批放行 / 审计写入永不开放。</p>
+              <p class="setfoot">有专属设置的插件<b>启用后</b>出现在左侧「插件」分组，停用即隐藏、能力收回。
+                插件只能做加法；脱敏豁免 / 白名单 / 审批放行 / 审计写入永不开放。</p>
             </div>
 
             <!-- ── 插件专属设置页（容器）：启用某个有设置的插件后，把它的设置渲染到这里 ──
@@ -385,7 +383,7 @@
                   </div>
                 </div>
                 <div class="setrow">
-                  <div class="setrow__text"><b>定时同步</b><span>每 5 分钟自动上报一次并取回最新策略（关掉也不影响本地使用）</span></div>
+                  <div class="setrow__text"><b>定时同步</b><span title="关掉不影响本地使用">每 5 分钟自动上报并取回最新策略</span></div>
                   <div class="setrow__ctrl"><label class="switch"><input type="checkbox" id="sw-ctrl-auto"><span class="switch__track"></span></label></div>
                 </div>
               </div>
@@ -393,8 +391,7 @@
               <div class="setcard" style="margin-top:12px">
                 <div class="setrow setrow--stack">
                   <div class="setrow__text"><b>用配对码接入</b>
-                    <span>向 IT 索取 6 位配对码（一次性、有有效期）。接入后本机只上传<b>掩码事件与元数据</b>：
-                      密钥与明文从不离开本机，模型提示词与回答也不经过控制面。</span></div>
+                    <span title="配对码一次性、有有效期">向 IT 索取 6 位配对码接入；本机只上传<b>掩码事件与元数据</b>，密钥与明文不离开本机</span></div>
                   <div class="ctrl-form">
                     <input type="text" id="ctrl-url" placeholder="控制面地址，如 http://10.0.0.9:8787">
                     <input type="text" id="ctrl-code" placeholder="配对码（6 位，如 A1B2C3）">
@@ -411,12 +408,12 @@
                 </div>
                 <div class="setrow">
                   <div class="setrow__text"><b>撤销控制面策略</b>
-                    <span>移除控制面下发的本地规则（断开上报不会自动移除，避免"悄悄放松")</span></div>
+                    <span title="断开上报不会自动移除，避免悄悄放松">移除控制面下发的本地规则</span></div>
                   <div class="setrow__ctrl"><button class="btn" id="btn-ctrl-clear" type="button">撤销</button></div>
                 </div>
               </div>
-              <p class="setfoot">控制面能做的只有"收紧"：下发敏感路径、提高审批下限、强制严格模式、限制可用模型与插件。
-                它<b>不能</b>下发脱敏豁免、审批放行或白名单放行——那类判定权永远留在本机内核。</p>
+              <p class="setfoot">控制面只能收紧：敏感路径、审批下限、严格模式、模型与插件白名单；
+                脱敏豁免与审批放行没有下发通路，判定权永远在本机内核。</p>
             </div>
 
             <!-- ── 窗口与外观 ── -->
@@ -490,7 +487,7 @@
       </div>
       <div class="modal__body">
         <div style="color:var(--text-2);font-size:var(--fs-sm)">
-          安全内核检测到 Agent 请求执行高危操作，已熔断挂起后台线程，等待人工安全审批。
+          检测到高危操作，已挂起等待人工审批。
         </div>
         <dl class="kv">
           <dt>申请工具</dt><dd id="approval-tool">—</dd>

@@ -202,16 +202,33 @@ class JsApi:
 
         链校验用 `verify_chain_detail()`：界面要能直接显示**人话原因**
         （"尾部被截断""锚点缺失""疑似抹掉 HMAC 标记"），而不是只给一个 ❌。
+
+        ★ 另附 `chain_state` 与锚点健康度（anchor_health）：把"合法迁移（待重建锚点）"
+          与"校验未通过（疑似被动手脚）"、以及"锚点未生效（防篡改能力降级）"在数据层
+          就区分开——顶栏与审计面板据此显示可操作状态，而不是一律红字。
         """
         try:
             from yindun.core.audit_log import AuditLog
             log = AuditLog()
             detail = log.verify_chain_detail()
+            health = log.anchor_health()
             raw_stats = log.get_stats() or {}
             by_type = {str(getattr(k, "value", k)): int(v)
                        for k, v in (raw_stats.get("by_type") or {}).items()}
             by_severity = {str(getattr(k, "value", k)): int(v)
                            for k, v in (raw_stats.get("by_severity") or {}).items()}
+            chain_state = str(detail.get("state") or health.get("state") or "")
+            anchor_dir = str(health.get("dir") or "")
+            if chain_state == "migrated":
+                anchor_note = "审计目录已迁移（待重建锚点）"
+            elif chain_state == "degraded":
+                anchor_note = "锚点未生效（防篡改能力降级）"
+            elif health.get("fallback"):
+                anchor_note = f"锚点已回退到备用位置：{anchor_dir or '未知'}"
+            elif anchor_dir:
+                anchor_note = f"锚点位置：{anchor_dir}"
+            else:
+                anchor_note = ""
             stats = {
                 "total_entries": int(raw_stats.get("total_entries", 0)),
                 # 以 verify_chain_detail 的结论为准（get_stats 内部也会校验，但拿不到原因）
@@ -219,6 +236,14 @@ class JsApi:
                 "chain_reason": str(detail.get("reason") or ""),
                 "chain_anchor": str(detail.get("anchor") or "none"),
                 "chain_legacy": int(detail.get("legacy", 0)),
+                # 机器可读状态：ok / empty / migrated / degraded / missing / tampered / no_key / accepted
+                "chain_state": chain_state,
+                "chain_anchor_path": str(health.get("path") or ""),
+                "chain_anchor_dir": anchor_dir,
+                "chain_anchor_degraded": bool(health.get("degraded")),
+                "chain_anchor_fallback": bool(health.get("fallback")),
+                "chain_anchor_note": anchor_note,
+                "chain_anchor_migration_source": str(health.get("migration_source") or ""),
                 "tool_calls": by_type.get("tool_call", 0),
                 "privacy_events": sum(v for k, v in by_type.items() if k.startswith("privacy")),
                 "approvals": by_type.get("access_control", 0),
@@ -241,6 +266,7 @@ class JsApi:
                     "prev": str(record.get("previous_hash", ""))[:16],
                 })
             return {"stats": stats, "chain_ok": bool(stats["chain_valid"]),
+                    "chain_state": chain_state, "anchor_health": health,
                     "entries": list(reversed(recent))}
         except Exception as exc:
             return {"stats": {}, "chain_ok": False, "entries": [], "error": str(exc)}

@@ -321,12 +321,27 @@ class PrivacyEngine:
         # (放宽) 省份为可选（支持"海淀区中关村大街1号"无省前缀）；
         # 必需出现"市/区/县/旗"行政区划（分支1），或【带数字】的门牌号（分支2），
         # 避免误伤"订单号/型号/座机号"这类以"号/街/路"结尾的普通业务词
-        "ADDRESS": r"(?:(?:北京|上海|天津|重庆|河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|海南|四川|贵州|云南|陕西|甘肃|青海|台湾|内蒙古|广西|西藏|宁夏|新疆|香港|澳门)(?:省|市|自治区|特别行政区)?)?"
+        # 地址：省市区 + 路街巷 + 门牌/楼栋/房间
+        # ★ 尾部必须把「门牌 / 楼栋 / 房间」段吃进来（V3.6.10 修高危漏脱敏）：
+        #   组员评审实测——「北京市海淀区中关村南大街 5 号院 3 号楼 1201 室」只脱敏到
+        #   「…南大街」，后面「5 号院 3 号楼 1201 室」**明文进了模型上下文**。
+        #   根因：尾部那个 `[^\s，。、；]{0,15}(?:号|幢|栋|…)` 不允许**空格**，
+        #   而门牌段常被写成「5 号院 3 号楼 1201 室」（数字与单位词之间带空格）。
+        #   现在补一段"数字／中文数词 + 单位词"可重复的尾链（自带 `\s*` 容错），
+        #   并允许链尾再跟一个裸房号（如「3 栋 502」）。
+        #   注意：尾链只**延长已经命中的地址**（整体用 (?:A|B) 包住再挂尾链），
+        #   它自己不会凭空造出新命中，因此不会误伤"订单号 / 型号"这类普通业务词。
+        "ADDRESS": r"(?:(?:(?:北京|上海|天津|重庆|河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|山东|河南|湖北|湖南|广东|海南|四川|贵州|云南|陕西|甘肃|青海|台湾|内蒙古|广西|西藏|宁夏|新疆|香港|澳门)(?:省|市|自治区|特别行政区)?)?"
                    r"(?:(?:[^\s，。、；]{2,8}(?:市|区|县|旗))"
                    r"(?:[^\s，。、；]{1,20}(?:路|街|道|巷|弄|大道)?)"
                    r"(?:[^\s，。、；]{0,15}(?:号|幢|栋|单元|室|大厦|广场|大楼))?"
                    r"|(?:[^\s，。、；]{2,15}(?:路|街|道|巷|弄))?"
-                   r"(?:[^\s，。、；]{0,9}\d[^\s，。、；]{0,3}(?:号|幢|栋|单元|室)))",
+                   r"(?:[^\s，。、；]{0,9}\d[^\s，。、；]{0,3}(?:号|幢|栋|单元|室))))"
+                   r"(?:(?:\s*(?:\d{1,4}|[零一二三四五六七八九十百]{1,3})\s*"
+                   r"(?:号院|号楼|号|弄|幢|栋|座|单元|门牌|楼|室|房|层|公寓|别墅))+"
+                   r"(?:\s*\d{1,4})?"
+                   r"|\s*(?:\d{1,4}|[零一二三四五六七八九十百]{1,3})\s*"
+                   r"(?:号院|号楼|号|弄|幢|栋|座|单元|门牌|楼|室|房|层))?",
 
         # === PHI 个人健康信息 ===
         # 病历号：常见前缀 MRN/BLH/病历号/病案号 + 数字
@@ -1184,6 +1199,91 @@ class PrivacyEngine:
                 original_value = encrypted_value
             restored = restored.replace(placeholder, original_value)
         return restored
+
+    # 裸占位符（模型丢了方括号，常见于 Markdown 反引号里）：`NAME_0_hgi6` / `NAME_0`。
+    # ★ 为什么必须兜这条（V3.6.10，组员评审 BUG-0005）：模型整理答案时经常把
+    #   `[NAME_0_hgi6]` 写成 `` `NAME_0_hgi6` `` 或纯 `NAME_0_hgi6`——精确替换必然漏掉，
+    #   用户看到的就是裸占位符，而「回答返回时自动还原」是对外承诺。
+    _BARE_PLACEHOLDER_RE = re.compile(
+        r"(?<![A-Za-z0-9_\[])([A-Z][A-Z0-9_]{1,24})_(\d+)(?:_([a-z0-9]{4}))?(?![A-Za-z0-9_\]])")
+
+    def deanonymize_with_stats(self, text: str, mapping: dict,
+                              strict: bool = False) -> tuple:
+        """还原并**如实报告**：返回 `(文本, 实际替换处数, 仍未能还原处数)`。
+
+        两条通路（与知识库占位符同一思路：宁可不还原，也不猜错）：
+          ① **精确替换**：`[TYPE_n_nonce]` 原样命中 → 换回真值（原有行为）；
+          ② **容错替换**：模型把方括号丢掉时（`` `NAME_0_hgi6` ``），按「类型 + nonce」
+             （退回「类型 + 编号」，再退回「该类型只有唯一值」）找**唯一**解 → 换回；
+             **不唯一就保持原样**，并把统计如实报给调用方。
+
+        ★ 审计口径同源：调用方必须用这里返回的「实际替换处数」，不能再拿映射表条数
+          当「已还原」——那是组员评审里「审计谎报 6 处、实际只还原 1 处」的根因。
+        """
+        if not text or not mapping:
+            return text, 0, 0
+
+        plain: Dict[str, str] = {}
+        for placeholder, encrypted_value in mapping.items():
+            try:
+                original_value = self._crypto.decrypt(encrypted_value)
+            except Exception:
+                if strict:
+                    continue
+                # 新格式（含 nonce）占位符：value 必为 Fernet 密文，
+                # 解密失败时保留占位符、不写回密文垃圾（默认模式同样如此）
+                if _NEW_PLACEHOLDER_RE.match(placeholder):
+                    continue
+                # 旧格式（[TYPE_N] 无 nonce）兼容旧版明文 mapping
+                original_value = encrypted_value
+            plain[str(placeholder)] = str(original_value)
+
+        hits = 0
+        restored = text
+        for placeholder, original_value in plain.items():
+            if placeholder in restored:
+                hits += restored.count(placeholder)
+                restored = restored.replace(placeholder, original_value)
+
+        # ② 容错：按「类型+nonce / 类型+编号 / 该类型唯一值」三级判定，逐条只认唯一解
+        by_type: Dict[str, list] = {}
+        for placeholder, original_value in plain.items():
+            match = _NEW_PLACEHOLDER_RE.match(placeholder) or re.match(
+                r"^\[([A-Z][A-Z0-9_]*)_(\d+)\]$", placeholder)
+            if not match:
+                continue
+            entity_type, number = match.group(1), match.group(2)
+            nonce = match.group(3) if (match.lastindex or 0) >= 3 else ""
+            by_type.setdefault(entity_type, []).append((number, nonce, original_value))
+
+        def _resolve(entity_type: str, number: str, nonce: str):
+            candidates = by_type.get(entity_type) or []
+            if nonce:
+                matched = [value for _n, candidate_nonce, value in candidates
+                           if candidate_nonce == nonce]
+                if len(matched) == 1:
+                    return matched[0]
+            matched = [value for candidate_number, _nc, value in candidates
+                       if candidate_number == number]
+            if len(matched) == 1:
+                return matched[0]
+            if len(candidates) == 1:
+                return candidates[0][2]
+            return None                     # 有歧义：不猜（保留占位符，交给统计如实上报）
+
+        def _replace_bare(match: "re.Match") -> str:
+            nonlocal hits
+            value = _resolve(match.group(1), match.group(2), match.group(3) or "")
+            if value is None:
+                return match.group(0)
+            hits += 1
+            return value
+
+        restored = self._BARE_PLACEHOLDER_RE.sub(_replace_bare, restored)
+        # 仍未还原的：带方括号的（含旧格式）与裸的都是"用户看得见的残留"
+        unresolved = len(re.findall(r"\[[A-Z][A-Z0-9_]*_\d+(?:_[a-z0-9]{4})?\]", restored))
+        unresolved += len(re.findall(self._BARE_PLACEHOLDER_RE, restored))
+        return restored, hits, unresolved
 
     # ──────────────────────────────────────────
     # 新增：映射表用后即焚

@@ -20,7 +20,8 @@ import os
 
 # ★ 路径基准必须锚定"仓库根目录"：PyInstaller 解析 spec 内相对路径时，
 #   基准是 spec 文件所在目录（tools/），不是当前工作目录。
-_ROOT = os.path.normpath(os.path.join(SPECPATH, "..", ".."))   # tools/packaging/ → 仓库根
+_ROOT = os.path.normpath(os.path.join(SPECPATH, "..", ".."))
+_ICON_NAME = "yindun-control.ico"   # tools/packaging/ → 仓库根
 _ENTRY = os.path.join(_ROOT, "yindun", "control", "__main__.py")
 
 def _collect_dir(src, dest, skip_dirs=(".mimosa", "__pycache__"), skip_ext=(".pyc", ".pyo")):
@@ -75,6 +76,13 @@ pyz = PYZ(a.pure)
 # 双击即一个原生控制台窗口，不再先弹一个黑命令行。代价是启动信息（监听地址/数据目录/令牌）
 # 没有终端可显示，因此统一改走 `desktop.say()`（无控制台时落日志）与 `desktop.notify()`
 # （启动失败弹系统对话框，写清原因与日志路径）——**不做"双击没反应"的静默失败**。
+# 图标缺失时给一句人话（PyInstaller 自己抛的是裸路径异常）
+_ICON_FILE = os.path.join(_ROOT, "assets", "icons", _ICON_NAME)
+if not os.path.exists(_ICON_FILE):
+    print("[spec] ⚠ 找不到定制图标 %s——先跑 python tools/packaging/make_icons.py"
+          "（不传 icon= 会退回 PyInstaller 默认图标，产物看着像半成品）" % _ICON_FILE)
+_ICON_PATH = _ICON_FILE if os.path.exists(_ICON_FILE) else None
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -82,6 +90,10 @@ exe = EXE(
     a.datas,
     [],
     name="YindunControl",
+    # ★ 定制图标（V3.6.10，负责人要求）：不传 icon= 时 PyInstaller 会用**它自带的默认图标**，
+    #   和产品毫无关系、看着就像半成品。图标由 tools/packaging/make_icons.py 生成
+    #   （盾牌+对勾；控制端用管理蓝以便一眼区分两个程序）。
+    icon=_ICON_PATH or str(_ROOT / "assets" / "icons" / "yindun-control.ico"),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
