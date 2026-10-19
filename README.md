@@ -491,7 +491,7 @@ yindun-agent/
 | `python-docx` | Word 文档解析 |
 | `openpyxl` | Excel 表格解析 |
 | `pydantic` | 数据校验（Tool 参数模型） |
-| `rapidocr-onnxruntime` | OCR 识别（Python < 3.13） |
+| `rapidocr-onnxruntime` | OCR 识别（Python < 3.13；**可选加成**——图片/扫描件默认走 Windows 自带 OCR，随包约 4MB） |
 
 ---
 

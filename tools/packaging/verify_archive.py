@@ -273,6 +273,39 @@ def _stdlib_zip_modules(reader) -> Set[str]:
     return names
 
 
+# 客户端 exe 必须带的**能力模块**（缺一个就少一类附件能力，且往往只在真机才暴露）
+CLIENT_REQUIRED_MODULES = (
+    "winrt._winrt_windows_media_ocr",      # Windows 内置 OCR（图片/扫描件）
+    "winrt.windows.media.ocr",
+    "winrt.windows.graphics.imaging",
+)
+
+
+def _check_required_modules(reader, zr, names) -> List[str]:
+    """这些模块必须真的在包里（按三处查找：PYZ / base_library.zip / 内建）。
+
+    为什么单独列一份：它们是**扩展模块**（.pyd），`_check_symbols` 那套"读字节码找符号"用不上，
+    只能查存在性。缺了的表现是"附件里图片/扫描件静默读不出字"，而构建日志一切正常——
+    所以必须在归档校验里钉住。
+    """
+    import sys as _sys
+    builtin_names = set(_sys.builtin_module_names)
+    pyz_names = set(getattr(zr, "toc", {}) or {})
+    stdlib_names = _stdlib_zip_modules(reader)
+
+    def _present(name: str) -> bool:
+        top = name.split(".")[0]
+        return (name in builtin_names or top in builtin_names
+                or name in pyz_names or top in pyz_names
+                or name in stdlib_names or top in stdlib_names)
+
+    missing = [n for n in names if not _present(n)]
+    if not missing:
+        return []
+    return [f"客户端 exe：缺少能力模块 {missing}（图片/扫描件 OCR 会静默失效；"
+            f"检查 spec 里 winrt 的 collect_submodules）"]
+
+
 def _check_plugin_deps(reader, zr, source_root: Path) -> List[str]:
     """插件的 import 必须真的进了包（组员审查报告里的 `html.parser` 那一类）。
 
@@ -315,6 +348,7 @@ def verify_client(exe: Path = None, source_root: Path = None) -> List[str]:
     problems += _check_data_dir(reader, source_root / "yindun" / "app" / "web",
                                "yindun/app/web")
     problems += _check_symbols(zr, CLIENT_SYMBOLS, "客户端 exe")
+    problems += _check_required_modules(reader, zr, CLIENT_REQUIRED_MODULES)
     problems += _check_plugin_deps(reader, zr, source_root)
     problems += _check_version(zr, __display_version__)
     return problems

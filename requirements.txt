@@ -26,3 +26,13 @@ pywebview>=5.0
 # 界面自动化回归（tests/test_ui_paths.py）：装完依赖还要下一份浏览器内核
 #   python -m playwright install chromium
 playwright>=1.40
+
+# Windows 内置 OCR（图片 / 扫描件识别的主路径，V3.6.7）：随包约 4MB，用系统语言包，离线、
+# 不下载模型。分发包名与导入名不同（还有 winrt 命名空间包），故逐个列出。
+winrt-runtime>=2.3.0; sys_platform == "win32"
+winrt-Windows.Foundation>=2.3.0; sys_platform == "win32"
+winrt-Windows.Foundation.Collections>=2.3.0; sys_platform == "win32"
+winrt-Windows.Media.Ocr>=2.3.0; sys_platform == "win32"
+winrt-Windows.Graphics.Imaging>=2.3.0; sys_platform == "win32"
+winrt-Windows.Storage.Streams>=2.3.0; sys_platform == "win32"
+winrt-Windows.Globalization>=2.3.0; sys_platform == "win32"

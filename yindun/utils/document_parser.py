@@ -55,9 +55,9 @@ PARSE_FAIL_PREFIXES = (
 
 # 解析失败提示的统一说明片段（拼接用，避免各处各写一份安装指引）
 OCR_INSTALL_HINT = (
-    "本机没有可用的离线 OCR 引擎：Python 3.13 无法安装 rapidocr-onnxruntime（该包仅支持 <3.13），"
-    "可选装支持 3.13 的 rapidocr（模型随包自带、离线可用）；"
-    "或把图片/扫描件转成可复制的文本、PDF 版再上传"
+    "本机没有可用的离线 OCR 引擎。优先走 Windows 自带 OCR（系统自带中英文语言包，随包只占几 MB）；"
+    "非 Windows 或系统缺语言包时，可另装 rapidocr（自带离线模型，但会多约 150MB 依赖）；"
+    "也可以把图片/扫描件转成可复制的文本、PDF 版再上传"
 )
 
 FUNASR_INSTALL_HINT = (
@@ -111,9 +111,12 @@ _OCR_STATE = {"tried": False, "engine": None, "name": "", "reason": ""}
 
 
 def _ocr_engine():
-    """懒加载 OCR 引擎。返回 (engine, 名称)；不可用时返回 (None, 原因说明)。
+    """是否有可用的 OCR 引擎。返回 (engine 或 True, 引擎名)；都没有时返回 (None, 安装提示)。
 
-    懒加载的理由：OCR 初始化要加载 ONNX 模型（秒级、占内存），而大多数附件根本不需要 OCR。
+    ★ 判据已改为"**统一引擎模块里有没有可用后端**"（V3.6.7）：旧的判据只看 rapidocr，
+      于是"系统自带 OCR 明明可用、只是没装 rapidocr"会被判成不可用 → 图片与扫描件直接放弃。
+      现在 Windows 平台默认就有系统 OCR（随包只占几 MB），rapidocr 变成可选加成。
+    懒加载：连 rapidocr 是有成本的（加载 ONNX 模型秒级），而多数附件根本不需要 OCR。
     """
     if not _OCR_STATE["tried"]:
         _OCR_STATE["tried"] = True
@@ -125,8 +128,20 @@ def _ocr_engine():
                 break
             except Exception as exc:      # 未安装 / 装不上 / 初始化失败，一律尝试下一个
                 _OCR_STATE["reason"] = f"{module}: {type(exc).__name__}"
-                print(f"[文档解析] OCR 引擎 {module} 不可用：{type(exc).__name__}: {exc}")
+                # ★ 不逐次打印（V3.6.7）：没装 rapidocr 是**常态**（Windows 上走系统 OCR 更划算，
+                #   随包少约 150MB），而这条打印会在每次解析图片/扫描页时刷屏。最终用的是谁，
+                #   由 `available_engines()` 与识别结果里的引擎名如实给出。
     if _OCR_STATE["engine"] is None:
+        # 统一引擎模块里可能已经有 Windows 自带 OCR（旧实现的判据只看 rapidocr，
+        # 于是"系统 OCR 明明可用"也会被判成不可用 → 扫描件/图片直接放弃，见 V3.6.7 实测）
+        try:
+            from yindun.utils.ocr_engine import available_engines
+            names = available_engines()
+        except Exception:
+            names = []
+        if names:
+            _OCR_STATE["name"] = "、".join(names)
+            return True, _OCR_STATE["name"]
         return None, OCR_INSTALL_HINT
     return _OCR_STATE["engine"], _OCR_STATE["name"]
 
@@ -182,12 +197,35 @@ def _ocr_ndarray(image):
 
 
 def _ocr_image(image) -> list:
-    """对一张图片（路径/字节/PIL/ndarray）执行 OCR，返回文本行列表；引擎不可用返回 []。"""
-    engine, _name = _ocr_engine()
-    if engine is None:
-        return []
+    """对一张图片（路径/字节/PIL/ndarray）执行 OCR，返回文本行列表；识别不了返回 []。
+
+    ★ 引擎选择交给 `yindun.utils.ocr_engine`（V3.6.7 起）：它按
+      **Windows 自带 OCR → rapidocr（若用户装了）→ 如实说明原因** 的顺序来，
+      并且图片走**内存流**不落盘。这里只负责把各种入参统一成字节。
+    """
+    from yindun.utils.ocr_engine import ocr_image as _ocr_bytes
     try:
-        return [line for line in _ocr_lines_from_result(engine(_ocr_ndarray(image))) if line]
+        data = image
+        if isinstance(image, (str, os.PathLike)):
+            from yindun.utils.ocr_engine import ocr_path as _ocr_path
+            text, how = _ocr_path(str(image))
+            _OCR_STATE["name"] = how
+            return [ln for ln in text.splitlines() if ln.strip()]
+        if isinstance(image, (bytes, bytearray)):
+            data = bytes(image)
+        else:                                   # PIL / ndarray：统一编码成 PNG 字节
+            import io
+            try:
+                from PIL import Image
+                if isinstance(image, Image.Image):
+                    buf = io.BytesIO(); image.save(buf, format="PNG"); data = buf.getvalue()
+                else:
+                    data = image.tobytes("png") if hasattr(image, "tobytes") else bytes(image)
+            except Exception:
+                data = bytes(image)
+        text, how = _ocr_bytes(data)
+        _OCR_STATE["name"] = how
+        return [ln for ln in text.splitlines() if ln.strip()]
     except Exception as exc:
         print(f"[文档解析] OCR 识别失败：{type(exc).__name__}: {exc}")
         return []
@@ -223,11 +261,12 @@ class PdfParser:
     def _ocr_page(page) -> str:
         """
         将 PyMuPDF 页面对象渲染为图片并执行 OCR 识别。
-        返回识别到的纯文本（按行拼接，已去重空白）。
-        若 OCR 引擎不可用或识别失败，返回空字符串。
+        返回识别到的纯文本（按行拼接，已去重空白）；识别不了返回空字符串。
+
+        ★ 不再先问"rapidocr 在不在"（V3.6.7 实测）：旧写法在"系统自带 OCR 可用、只是没装
+          rapidocr"时直接放弃，扫描件 PDF 等于白挂。现在统一交给 `_ocr_image` →
+          `yindun.utils.ocr_engine`（Windows 内置 OCR 优先，其次才看有没有装 rapidocr）。
         """
-        if _ocr_engine()[0] is None:
-            return ""
         try:
             # 渲染为高分辨率图片（DPI=300 兼顾精度与速度）
             pix = page.get_pixmap(dpi=300)

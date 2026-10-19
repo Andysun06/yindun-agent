@@ -141,14 +141,49 @@ if samples.get("pptx") and samples["pptx"].exists():
     ppt_txt = DP.extract_file_text(str(samples["pptx"])) or ""
     check("pptx 按页提取并标出页号（模型能引用「第 N 页」）",
           "第 1 页" in ppt_txt and "季度汇报" in ppt_txt, ppt_txt[:80])
-for ext, why in (("png", "图片"), ("zip", "压缩包"), ("bin", "二进制")):
+for ext, why in (("zip", "压缩包"), ("bin", "二进制")):
     path = samples.get(ext)
     if not path or not path.exists():
         continue
     out = DP.extract_file_text(str(path)) or ""
     failed = is_fail(out) if is_fail else out.startswith("[文档解析")
     check(f"{ext}（{why}）被判定为失败且给出可行动原因",
-          failed and ("OCR" in out or "解压" in out or "文本版" in out), out[:90])
+          failed and ("解压" in out or "文本版" in out), out[:90])
+
+# 图片：本机有 OCR 后端时**必须真的读出内容**（负责人最在意的一条）；
+# 只有"一个后端都没有"（例如非 Windows 且没装 rapidocr）时才允许"如实说明需要 OCR 组件"。
+from yindun.utils.ocr_engine import available_engines                     # noqa: E402
+_engines = available_engines()
+big_img = TMP / "扫描件.png"
+try:
+    from PIL import Image as _I, ImageDraw as _D, ImageFont as _F
+    _font = None
+    for _cand in (r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\simhei.ttf"):
+        if Path(_cand).exists():
+            _font = _F.truetype(_cand, 34)
+            break
+    _im = _I.new("RGB", (900, 240), "white")
+    _dd = _D.Draw(_im)
+    _dd.text((30, 40), "甲方：张伟 联系电话：13812345678", fill="black", font=_font)
+    _dd.text((30, 110), "合同编号 CONTRACT NO 2026-888", fill="black", font=_font)
+    _im.save(big_img)
+    img_ok = True
+except Exception as _exc:                                                  # noqa: BLE001
+    img_ok = False
+    print(f"  ⚠ 造图片样例失败：{_exc}")
+if img_ok:
+    img_out = DP.extract_file_text(str(big_img)) or ""
+    img_failed = is_fail(img_out) if is_fail else img_out.startswith("[文档解析")
+    if _engines:
+        squeezed = img_out.replace(" ", "")
+        check(f"图片能真的读出文字（本机引擎：{'、'.join(_engines)}）",
+              (not img_failed) and ("13812345678" in squeezed or "CONTRACT" in img_out.upper()),
+              img_out[:140])
+        check("识别结果里写明用的是哪个引擎（不让人猜）",
+              "OCR" in img_out and any(e.split()[0] in img_out for e in _engines), img_out[:90])
+    else:
+        check("本机没有 OCR 后端时，图片给出可行动原因（而不是假装读到）",
+              img_failed and "OCR" in img_out, img_out[:120])
 
 # ══════════════════════════════════════════════════════════════════════
 # C. 集成：附件的 chars/error 与"模型真正拿到什么"

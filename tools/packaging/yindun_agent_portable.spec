@@ -81,6 +81,27 @@ for _pkg in _OCR_PKGS:
     hiddenimports += h
     _ocr_collected.append(_pkg)
 
+# ── Windows 内置 OCR（WinRT）：图片/扫描件识别的主路径（V3.6.7）──
+# 为什么是它：随包只占约 4MB，用系统已安装的语言包（本机实测 en-US / zh-Hans-CN），
+# 一张 A4 截图约 0.05 秒；而 rapidocr 要拖 opencv+模型约 150MB（见上面的可选块）。
+_winrt_modules = []
+try:
+    import importlib.util as _ilu2
+    if _ilu2.find_spec("winrt") is not None:
+        _winrt_modules = collect_submodules("winrt")
+        hiddenimports += _winrt_modules
+except Exception as exc:
+    print(f"[spec] Windows OCR（winrt）收集失败：{exc}")
+if _winrt_modules:
+    print("*" * 78)
+    print(f"* 本次产物【含 Windows 内置 OCR】：{len(_winrt_modules)} 个模块 → 图片与扫描件 PDF 可提取文字")
+    print("*" * 78)
+else:
+    print("*" * 78)
+    print("* 本次产物【不含 Windows OCR】：图片与扫描件 PDF 只能靠 rapidocr（若已装）或如实提示用户")
+    print("*   要支持：pip install winrt-runtime winrt-Windows-Media-Ocr 等（见 requirements.txt）后重新构建")
+    print("*" * 78)
+
 if _ocr_collected:
     print("*" * 78)
     print(f"* 本次产物【含 OCR】：{'、'.join(_ocr_collected)} → 扫描件 PDF 与图片可提取文字")
