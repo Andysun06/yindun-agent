@@ -337,10 +337,16 @@ body.is-maximized .win-btn__ico-restore { display: block; }
 
 /* 文书块（代码/表格）：浅底 + 发丝边 */
 /* 注意：用户输入在 .slip>.bubble 内，助手输出在 .entry__body 内，两者都要覆盖 */
-.bubble pre, .entry__body pre { margin: var(--sp-4) 0; padding: var(--sp-4); background: var(--code-bg); border: 1px solid var(--code-border); border-radius: var(--r-ctrl); overflow-x: auto; line-height: 1.7; font-size: var(--fs-sm); }
+/* 引用块与分隔线（V3.6.12）：模型用 `>` 引用原文、用 --- 分节时的呈现 */
+.bubble blockquote, .entry__body blockquote { margin: var(--sp-3) 0; padding: var(--sp-2) var(--sp-4);
+  border-left: 3px solid var(--accent-500); background: var(--bg-subtle); color: var(--text-2);
+  border-radius: 0 var(--r-chip) var(--r-chip) 0; }
+.bubble blockquote br:last-child, .entry__body blockquote br:last-child { display: none; }
+.bubble hr, .entry__body hr { margin: var(--sp-4) 0; border: none; border-top: 1px solid var(--border-1); }
+.bubble pre, .entry__body pre { margin: var(--sp-3) 0; padding: var(--sp-4); background: var(--code-bg); border: 1px solid var(--code-border); border-radius: var(--r-ctrl); overflow-x: auto; line-height: 1.7; font-size: var(--fs-sm); }
 .bubble code, .entry__body code { font-family: var(--font-mono); font-size: .92em; background: var(--bg-subtle); padding: 1px 5px; border-radius: var(--r-chip); }
 .bubble pre code, .entry__body pre code { background: none; padding: 0; border: none; }
-.bubble table, .entry__body table { border-collapse: collapse; margin: var(--sp-4) 0; font-size: var(--fs-sm); }
+.bubble table, .entry__body table { border-collapse: collapse; margin: var(--sp-3) 0; font-size: var(--fs-sm); }
 .bubble th, .bubble td, .entry__body th, .entry__body td { border-bottom: 1px solid var(--border-1); padding: 5px var(--sp-4); text-align: left; }
 .bubble th:first-child, .bubble td:first-child,
 .entry__body th:first-child, .entry__body td:first-child { width: 1%; white-space: nowrap; }   /* 标签列不撑宽 */
@@ -847,6 +853,13 @@ html[data-theme="dark"] .chain-badge--ok { color: var(--accent-300); background:
 .audit-item__hash { margin-top: 2px; color: var(--text-3); }
 
 /* 知识库台账 */
+/* 入库结果说明：失败/部分失败的原因留在列表上方，toast 消失后仍可见 */
+.kb-notice { margin-top: var(--sp-3); padding: var(--sp-3); border: 1px solid var(--border-1);
+  border-left: 3px solid var(--danger-500); border-radius: var(--r-ctrl);
+  background: var(--bg-subtle); color: var(--text-1); font-size: var(--fs-sm);
+  line-height: var(--lh-body); white-space: pre-wrap; }
+.kb-notice.is-warn { border-left-color: var(--accent-500); }
+.kb-notice.is-bad { color: var(--danger-500); }
 .kb-list { display: flex; flex-direction: column; margin-top: var(--sp-3); max-height: 220px; overflow-y: auto; border-top: 1px solid var(--border-1); }
 .kb-item { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-4); padding: var(--sp-3) var(--sp-2); border-bottom: 1px solid var(--border-1); font-size: var(--fs-sm); }
 .kb-item__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

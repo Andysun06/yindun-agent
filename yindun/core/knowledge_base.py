@@ -233,6 +233,34 @@ class KnowledgeBase:
         """对外暴露的可用性检查。"""
         return self._check_available()
 
+    def embedding_ready(self, timeout: float = 1.5, cache_seconds: float = 30.0) -> bool:
+        """本地 embedding 是否**真的能跑**（V3.6.12，组员评审 BUG-01）。
+
+        为什么不能只看 `_check_available()`：那只检查 Python 依赖装没装。
+        Ollama 没起 / 没拉 `nomic-embed-text` 时它照样返回 True，界面显示"就绪"、
+        用户点添加也一直可点，直到向量化那一步才失败——而失败又被批量结果吞掉，
+        于是变成"提示入库完成、库其实是空的"。
+
+        这里真问一句 Ollama（`/api/tags`，1.5 秒超时、**绕过系统代理**）并核对模型名。
+        结果做短缓存（默认 30 秒）：界面轮询/反复重绘时不会每次都打服务。
+        """
+        if not self._check_available():
+            return False
+        now = time.time()
+        cached = getattr(self, "_embedding_ready_cache", None)
+        if cached and now - cached[0] < cache_seconds:
+            return cached[1]
+        ready = False
+        try:
+            from yindun.app.llm_factory import detect_ollama_models_via_api
+            models, _note = detect_ollama_models_via_api(self.ollama_base_url)
+            wanted = str(self.embed_model or "").split(":")[0].lower()
+            ready = any(str(name or "").split(":")[0].lower() == wanted for name in models)
+        except Exception:
+            ready = False
+        self._embedding_ready_cache = (now, ready)
+        return ready
+
     def _ensure_ready(self):
         """确保向量库和 embedding 已初始化。若依赖缺失则抛出 RuntimeError。"""
         if not self._check_available():

@@ -184,6 +184,58 @@ def part_a() -> None:
     check("置顶失败时如实回 ok=False（不假装成功，界面才不会亮着骗人）",
           r_fail.get("ok") is False and r_fail.get("reason") == "RuntimeError", str(r_fail))
 
+    # ── A2.7 连点串行化（V3.6.12，与客户端同一处缺陷：并发写 WinForms TopMost 会假死）──
+    class _SlowTopWindow(_FakeWindow):
+        """置顶写入睡 0.15s，并记录同时进入 setter 的线程数（把竞态窗口放大）。"""
+
+        def __init__(self):
+            super().__init__()
+            self._on_top = False
+            self.entries = 0
+            self.active = 0
+            self.max_active = 0
+            self._guard = threading.Lock()
+
+        @property
+        def on_top(self):
+            return self._on_top
+
+        @on_top.setter
+        def on_top(self, value):
+            with self._guard:
+                self.entries += 1
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            time.sleep(0.15)
+            self._on_top = bool(value)
+            with self._guard:
+                self.active -= 1
+
+    slow_win = _SlowTopWindow()
+    slow_bridge = desktop.WindowBridge(slow_win)
+    slow_bridge.bind(slow_win)
+    barrier = threading.Barrier(2)
+    race = []
+
+    def _click_top():
+        barrier.wait()
+        race.append(slow_bridge.window_action("toggle_topmost"))
+
+    threads = [threading.Thread(target=_click_top) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    check("控制端两线程同时点置顶：两次都成功返回",
+          len(race) == 2 and all(r.get("ok") is True for r in race), str(race))
+    check("★ 控制端窗口动作最大并发进入数必须为 1（_win_lock 串行化）",
+          slow_win.max_active == 1,
+          f"max_active={slow_win.max_active} entries={slow_win.entries}")
+    check("两次点按都真的落到窗口属性上，最终状态回到未置顶",
+          slow_win.entries == 2 and slow_win.on_top is False
+          and slow_bridge.window_state().get("topmost") is False,
+          f"entries={slow_win.entries} on_top={slow_win.on_top}")
+
     # ── A3 状态也能被原生事件同步（用户用系统快捷键还原时，图标不能停在"最大化"）──
     win.events.restored.fire()
     check("原生 restored 事件把状态同步回 False",

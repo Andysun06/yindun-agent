@@ -22,6 +22,8 @@
     laya: null,              // laya 接入状态（本机 / 局域网 / 正则回退）
     toolBusy: false,         // 安全工具同一时间只跑一个（避免结果互相覆盖）
     prov: null,              // 模型接入页"正在查看"的供应商 {tier, provider, builtin, isNew?}
+    windowMini: false,       // 原生窗口是否处于闪发折叠态（决定最大化按钮的语义性禁用）
+    kbNotice: "",            // 知识库列表上方的持久说明（失败 / 部分失败原因）
   };
 
   /* ── 工具 ─────────────────────────────────────────── */
@@ -67,6 +69,16 @@
 
   /** 极简 Markdown 渲染（先转义再套标签，保证不引入 HTML 注入）
    *  支持：代码块、表格（单元格内行内标记/安全链接/<br> 换行）、行内代码、粗体、标题、列表、换行 */
+  /** 行内格式（输入必须是**已转义**的文本；不再二次转义，表格/引用块共用）。 */
+  function mdInline(text) {
+    return text
+      .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+      .replace(/^#{1,3}\s+(.*)$/gm, "<strong>$1</strong>")
+      .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/^\s*[-*]\s+(.*)$/gm, "• $1")
+      .replace(/\n/g, "<br>");
+  }
+
   function md(text) {
     const blocks = [];
     const stash = (html) => { blocks.push(html); return `\u0000B${blocks.length - 1}\u0000`; };
@@ -99,13 +111,30 @@
     }
     out = kept.join("\n");
 
+    // 2.5) 引用块：连续 `>` 行（含 `>` 空行、`> - 列表`）合并成 <blockquote>
+    //      负责人实测：模型用 `> ` 引用 OCR 原文时，界面把 `>` 原样显示成了纯文本。
+    //      ★ 此时文本已经过 esc()，`>` 已变成 `&gt;`——必须按转义后的形态匹配。
+    out = out.replace(/(?:^|\n)((?:[ \t]*&gt;[^\n]*(?:\n|$))+)/g, (_m, body) => {
+      const inner = body.replace(/\n$/, "").split("\n")
+        .map((line) => line.replace(/^[ \t]*&gt;\s?/, ""))
+        .join("\n");
+      if (!inner.trim()) return "\n";            // 空引用块不占位
+      return "\n" + stash(`<blockquote>${mdInline(inner)}</blockquote>`) + "\n";
+    });
+
+    // 2.6) 分隔线：`---` / `***` / `___`（独占一行、3 个以上）→ <hr>
+    out = out.replace(/^[ \t]*([-*_])\1{2,}[ \t]*$/gm, () => stash("<hr>"));
+
     // 3) 行内格式
-    out = out
-      .replace(/`([^`\n]+)`/g, "<code>$1</code>")
-      .replace(/^#{1,3}\s+(.*)$/gm, "<strong>$1</strong>")
-      .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-      .replace(/^\s*[-*]\s+(.*)$/gm, "• $1")
-      .replace(/\n/g, "<br>");
+    out = mdInline(out);
+
+    // 4) 空行收敛（V3.6.12，负责人反馈「有些地方空白太大」）：
+    //    模型常在代码块前后留 2~3 个空行，旧实现每个空行都变 <br>，再叠加 <pre> 的外边距
+    //    → 视觉上是大片空白。这里：连续空行最多留一个；块级元素（代码块/表格/引用/分隔线，
+    //    此时都是占位符）前后不留空行。
+    out = out.replace(/\n{3,}/g, "\n\n")
+      .replace(/\n+(?=\u0000B\d+\u0000)/g, "\n")
+      .replace(/(\u0000B\d+\u0000)\n+/g, "$1\n");
 
     return out.replace(/\u0000B(\d+)\u0000/g, (_m, i) => blocks[Number(i)]);
   }
@@ -877,15 +906,36 @@
   }
 
   /* ── 知识库 ───────────────────────────────────── */
+  /** 列表上方的持久说明：入库失败/部分失败的原因必须留在面上（toast 一闪就没了）。
+   *  保留到下一次入库开始时才清空，刷新列表 / 重新进入设置页都不会丢。 */
+  function paintKbNotice(text, kind = "") {
+    state.kbNotice = String(text || "");
+    const el = $("kb-notice");
+    if (!el) return;
+    el.textContent = state.kbNotice;
+    el.hidden = !state.kbNotice;
+    el.className = "kb-notice" + (kind === "bad" ? " is-bad" : (kind === "warn" ? " is-warn" : ""));
+  }
+
   function renderKb(status) {
     const data = status || {};
     const hint = $("kb-status");
     const available = !!data.available;
-    hint.textContent = available
-      ? `就绪 · 文档 ${(data.stats && data.stats.total_documents) || (data.docs || []).length} 篇 · 片段 ${(data.stats && data.stats.total_chunks) || "—"} · 模型 ${data.embed_model || "—"}`
-      : `不可用：${data.error || "未知原因"}`;
-    hint.style.color = available ? "var(--text-3)" : "var(--danger-500)";
-    $("btn-kb-add").disabled = !available;
+    // `available`（依赖装没装）与 `embedding_ready`（Ollama + embed 模型能不能用）是两件事：
+    // 只有后者为真才允许点「添加文档」，否则用户点了必然失败。旧后端/沙盘没有该字段时按可用处理。
+    const embeddingReady = data.embedding_ready !== false;
+    const usable = available && embeddingReady;
+    if (!available) {
+      hint.textContent = `不可用：${data.error || "未知原因"}`;
+    } else if (!embeddingReady) {
+      hint.textContent = `不可用：${data.error || "本地向量模型未就绪"}`;
+    } else {
+      hint.textContent = `就绪 · 文档 ${(data.stats && data.stats.total_documents) || (data.docs || []).length} 篇 · 片段 ${(data.stats && data.stats.total_chunks) || "—"} · 模型 ${data.embed_model || "—"}`;
+    }
+    hint.style.color = usable ? "var(--text-3)" : "var(--danger-500)";
+    const addBtn = $("btn-kb-add");
+    addBtn.disabled = !usable;
+    addBtn.title = usable ? "" : (data.error || "知识库不可用，暂不能添加文档");
     const list = $("kb-list");
     const docs = data.docs || [];
     if (!docs.length) {
@@ -2582,6 +2632,7 @@
       pin.title = st.topmost ? "取消置顶" : "置顶";
       pin.setAttribute("aria-pressed", st.topmost ? "true" : "false");
     }
+    state.windowMini = !!st.mini;
     if (max) {
       // 折叠态（闪发浮条）下窗口几何已经被改过：最大化会卡在"看起来最大、其实是浮条"
       // 的半个状态里，所以这里**禁用并如实提示**（服务端也会拒绝，见 window_action）。
@@ -2603,15 +2654,28 @@
     paintWindowState();                 // 只画状态，不改变窗口
     document.querySelectorAll("[data-win]").forEach((btn) => {
       btn.onclick = async () => {
+        // ★ 防连点（V3.6.12，组员评审）：pywebview 的每次桥调用都会新开线程，
+        //   连点会并发写 WinForms 窗口属性，原生窗口可能假死。这里在**第一个 await 之前**
+        //   同步禁用本按钮（disabled 不再派发 click），busy 标记再兜一层——
+        //   因为 paintWindowState() 重绘时可能按真实状态把 disabled 改回来。
+        if (btn.dataset.busy === "1") return;
+        btn.dataset.busy = "1";
+        btn.disabled = true;
         const action = btn.dataset.win;
-        const ok = await call("window_action", action);
-        if (action === "toggle_top") {
-          if (ok === false) { toast("置顶切换失败"); return; }
-          await paintWindowState();     // 用真实状态刷新高亮（而不是本地取反）
-          toast(state.settings.topmost ? "已置顶显示" : "已取消置顶");
-        } else if (action === "toggle_maximize") {
-          if (ok === false) { toast("先退出闪发模式，再最大化窗口"); await paintWindowState(); return; }
-          await paintWindowState();     // 图标与 is-active 跟着原生状态走
+        try {
+          const ok = await call("window_action", action);
+          if (action === "toggle_top") {
+            if (ok === false) { toast("置顶切换失败"); return; }
+            await paintWindowState();     // 用真实状态刷新高亮（而不是本地取反）
+            toast(state.settings.topmost ? "已置顶显示" : "已取消置顶");
+          } else if (action === "toggle_maximize") {
+            if (ok === false) { toast("先退出闪发模式，再最大化窗口"); await paintWindowState(); return; }
+            await paintWindowState();     // 图标与 is-active 跟着原生状态走
+          }
+        } finally {
+          btn.dataset.busy = "";
+          // 请求返回后恢复；但折叠态下最大化的禁用是**语义性**的，必须保持。
+          btn.disabled = action === "toggle_maximize" && !!state.windowMini;
         }
       };
     });
@@ -2956,6 +3020,59 @@
         ② 用户开了"减少动态效果"（prefers-reduced-motion）直接切，不做动画；
         ③ WebView2 老版本没有这个 API → 直接切（功能不受影响）。 */
   let _themeApplied = false;
+  // 主题连点的合并状态（见 toggleTheme）
+  let _themeBurst = false;      // 本轮连点是否已经起过过渡
+  let _themeIntent = null;      // 本轮目标主题（不读过渡进行中的 dataset，避免翻转错位）
+  let _themeTimer = null;
+
+  /** 把当前**意图**落到 DOM 上。做成函数而不是捕获具体值：View Transition 的
+   *  update 回调是异步执行的，晚到时也必须画"最后一次点击"的目标态，不能把后点的覆盖回去。 */
+  function paintThemeNow() {
+    const dark = _themeIntent !== null
+      ? _themeIntent
+      : document.documentElement.dataset.theme === "dark";
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+  }
+
+  /** 切换明暗：点下**立刻**切换视觉（不能有可感知延迟），但同一轮连点：
+   *  ① 只起一次 View Transition（重叠的过渡会互相打断，观感抖动）；
+   *  ② save_settings 用 220ms 防抖合并，只落最终态一次（避免多次磁盘写）。
+   *  prefers-reduced-motion / 老 WebView2 无 startViewTransition 的降级与 applyTheme 一致。 */
+  function toggleTheme() {
+    const current = _themeIntent !== null
+      ? _themeIntent
+      : document.documentElement.dataset.theme === "dark";
+    const dark = !current;
+    _themeIntent = dark;
+    state.settings.dark_mode = dark;
+    if (!_themeBurst) {
+      _themeBurst = true;
+      const reduce = !!(window.matchMedia
+        && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+      if (!_themeApplied || reduce || typeof document.startViewTransition !== "function") {
+        paintThemeNow();
+      } else {
+        try {
+          document.startViewTransition(paintThemeNow);
+        } catch (err) {
+          paintThemeNow();     // 过渡被拒（例：已有过渡在跑）→ 至少把主题切成对的
+        }
+      }
+      _themeApplied = true;
+    } else {
+      // 连点窗口内：直接落最终态，不叠加第二个过渡
+      paintThemeNow();
+    }
+    if (_themeTimer) clearTimeout(_themeTimer);
+    _themeTimer = setTimeout(() => {
+      _themeTimer = null;
+      _themeBurst = false;
+      _themeIntent = null;
+      // 一轮连点只写一次盘，值取最终态
+      call("save_settings", { dark_mode: document.documentElement.dataset.theme === "dark" });
+    }, 220);
+  }
+
   function applyTheme(dark, animate = true) {
     const html = document.documentElement;
     const next = dark ? "dark" : "light";
@@ -3200,15 +3317,44 @@
 
     $("btn-new-session").onclick = newSession;
     $("btn-kb-add").onclick = async () => {
+      const addBtn = $("btn-kb-add");
+      if (addBtn.disabled) return;
+      addBtn.disabled = true;            // 一次入库没结束前不再发第二次（与窗口按钮同理）
+      paintKbNotice("", "");             // 下一次入库开始：清掉上一条说明
       toast("正在入库（本地解析 + 逐块脱敏 + 向量化）…", 8000);
       const res = await call("kb_pick_and_add");
-      if (res && res.ok) {
-        toast("入库完成");
-        renderKb(res.status);
-      } else if (res && res.error) {
-        toast("入库失败：" + res.error);
+      if (!res) {
+        // 桥接缺失/调用抛错：call() 已提示，这里只把可持久的结果说明补上
+        paintKbNotice("入库失败：没有拿到入库结果（桥接调用失败）", "bad");
+        await refreshKb();
+        return;
       }
-      await refreshKb();
+      const result = res.result || {};
+      const total = Number(result.total != null ? result.total : (result.details || []).length);
+      const failed = Number(res.failed != null ? res.failed : result.failed || 0);
+      const success = Number(result.success != null ? result.success : Math.max(0, total - failed));
+      if (res.ok === false) {
+        // ★ 全部失败 / 前置条件不满足：如实说原因，绝不再弹「入库完成」
+        const reason = res.error || res.summary || result.summary || "未知原因";
+        toast("入库失败：" + reason, 6000);
+        paintKbNotice("入库失败：" + reason, "bad");
+      } else if (res.partial) {
+        // 部分成功：成功/总数 + 失败文件与原因（最多列 3 条，其余给出数量）
+        const badItems = (result.details || []).filter((d) => d && d.status === "failed");
+        const lines = badItems.slice(0, 3).map(
+          (d) => `${d.file || "文件"}：${d.error || "未说明原因"}`);
+        if (badItems.length > 3) lines.push(`等 ${badItems.length} 个文件失败`);
+        const head = `入库部分完成：成功 ${success}/${total}`;
+        toast(head, 6000);
+        paintKbNotice(head + (lines.length ? "\n" + lines.join("\n")
+                                           : (res.summary ? "\n" + res.summary : "")), "warn");
+      } else {
+        const text = total > 0 ? `入库完成：成功 ${success}/${total}` : "入库完成";
+        toast(text);
+        paintKbNotice(text, "");
+      }
+      if (res.status) renderKb(res.status);
+      else await refreshKb();
     };
     $("btn-kb-refresh").onclick = refreshKb;
     bindWindowControls();
@@ -3280,7 +3426,7 @@
     // 插件市场搜索：客户端过滤（插件数是个位数到几十，不需要往返一次）
     if ($("plugin-search")) $("plugin-search").oninput = () => renderPlugins(state.plugins);
     const themeBtn2 = $("btn-theme-2");
-    if (themeBtn2) themeBtn2.onclick = () => persist({ dark_mode: document.documentElement.dataset.theme !== "dark" });
+    if (themeBtn2) themeBtn2.onclick = toggleTheme;
     $("btn-toggle-right").onclick = () => { autoCollapsedRight = false; setRightCollapsed(!rightCollapsed()); };
     $("btn-panel-collapse").onclick = () => { autoCollapsedRight = false; setRightCollapsed(true); };
     $("btn-sidebar").onclick = () => {
@@ -3290,7 +3436,7 @@
     document.querySelectorAll(".ptab").forEach((tab) => {
       tab.onclick = () => openPane(tab.dataset.pane);
     });
-    $("btn-theme").onclick = () => persist({ dark_mode: document.documentElement.dataset.theme !== "dark" });
+    $("btn-theme").onclick = toggleTheme;
     $("btn-allow").onclick = async () => { hideApproval(); await call("approve", true); };
     $("btn-deny").onclick = async () => { hideApproval(); await call("approve", false); };
 

@@ -15,6 +15,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -320,8 +321,10 @@ check("提供只读布局快照供自动化校验", "window.__ydLayout = () =>" 
 print("\n" + "=" * 78)
 print("【5】置顶：运行时即时生效（不再要求重启）")
 print("=" * 78)
-check("桥接层在保存设置后立即写窗口标志",
-      "window.on_top = new_value" in webview_src and "即时应用置顶失败" in webview_src)
+check("桥接层在保存设置后立即写窗口标志（切换走 UI 线程调度，失败退回直接赋值）",
+      'window.on_top = bool(patch["topmost"])' in webview_src
+      and 'setattr(window, "on_top", want)' in webview_src
+      and "即时应用置顶失败" in webview_src)
 check("界面既不声称「置顶需重启」、也不再挂「立即生效」标签（所有设置都即时生效，不必逐个声明）",
       "重启" not in html.split("btn-pin")[1][:120] and "立即生效" not in html
       and 'title="置顶 / 取消置顶"' in html)
@@ -485,6 +488,138 @@ check("laya 接入配置由设置页与插件共用同一份文件（不会各�
       and '"laya_source.json"' in (ROOT / "yindun/plugins/builtin/laya_risk/plugin.py").read_text(encoding="utf-8"))
 check("仍然声明「laya 不参与放行判定」（亮点能力也不能越过安全不变量）",
       "不参与任何放行判定" in js.split("async function renderLayaSettings")[1][:1600])
+
+# ── 8) 连点置顶的串行化（V3.6.12，组员评审 BUG-02）──
+#    pywebview 对每个 js_api 调用新开线程；并发写 WinForms 的 TopMost 会把窗口写成
+#    "未响应"。这一段用假窗口量**真实的最大并发进入数**，而不是 grep 一把锁。
+print("\n" + "=" * 78)
+print("【8】窗口动作串行化：连点不会并发写窗口属性")
+print("=" * 78)
+
+
+class _ConcurrencyWindow:
+    """置顶属性写入时睡 0.15s，并记录"同时进入 setter 的线程数"。
+
+    真机上的并发写就发生在这一层；用一个会睡的业务属性把竞态窗口放大，
+    锁没生效时几乎必然观测到 max_active > 1。
+    """
+
+    def __init__(self, initial=False):
+        self._on_top = bool(initial)
+        self.entries = 0
+        self.active = 0
+        self.max_active = 0
+        self._guard = threading.Lock()
+
+    @property
+    def on_top(self):
+        return self._on_top
+
+    @on_top.setter
+    def on_top(self, value):
+        with self._guard:
+            self.entries += 1
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        time.sleep(0.15)
+        self._on_top = bool(value)
+        with self._guard:
+            self.active -= 1
+
+
+def _run_concurrent(fn, count=2):
+    barrier = threading.Barrier(count)
+    results = []
+
+    def _worker():
+        barrier.wait()
+        results.append(fn())
+
+    threads = [threading.Thread(target=_worker) for _ in range(count)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    return results
+
+
+race_win = _ConcurrencyWindow()
+holder["window"] = race_win
+race_results = _run_concurrent(lambda: api.window_action("toggle_top"), 2)
+check("两线程同时点置顶：两次都成功返回", len(race_results) == 2 and all(race_results),
+      str(race_results))
+check("★ 最大并发进入数必须为 1（锁确实串行化了整个分派）", race_win.max_active == 1,
+      f"max_active={race_win.max_active} entries={race_win.entries}")
+check("两次调用都真的落到窗口属性上", race_win.entries == 2, str(race_win.entries))
+
+# 顺序调用 10 次仍全部成功（防止"为修并发把正常路径锁死"）
+seq_win = _ConcurrencyWindow()
+holder["window"] = seq_win
+seq_results = [api.window_action("toggle_top") for _ in range(10)]
+check("顺序连点 10 次仍全部成功", seq_results == [True] * 10, str(seq_results))
+check("顺序 10 次恰好 10 次写入（没有丢点击、没有额外重复）",
+      seq_win.entries == 10, str(seq_win.entries))
+check("顺序 10 次（偶数）后窗口回到初始未置顶状态", seq_win.on_top is False,
+      str(seq_win.on_top))
+check("置顶偏好同步写回设置", svc.settings.get("topmost") is False,
+      repr(svc.settings.get("topmost")))
+
+# ── 9) UI 线程调度（WinForms Form.Invoke）──
+#    真机上 set_on_top 最终是 form.TopMost = value；在工作线程里直接赋值属于跨线程
+#    操作 WinForms 控件。这里注入一个假 instances，验证"找得到 Form 就走 Invoke"。
+from webview.platforms import winforms as _wf  # noqa: E402
+
+_old_instances = _wf.BrowserView.instances
+_invoked = []
+
+
+class _FakeForm:
+    def __init__(self):
+        self.invoked = 0
+
+    def Invoke(self, callback):
+        self.invoked += 1
+        callback()
+
+
+class _UidWindow:
+    def __init__(self, uid):
+        self.uid = uid
+        self.on_top = False
+
+
+form = _FakeForm()
+try:
+    _wf.BrowserView.instances = {"uid-probe": form}
+    uid_win = _UidWindow("uid-probe")
+    dispatched = JsApi._ui_thread_dispatch(uid_win, lambda: _invoked.append(1))
+    check("找到 Form 时走 Invoke 并返回 True", dispatched is True, str(dispatched))
+    check("回调确实在调度路径里被执行", _invoked == [1] and form.invoked == 1,
+          f"{_invoked} invoked={form.invoked}")
+
+    _wf.BrowserView.instances = {}
+    no_instance = JsApi._ui_thread_dispatch(uid_win, lambda: _invoked.append(2))
+    check("instances 里没有该 uid → 返回 False（调用方据此回退）",
+          no_instance is False and _invoked == [1], f"{no_instance} {_invoked}")
+finally:
+    _wf.BrowserView.instances = _old_instances
+
+# ── 10) UI 线程调度不可用 → 仍能完成切换（退回直接赋值 + 写回设置）──
+_orig_dispatch = JsApi.__dict__["_ui_thread_dispatch"]
+JsApi._ui_thread_dispatch = staticmethod(lambda window, callback: False)
+try:
+    fallback_win = _UidWindow("no-such-uid")
+    holder["window"] = fallback_win
+    fallback_ok = api.window_action("toggle_top")
+finally:
+    JsApi._ui_thread_dispatch = _orig_dispatch
+
+check("调度不可用仍返回成功（退回直接赋值，不让用户点了没反应）",
+      fallback_ok is True, str(fallback_ok))
+check("退回直接赋值真的把窗口置顶了", fallback_win.on_top is True,
+      str(fallback_win.on_top))
+check("退回路径同样写回设置", svc.settings.get("topmost") is True,
+      repr(svc.settings.get("topmost")))
 
 print("\n" + "=" * 78)
 if failures:

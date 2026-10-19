@@ -352,6 +352,16 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
       <tr><td><b>生成的 .docx 打不开</b>：让智能体「创建一个 aaa.docx，把信息写进去」，WPS/Word 打开提示「文件已损坏」（实测文件不是 zip、而是纯文本）</td><td>这是最坏的一类失败：<b>工具回报成功、交付物却是坏的</b>，用户要到打开文件时才发现</td><td>按扩展名生成<b>合法容器</b>：docx→一行一段落（python-docx）、xlsx→一行一记录并按逗号/制表符/顿号分列（openpyxl）、pptx→一页幻灯片+文本框（python-pptx）；在已有文档上<b>追加/替换</b>也先解析正文、再重新生成容器；缺组件时<b>如实报失败</b>并建议改用 .txt，绝不静默产出坏文件</td></tr>
       <tr><td><b>写进文件的正文里有占位符</b>：aaa.docx 里留着 <span class="commit">[PHONE_0_h5ko]</span>，而界面上那段回答是还原过的</td><td>用户拿到的是"半成品交付物"；更本质的是<b>写盘与展示用了两套映射口径</b>（写盘只用了本轮映射，跨轮占位符换不回来）</td><td>写盘参数改用<b>累积映射</b>并对 str/list/dict 递归还原；残留判定<b>不依赖映射表非空</b>（直接按占位符形状扫描，避免"映射为空 → 静默通过"）；仍有残留时在回答与状态行里如实写「有 N 处占位符未能还原」</td></tr>
     </table>
+    <h3>7.4　可用性回归：假成功、假死与渲染残缺（V3.6.12）</h3>
+    <p>组员对 V3.6.11 的评审与负责人实测又发现四处「看起来能用、实际不对」的问题，均已在源码层修复并固化为回归断言。</p>
+    <table class="data">
+      <thead><tr><th style="width:23%">现象（实测）</th><th style="width:28%">根因</th><th>修复</th></tr></thead>
+      <tr><td><b>知识库「入库完成」但库是空的</b>（Excel/PDF 导入后提示成功，列表仍为空）</td><td>`kb_add` 只要批处理没抛异常就 `ok=true`，而 `add_documents` 是**逐文件容错**的——「成功 0/2」也走成功分支；真实原因只活在 `details` 里，界面无出口。`is_available()` 又只查 Python 依赖，Ollama 没起也显示「就绪」</td><td>`ok = success > 0`（全失败带第一条原因；部分成功 `partial=true`）；响应始终带 `summary`，界面**持久展示**失败文件与原因；新增 `embedding_ready()`（真问 `/api/tags`、1.5s 超时、30s 缓存），未就绪时禁用「添加文档」并写明 `ollama pull …`</td></tr>
+      <tr><td><b>连续点击「置顶」把窗口点成未响应</b>（桥接 12s 超时，只能杀进程）</td><td>pywebview 对每个 js_api 调用**新开线程**，前端无防连点 → 多线程并发写 WinForms `TopMost`（py-spy 栈可见 `set_on_top → i.TopMost`，其余线程全停）</td><td>三层：后端窗口动作**串行化**（锁）；写入**调度到 UI 线程**（WinForms `Form.Invoke`，不可用时如实回退）；前端四个窗口按钮请求期间 `disabled`（连点只发一次）。置顶目标值改从**窗口真实状态**推导</td></tr>
+      <tr><td><b>主题连点</b>：过渡互相打断、重复落盘</td><td>每次点击都起一次 View Transition + 写一次配置</td><td>点下**立即**切换；一轮连点只起一次过渡、只落盘一次 `dark_mode`（220ms 合并）；reduce-motion 与老 WebView2 降级不变</td></tr>
+      <tr><td><b>Markdown 残缺与空白</b>：`&gt;` 引用行原样显示、`---` 原样显示、代码块前后大片空白</td><td>自写渲染器没有 blockquote / hr；每个空行都转成 `<br>`，再叠加 `<pre>` 外边距；且引用匹配按原文 `&gt;` 之前先做了 `esc()`</td><td>新增**引用块**（含 `&gt; - 列表`）与**分隔线**（`---/***/___`）；连续空行收敛、块级元素前后不留空行；CSS 补 blockquote/hr 并收紧块间距。★ 引用匹配改为按 `esc()` 后的 `&amp;gt;`（第一版按 `&gt;` 匹配完全没生效）。引用块内 HTML 仍严格转义</td></tr>
+    </table>
+    <div class="tbl-caption">可用性回归整改（V3.6.12；新增知识库诚实性套件 31 条、窗口串行化 +13/+3、界面 295 条含渲染与防连点断言）</div>
     <div class="tbl-caption">交付物完整性整改（V3.6.11；文件管理套件 +8：三种容器真文件、追加/替换后仍可打开；回复链路 +4：跨轮还原与残留提示）</div>
     <div class="tbl-caption">隐私与判据口径修正清单（V3.6.11；每条都有回归断言：隐私套件 +6、插件套件 +6、回复链路 +3）</div>
     <h2 class="sec">8　测试与质量保障</h2>

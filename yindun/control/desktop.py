@@ -103,6 +103,8 @@ class WindowBridge:
         self._window = window
         self._maximized = False
         self._topmost = False
+        # 窗口动作串行化（连点会产生并发 js_api 线程；并发写 WinForms 属性会假死）
+        self._win_lock = threading.Lock()
 
     # ── 由 open_window 调用 ───────────────────────
     def bind(self, window) -> None:
@@ -132,6 +134,10 @@ class WindowBridge:
 
         未识别的动作一律拒绝（返回 ok=False），不做"猜一个最像的动作"——
         自绘按钮就这四个，出现第五个说明前端被改过，此时静默执行更危险。
+
+        ★ 串行化（V3.6.12，与客户端同一处缺陷）：pywebview 对每个 js_api 调用**新开线程**，
+          连点会让多个线程并发写 WinForms 窗口属性（`TopMost` 实测会把窗口写成"未响应"）。
+          一把实例锁把窗口动作排成队；正常点击完全不受影响。
         """
         act = str(action or "").strip().lower()
         if act not in self.ACTIONS:
@@ -141,21 +147,22 @@ class WindowBridge:
         if window is None:
             return {"ok": False, "action": act, "maximized": False, "topmost": False,
                     "reason": "no-window"}
-        try:
-            if act == "toggle_topmost":
-                self._toggle_topmost(window)
-            elif act == "minimize":
-                window.minimize()
-            elif act == "toggle_maximize":
-                self._toggle_maximize(window)
-            else:
-                window.destroy()
-            return {"ok": True, "action": act, "maximized": bool(self._maximized),
-                    "topmost": bool(self._topmost)}
-        except Exception as exc:
-            say(f"[控制面] 窗口动作 {act} 失败：{type(exc).__name__}: {exc}")
-            return {"ok": False, "action": act, "maximized": bool(self._maximized),
-                    "topmost": bool(self._topmost), "reason": type(exc).__name__}
+        with self._win_lock:
+            try:
+                if act == "toggle_topmost":
+                    self._toggle_topmost(window)
+                elif act == "minimize":
+                    window.minimize()
+                elif act == "toggle_maximize":
+                    self._toggle_maximize(window)
+                else:
+                    window.destroy()
+                return {"ok": True, "action": act, "maximized": bool(self._maximized),
+                        "topmost": bool(self._topmost)}
+            except Exception as exc:
+                say(f"[控制面] 窗口动作 {act} 失败：{type(exc).__name__}: {exc}")
+                return {"ok": False, "action": act, "maximized": bool(self._maximized),
+                        "topmost": bool(self._topmost), "reason": type(exc).__name__}
 
     def _toggle_topmost(self, window) -> None:
         """置顶/取消置顶（V3.6.7，按负责人要求与客户端保持一致的四按钮）。

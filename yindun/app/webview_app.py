@@ -59,6 +59,12 @@ class JsApi:
         self._window = window_holder
         # 折叠前的完整几何（极简闪发折叠模式用；None = 当前未折叠）
         self._saved_geometry: Optional[Tuple[int, int, int, int]] = None
+        # ★ 窗口操作**串行化**（V3.6.12，组员评审 BUG-02）：
+        #   pywebview 对每个 js_api 调用**新开一个线程**，前端连点就会并发进入这里；
+        #   多个线程同时写 WinForms 的 `TopMost` 会让窗口假死（实测 10 次并发即稳定复现，
+        #   py-spy 栈里可见 set_on_top → `i.TopMost = ...`，其余 Python 线程全停）。
+        #   一把锁把它们排成队，配合"值没变就不重复写"的去重，正常点击完全不受影响。
+        self._window_lock = threading.Lock()
 
     # ── 启动数据 ─────────────────────────────────
     def bootstrap(self) -> Dict[str, Any]:
@@ -332,33 +338,80 @@ class JsApi:
         window = self._window.get("window")
         if window is None:
             return False
-        try:
-            if action == "minimize":
-                window.minimize()
-            elif action == "toggle_top":
-                new_value = not bool(self._svc.settings.get("topmost", False))
-                self._svc.settings.set("topmost", new_value)
-                self._svc.settings.save()
-                try:
-                    window.on_top = new_value            # 立即作用到原生窗口
-                    self._svc._emit("status", f"置顶已{'开启' if new_value else '关闭'}")
-                except Exception as exc:
-                    print(f"[WebView] 即时应用置顶失败（已保存，重启后生效）：{exc}")
-                    self._svc._emit("status", f"置顶已设为「{'开' if new_value else '关'}」，本机需重启后生效")
-            elif action == "mini":
-                self._collapse_to_mini(window)
-            elif action == "restore_window":
-                self._restore_from_mini(window)
-            elif action == "toggle_maximize":
-                return self._toggle_maximize(window)
-            elif action == "close":
-                window.destroy()
-            else:
+        # ★ 所有窗口操作串行化（见 __init__ 里 `_window_lock` 的说明）：
+        #   前端连点会产生 N 个并发 js_api 调用，pywebview 每个调用一个新线程；
+        #   并发写 WinForms 窗口属性会假死。排队执行才是与"点一次"等价的语义。
+        with self._window_lock:
+            try:
+                if action == "minimize":
+                    window.minimize()
+                elif action == "toggle_top":
+                    return self._toggle_top(window)
+                elif action == "mini":
+                    self._collapse_to_mini(window)
+                elif action == "restore_window":
+                    self._restore_from_mini(window)
+                elif action == "toggle_maximize":
+                    return self._toggle_maximize(window)
+                elif action == "close":
+                    window.destroy()
+                else:
+                    return False
+                return True
+            except Exception as exc:
+                print(f"[WebView] 窗口操作 {action} 失败：{exc}")
                 return False
+
+    # ── 置顶（UI 线程调度 + 去重）──────────────────────────
+    @staticmethod
+    def _ui_thread_dispatch(window, callback) -> bool:
+        """把窗口属性写入**调度到 WinForms UI 线程**；不可用时返回 False。
+
+        为什么需要：pywebview 的 `set_on_top` 最终是 `form.TopMost = value`——在
+        js_api 的工作线程上直接赋值属于跨线程操作 WinForms 控件；多个工作线程并发写
+        时窗口会假死（组员评审 BUG-02 实测：连续 10 次并发 → `Responding=False`）。
+        WinForms 的 `Form.Invoke` 会把回调排到 UI 线程执行，这里优先走它；
+        平台/版本不支持（非 Windows、结构变化）时如实退回直接赋值。
+        """
+        try:
+            from webview.platforms import winforms as _wf
+            form = _wf.BrowserView.instances.get(getattr(window, "uid", None))
+            if form is None or not hasattr(form, "Invoke"):
+                return False
+            form.Invoke(callback)          # 同步：等 UI 线程执行完
             return True
         except Exception as exc:
-            print(f"[WebView] 窗口操作 {action} 失败：{exc}")
+            print(f"[WebView] UI 线程调度不可用（退回直接赋值）：{exc}")
             return False
+
+    def _toggle_top(self, window) -> bool:
+        """切换置顶：以**窗口当前状态**为准，写入优先调度到 UI 线程（V3.6.12）。
+
+        旧实现按 `not settings.topmost` 计算目标值再无条件写 `TopMost` + 落盘；
+        连点时多个线程并发读到旧值、同时写窗口属性——这正是组员评审里"连续点置顶
+        把窗口点成未响应"的根因。现在调用方已用 `_window_lock` 串行化，这里再保证两件事：
+          · 目标值从**窗口真实状态**推导（设置值可能与窗口不同步，例如上次应用失败）；
+          · 写入走 WinForms `Invoke`（UI 线程）；平台不支持时如实退回直接赋值。
+        """
+        try:
+            want = not bool(window.on_top)
+        except Exception:
+            want = not bool(self._svc.settings.get("topmost", False))
+        applied = self._ui_thread_dispatch(window, lambda: setattr(window, "on_top", want))
+        if not applied:
+            try:
+                window.on_top = want
+            except Exception as exc:
+                # 即时应用失败：保存选择，如实告知"重启后生效"，不假装成功
+                print(f"[WebView] 即时应用置顶失败（已保存，重启后生效）：{exc}")
+                self._svc.settings.set("topmost", want)
+                self._svc.settings.save()
+                self._svc._emit("status", f"置顶已设为「{'开' if want else '关'}」，本机需重启后生效")
+                return True
+        self._svc.settings.set("topmost", want)
+        self._svc.settings.save()
+        self._svc._emit("status", f"置顶已{'开启' if want else '关闭'}")
+        return True
 
     # ── 极简闪发折叠模式（几何计算见 app/window_layout.py）──
     def _current_geometry(self, window) -> Optional[Tuple[int, int, int, int]]:

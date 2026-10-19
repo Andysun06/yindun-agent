@@ -1785,15 +1785,29 @@ class AgentService:
         return self._kb
 
     def kb_status(self) -> Dict[str, Any]:
-        """知识库状态：是否可用、embedding 模型、文档/片段数。"""
+        """知识库状态：依赖是否装好、**embedding 是否真的可用**、文档/片段数。
+
+        ★ `available` 与 `embedding_ready` 是两件事（V3.6.12，组员评审 BUG-01）：
+          · available      = Python 依赖已安装（能不能起向量库）；
+          · embedding_ready = Ollama 在线且 embed 模型在（能不能真的向量化）。
+          界面必须按后者决定"能否添加文档"，并说清原因——否则用户会看到"就绪"、
+          点添加也能点，最后失败被批量结果吞掉。
+        """
         kb = self.knowledge_base()
         if kb is None:
-            return {"available": False, "docs": [], "stats": {},
+            return {"available": False, "embedding_ready": False, "docs": [], "stats": {},
                     "error": self._kb_error or "知识库未初始化"}
         try:
             available = bool(kb.is_available())
         except Exception as exc:
-            return {"available": False, "docs": [], "stats": {}, "error": str(exc)}
+            return {"available": False, "embedding_ready": False, "docs": [], "stats": {},
+                    "error": str(exc)}
+        embedding_ready = False
+        if available:
+            try:
+                embedding_ready = bool(kb.embedding_ready())
+            except Exception as exc:
+                print(f"[AgentService] embedding 探活失败：{exc}")
         stats = {}
         docs = []
         if available:
@@ -1802,16 +1816,33 @@ class AgentService:
                 docs = kb.list_documents() or []
             except Exception as exc:
                 print(f"[AgentService] 读取知识库状态失败：{exc}")
+        embed_model = getattr(kb, "embed_model", "")
+        if not available:
+            error = "知识库依赖未安装（chromadb / langchain-chroma 等）"
+        elif not embedding_ready:
+            error = f"本地 embedding 不可用（请确认 Ollama 在线且已拉取 {embed_model}）"
+        else:
+            error = None
         return {
             "available": available,
-            "embed_model": getattr(kb, "embed_model", ""),
+            "embedding_ready": embedding_ready,
+            "embed_model": embed_model,
             "docs": docs,
             "stats": stats,
-            "error": None if available else "本地 embedding 不可用（请确认 Ollama 在线且已拉取 nomic-embed-text）",
+            "error": error,
         }
 
     def kb_add(self, paths: List[str]) -> Dict[str, Any]:
-        """把文档入库（入库前逐块脱敏，向量库只存占位符）。"""
+        """把文档入库（入库前逐块脱敏，向量库只存占位符）。
+
+        ★ `ok` 必须反映**真实结果**（V3.6.12，组员评审 BUG-01）：`add_documents()`
+          是逐文件容错的——单个文件失败只记进 details、不抛异常。旧实现因此
+          "只要批处理跑完就 ok=True"，于是"成功 0/2"也会被界面当成入库成功，
+          用户看到一个空库。现在：
+          · `success > 0` 才算 ok（全部失败 → ok=False，并带第一条失败原因）；
+          · 部分失败 → ok=True 但 `partial=True` + `failed`/`summary`，界面必须提示；
+          · 始终把 `summary`（人话统计）带回去，不让失败原因只活在 details 里。
+        """
         kb = self.knowledge_base()
         if kb is None:
             return {"ok": False, "error": self._kb_error or "知识库未初始化"}
@@ -1820,11 +1851,29 @@ class AgentService:
             return {"ok": False, "error": "未选择文件"}
         try:
             if not kb.is_available():
-                return {"ok": False, "error": "本地 embedding 不可用（Ollama / nomic-embed-text 未就绪）"}
+                return {"ok": False, "error": "知识库依赖未安装（请先安装 chromadb 等组件）"}
+            if not kb.embedding_ready():
+                return {"ok": False,
+                        "error": ("本地 embedding 不可用：Ollama 未在线，或没有拉取 "
+                                  f"{getattr(kb, 'embed_model', 'nomic-embed-text')}。"
+                                  "先在命令行执行 ollama pull nomic-embed-text，再重试。")}
             self._emit("status", f"正在入库 {len(files)} 个文档（逐块脱敏后向量化）…")
             result = kb.add_documents(files)
             self._emit("status", "")
-            return {"ok": True, "result": result, "status": self.kb_status()}
+            success = int(result.get("success") or 0)
+            failed = int(result.get("failed") or 0)
+            summary = str(result.get("summary") or "")
+            errors = [str(item.get("error") or "") for item in (result.get("details") or [])
+                      if str(item.get("status")) == "failed"]
+            return {
+                "ok": success > 0,
+                "result": result,
+                "summary": summary,
+                "failed": failed,
+                "partial": success > 0 and failed > 0,
+                "error": "" if success else (errors[0] if errors else summary or "没有文档成功入库"),
+                "status": self.kb_status(),
+            }
         except Exception as exc:
             self._emit("status", "")
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}

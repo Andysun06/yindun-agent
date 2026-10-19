@@ -833,7 +833,101 @@ def main() -> int:
                   c[9]["code"] == ["<br>"] and c[9]["brs"] == 0 and "<br>" in c[9]["text"],
                   f"code={c[9]['code']} brs={c[9]['brs']} text={c[9]['text']!r}")
 
-        # ── 13) 等待态 / 空回复兜底 / trace 落点（真机事故固化）──
+        # ── 12b) 引用块 / 分隔线 / 空行收敛（V3.6.12，负责人截图）──
+        # 现场：模型用 `> ` 引用 OCR 原文，界面把 `>` 原样显示成纯文本；`---` 也原样显示；
+        #      代码块前后留下大片空白（空行都变成了 <br>，再叠加 <pre> 外边距）。
+        print("\n" + "=" * 78)
+        print("【12b】Markdown 引用块 / 分隔线 / 空行收敛")
+        print("=" * 78)
+        md_quote = "\n".join([
+            "【题目定位】",
+            "> 一、选择题（本题共20分）",
+            ">",
+            "> 1. 下列函数中，不是类的成员函数（ ）",
+            "> - A) 构造函数",
+            "> - B) 析构函数",
+            "---",
+            "答案：C",
+        ])
+        page.evaluate("(t) => window.yindun.onEvent('intermediate_result', t)", md_quote)
+        page.wait_for_timeout(300)
+        quote = page.evaluate("""() => {
+          const body = [...document.querySelectorAll('#chat .entry__body')].pop();
+          if (!body) return null;
+          const q = body.querySelector('blockquote');
+          return {
+            hasQuote: !!q,
+            quoteText: q ? q.textContent : '',
+            quoteMarks: (body.textContent.match(/>/g) || []).length,
+            hrs: body.querySelectorAll('hr').length,
+            literalHr: body.textContent.includes('---'),
+            quoteBrs: q ? q.querySelectorAll('br').length : -1,
+          };
+        }""")
+        check("★ `> ` 引用渲染成 blockquote（页面上不再出现字面 '>'）",
+              bool(quote) and quote["hasQuote"] and quote["quoteMarks"] == 0, str(quote))
+        check("★ 引用块里的 `> - A)` 变成列表标记（保留内容）",
+              bool(quote) and "• A) 构造函数" in quote["quoteText"], str(quote))
+        check("★ `---` 渲染成 <hr>（页面上不再出现字面 '---'）",
+              bool(quote) and quote["hrs"] == 1 and not quote["literalHr"], str(quote))
+
+        md_space = "\n".join([
+            "### 小节标题",
+            "",
+            "",
+            "",
+            "```",
+            "class Box { int size; };",
+            "```",
+            "",
+            "",
+            "",
+            "关键特征：",
+        ])
+        page.evaluate("(t) => window.yindun.onEvent('intermediate_result', t)", md_space)
+        page.wait_for_timeout(300)
+        spacing = page.evaluate("""() => {
+          const body = [...document.querySelectorAll('#chat .entry__body')].pop();
+          const pre = body ? body.querySelector('pre') : null;
+          if (!pre) return null;
+          const rect = pre.getBoundingClientRect();
+          // 前后各找一个"有文字"的节点，量它们的间距
+          const prev = pre.previousSibling;
+          const next = pre.nextSibling;
+          const prevText = prev && prev.textContent ? prev.textContent : '';
+          const nextText = next && next.textContent ? next.textContent : '';
+          return {
+            brsBefore: (prevText.match(/\\u0000/g) || []).length,
+            prevTail: prevText.slice(-12),
+            nextHead: nextText.slice(0, 12),
+            preH: rect.height,
+            gapBeforeOk: !!prev,
+            gapAfterOk: !!next,
+            emptyP: body.querySelectorAll('p:empty').length,
+            totalBrs: body.querySelectorAll('br').length,
+          };
+        }""")
+        # 渲染器不再产出 <p>；空行收敛后，<pre> 前后的换行数不应堆叠成大片空白。
+        check("★ 代码块前后不再堆叠空行（空段落 0 个、br 数量可控）",
+              bool(spacing) and spacing["emptyP"] == 0 and spacing["totalBrs"] <= 8, str(spacing))
+        check("代码块内容完整保留（收敛空白不影响正文）",
+              "class Box" in page.evaluate(
+                  "() => [...document.querySelectorAll('#chat .entry__body pre')].pop().textContent"),
+              "")
+
+        # 引用块里的 HTML 仍必须转义（加 blockquote 不能放松安全口径）
+        evil_q = "> <img src=x on" + "error=alert(" + "1)>"
+        page.evaluate("(t) => window.yindun.onEvent('intermediate_result', t)", evil_q)
+        page.wait_for_timeout(250)
+        evil_q_dom = page.evaluate("""() => {
+          const body = [...document.querySelectorAll('#chat .entry__body')].pop();
+          return { imgs: body.querySelectorAll('img').length,
+                   text: body.textContent || '' };
+        }""")
+        check("★ 引用块里的恶意标签仍被转义（DOM 无 img）",
+              evil_q_dom["imgs"] == 0 and "<img" in evil_q_dom["text"], str(evil_q_dom))
+
+
         # 事故（负责人实测）：问「我的桌面有几张图片？」→ 助手气泡是**空的**、整段生成期没有
         # 任何"思考中"提示，重启后那一轮像没发生过。后端已修（直答快路径不再吞工具调用、
         # 终止文本保证非空），这里把前端的三条反馈缺口钉死：发送即等待态、等待态被"升级"
@@ -1554,6 +1648,165 @@ def main() -> int:
             check(f"{label}下滚动条宽度仍是既有的 10px（没被顺手改掉）",
                   styles["width"] == "10px", str(styles))
 
+        # ── 20b) 窗口按钮防连点（组员评审：连续点击会把窗口点成"未响应"）──
+        print("\n" + "=" * 78)
+        print("【20b】窗口按钮防连点：请求未返回时同一按钮只发一次")
+        print("=" * 78)
+        # 把桥接换成一个**可控 Promise**：记录调用次数，由测试手动 resolve
+        page.evaluate("""() => {
+            window.__winCalls = 0;
+            window.__winResolve = null;
+            window.__YINDUN_MOCK__.api.window_action = (action) => {
+              window.__winCalls += 1;
+              window.__winAction = action;
+              return new Promise((resolve) => { window.__winResolve = () => resolve(true); });
+            };
+        }""")
+        page.evaluate("""() => {
+            const b = document.getElementById('btn-pin');
+            for (let i = 0; i < 5; i++) b.click();     // 同步狂点 5 下
+        }""")
+        page.wait_for_timeout(120)
+        win_calls = page.evaluate("() => window.__winCalls")
+        check("置顶连点 5 次：请求进行中桥接只被调用 1 次", win_calls == 1, str(win_calls))
+        check("首个 await 之前按钮已同步 disabled（后续 click 不再派发）",
+              page.evaluate("() => document.getElementById('btn-pin').disabled") is True, "")
+        page.evaluate("() => window.__winResolve && window.__winResolve()")
+        page.wait_for_timeout(250)
+        check("请求返回后按钮恢复可用",
+              page.evaluate("() => !document.getElementById('btn-pin').disabled"), "")
+        page.evaluate("() => document.getElementById('btn-pin').click()")
+        page.wait_for_timeout(120)
+        win_calls = page.evaluate("() => window.__winCalls")
+        check("resolve 后再点一次：调用次数变为 2", win_calls == 2, str(win_calls))
+        page.evaluate("() => window.__winResolve && window.__winResolve()")   # 收尾，别留悬挂 Promise
+        page.wait_for_timeout(250)
+
+        # ── 20c) 主题连点防抖：立即切换 / 过渡与落盘合并 ──
+        print("\n" + "=" * 78)
+        print("【20c】主题连点：立即切换 + 一轮只落盘一次")
+        print("=" * 78)
+        page.emulate_media(reduced_motion="no-preference")
+        page.wait_for_timeout(300)                       # 让上一段可能的防抖计时器收尾
+        page.evaluate("() => { window.__calls = []; }")  # 只统计本段的 save_settings
+        theme_start = page.evaluate("() => document.documentElement.dataset.theme")
+        page.evaluate("""() => {
+            const b = document.getElementById('btn-theme');
+            for (let i = 0; i < 5; i++) setTimeout(() => b.click(), i * 30);
+        }""")
+        # ★ 采样点要落在"已点奇数次、但还没到 220ms 合并窗口"：5 次点击在 0/30/60/90/120ms 发出，
+        #   取 100ms 时只落了 4 次（偶数 → 正好回到初值，二者相等并不说明"没立即切换"）。
+        page.wait_for_timeout(160)                       # 5 次都点了（奇数），仍早于 220ms 合并窗口
+        theme_mid = page.evaluate("() => document.documentElement.dataset.theme")
+        check("连点过程中主题已立即切换（不等防抖窗口结束）",
+              theme_mid != theme_start, f"{theme_start} → {theme_mid}")
+        page.wait_for_timeout(450)                       # 留足 220ms 合并窗口
+        theme_end = page.evaluate("() => document.documentElement.dataset.theme")
+        check("连点 5 次（奇数次）后最终态 = 最后一次点击的目标",
+              theme_end != theme_start, f"{theme_start} → {theme_end}")
+        dark_saves = [c for c in calls("save_settings")
+                      if c[1] and isinstance(c[1][0], dict) and "dark_mode" in c[1][0]]
+        check("一轮连点只落盘一次 dark_mode", len(dark_saves) == 1, str(dark_saves))
+        check("落盘的 dark_mode 就是最终态",
+              bool(dark_saves) and dark_saves[-1][1][0]["dark_mode"] == (theme_end == "dark"),
+              str(dark_saves[-1:]))
+
+        # ── 20d) 知识库入库结果如实展示（组员评审 BUG-01）──
+        print("\n" + "=" * 78)
+        print("【20d】知识库：失败 / 部分成功 / embedding 未就绪")
+        print("=" * 78)
+        if not page.evaluate("() => document.querySelector('.app').classList.contains('is-settings-open')"):
+            page.click("#btn-settings")
+            page.wait_for_timeout(300)
+        page.click('.setnav__item[data-set="kb"]')
+        page.wait_for_timeout(300)
+
+        def clear_toasts() -> None:
+            page.evaluate("() => document.querySelectorAll('#toast-root .toast').forEach(e => e.remove())")
+
+        def toast_text() -> str:
+            return page.eval_on_selector_all(
+                "#toast-root .toast", "els => els.map(e => e.textContent).join(' | ')")
+
+        # ① 全部失败：必须说清原因，绝不能再说「入库完成」
+        page.evaluate("""() => {
+            const m = window.__YINDUN_MOCK__.api;
+            m.kb_pick_and_add = () => Promise.resolve({ ok: false, error: "Ollama 未在线，无法向量化" });
+            m.kb_status = () => Promise.resolve({ available: true, embedding_ready: true,
+                embed_model: "nomic-embed-text", docs: [], stats: {}, error: null });
+        }""")
+        page.click("#btn-kb-refresh")
+        page.wait_for_timeout(200)
+        clear_toasts()
+        page.click("#btn-kb-add")
+        page.wait_for_timeout(350)
+        t_text = toast_text()
+        check("① ok=false：toast 明确给出失败原因", "Ollama 未在线" in t_text, repr(t_text))
+        check("① ok=false：不再出现「入库完成」", "入库完成" not in t_text, repr(t_text))
+        notice = (page.inner_text("#kb-notice") or "").strip()
+        check("① 失败原因在列表上方持久可见（不是 flash 一下）",
+              page.is_visible("#kb-notice") and "Ollama 未在线" in notice, repr(notice))
+
+        # ② 部分成功：成功 x/y + 失败文件与原因
+        page.evaluate("""() => {
+            const m = window.__YINDUN_MOCK__.api;
+            m.kb_pick_and_add = () => Promise.resolve({
+                ok: true, partial: true, failed: 1,
+                summary: "入库完成：成功 1/2，失败 1：坏文档.pdf（加密 PDF 无法解析）",
+                result: { total: 2, success: 1, failed: 1, summary: "入库完成：成功 1/2", details: [
+                    { file: "好文档.md", status: "success" },
+                    { file: "坏文档.pdf", status: "failed", error: "加密 PDF 无法解析" } ] },
+                status: { available: true, embedding_ready: true, embed_model: "nomic-embed-text",
+                          docs: [{ name: "好文档.md", chunks: 2 }],
+                          stats: { total_documents: 1, total_chunks: 2 }, error: null }
+            });
+        }""")
+        clear_toasts()
+        page.click("#btn-kb-add")
+        page.wait_for_timeout(350)
+        t_text = toast_text()
+        notice = (page.inner_text("#kb-notice") or "").strip()
+        check("② 部分成功提示「成功 1/2」", "成功 1/2" in t_text, repr(t_text))
+        check("② 部分成功列出失败文件名与原因",
+              "坏文档.pdf" in notice and "加密 PDF 无法解析" in notice, repr(notice))
+
+        # ③ embedding_ready=false：禁用添加 + 显示后端原因
+        page.evaluate("""() => {
+            const m = window.__YINDUN_MOCK__.api;
+            m.kb_status = () => Promise.resolve({ available: true, embedding_ready: false,
+                embed_model: "nomic-embed-text",
+                error: "本地 embedding 不可用（请确认 Ollama 在线且已拉取 nomic-embed-text）",
+                docs: [], stats: {} });
+        }""")
+        page.click("#btn-kb-refresh")
+        page.wait_for_timeout(250)
+        check("③ embedding_ready=false 时「添加文档」禁用",
+              page.evaluate("() => document.getElementById('btn-kb-add').disabled") is True, "")
+        hint = (page.inner_text("#kb-status") or "").strip()
+        check("③ 禁用时旁边如实显示 kb_status.error", "请确认 Ollama 在线" in hint, repr(hint))
+
+        # ④ 状态恢复后按钮恢复可点
+        page.evaluate("""() => {
+            const m = window.__YINDUN_MOCK__.api;
+            m.kb_status = () => Promise.resolve({ available: true, embedding_ready: true,
+                embed_model: "nomic-embed-text", docs: [], stats: {}, error: null });
+        }""")
+        page.click("#btn-kb-refresh")
+        page.wait_for_timeout(250)
+        check("④ 状态恢复 ready 后「添加文档」恢复可点",
+              page.evaluate("() => !document.getElementById('btn-kb-add').disabled"), "")
+
+        # ⑤ 说明持久存在，且就在列表上方
+        notice = (page.inner_text("#kb-notice") or "").strip()
+        check("⑤ 列表上方的说明在刷新后仍持久存在",
+              page.is_visible("#kb-notice") and "坏文档.pdf" in notice, repr(notice))
+        check("⑤ 说明位于知识库列表上方（同一容器且先于列表）", page.evaluate("""() => {
+            const n = document.getElementById('kb-notice');
+            const l = document.getElementById('kb-list');
+            return !!(n && l && n.parentElement === l.parentElement
+                      && (n.compareDocumentPosition(l) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0);
+        }"""), "")
+
         # ── 21b) 输入框焦点环只该有一圈（负责人截图："为什么两个圈都高亮"）──
         # 根因：全局 `textarea:focus { border-color + box-shadow }` 给内层 textarea 加了一圈，
         #      外面 `.composer__box:focus-within` 又加一圈 → 看着是套着的两个圈。
@@ -1561,8 +1814,15 @@ def main() -> int:
         print("\n" + "=" * 78)
         print("【21b】输入框焦点：只有最外一圈高亮")
         print("=" * 78)
+        # ★ 前面的用例可能把界面切到设置页（输入框隐藏，focus() 不会生效）——
+        #   先回到对话视图再聚焦，否则测到的是"没聚焦"的默认样式（假失败）。
+        if page.evaluate("() => document.querySelector('.app').classList.contains('is-settings-open')"):
+            page.click("#set-back")          # 设置视图里顶栏的齿轮不可见，用「返回对话」
+            page.wait_for_timeout(250)
         page.evaluate("() => { document.querySelector('#input').focus(); }")
         page.wait_for_timeout(120)
+        check("（前置）输入框真的拿到焦点（否则焦点环断言无意义）",
+              page.evaluate("() => document.activeElement && document.activeElement.id") == "input", "")
         ring = page.evaluate("""() => {
             const box = document.querySelector('.composer__box');
             const ta = document.querySelector('#input');
