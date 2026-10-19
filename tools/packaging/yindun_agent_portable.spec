@@ -61,10 +61,20 @@ for pkg in [
 _OCR_PKGS = ["rapidocr_onnxruntime", "rapidocr"]
 _ocr_collected = []
 for _pkg in _OCR_PKGS:
+    # ★ 必须先确认"这个包真的在环境里"（V3.6.7 实测）：PyInstaller 6.21 的 collect_all() 对
+    #   **缺失**的包只打一条 WARNING、**不抛异常**，所以原来 try/except 那套判据根本不成立——
+    #   横幅会印成【含 OCR】而实际一个文件都没收进去，等于对着交付的人撒谎。
     try:
+        import importlib.util as _ilu
+        if _ilu.find_spec(_pkg) is None:
+            print(f"[spec] OCR 引擎 {_pkg} 未安装（find_spec 为空），跳过")
+            continue
         d, b, h = collect_all(_pkg)
     except Exception as exc:
         print(f"[spec] OCR 引擎 {_pkg} 未收集：{exc}")
+        continue
+    if not (d or b or h):
+        print(f"[spec] OCR 引擎 {_pkg} 收集结果为空，视为未收集")
         continue
     datas += d
     binaries += b

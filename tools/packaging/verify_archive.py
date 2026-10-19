@@ -114,6 +114,73 @@ def _harvest(code) -> Tuple[Set[str], str]:
     return names, "\n".join(texts)
 
 
+def _plugin_import_modules(src_root: Path) -> Set[str]:
+    """扫描内置插件源码，收集它们 import 的**非本仓库**模块名（去重后的顶层名）。
+
+    为什么需要它（组员审查报告的真实案例）：插件是**按文件路径动态加载**的
+    （`plugins/host.py` 里 `spec_from_file_location`），PyInstaller 的静态分析进不去
+    `plugin.py`，插件独有的 import（例如 `doc_extra` 用的 `html.parser`）只能"碰巧"被别的
+    模块带进包。构建脚本会主动收集（见 spec），这里**独立复核一遍**——两个实现各自扫源码，
+    一个坏了另一个还能报出来。
+
+    只收集"第三方/标准库"模块：跳过相对导入与本仓库自己的 `yindun*`（它们由
+    `collect_submodules("yindun")` 负责）。
+    """
+    import ast
+
+    tolerated = {"ImportError", "ModuleNotFoundError", "Exception"}
+
+    def _optional_imports(tree) -> Set[int]:
+        """被 try/except（捕 ImportError / Exception）包住的 import 节点：**可选依赖**。
+
+        判据取自源码结构而不是一份白名单：插件把"本机没装也能降级"的依赖写成
+        `try: from laya import Router / except Exception: 回退`，这类 import 缺了不算缺陷
+        （laya 就是这种：装了用模型分级，没装回退正则）。白名单会随插件增删漂移，
+        结构判据不会。
+        """
+        marked: Set[int] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Try):
+                continue
+            # ★ 只认异常**类型**（`h.type`）：`except Exception as exc:` 里的 `h.name` 是绑定名 "exc"，
+            #   早先写成 `h.name or h.type.id` 会把它当成捕获类型 → 所有"忘了带类型"的处理器
+            #   都会被误判成"没捕获 ImportError"，可选依赖因此漏检（实测：laya 没被识别成可选）。
+            catches = {h.type.id for h in node.handlers
+                       if isinstance(getattr(h, "type", None), ast.Name)}
+            if not (catches & tolerated):
+                continue
+            for child in ast.walk(ast.Module(body=node.body, type_ignores=[])):
+                marked.add(id(child))
+        return marked
+
+    found: Set[str] = set()
+    plugin_root = src_root / "yindun" / "plugins" / "builtin"
+    for path in sorted(plugin_root.glob("*/*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        except SyntaxError:
+            continue
+        optional = _optional_imports(tree)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:                  # 相对导入：插件自己在包里
+                    continue
+                names = [node.module or ""]
+            else:
+                continue
+            if id(node) in optional:
+                continue
+            for name in names:
+                top = (name or "").split(".")[0]
+                if not top or top.startswith("yindun") or top == "__future__":
+                    continue
+                found.add(top)
+                found.add(name)                 # 子模块也留一份（PyInstaller 会按需收集）
+    return found
+
+
 def _module_symbols(zr, module: str) -> Tuple[Set[str], str]:
     entry = next((n for n in zr.toc if n == module), None)
     if entry is None:
@@ -183,6 +250,57 @@ def _exe_path(kind: str, version: str) -> Path:
     return _SRC / "dist" / name
 
 
+def _stdlib_zip_modules(reader) -> Set[str]:
+    """`base_library.zip` 里的模块名（PyInstaller 6 把纯 Python 标准库放这儿，不在 PYZ 里）。
+
+    不查这里就会把 `re` 这种"明明在包里、只是不落 PYZ"的模块报成缺失（实测踩过一次）。
+    """
+    names: Set[str] = set()
+    entry = next((n for n in reader.toc if n.lower().endswith("base_library.zip")), "")
+    if not entry:
+        return names
+    import io
+    import zipfile
+    try:
+        with zipfile.ZipFile(io.BytesIO(reader.extract(entry))) as zf:
+            for item in zf.namelist():
+                head = item.split("/")[0]
+                names.add(head[:-4] if head.endswith(".pyc") else head)
+                names.add(item[:-4].replace("/", ".") if item.endswith(".pyc") else "")
+    except Exception:
+        pass
+    names.discard("")
+    return names
+
+
+def _check_plugin_deps(reader, zr, source_root: Path) -> List[str]:
+    """插件的 import 必须真的进了包（组员审查报告里的 `html.parser` 那一类）。
+
+    判据：按插件源码扫出来的模块名，逐个在**三个地方**找——PYZ 模块表、`base_library.zip`
+    （PyInstaller 6 的标准库落点）、解释器内建模块表。三处都没有才算"没进包"。
+    这条能拦住"源码跑得好好的、exe 里插件自检报 ModuleNotFoundError"的整类问题。
+    """
+    modules = _plugin_import_modules(source_root)
+    if not modules:
+        return []
+    import sys as _sys
+    builtin_names = set(_sys.builtin_module_names)
+    pyz_names = set(getattr(zr, "toc", {}) or {})
+    stdlib_names = _stdlib_zip_modules(reader)
+
+    def _present(name: str) -> bool:
+        top = name.split(".")[0]
+        return (name in builtin_names or top in builtin_names
+                or name in pyz_names or top in pyz_names
+                or name in stdlib_names or top in stdlib_names)
+
+    missing = sorted(m for m in modules if not _present(m))
+    if not missing:
+        return []
+    return [f"客户端 exe：插件依赖模块没进包 {missing}（源码能跑、exe 里会 ModuleNotFoundError；"
+            f"检查 tools/packaging/yindun_agent_portable.spec 的 hiddenimports 收集）"]
+
+
 def verify_client(exe: Path = None, source_root: Path = None) -> List[str]:
     """校验客户端 exe；返回问题列表（空 = 全部一致）。"""
     source_root = Path(source_root or _SRC)
@@ -197,6 +315,7 @@ def verify_client(exe: Path = None, source_root: Path = None) -> List[str]:
     problems += _check_data_dir(reader, source_root / "yindun" / "app" / "web",
                                "yindun/app/web")
     problems += _check_symbols(zr, CLIENT_SYMBOLS, "客户端 exe")
+    problems += _check_plugin_deps(reader, zr, source_root)
     problems += _check_version(zr, __display_version__)
     return problems
 
