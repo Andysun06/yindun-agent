@@ -234,11 +234,14 @@ def _resolve_target_dir(target_directory: str, default_dir=None) -> str:
     if os.path.isabs(p):
         return os.path.abspath(p)
 
-    # 然后处理中文描述。"桌面" 走**外壳真实路径**（注册表）：
+    # 然后处理中文描述。"桌面 / 下载 / 文档" 都走**外壳真实路径**（注册表）：
     # 被 OneDrive 重定向的机器上 `~/Desktop` 是不存在的旧位置，拼它必然落空。
-    if "桌面" in target_directory:
-        desktop = _shell_folder_dirs().get("Desktop")
-        return desktop or os.path.join(os.path.expanduser("~"), "Desktop")
+    # ★ 下载/文档同样要认（V3.6.9）：用户会说"下载里存了多少个文件"——旧实现只认「桌面」，
+    #   这句会静默落到默认目录上去列，答非所问却看不出哪里错了。
+    _known = _shell_folder_dirs()
+    for keyword, english in (("桌面", "Desktop"), ("下载", "Downloads"), ("文档", "Documents")):
+        if keyword in target_directory:
+            return _known.get(english) or os.path.join(os.path.expanduser("~"), english)
 
     drive_match = re.search(r"^([A-Za-z])\s*[盘盘]\s*(.*)", p)
     if drive_match:

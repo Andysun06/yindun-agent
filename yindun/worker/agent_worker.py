@@ -664,6 +664,38 @@ class Worker:
                         forced_tool_result = f"[工具执行出错] {_e}"
                     self.tool_call_count += 1
 
+            # ★ 第四个强制分支（V3.6.9，负责人实测："我用 2b 模型，回答不了桌面有多少文件"）：
+            #   最**自然**的问法恰恰不在上面两个分支的触发词里 —— "我的桌面有多少文件？"
+            #   既没有绝对路径，也没有"列出/看看/有什么"这类动词，于是宿主不兜底，
+            #   弱模型（2b）就自己发挥：实测它回了一段"我无法直接访问您的桌面文件夹…
+            #   根据当前权限范围，我只能查看以下目录"（而桌面**就在**那个列表里），
+            #   既没调工具、也没给出数量。用户看到的就是"这么简单的事都做不了"。
+            #   这里补一条**数量/清点**触发：位置词（桌面/下载/文档/沙箱/目录/文件夹）
+            #   或"文件"类名词（文件/图片/照片/文档）＋ 清点词（多少/几个/几张/数量…）
+            #   命中即由宿主真的去列一次目录，把真实结果喂给模型。
+            #   收紧口径：必须有"清点"意图，普通问答与写代码的请求不会被劫持
+            #   （例："帮我写一段代码生成几张图片"没有位置词、也不是清点文件 → 不介入）。
+            if forced_tool_result is None and "list_local_files" in self.tools_map:
+                _want_dir = self._dir_listing_target(self.user_input)
+                if _want_dir:
+                    self.status.emit(f"[工具执行] 清点目录: {_want_dir}")
+                    try:
+                        _args = {"target_directory": _want_dir}
+                        _raw = self._execute_with_approval("list_local_files", _args)
+                        # ★ 数字由**宿主**数准（V3.6.9，负责人实测的下一步）：
+                        #   拿到真实清单还不够 —— 2b 模型对着一长串文件名会数错
+                        #   （同一次提问实测报 48，换个思考开关就报 61）。清点类问题的
+                        #   正确答案就在宿主手里（os.scandir 数一遍即可），没理由让它猜。
+                        #   把"文件 N 个 / 子目录 M 个"直接给它，并说明以这组数字为准；
+                        #   拼好后再走同一个脱敏通道（路径里的用户名等照旧被掩盖）。
+                        _raw = self._count_note(_want_dir) + "\n" + _raw
+                        forced_tool_result, _ = self._anonymize_tool_output(_raw, "list_local_files")
+                        forced_tool_name = "list_local_files"
+                        forced_tool_args = dict(_args)
+                    except Exception as _e:
+                        forced_tool_result = f"[工具执行出错] {_e}"
+                    self.tool_call_count += 1
+
             # ★ 第三个强制分支（V3.6.3，"别让 agent 成为短板"）：**问某个具体文件的内容**
             #   但没有给绝对路径时（"读一下沙箱里的 客户名单.txt""demo_contract.txt 里写了什么"），
             #   由宿主直接把文件读出来喂给模型。实测：4B 模型这类请求**经常不调工具**，
@@ -1028,15 +1060,20 @@ class Worker:
                         self._deepen_used = True
                         self.status.emit(f"[深化 {round_count}/{min_rounds}] 未达最低思考轮数，强制继续分析...")
                         deepen_prompt = (
-                        "\n\n请基于以上工具执行结果，继续深入分析："
-                        "1. 重点解读关键文件的具体实现逻辑\n"
-                        "2. 总结项目的核心功能、技术亮点和潜在风险\n"
-                        "3. 如果有遗漏的重要文件，请调用工具继续读取分析"
-                    )
-                    messages.append(HumanMessage(content=deepen_prompt,
-                                                additional_kwargs={"internal": True}))
-                    has_executed_tool = False  # 重置标记，允许下一轮继续强制
-                    continue  # 不返回，继续下一轮推理
+                            "\n\n请基于以上工具执行结果，继续深入分析："
+                            "1. 重点解读关键文件的具体实现逻辑\n"
+                            "2. 总结项目的核心功能、技术亮点和潜在风险\n"
+                            "3. 如果有遗漏的重要文件，请调用工具继续读取分析"
+                        )
+                        # ★ 这三行必须在 else 里（V3.6.9 修复真实崩溃）：
+                        #   原先它们比 else 体浅一层，于是"已得到实质回答、跳过深化轮"那支
+                        #   执行完就直落下来引用 `deepen_prompt`——该变量只在 else 里赋值，
+                        #   必然 UnboundLocalError「回答生成失败」。而且崩的正是"模型答得好"
+                        #   的路径（越该正常回答的越崩），用户看到的就是"回答了但报错"。
+                        messages.append(HumanMessage(content=deepen_prompt,
+                                                     additional_kwargs={"internal": True}))
+                        has_executed_tool = False  # 重置标记，允许下一轮继续强制
+                        continue  # 不返回，继续下一轮推理
 
                 if has_executed_tool and not self._looks_substantive(
                         content if isinstance(content, str) else ""):
@@ -1049,6 +1086,14 @@ class Worker:
                                                 additional_kwargs={"internal": True}))
                     final_msg = self._invoke_llm_streaming(messages)
                     content = getattr(final_msg, "content", "")
+                    # ★ 总结轮的结果必须**进消息链**（V3.6.9 修复真实不一致）：
+                    #   这一轮是在替用户生成最终答复，旧实现只 emit 给界面、没放进 `messages`——
+                    #   而落库用的是链尾（`_ensure_reply_persisted` 只补空尾、不覆盖已有的非空尾），
+                    #   于是用户当场看到的是总结、重开会话只看得到总结之前那句薄回答（实测"好的"）。
+                    #   补进链里，落库口径与界面一致：用户看到什么，库里就存什么。
+                    if content and isinstance(content, str) and content.strip():
+                        messages.append(AIMessage(content=content,
+                                                  additional_kwargs={"internal": True}))
                     # 渐进输出：把总结也先发给用户
                     if content and isinstance(content, str) and content.strip():
                         self.intermediate_result.emit(self._clean(content))
@@ -1491,6 +1536,74 @@ class Worker:
     #     ② 放行必定留痕——状态栏 + 过程轨迹可见，工具层再写一条 access_control 审计
     #        （含工具名/真实路径/档位/判定结果），任何一次越界都没有静默通道。
     # ──────────────────────────────────────────
+
+    # ──────────────────────────────────────────
+    # 清点类请求的识别（V3.6.9）
+    #   为什么单独一个方法：上面那几个强制分支的触发词是"动作动词"（列出/看看/有什么），
+    #   而用户最自然的问法是**数量问句**——"我的桌面有多少文件""下载里存了几张图"。
+    #   这类问句不带任何动作动词，弱模型于是自己编（实测 2b 会拿"权限范围说明"当答案）。
+    #   判据（三条同时满足才介入，宁可不介入也别劫持普通问答）：
+    #     ① 有**位置词**（桌面/下载/文档/沙箱/目录/文件夹）或"文件"类名词（文件/图片/照片/文档）；
+    #     ② 有**清点意图**（多少/几个/几张/几份/几件/数量/有几个/还有多少）；
+    #     ③ 不是"要我写/生成代码"那类创作请求（没有位置词时尤其要看这一条）。
+    #   返回要列举的目录（""=不介入）：给了位置词就用位置词，否则用当前工作目录。
+    # ──────────────────────────────────────────
+    _DIR_LOCATION_WORDS = ("桌面", "下载", "文档", "沙箱", "目录", "文件夹", "工作区")
+    _COUNT_INTENT_WORDS = ("多少", "几个", "几张", "几份", "几件", "数量", "有几个", "还有几")
+    _CREATION_WORDS = ("写一段", "写个", "生成一段", "生成一份", "代码", "脚本", "函数", "正则")
+
+    def _dir_listing_target(self, text: str) -> str:
+        """清点类问句 → 要列举的目录；不介入时返回空串。"""
+        body = str(text or "")
+        if not body:
+            return ""
+        if not any(word in body for word in self._COUNT_INTENT_WORDS):
+            return ""
+        has_location = any(word in body for word in self._DIR_LOCATION_WORDS)
+        has_file_noun = any(word in body for word in ("文件", "图片", "照片", "文档", "表格"))
+        if not (has_location or has_file_noun):
+            return ""
+        if not has_location and any(word in body for word in self._CREATION_WORDS):
+            return ""                      # "帮我写段代码生成几张图片"：创作请求，不是清点
+        try:
+            # 具体目录词（桌面/下载/文档）→ 交给工具层同一套解析（含 OneDrive 重定向后的真实路径）；
+            # 泛指的"沙箱/目录/文件夹/工作区"→ 本次会话的工作目录（self.sandbox_path），
+            # 不能落到应用根上（那会把"这个目录里有多少文件"数成程序目录）。
+            from yindun.core.file_tools import _resolve_target_dir
+            for keyword in ("桌面", "下载", "文档"):
+                if keyword in body:
+                    resolved = _resolve_target_dir(keyword)
+                    if resolved and os.path.isdir(resolved):
+                        return resolved
+                    break
+            return self.sandbox_path or _resolve_target_dir("")
+        except Exception:
+            return self.sandbox_path or ""
+
+    @staticmethod
+    def _count_note(directory: str) -> str:
+        """宿主自己数一遍目录（文件数 / 子目录数 / 合计），给模型一组**可照抄的数字**。
+
+        为什么不让模型数：清点类问题（"桌面有多少文件"）的正解就摆在宿主手上，
+        `os.scandir` 数一遍是 O(n) 的确定操作；而让语言模型去数一长串文件名，
+        实测会数错（同一次提问，两次运行给出 48 与 61），用户拿到的就是一个错数。
+        数不出来时如实说明（不猜、不填 0 冒充）。
+        """
+        target = str(directory or "")
+        if not target:
+            return ""
+        try:
+            files = dirs = 0
+            for entry in os.scandir(target):
+                if entry.is_dir():
+                    dirs += 1
+                else:
+                    files += 1
+            return (f"【宿主清点】{target}：文件 {files} 个、子目录 {dirs} 个"
+                    f"（合计 {files + dirs} 项）。用户问「有多少」时，**以这组数字为准**，"
+                    f"不要自己数清单里的名字。")
+        except Exception as exc:                                        # noqa: BLE001
+            return f"【宿主清点】{target}：统计失败（{type(exc).__name__}: {exc}），请如实说明读不到。"
 
     def _range_notice(self) -> str:
         """给模型的「当前可读写范围」实时说明（拼进系统提示，每轮现读）。

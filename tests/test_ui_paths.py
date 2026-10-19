@@ -1465,6 +1465,31 @@ def main() -> int:
             check(f"{label}下滚动条宽度仍是既有的 10px（没被顺手改掉）",
                   styles["width"] == "10px", str(styles))
 
+        # ── 21b) 输入框焦点环只该有一圈（负责人截图："为什么两个圈都高亮"）──
+        # 根因：全局 `textarea:focus { border-color + box-shadow }` 给内层 textarea 加了一圈，
+        #      外面 `.composer__box:focus-within` 又加一圈 → 看着是套着的两个圈。
+        # 判据用**计算样式**：聚焦后外层有焦点环、内层没有任何环/边框色。
+        print("\n" + "=" * 78)
+        print("【21b】输入框焦点：只有最外一圈高亮")
+        print("=" * 78)
+        page.evaluate("() => { document.querySelector('#input').focus(); }")
+        page.wait_for_timeout(120)
+        ring = page.evaluate("""() => {
+            const box = document.querySelector('.composer__box');
+            const ta = document.querySelector('#input');
+            const cs = getComputedStyle(ta), bs = getComputedStyle(box);
+            return {
+              wrapperShadow: bs.boxShadow, wrapperBorder: bs.borderTopColor,
+              innerShadow: cs.boxShadow, innerBorder: cs.borderTopColor, innerOutline: cs.outlineStyle,
+            }; }""")
+        check("★ 外层容器有焦点环（表达「输入区聚焦」）",
+              ring["wrapperShadow"] and ring["wrapperShadow"] != "none", str(ring))
+        check("★ 内层 textarea 不再自带焦点环/边框色（否则就是两个圈）",
+              (not ring["innerShadow"] or ring["innerShadow"] == "none")
+              and ring["innerOutline"] == "none", str(ring))
+        check("外层染成了强调色（真焦点态，不是默认边框）",
+              ring["wrapperBorder"] != ring["innerBorder"], str(ring))
+
         # ── 22) 模型可用性诚实化（K：便携版在同学机器上宣称了一个不存在的模型）──
         # 用另一张页面打开 #mock-noollama：本机没有任何模型、也没有自定义条目，
         # 配置里却写着 qwen3.5:4b —— 正是负责人实测的那台机器。

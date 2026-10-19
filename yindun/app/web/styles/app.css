@@ -406,6 +406,13 @@ body.is-maximized .win-btn__ico-restore { display: block; }
 }
 .composer__box:focus-within { border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--focus-ring); }
 .composer textarea { width: 100%; resize: none; border: none; outline: none; background: transparent; padding: 0; max-height: 180px; line-height: 1.6; font-size: var(--fs-base); }
+/* ★ 焦点只由外层容器表达（V3.6.9 修「两个圈」）：下方那条全局
+   `textarea:focus { border-color + box-shadow }` 也会给这个内层输入框加一圈，
+   于是聚焦时外层 `.composer__box:focus-within` 与内层同时高亮、看着是两个套圈。
+   这里显式压掉内层——外圈已经在表达"输入区获得焦点"，内圈是纯噪声。 */
+.composer textarea:focus, .composer textarea:focus-visible {
+  border-color: transparent; box-shadow: none; outline: none;
+}
 .composer textarea::placeholder { color: var(--text-3); }
 .composer__hint { margin-top: var(--sp-3); font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-3); text-align: center; }
 

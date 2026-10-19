@@ -72,9 +72,11 @@ class ScriptedLLM:
     def __init__(self, script):
         self.script = list(script)
         self.calls = 0
+        self.seen = []          # 每次调用收到的消息（查"宿主到底把什么喂给了模型"用）
 
     def invoke(self, messages):
         self.calls += 1
+        self.seen.append(list(messages))
         step = self.script[min(self.calls - 1, len(self.script) - 1)]
         return _ai(step.get("content", ""), step.get("tool_calls"))
 
@@ -304,6 +306,43 @@ check("★ 总结为空时不发空串：换成如实说明",
       bool(str(_fin5 or "").strip()) and "没有拿到可用的结果" in str(_fin5), repr(str(_fin5)[:120]))
 check("落库链尾非空", tail_is_assistant_text(_worker5, _fin5),
       str([(m.get("role"), len(str(m.get("content") or ""))) for m in (_worker5.result_messages or [])]))
+
+print("\n" + "=" * 78)
+print("【5.5】清点类问句（「桌面有多少文件」）：宿主自己列一次并给出准确数字")
+print("=" * 78)
+# 真实事故（负责人实测，2b 模型）：「我桌面有多少文件」既没有绝对路径、也没有「列出/看看」
+# 这类动词，宿主的强制工具分支全都没命中 → 弱模型自己发挥（回了一段「我无法访问桌面」）。
+# 现在补上「清点意图 + 位置词」的触发，并且**连数字都由宿主数准**再交给模型
+# （2b 对着一长串文件名会数错：同一次提问两次运行给出 48 与 61）。
+_count_dir = Path(SANDBOX_ROOT) / "count_probe"
+_count_dir.mkdir(parents=True, exist_ok=True)
+for _i in range(7):
+    (_count_dir / f"f{_i}.txt").write_text("x", encoding="utf-8")
+(_count_dir / "sub").mkdir(exist_ok=True)
+
+_worker55 = make_worker(ScriptedLLM([{"content": "好的，我看看。"}]),
+                        {"list_local_files": FakeTool("list_local_files",
+                                                      lambda args: "f0.txt f1.txt …（清单）")},
+                        "这个目录里有多少文件？")
+_worker55.sandbox_path = str(_count_dir)
+_events55, _elapsed55, _stuck55 = run_worker(_worker55)
+check("有限时间内结束", not _stuck55, f"耗时 {_elapsed55:.1f}s 仍未结束")
+_sent55 = "\n".join(str(getattr(m, "content", ""))
+                    for call in _worker55.llm.seen for m in call)
+check("★ 宿主自己列了目录（不再指望弱模型主动调工具）",
+      any("清点目录" in str(p) for p in all_of(_events55, "status")),
+      str(all_of(_events55, "status"))[:200])
+check("★ 交给模型的是宿主数准的数字（7 个文件、1 个子目录）",
+      "文件 7 个" in _sent55 and "子目录 1 个" in _sent55, _sent55[-200:] or "（模型没收到清点结果）")
+check("清点结果里提醒了「以这组数字为准」", "以这组数字为准" in _sent55, _sent55[-160:] or "")
+
+_worker55b = make_worker(ScriptedLLM([{"content": "这是一段示例代码。"}]),
+                         {"list_local_files": FakeTool("list_local_files", lambda args: "x")},
+                         "帮我写一段代码生成几张图片的说明")
+_events55b, _, _ = run_worker(_worker55b)
+check("创作型请求不被劫持（写代码 + 几张图片 ≠ 清点文件）",
+      not [p for p in all_of(_events55b, "status") if "清点目录" in str(p)],
+      str(all_of(_events55b, "status"))[:160])
 
 print("\n" + "=" * 78)
 print("【6】失败路径：错误必须变成用户可见的回复文本并落库（不再删掉用户提问）")
