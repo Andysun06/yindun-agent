@@ -108,11 +108,9 @@ if _ocr_collected:
     print("*" * 78)
 else:
     print("*" * 78)
-    print("* 本次产物【不含 OCR】：★ 图片附件与扫描件 PDF 将**读不到文字**")
-    print("*   （程序会如实提示「需要 OCR 组件」，不会假装读到了内容）")
-    print("*   原因：rapidocr-onnxruntime 的包元数据要求 Python <3.13（3.13 上装不上）；")
-    print("*         支持 3.13 的 rapidocr 本次未安装。两者的模型都随包离线自带，不需要联网下载。")
-    print("*   要支持：pip install rapidocr 后重新构建（会一并收集 onnxruntime/opencv 等依赖）")
+    print("* 【未收集 rapidocr】：它是**可选加成**，不是主路径——Windows 平台默认已用系统自带 OCR")
+    print("*   （见上面那条 winrt 横幅）。装了 rapidocr 会一并收集（多约 150MB，中文精度略高）。")
+    print("*   非 Windows 平台才需要它：pip install rapidocr 后重新构建")
     print("*" * 78)
 
 # ── 产品代码与随包文档 ──

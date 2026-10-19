@@ -87,20 +87,22 @@ def log_file_hint() -> str:
 class WindowBridge:
     """窗口动作桥（自绘标题栏按钮 → 原生窗口调用）。
 
-    ★ 能力边界：这个桥**只动窗口本身**——最小化/最大化/关闭/读一下最大化状态。
+    ★ 能力边界：这个桥**只动窗口本身**——置顶/最小化/最大化/关闭，外加读一下这些状态。
       它不读控制面数据、不接受令牌、不接受路径或 URL 参数，因此即使页面被改坏，
       通过它拿到的最大能力也只是"动一下这个窗口"。控制面的鉴权仍在 HTTP 层，
       和这里无关（漏配桥不会放宽任何权限）。
 
     ★ 为什么要自己写按钮：无边框窗口（frameless）没有系统标题栏，不给按钮就关不掉、
-      也最小化不了——那不是"好看"，是**功能缺失**。
+      也最小化不了——那不是"好看"，是**功能缺失**。置顶同理（V3.6.7 按负责人要求补上，
+      与客户端右上角保持同一套四按钮：置顶 / 最小化 / 最大化 / 关闭）。
     """
 
-    ACTIONS = ("minimize", "toggle_maximize", "close")
+    ACTIONS = ("toggle_topmost", "minimize", "toggle_maximize", "close")
 
     def __init__(self, window=None) -> None:
         self._window = window
         self._maximized = False
+        self._topmost = False
 
     # ── 由 open_window 调用 ───────────────────────
     def bind(self, window) -> None:
@@ -118,37 +120,54 @@ class WindowBridge:
         self._maximized = bool(flag)
 
     def window_state(self) -> dict:
-        """按钮要用的状态：有没有窗口（决定要不要显示按钮）、当前是否最大化。"""
+        """按钮要用的状态：有没有窗口（决定要不要显示按钮）、是否最大化、是否置顶。"""
         try:
-            return {"available": self._window is not None, "maximized": bool(self._maximized)}
+            return {"available": self._window is not None, "maximized": bool(self._maximized),
+                    "topmost": bool(self._topmost)}
         except Exception:
-            return {"available": False, "maximized": False}
+            return {"available": False, "maximized": False, "topmost": False}
 
     def window_action(self, action: str) -> dict:
         """执行窗口动作。返回 {ok, action, maximized, reason}，前端据此切图标。
 
         未识别的动作一律拒绝（返回 ok=False），不做"猜一个最像的动作"——
-        自绘按钮只有三个，出现第四个说明前端被改过，此时静默执行更危险。
+        自绘按钮就这四个，出现第五个说明前端被改过，此时静默执行更危险。
         """
         act = str(action or "").strip().lower()
         if act not in self.ACTIONS:
             return {"ok": False, "action": act, "maximized": bool(self._maximized),
-                    "reason": "unknown-action"}
+                    "topmost": bool(self._topmost), "reason": "unknown-action"}
         window = self._window
         if window is None:
-            return {"ok": False, "action": act, "maximized": False, "reason": "no-window"}
+            return {"ok": False, "action": act, "maximized": False, "topmost": False,
+                    "reason": "no-window"}
         try:
-            if act == "minimize":
+            if act == "toggle_topmost":
+                self._toggle_topmost(window)
+            elif act == "minimize":
                 window.minimize()
             elif act == "toggle_maximize":
                 self._toggle_maximize(window)
             else:
                 window.destroy()
-            return {"ok": True, "action": act, "maximized": bool(self._maximized)}
+            return {"ok": True, "action": act, "maximized": bool(self._maximized),
+                    "topmost": bool(self._topmost)}
         except Exception as exc:
             say(f"[控制面] 窗口动作 {act} 失败：{type(exc).__name__}: {exc}")
             return {"ok": False, "action": act, "maximized": bool(self._maximized),
-                    "reason": type(exc).__name__}
+                    "topmost": bool(self._topmost), "reason": type(exc).__name__}
+
+    def _toggle_topmost(self, window) -> None:
+        """置顶/取消置顶（V3.6.7，按负责人要求与客户端保持一致的四按钮）。
+
+        直接写 `window.on_top`：端点端已在真机上核对过"运行时改这个属性真的作用到原生窗口"
+        （读 Win32 的 WS_EX_TOPMOST 位确认），且不会卡住 pywebview 的事件循环。
+        失败时让异常冒上去——`window_action` 会如实返回 ok=False，界面据此保持原状态
+        （**不假装成功**：置顶按钮亮着但窗口没置顶是最难查的那种假象）。
+        """
+        want = not self._topmost
+        window.on_top = want
+        self._topmost = want
 
     def _toggle_maximize(self, window) -> None:
         """最大化/还原。pywebview 在 Windows 上提供 maximize/restore；

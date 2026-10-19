@@ -478,6 +478,9 @@ i.sev-critical, i.sev-security { background:var(--danger-500); }
 .winctrl__btn svg { width:14px; height:14px; stroke-width:1.5; }
 .winctrl__btn--close:hover { background:var(--danger-500); color:#fff; }
 .winctrl__btn.is-max svg path { d:path("M9.5 6.5h8v8h-8z"); }
+/* 置顶钮点亮：与端点端的置顶图钉同一语义（只有窗口**真的在最前面**才亮，状态以桥返回为准） */
+.winctrl__btn.is-on { color:var(--accent-600); background:var(--bg-active); }
+.winctrl__btn.is-on:hover { background:var(--bg-active); color:var(--accent-600); }
 
 /* 拖动区域：pywebview **只认 `.pywebview-drag-region` 这一个类名**
    （DRAG_REGION_SELECTOR 默认值，见 yindun/app/webview_app.py 的同类用法）。

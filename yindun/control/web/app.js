@@ -344,9 +344,10 @@ function bindKeys() {
 function bindWindowControls() {
   const groups = document.querySelectorAll(".winctrl");
   if (!groups.length) return;
-  // 按钮上的 data-win 是短标签（min/max/close），桥认的是动作名——这里显式映射。
+  // 按钮上的 data-win 是短标签（top/min/max/close），桥认的是动作名——这里显式映射。
   // 不做"直接转发 data-win"，否则桥收到 "min" 只认识 "minimize"，会当成未知动作拒绝。
-  const ACTION = { min: "minimize", max: "toggle_maximize", close: "close" };
+  // 四个按钮的顺序与客户端一致：置顶 / 最小化 / 最大化 / 关闭（V3.6.7）。
+  const ACTION = { top: "toggle_topmost", min: "minimize", max: "toggle_maximize", close: "close" };
   const wait = setInterval(() => {
     if (!window.pywebview || !window.pywebview.api || !window.pywebview.api.window_action) return;
     clearInterval(wait);
@@ -357,14 +358,33 @@ function bindWindowControls() {
     // 桌面窗口里拖动区不该顺带选中顶栏文字（浏览器里保留正常文本选择）
     document.querySelectorAll(BARS).forEach((bar) => { bar.style.userSelect = "none"; });
     const maxBtn = document.querySelector('.winctrl__btn[data-win="max"]');
-    const paint = (st) => { if (maxBtn && st) maxBtn.classList.toggle("is-max", !!st.maximized); };
+    const topBtns = document.querySelectorAll('.winctrl__btn[data-win="top"]');
+    // 图标状态一律以**桥返回的真实状态**为准（不靠"点一下就翻转"记账）：
+    // 最大化→切还原图标；置顶→按钮点亮（实际窗口不在最前面时绝不能显示成已置顶）。
+    const paint = (st) => {
+      if (!st) return;
+      if (maxBtn) maxBtn.classList.toggle("is-max", !!st.maximized);
+      topBtns.forEach((b) => b.classList.toggle("is-on", !!st.topmost));
+    };
+    // 启动时把本窗口的置顶偏好**应用一次**（记在本地存储里：控制台窗口每次都是新开的，
+    // 不恢复的话用户每次都得重新点）。偏好只在拿到桥之后应用，浏览器形态下自然跳过。
+    try {
+      const want = localStorage.getItem("yd.topmost") === "1";
+      if (want) window.pywebview.api.window_action("toggle_topmost").then(paint).catch(() => {});
+    } catch (e) { /* 存储不可用时按未置顶处理，不影响其它按钮 */ }
     document.querySelectorAll(".winctrl__btn").forEach((b) => {
       b.onclick = async (e) => {
         e.stopPropagation();
         const act = ACTION[b.dataset.win];
         if (!act) return;                    // 未知按钮不转发（前端多一个按钮不该等于桥多一个能力）
-        try { paint(await window.pywebview.api.window_action(act)); }
-        catch (err) { toast("窗口操作失败：" + (err && err.message ? err.message : err)); }
+        try {
+          const st = await window.pywebview.api.window_action(act);
+          paint(st);
+          // 置顶是"窗口级偏好"，记进本地存储，下次打开控制台自动恢复（失败的不记）
+          if (act === "toggle_topmost" && st && st.ok) {
+            try { localStorage.setItem("yd.topmost", st.topmost ? "1" : "0"); } catch (e) { /* 忽略 */ }
+          }
+        } catch (err) { toast("窗口操作失败：" + (err && err.message ? err.message : err)); }
       };
     });
     // 双击顶栏 = 最大化/还原（Windows 用户的肌肉记忆，缺了会被当成"窗口卡住"）

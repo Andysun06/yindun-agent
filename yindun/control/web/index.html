@@ -15,6 +15,9 @@
   <div class="auth__bar pywebview-drag-region">
     <span class="auth__bar-t">隐盾控制台</span>
     <div class="winctrl winctrl--auth" hidden>
+      <button class="winctrl__btn" type="button" data-win="top" title="置顶 / 取消置顶（本窗口始终在最前面）" aria-label="置顶">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4h6l-1 6 3 3H7l3-3-1-6zM12 13v7"/></svg>
+      </button>
       <button class="winctrl__btn" type="button" data-win="min" title="最小化" aria-label="最小化">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>
       </button>
@@ -138,6 +141,9 @@
       </div>
       <!-- 自制窗口按钮：只在**无边框桌面窗口**里显示（浏览器/纯服务形态下由 app.js 隐藏） -->
       <div class="winctrl" id="winctrl" hidden>
+        <button class="winctrl__btn" type="button" data-win="top" title="置顶 / 取消置顶（本窗口始终在最前面）" aria-label="置顶">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4h6l-1 6 3 3H7l3-3-1-6zM12 13v7"/></svg>
+        </button>
         <button class="winctrl__btn" type="button" data-win="min" title="最小化" aria-label="最小化">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>
         </button>

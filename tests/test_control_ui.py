@@ -152,6 +152,38 @@ def part_a() -> None:
     bridge.window_action("close")
     check("关闭 → window.destroy()", win.calls[-1] == "destroy", str(win.calls))
 
+    # ── A2.6 置顶（V3.6.7：与端点端同一套四按钮：置顶 / 最小化 / 最大化 / 关闭）──
+    check("桥的动作清单正好四个（多一个都等于多一份窗口能力）",
+          tuple(desktop.WindowBridge.ACTIONS) == ("toggle_topmost", "minimize",
+                                                  "toggle_maximize", "close"),
+          str(desktop.WindowBridge.ACTIONS))
+    top_win = _FakeWindow()
+    top_bridge = desktop.WindowBridge(top_win)
+    top_bridge.bind(top_win)
+    r_on = top_bridge.window_action("toggle_topmost")
+    check("置顶：写 window.on_top=True 且状态回传 topmost=True",
+          getattr(top_win, "on_top", None) is True and r_on.get("topmost") is True, str(r_on))
+    check("置顶状态能被 window_state() 读到（按钮据此点亮）",
+          top_bridge.window_state().get("topmost") is True, str(top_bridge.window_state()))
+    r_off = top_bridge.window_action("toggle_topmost")
+    check("再点一次取消置顶：on_top=False 且回传 topmost=False",
+          getattr(top_win, "on_top", None) is False and r_off.get("topmost") is False, str(r_off))
+
+    class _TopFailWindow(_FakeWindow):
+        """模拟"原生置顶失败"：属性写入直接抛异常。"""
+
+        def __setattr__(self, name, value):
+            if name == "on_top":
+                raise RuntimeError("模拟原生置顶失败")
+            super().__setattr__(name, value)
+
+    fail_win = _TopFailWindow()
+    fail_bridge = desktop.WindowBridge(fail_win)
+    fail_bridge.bind(fail_win)
+    r_fail = fail_bridge.window_action("toggle_topmost")
+    check("置顶失败时如实回 ok=False（不假装成功，界面才不会亮着骗人）",
+          r_fail.get("ok") is False and r_fail.get("reason") == "RuntimeError", str(r_fail))
+
     # ── A3 状态也能被原生事件同步（用户用系统快捷键还原时，图标不能停在"最大化"）──
     win.events.restored.fire()
     check("原生 restored 事件把状态同步回 False",
@@ -222,7 +254,10 @@ window.pywebview = { api: { window_action: (a) => {
   window.__winCalls.push(a);
   const maximized = a === "toggle_maximize" ? !window.__winMax : window.__winMax;
   window.__winMax = maximized;
-  return { ok: true, action: a, maximized };
+  // 置顶同理：真实状态由桥维护并回传（前端只按回传值点亮按钮）
+  const topmost = a === "toggle_topmost" ? !window.__winTop : window.__winTop;
+  window.__winTop = topmost;
+  return { ok: true, action: a, maximized, topmost };
 } } };
 """
 
@@ -495,11 +530,16 @@ def run_pages(browser, url: str) -> None:
     check("浏览器形态（无 pywebview 桥）按钮整组隐藏",
           page.eval_on_selector_all(".winctrl", "els => els.every(e => e.hidden)"))
     groups = page.eval_on_selector_all(".winctrl", "els => els.length")
-    check("真按钮集齐三枚（最小化/最大化/关闭）× 登录页与主界面",
-          page.eval_on_selector_all('.winctrl__btn[data-win="min"]', "e => e.length") == groups and
-          page.eval_on_selector_all('.winctrl__btn[data-win="close"]', "e => e.length") == groups and
-          page.eval_on_selector_all('.winctrl__btn[data-win="max"]', "e => e.length") == groups,
+    check("真按钮集齐**四枚**（置顶/最小化/最大化/关闭）× 登录页与主界面",
+          all(page.eval_on_selector_all(f'.winctrl__btn[data-win="{k}"]', "e => e.length") == groups
+              for k in ("top", "min", "max", "close")),
           f"组数 {groups}")
+    order = page.eval_on_selector_all("#winctrl .winctrl__btn", "els => els.map(e => e.dataset.win)")
+    check("四个按钮的顺序是 置顶→最小化→最大化→关闭（与端点端一致）",
+          order == ["top", "min", "max", "close"], str(order))
+    check("每个按钮都有可读的 title/aria-label（自绘按钮没有系统提示，别让用户猜）",
+          page.eval_on_selector_all("#winctrl .winctrl__btn",
+                                    "els => els.every(e => e.title && e.getAttribute('aria-label'))"))
     check("拖动区域用的是官方类名 .pywebview-drag-region（无边框窗口才拖得动）",
           page.eval_on_selector_all(".pywebview-drag-region", "els => els.length") >= 2,
           str(page.eval_on_selector_all(".pywebview-drag-region", "els => els.length")))
@@ -518,6 +558,22 @@ def run_pages(browser, url: str) -> None:
     calls = page2.evaluate("() => window.__winCalls")
     check("点最小化/最大化真的调用了桥（动作名与服务端约定一致）",
           calls == ["minimize", "toggle_maximize"], str(calls))
+    # 置顶（V3.6.7）：动作名、点亮状态、以及"记住这个偏好"
+    page2.click('#winctrl .winctrl__btn[data-win="top"]')
+    page2.wait_for_timeout(150)
+    top_calls = page2.evaluate("() => window.__winCalls")
+    check("点置顶调的是 toggle_topmost（不是前端自己翻转图标）",
+          top_calls[-1] == "toggle_topmost", str(top_calls))
+    check("置顶后按钮点亮（且只有真的置顶才亮——状态取自桥返回值）",
+          page2.eval_on_selector('.winctrl__btn[data-win="top"]', "el => el.classList.contains('is-on')"))
+    check("置顶偏好写进本地存储（下次打开控制台自动恢复）",
+          page2.evaluate("() => localStorage.getItem('yd.topmost')") == "1",
+          str(page2.evaluate("() => localStorage.getItem('yd.topmost')")))
+    page2.click('#winctrl .winctrl__btn[data-win="top"]')
+    page2.wait_for_timeout(150)
+    check("再点一次取消置顶：按钮熄灭 + 偏好记为关",
+          not page2.eval_on_selector('.winctrl__btn[data-win="top"]', "el => el.classList.contains('is-on')")
+          and page2.evaluate("() => localStorage.getItem('yd.topmost')") == "0")
     check("最大化后图标切到还原态（按钮不会一直显示'最大化'）",
           page2.eval_on_selector('.winctrl__btn[data-win="max"]', "el => el.classList.contains('is-max')"))
     page2.click('#winctrl .winctrl__btn[data-win="max"]')
