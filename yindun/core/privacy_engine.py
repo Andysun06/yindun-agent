@@ -911,6 +911,35 @@ class PrivacyEngine:
                     hops += 1
                 start = pos + 1
 
+        # ★ 与"已确认的联系方式/证件"共现的人名（V3.6.11，负责人实测）
+        #   现场：「梁诚敬 13713068555 广州大学 计算机学院软件工程，男 19岁」只脱敏了手机——
+        #   「梁诚敬」没有触发词，落在"无触发词人名不猜"的声明边界里；但**一句话里既有姓名
+        #   又有手机/证件**时，这句本身就是一条个人信息记录，姓名应当一起脱敏（云端尤其如此）。
+        #   判据（三条同时满足才认，宁漏不误伤）：
+        #     ① 同句/邻近窗口里已经有 **PHONE / EMAIL / IDCARD / BANKCARD / 车牌 / 病历号** 等
+        #        已确认实体的占位符（此时正则阶段已把它们替换成占位符，坐标准确）；
+        #     ② 候选是「姓氏表 + 1~2 字」且通过既有的收口（`_match_name_at` → `_trim_name`）；
+        #     ③ 候选**后面不是机构名后缀**（公司/大学/学院/集团/银行/医院/中心…）——
+        #        否则「王科技有限公司」会被切掉一个"人名"；
+        #     ③ 与触发词阶段已认领的区间不重叠。
+        for contact in self._CONTACT_PLACEHOLDER_RE.finditer(base):
+            win_start = max(0, contact.start() - 24)
+            win_end = min(len(base), contact.end() + 24)
+            window = base[win_start:win_end]
+            for offset in range(len(window)):
+                cand = self._match_name_at(window, offset)
+                if not cand:
+                    continue
+                abs_start = win_start + offset
+                abs_end = abs_start + len(cand)
+                if any(s <= abs_start < e or s < abs_end <= e for s, e in claimed):
+                    continue
+                tail = window[offset + len(cand):offset + len(cand) + 6]
+                if any(tail.startswith(word) for word in self._ORG_SUFFIX_WORDS):
+                    continue
+                claimed.append((abs_start, abs_end))
+                spans.append((abs_start, abs_end, cand))
+
         # 降序替换（后面的先替换，前面的坐标不受影响）
         result = base
         for abs_start, abs_end, name_candidate in sorted(spans, key=lambda item: -item[0]):
@@ -1066,6 +1095,19 @@ class PrivacyEngine:
 
     # 人名末尾的收口字：虚词 + 办公高频动词 + 紧随人名的字段标签首字。
     # 抽成类属性是为了让单字姓氏与复姓名共用同一套收口（V3.6.2 复姓分支接入时抽出来的）。
+    # 已确认"联系方式/证件"类实体的占位符（用于"同句有人名就一起脱敏"的共现判定）
+    _CONTACT_PLACEHOLDER_RE = re.compile(
+        r"\[(PHONE|EMAIL|IDCARD|IDCARD15|BANKCARD|PASSPORT|PLATE|MEDICAL_RECORD|WECHAT)"
+        r"_\d+_[a-z0-9]{4}\]")
+
+    # 机构名后缀（"王科技有限公司"这类不能被切出一个"人名"；宁可漏，不要误伤机构名）
+    _ORG_SUFFIX_WORDS = (
+        "有限公司", "有限责任公司", "股份有限公司", "公司", "集团", "大学", "学院", "学校",
+        "中学", "小学", "幼儿园", "研究院", "研究所", "实验室", "银行", "医院", "中心",
+        "科技", "股份", "实业", "酒店", "宾馆", "超市", "商城", "工厂", "政府", "委员会",
+        "分公司", "办事处", "事务所", "出版社", "电视台", "日报", "晚报",
+    )
+
     NAME_STOP_CHARS = {
         # 虚词
         "的", "是", "了", "和", "与", "在", "有", "为", "及", "或",

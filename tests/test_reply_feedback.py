@@ -544,9 +544,106 @@ check("寒暄不受影响（「谢谢」这类短答不该被判截断）",
       not Worker._looks_truncated_answer("好的", "谢谢")
       and not Worker._looks_truncated_answer("42", "1+1 等于几"), "")
 
+
+print("\n" + "=" * 78)
+print("【5.9】审批文案不再自相矛盾：只说「需要你确认（本档位要求）」，不做风险定性")
+print("=" * 78)
+# 负责人实测现场：同一轮里「插件说紧张 + 风险分级说低危 + 状态行说🚨敏感操作」三行打架。
+# 这行状态的职责只是"当前档位要求你确认一下"，风险高低由风险分级那行负责——别抢它的活。
+import os as _os                                                        # noqa: E402
+_prev_perm = _os.environ.get("YINDUN_PERMISSION")
+_os.environ["YINDUN_PERMISSION"] = "ask"          # 变更前确认档：写盘类会走 confirm 分支
+try:
+    _worker59b = make_worker(ScriptedLLM([{"content": "ok"}]), {}, "建个文件")
+    _statuses = []
+    _worker59b.status.subscribe("status", _statuses.append) if hasattr(_worker59b.status, "subscribe") \
+        else None
+    _worker59b.bus.subscribe("status", _statuses.append)
+    _worker59b._request_approval = lambda *a, **k: False          # 直接驳回：不阻塞、只看文案
+    _tmp_target = str(SANDBOX_ROOT)
+    _result = _worker59b._execute_with_approval("create_local_file",
+                                                {"filename": "审批文案探针.txt",
+                                                 "target_directory": _tmp_target})
+    _joined = " | ".join(str(s) for s in _statuses)
+    check("★ 审批状态行说「需要你确认」并点明原因（档位要求）",
+          "需要你确认" in _joined and "档位要求人工审批" in _joined, _joined[:200])
+    check("★ 不再出现「🚨 敏感操作」这种风险定性（避免与风险分级那行打架）",
+          "敏感操作" not in _joined, _joined[:200])
+    check("被驳回时如实返回驳回结果（不静默）", "已驳回" in str(_result) or "驳回" in str(_result),
+          str(_result)[:120])
+finally:
+    if _prev_perm is None:
+        _os.environ.pop("YINDUN_PERMISSION", None)
+    else:
+        _os.environ["YINDUN_PERMISSION"] = _prev_perm
+
+print("\n" + "=" * 78)
+print("【5.10】落盘内容必须还原掩码（跨轮占位符也要），还原不了就点破")
+print("=" * 78)
+# 负责人实测：让智能体把客户信息写进 aaa.docx，打开文件却是 `[PHONE_0_h5ko]`——
+# 写盘参数以前只拿**本轮**的 box 去还原，上一轮掩码过的占位符一个都换不回来
+# （界面上那段回答是还原过的，于是「用户看到的」与「落盘的」不一致）。
+from yindun.core.privacy_engine import PrivacyEngine as _PE                 # noqa: E402
+from yindun.core import file_tools as _FT                                    # noqa: E402
+from pathlib import Path as _Path                                            # noqa: E402
+
+_prev_perm2 = _os.environ.get("YINDUN_PERMISSION")
+_os.environ["YINDUN_PERMISSION"] = "full"       # 让写盘真的执行（默认档是"变更前确认"，会走审批）
+_eng_pw = _PE()
+_anon_text, _cross_turn_map = _eng_pw.anonymize("联系电话 13713068560")       # 模拟"上一轮"的掩码
+_ph = next(iter(_cross_turn_map))
+_llm52 = ScriptedLLM([
+    {"content": "", "tool_calls": [{"name": "create_local_file",
+                                    "args": {"filename": "客户信息.txt",
+                                             "content": f"客户信息\n电话：{_ph}",
+                                             "target_directory": str(SANDBOX_ROOT)},
+                                    "id": "c1"}]},
+    {"content": "已把客户信息写入文件。"},
+])
+_worker52 = make_worker(_llm52, {"create_local_file": _FT.create_local_file}, "把客户信息记到文件里",
+                        think_mode="深度思考")     # 写盘类工具在快速档会被拦，这里要真写
+_worker52.privacy_shield = True      # ★ 要测的就是"网关开启时落盘内容必须还原"
+_worker52._box_mapping = dict(_cross_turn_map)        # ★ 跨轮映射：本轮 box 里没有这条
+_events52, _, _stuck52 = run_worker(_worker52)
+_written = _Path(SANDBOX_ROOT) / "客户信息.txt"
+check("有限时间内结束", not _stuck52)
+check("★ 跨轮占位符在落盘时被还原成真值（文件里不是 [PHONE_…]）",
+      _written.exists() and "13713068560" in _written.read_text(encoding="utf-8")
+      and "[PHONE_" not in _written.read_text(encoding="utf-8"),
+      _written.read_text(encoding="utf-8")[:120] if _written.exists() else "（没写出文件）")
+if _written.exists():
+    _written.unlink()
+
+_llm53 = ScriptedLLM([
+    {"content": "", "tool_calls": [{"name": "create_local_file",
+                                    "args": {"filename": "坏映射.txt",
+                                             "content": "电话：[PHONE_9_zzzz]",
+                                             "target_directory": str(SANDBOX_ROOT)},
+                                    "id": "c1"}]},
+    {"content": "已写入。"},
+])
+_worker53 = make_worker(_llm53, {"create_local_file": _FT.create_local_file}, "把信息写进文件",
+                        think_mode="深度思考")
+_worker53.privacy_shield = True
+_events53, _, _ = run_worker(_worker53)
+_fin53 = str(last_of(_events53, "finished") or "")
+check("★ 映射里没有的占位符：回答里点破「有 N 处未能还原」",
+      "未能还原" in _fin53 and "占位符" in _fin53, repr(_fin53[-180:]))
+check("状态里也提示了未还原（过程可见，不只藏在回答里）",
+      any("未能还原" in str(p) for p in all_of(_events53, "status")),
+      str(all_of(_events53, "status"))[-200:])
+_bad = _Path(SANDBOX_ROOT) / "坏映射.txt"
+if _bad.exists():
+    _bad.unlink()
+if _prev_perm2 is None:
+    _os.environ.pop("YINDUN_PERMISSION", None)
+else:
+    _os.environ["YINDUN_PERMISSION"] = _prev_perm2
+
 if failures:
     print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))
     sys.exit(1)
 print("✅ 全部通过：不再有空气泡 / 工具调用不再被吞 / 无进展会收尾 / 失败有回复且被持久化 / 等待期间有状态事件")
 sys.exit(0)
+
 

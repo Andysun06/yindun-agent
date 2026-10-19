@@ -109,6 +109,29 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "yindun" / "plugins
 from plugin import advisory_for_approval  # noqa: E402
 check("无模型时安静返回 None", advisory_for_approval({"model": "", "user_request": "读文件"}) is None)
 
+# ── 1b) 审批建议的判据不能被"内部占位说法"带偏（V3.6.11，负责人实测）──
+# 现场：「创建一个文件，在桌面，aaa.txt 是名字」被判成
+#   「与你的请求不符…指定了『系统物理桌面』目录，存在破坏性风险」——
+# 根因是判官看到了工具参数里 `target_directory="系统物理桌面"`（本机工具认的占位写法），
+# 把它读成了"系统目录/越权"；而真实目标已经在 path 字段里。真相交叠着风险分级那行「低危」，
+# 三行互相打架。这里钉住三件事：参数要净化、要给判官正确上下文、提示词要禁止风险定性。
+import plugin as _dh  # noqa: E402
+_clean = _dh._sanitize_args({"filename": "aaa.txt", "target_directory": "系统物理桌面"})
+check("★ 参数净化：内部占位目录值不进判据",
+      _clean == {"filename": "aaa.txt"}, str(_clean))
+check("参数净化保留正常参数（只去掉占位目录，不误删别的）",
+      _dh._sanitize_args({"filename": "a.txt", "content": "x"}) == {"filename": "a.txt", "content": "x"})
+_note = _dh._context_note()
+check("★ 给判官补了本机规则（可读写范围 / 权限档位）",
+      "可读写范围" in _note and "权限档位" in _note, _note[:80])
+check("上下文里点明：范围内容 + 档位要求审批 = 正常流程，不要判「不符」",
+      "正常流程" in _note and "不要据此判" in _note, _note[-60:])
+check("★ 提示词要求理由只讲「请求↔操作」对应关系，禁止越权/非授权/破坏性定性",
+      "目标路径以「目标」字段为准" in _dh._PROMPT and "不要写「越权 / 非授权 / 破坏性」" in _dh._PROMPT,
+      _dh._PROMPT[:120])
+check("提示词解释了「当前沙箱目录 / 系统物理桌面」是本机工具的占位写法",
+      "占位写法" in _dh._PROMPT, "")
+
 # ── 2) manifest 校验 ────────────────────────────────
 print("\n" + "=" * 78)
 print("【2】manifest 校验（安全约束）")

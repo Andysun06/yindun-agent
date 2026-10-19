@@ -252,6 +252,7 @@ def main():
         ("原文含字面量占位符不应被误还原", run_nonce_anti_hijack_test),
         ("同批 nonce 不重复", run_nonce_uniqueness_test),
         ("新格式解密失败保留占位符", run_new_format_failure_test),
+        ("共现人名：同句有联系方式时姓名一起脱敏", run_name_contact_cooccurrence_test),
     ]
     nonce_failed = []
     for desc, fn in nonce_checks:
@@ -319,6 +320,41 @@ def run_new_format_failure_test():
     assert default_restored == text, f"默认模式应保留占位符: {default_restored}"
     assert strict_restored == text, f"strict 模式应保留占位符: {strict_restored}"
     print("  ✅ 默认与 strict 均保留占位符，不写入密文垃圾")
+
+
+def run_name_contact_cooccurrence_test():
+    """【共现人名】与已确认联系方式同句的姓名一起脱敏（V3.6.11，负责人实测）。
+
+    现场：「梁诚敬 13713068555 广州大学 计算机学院软件工程，男 19岁」只脱了手机。
+    判据是"共现"而不是"猜"：这句里已经有确认过的联系方式 → 它就是一条个人信息记录。
+    """
+    import re
+    engine = NewEngine()
+
+    def _has(out, kind):
+        return bool(re.search(r"\[" + kind + r"_\d+_[a-z0-9]{4}\]", out))
+
+    for label, sample in (
+            ("负责人实测原句", "梁诚敬 13713068555 广州大学 计算机学院软件工程，男 19岁"),
+            ("字段式", "姓名：李明 手机：13900000001"),
+            ("复姓 + 手机", "欧阳修文 13800000004 中国科学院"),
+    ):
+        out, _ = engine.anonymize(sample)
+        assert _has(out, "NAME") and _has(out, "PHONE"), f"{label}：姓名与手机都应脱敏 → {out}"
+        print(f"  ✅ 【共现】{label}：姓名与手机都脱敏")
+
+    for label, sample in (
+            ("机构名不能被切成人名", "王科技有限公司 联系电话 13900000002"),
+            ("纯机构 + 电话", "北京大学计算机学院招生办 13800000003"),
+            ("只给结果、无姓名", "订单号 8899 联系电话 13900000005"),
+    ):
+        out, _ = engine.anonymize(sample)
+        assert not _has(out, "NAME") and _has(out, "PHONE"), f"{label}：不应误造人名 → {out}"
+        print(f"  ✅ 【共现·负例】{label}：只脱敏手机、不误造人名")
+
+    out, _ = engine.anonymize("梁诚敬 广州大学 软件工程")
+    assert not _has(out, "NAME"), f"没有联系方式时仍不应猜人名（声明边界）：{out}"
+    print("  ✅ 【共现·边界】无联系方式时不猜人名（与文档声明一致）")
 
 
 if __name__ == "__main__":

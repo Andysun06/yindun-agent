@@ -442,7 +442,10 @@ def test_18_anchor_tamper_is_detected():
 def test_19_reanchor_after_explicit_confirmation():
     """测试19：锚点缺失（升级/拷贝审计目录）时判无效，显式确认后可重建"""
     log = _fresh_chain(5)
-    log._anchor_path().unlink()                            # 模拟"锚点被删/首次升级"
+    # ★ 必须把**所有候选落点**的锚点都清掉（V3.6.11）：只删首选时，新逻辑会找到
+    #   "另一路径上与当前链自洽的旧锚点"并判为**迁移**（这是 BUG-0001 要的区分），
+    #   那属于预期行为、不是"锚点被删"的场景。这里模拟的是真正的"锚点全没了"。
+    _clear_anchor_files(_ANCHOR_PRIMARY, _ANCHOR_FALLBACK)
 
     detail = _reload_singleton().verify_chain_detail()
     assert detail["valid"] is False and "锚点缺失" in detail["reason"], f"锚点缺失应判无效：{detail}"

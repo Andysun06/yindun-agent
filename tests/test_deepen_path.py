@@ -96,7 +96,9 @@ VERBOSE_ANSWER = ("桌面上一共 12 个文件，其中 5 张图片、4 个文�
                   "- 图片：a.png、b.jpg、c.png、d.jpg、e.png\n"
                   "- 文档：报告.docx、笔记.md、合同.pdf、清单.xlsx\n"
                   "如果需要按类型整理，我可以继续。")
-THIN_ANSWER = "好的"
+# ★ 带句末标点的短答（V3.6.11）：不带标点的「好的」会被"疑似被截断"先接管，
+#   那样测到的是截断重生成、而不是深化轮（两条纠正都要能各自被覆盖到）。
+THIN_ANSWER = "好的。"
 
 
 def make_worker(llm, user_input, think_mode="深度思考", depth=3):

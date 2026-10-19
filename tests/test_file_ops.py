@@ -295,6 +295,73 @@ res = _worker._execute_tool("batch_rename_local_files",
 check("批量改名经 worker 分发后生效（桌面文件.txt → desk文件.txt）",
       (DESK / "desk文件.txt").exists(), res)
 
+print("\n" + "=" * 78)
+print("【E】容器格式必须写成**真文件**（.docx/.xlsx/.pptx 能被 Word/WPS/Excel 打开）")
+print("=" * 78)
+# 负责人实测：让智能体「创建一个 aaa.docx，然后把信息写在里面」，旧实现把纯文本直接写进
+# `.docx` —— WPS 打开提示「文件已损坏」（那只是一个同名文本文件）。看起来成功、交付物打不开，
+# 属于最坏的一类失败。这里逐格式验收：是真的容器、能被标准库打开、内容在。
+_office = WORK / "office"
+_office.mkdir(exist_ok=True)
+_docx = _office / "客户信息.docx"
+_res = call(FT.create_local_file, filename="客户信息.docx",
+            content="客户信息记录\n姓名：梁诚敬\n联系电话：13713068555",
+            target_directory=str(_office))
+check("创建 .docx 成功", "已" in _res and "创建" in _res, _res[:100])
+check("★ .docx 是真正的 Office 容器（zip 头 PK，不是纯文本）",
+      _docx.exists() and _docx.read_bytes()[:2] == b"PK", str(_docx.read_bytes()[:8]) if _docx.exists() else "不存在")
+try:
+    from docx import Document as _Docx
+    _paras = [p.text for p in _Docx(str(_docx)).paragraphs if p.text.strip()]
+    check("★ python-docx 能打开，且四行内容都在（Word 打开不会报损坏）",
+          _paras[:3] == ["客户信息记录", "姓名：梁诚敬", "联系电话：13713068555"], str(_paras))
+except Exception as _exc:
+    check("★ python-docx 能打开", False, f"{type(_exc).__name__}: {_exc}")
+
+_xlsx = _office / "数据.xlsx"
+call(FT.create_local_file, filename="数据.xlsx", content="姓名,电话\n梁诚敬,13713068555",
+     target_directory=str(_office))
+try:
+    import openpyxl as _xl
+    _sheet = _xl.load_workbook(str(_xlsx)).active
+    check("★ .xlsx 也是真容器且能打开（逗号自动分列）",
+          _xlsx.read_bytes()[:2] == b"PK" and [c.value for c in _sheet[1]] == ["姓名", "电话"],
+          str([c.value for c in _sheet[1]]))
+except Exception as _exc:
+    check("★ .xlsx 能打开", False, f"{type(_exc).__name__}: {_exc}")
+
+_pptx = _office / "汇报.pptx"
+call(FT.create_local_file, filename="汇报.pptx", content="周报\n本周完成：三项",
+     target_directory=str(_office))
+try:
+    from pptx import Presentation as _Pptx
+    check("★ .pptx 也是真容器且能打开", len(_Pptx(str(_pptx)).slides) == 1,
+          str(len(_Pptx(str(_pptx)).slides)))
+except Exception as _exc:
+    check("★ .pptx 能打开", False, f"{type(_exc).__name__}: {_exc}")
+
+# 在已有 docx 上追加/替换：**改完仍要能打开**（旧实现读二进制再写回去 = 一改就坏）
+call(FT.modify_local_file, filename="客户信息.docx", old_content="", new_content="备注：已回访",
+     target_directory=str(_office))
+try:
+    from docx import Document as _Docx2
+    _paras2 = [p.text for p in _Docx2(str(_docx)).paragraphs if p.text.strip()]
+    check("★ 在 .docx 上追加后仍可打开，且追加内容在", "备注：已回访" in _paras2, str(_paras2))
+except Exception as _exc:
+    check("★ 追加后仍可打开", False, f"{type(_exc).__name__}: {_exc}")
+call(FT.modify_local_file, filename="客户信息.docx", old_content="姓名：梁诚敬",
+     new_content="姓名：张三", target_directory=str(_office))
+try:
+    from docx import Document as _Docx3
+    _paras3 = [p.text for p in _Docx3(str(_docx)).paragraphs if p.text.strip()]
+    check("★ 在 .docx 上替换后仍可打开，且内容被替换",
+          "姓名：张三" in _paras3 and "姓名：梁诚敬" not in _paras3, str(_paras3))
+except Exception as _exc:
+    check("★ 替换后仍可打开", False, f"{type(_exc).__name__}: {_exc}")
+
+check("生成器对不支持的容器格式如实报错（不静默产出坏文件）",
+      FT.write_office_document(str(_office / "x.rtf"), "文本") != "", "")
+
 # 收尾：清理临时沙箱（不碰真实桌面/文档/仓库）
 PERM.user_working_dirs = _real_working_dirs
 PERM.register_sandbox_settings_source(None)

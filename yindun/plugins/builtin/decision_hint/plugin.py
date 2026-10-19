@@ -26,9 +26,53 @@ _PROMPT = """你是涉密办公场景的安全审批助手。请判断：Agent �
 只输出一行 JSON，不要任何解释文字：
 {{"verdict": "相符|存疑|不符", "reason": "不超过30字的理由"}}
 
+判据说明（务必遵守）：
+1. **目标路径以「目标」字段为准**——那里已经是解析后的真实路径。
+2. 参数里若出现「当前沙箱目录 / 系统物理桌面 / 桌面」这类说法，是**本机工具的占位写法**，
+   不代表"系统目录"或"越权"；真正的目标看第 1 条。
+3. 理由里**只说明操作与请求的对应关系**，不要写「越权 / 非授权 / 破坏性」这类定性——
+   除非工具与请求**明显冲突**（例如用户只要求查看，却要执行删除或运行命令）。
+
 用户原话：{request}
 
-待执行操作：工具={tool}；目标={path}；参数={args}"""
+待执行操作：工具={tool}；目标={path}；参数={args}{context}"""
+
+
+# 本机工具的"占位说法"：模型常把 target_directory 填成这些词（工具层认它们），
+# 但**判官模型会把它读成"系统目录 / 越权"** —— 负责人实测就是这样被判成
+# 「与你的请求不符…存在破坏性风险」，而旁边风险分级那行又说「低危」，自相矛盾。
+# 真实目标已经在 `path` 字段里（解析后的绝对路径），这些占位值一律不进判据。
+_INTERNAL_DIR_WORDS = ("当前沙箱目录", "系统物理桌面", "沙箱目录", "默认目录", "桌面", "下载", "文档")
+
+
+def _sanitize_args(args: dict) -> dict:
+    """去掉参数里的内部占位目录值，其余按原样（截断到 200 字）交给判官。"""
+    clean = {}
+    for key, value in list((args or {}).items())[:6]:
+        if isinstance(value, str) and value.strip() in _INTERNAL_DIR_WORDS:
+            continue                      # 目标看 path 字段，这里略过
+        clean[key] = str(value)[:200] if not isinstance(value, (int, float, bool)) else value
+    return clean
+
+
+def _context_note() -> str:
+    """给判官补上"这台机器当前的规则"——否则它会把"写个人桌面"当成越权。
+
+    只读内核的三个公开口径（可读写范围 / 权限档位 / 越界判定），拿不到就留空：
+    判官少这点上下文仍然能判，但有了它"相符但需审批"这类情形就不会被误判成"不符"。
+    """
+    try:
+        from yindun.core.permission import (LABELS, OUTSIDE_HINTS, permission_mode,
+                                            sandbox_scope_text)
+        mode = permission_mode()
+        return ("\n\n本机当前规则（判据用）：可读写范围=" + sandbox_scope_text() + "；"
+                "权限档位=" + str(LABELS.get(mode, mode)) + "；"
+                "范围外操作的处理=" + str(OUTSIDE_HINTS.get(mode, "")) + "。"
+                "\n注意：目标落在「可读写范围」内、只是档位要求人工审批的，属于**正常流程**，"
+                "不要据此判「不符」；只有「请求与操作本身对不上」"
+                "（例如用户只让查看却要删除或执行命令）才算不符。")
+    except Exception:
+        return ""
 
 
 def _verdict_from_text(text: str) -> Optional[str]:
@@ -83,11 +127,7 @@ def advisory_for_approval(context: Dict[str, Any]) -> Optional[Dict[str, str]]:
         request = "（本轮没有可对照的用户原话）"
 
     args = context.get("args") or {}
-    brief_args = json.dumps(
-        {k: (str(v)[:200] if not isinstance(v, (int, float, bool)) else v)
-         for k, v in list(args.items())[:6]},
-        ensure_ascii=False,
-    )
+    brief_args = json.dumps(_sanitize_args(args), ensure_ascii=False)
 
     try:
         from langchain_ollama import ChatOllama
@@ -109,6 +149,7 @@ def advisory_for_approval(context: Dict[str, Any]) -> Optional[Dict[str, str]]:
             tool=str(context.get("tool") or context.get("tool_name") or "未知工具"),
             path=str(context.get("path") or "-"),
             args=brief_args,
+            context=_context_note(),
         ))
         content = getattr(message, "content", message)
         parsed = _parse(str(content))

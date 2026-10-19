@@ -218,6 +218,66 @@ def _safe_write_path(file_path, base_dir):
 # 每个工具都通过本函数解析目标路径，不再依赖 SANDBOX_PATH 环境变量
 # ──────────────────────────────────────────
 
+# ──────────────────────────────────────────
+# Office 容器格式的**真文件**写入（V3.6.11）
+# ------------------------------------------------------------------
+# 负责人实测：让智能体「创建一个 aaa.docx，然后把信息写在里面」，旧实现把纯文本直接写进
+# `.docx` —— 用户用 Word / WPS 打开提示「文件已损坏」（因为那只是一个同名文本文件）。
+# 看起来"成功"、交付物却打不开，属于最坏的一类失败。这里按扩展名生成**合法容器**：
+#   · docx → 一行一段落（python-docx）
+#   · xlsx → 一行一 record、逗号/制表符/顿号分列（openpyxl）
+#   · pptx → 一页幻灯片、正文放在文本框里（python-pptx）
+# 缺组件时**不静默**：返回失败原因，由调用方如实告诉用户（绝不产出一个打不开的假文件）。
+# ──────────────────────────────────────────
+_OFFICE_EXTS = (".docx", ".xlsx", ".pptx")
+
+
+def write_office_document(file_path, text: str) -> str:
+    """把文本写成真正的 Office 文件。返回空串=成功；否则返回失败原因（给用户看的话）。"""
+    import os as _os
+    ext = _os.path.splitext(str(file_path))[1].lower()
+    body = str(text or "")
+    lines = [ln.rstrip() for ln in body.splitlines()]
+    try:
+        if ext == ".docx":
+            from docx import Document
+            doc = Document()
+            for line in lines or [""]:
+                doc.add_paragraph(line)
+            doc.save(str(file_path))
+            return ""
+        if ext == ".xlsx":
+            from openpyxl import Workbook
+            book = Workbook()
+            sheet = book.active
+            sheet.title = "Sheet1"
+            for line in lines:
+                if not line.strip():
+                    continue
+                cells = re.split(r"[,	、;；|]", line)
+                sheet.append([cell.strip() for cell in cells])
+            book.save(str(file_path))
+            return ""
+        if ext == ".pptx":
+            from pptx import Presentation
+            from pptx.util import Inches
+            deck = Presentation()
+            slide = deck.slides.add_slide(deck.slide_layouts[5])      # 标题+内容版式
+            title = slide.shapes.title
+            if title is not None:
+                title.text = (lines[0] if lines else "文档")[:60]
+            box = slide.shapes.add_textbox(Inches(0.6), Inches(1.6), Inches(9.0), Inches(5.0))
+            frame = box.text_frame
+            frame.text = lines[1] if len(lines) > 1 else (lines[0] if lines else "")
+            for line in lines[2:]:
+                frame.add_paragraph(line)
+            deck.save(str(file_path))
+            return ""
+    except Exception as exc:                                            # noqa: BLE001
+        return f"{type(exc).__name__}: {exc}"
+    return f"不支持的容器格式 {ext}"
+
+
 def _resolve_target_dir(target_directory: str, default_dir=None) -> str:
     """
     将工具参数 target_directory 解析为实际绝对路径。
@@ -557,6 +617,18 @@ def create_local_file(filename: str, content: str = "", target_directory: str = 
     try:
         if not os.path.exists(base_dir):
             os.makedirs(base_dir, exist_ok=True)
+        # ★ 容器格式（.docx/.xlsx/.pptx）必须写成**真文件**（V3.6.11，负责人实测：
+        #   纯文本写进 .docx → WPS/Word 提示「文件已损坏」）。缺组件则如实报失败，
+        #   绝不产出一个打不开的假文件。
+        if os.path.splitext(safe_filename)[1].lower() in _OFFICE_EXTS:
+            failure = write_office_document(str(file_path), content)
+            if failure:
+                return (f"❌ 创建 {safe_filename} 失败：本机缺少生成该类文档的组件"
+                        f"（{failure}）。可以改用 .txt/.md 让我写纯文本。")
+            folder_name = os.path.basename(base_dir) if os.path.basename(base_dir) else base_dir
+            result = (f"✅ 已在 [{folder_name}] 下创建 **{safe_filename}**（真正的 Office 文档，"
+                      f"Word/WPS 可直接打开）。")
+            return result + (outside_note(base_dir) if outside_ok else "")
         file_path.write_text(content, encoding="utf-8")
         folder_name = os.path.basename(base_dir) if os.path.basename(base_dir) else base_dir
         result = f"✅ 权限验证通过！成功在授权目录 [{folder_name}] 下物理创建文件：{safe_filename}。"
@@ -961,7 +1033,29 @@ def modify_local_file(filename: str, old_content: str = "", new_content: str = "
     try:
         if not os.path.exists(file_path):
             return f"❌ 修改失败：文件 {safe_filename} 不存在。"
-        
+
+        # ★ 容器格式（.docx/.xlsx/.pptx）要**按文档读、按文档写**（V3.6.11）：
+        #   旧实现用 `_read_file_text` 直接读二进制（拿到乱码）再 `write_text` 回去——
+        #   结果是"改一下就损坏"。这里改成：走内核解析器取出正文 → 替换/追加 →
+        #   用 `write_office_document` 重新生成合法容器。
+        _ext = os.path.splitext(safe_filename)[1].lower()
+        if _ext in _OFFICE_EXTS:
+            from yindun.utils.document_parser import extract_file_text
+            content = str(extract_file_text(str(file_path)) or "")
+            if old_content:
+                if old_content not in content:
+                    return "❌ 修改失败：未找到要替换的内容。请提供精确的原文片段。"
+                new_content_full = content.replace(old_content, new_content)
+            else:
+                new_content_full = content.rstrip() + "\n" + new_content
+            failure = write_office_document(str(file_path), new_content_full)
+            if failure:
+                return f"❌ 修改 {safe_filename} 失败：无法重写该文档（{failure}）。"
+            folder_name = os.path.basename(base_dir) if os.path.basename(base_dir) else base_dir
+            action = "替换内容" if old_content else "追加内容"
+            return (f"✅ 成功{action}！{safe_filename} 已更新（仍是可正常打开的 Office 文档，目录 {folder_name}）。"
+                    + (outside_note(base_dir) if outside_ok else ""))
+
         content = _read_file_text(file_path)
         
         if old_content:

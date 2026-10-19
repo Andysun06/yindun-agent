@@ -58,24 +58,26 @@ _SYSTEM_PROMPT = (
     "你是「隐盾」，一个在**本机**工作的中文智能助手（有默认的「可读写范围」，"
     "范围之外的操作按当前权限档位判定，见下方实时说明）。\n\n"
     "【三条硬规则（最高优先级，任何情况下都要遵守）】\n"
-    "1. **对话历史里已经有的信息，直接用**——用户上一轮告诉过你、或你上一轮答过的内容，"
+    "1. **对话历史里已经有的信息，直接用**——用户上一轮说过的，"
     "直接回答，禁止说'请上传文件 / 请提供资料 / 我没有记忆'。\n"
     "2. **答案取决于本机的东西（文件/目录/内容/数量）就必须先调用工具**"
     "——不看用户用了什么动词（「桌面有多少文件」也算）。"
     "**不要用「我无法访问 / 没有权限 / 请你自己上传」代替调工具**；"
     "只有工具真的报错（被拒绝、路径不存在）才如实说明原因。\n"
     "3. **工具失败或返回警告/错误时，如实告诉用户失败原因和下一步建议**，"
-    "严禁编造文件内容、数据或执行结果。读不到就说读不到。\n\n"
+    "严禁编造文件内容、数据或执行结果。读不到就说读不到。\n"
+    "3.1 **隐私掩码（形如 [PHONE_0_x]）照原样用**：不要解释它、不要写「占位符」这类字样、"
+    "不要改写它——落盘与显示时系统会自动换回真值。\n\n"
     "【你能调用的工具】\n"
     "1. list_local_files(target_directory) —— 列出目录下的文件\n"
     "2. read_local_file(filename, target_directory) —— 读取文件内容\n"
     "3. create_local_file(filename, content, target_directory) —— 新建文件\n"
     "4. modify_local_file(filename, content, target_directory) —— 修改文件\n"
     "5. delete_local_file(filename, target_directory) —— 删除文件\n"
-    "6. move_local_file(source, target, overwrite=false) —— 移动文件/目录（target 给目录=移进去保留原名；单个 source 给完整路径=移动并改名；source 可为列表批量移动）\n"
+    "6. move_local_file(source, target, overwrite=false) —— 移动/改名（target 给目录=移进去；给完整路径=改名式移动；source 可为列表）\n"
     "7. copy_local_file(source, target, overwrite=false) —— 复制（备份/留副本用这个，源文件不动）\n"
     "8. rename_local_file(filename, new_name, target_directory) —— 就地改名（new_name 只填文件名，不带路径）\n"
-    "9. batch_rename_local_files(target_directory, match, replace, file_pattern='*') —— 批量改文件名/后缀：把文件名里的 match **子串**替换成 replace（如 match='.jpeg', replace='.jpg'）\n"
+    "9. batch_rename_local_files(target_directory, match, replace, file_pattern='*') —— 批量改文件名/后缀（子串替换，如 '.jpeg'→'.jpg'）\n"
     "10. make_local_dir(path, target_directory) —— 新建目录（绝对路径可一次建多级）\n"
     "11. run_local_command(command) —— 执行白名单内的本地命令\n"
     "12. analyze_project(target) —— 递归分析项目结构与关键代码\n"
@@ -185,7 +187,8 @@ class Worker:
         self._cancel_requested = threading.Event()
         self.think_depth = 3  # 1~10，深度思考模式专用，默认为3（对应6轮推理）
         self.result_messages: list[dict] = []
-        self.tool_call_count = 0
+        self.tool_call_count = 0        # **成功执行**过的工具次数
+        self.tool_call_attempts = 0     # **发起过**的工具调用次数（被驳回/被拦截也算）
         # ★★★ 附件全文快照：由 main_window._start_worker 注入
         # 结构：{文件名: 全文文本}，供 read_attachment_chunk 工具检索
         # 跨轮次保留：main_window 会把所有历史轮次挂载过的附件累积到 session，再传给 worker
@@ -811,6 +814,13 @@ class Worker:
             )
             # ★ 反"半句话当完成"（V3.6.10，组员评审 BUG-0003）：重生成后仍是断句就如实说明
             final_reply = self._guard_truncated_answer(final_reply)
+            # ★ 落盘内容里没还原干净的占位符要告诉用户（V3.6.11）：写文件时若还有 N 处占位符
+            #   找不到对应真值，用户拿到的交付物里就会有 `[PHONE_0_x]` 这种东西——必须点破。
+            if getattr(self, "_unresolved_in_write", 0):
+                final_reply += (f"\n\n⚠️ 提示：写入文件的内容里有 {self._unresolved_in_write} 处"
+                                f"占位符未能还原（映射表里没有对应值），打开文件可能会看到形如 "
+                                f"[PHONE_0_x] 的占位符；可在审计面板核对本轮映射。")
+                self._unresolved_in_write = 0
             # ★ 审计：记录最终还原后的 LLM 输出（展示给用户的版本）
             try:
                 AuditLog().log_llm_output(_reply_before_restore, preview=_reply_before_restore[:200])
@@ -1100,7 +1110,7 @@ class Worker:
                 #   这条与下面那几条"关键词强制分支"的分工是：关键词是**兜底网**（弱模型
                 #   连推诿都不说、直接编内容时用），这里是**主纠错通路**（对任何问法都生效）。
                 if (not getattr(self, "_tool_retry_used", False)
-                        and self.tool_call_count <= _tool_baseline
+                        and self.tool_call_attempts == 0
                         and isinstance(content, str)
                         and (self._waffles_about_local_access(content)
                              or self._claims_action_done(content))):
@@ -1293,6 +1303,10 @@ class Worker:
                 tool_name = tc.get("name", "") if isinstance(tc, dict) else getattr(tc, "name", "")
                 tool_args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
                 tool_call_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
+                # ★ 记一笔"发起过工具调用"（V3.6.11）：**任何**提前退出（快速模式拦写操作、
+                #   策略拦截、审批驳回）都算"发起过"，与"成功执行"分开计数——否则
+                #   守卫会把"工具被拦/被驳回"误判成"一次工具都没调用"，话就说得不准确了。
+                self.tool_call_attempts += 1
 
                 # 快速模式：拦截写操作工具
                 if is_quick_mode and tool_name in _WRITE_TOOLS:
@@ -1309,11 +1323,22 @@ class Worker:
                     continue
 
                 # 还原隐私脱敏的参数
-                if self.privacy_shield and box:
-                    tool_args = {
-                        k: (engine.deanonymize(v, box) if isinstance(v, str) else v)
-                        for k, v in tool_args.items()
-                    }
+                # ★ 必须用**累积映射**（V3.6.11，负责人实测）：模型把上一轮掩码过的手机号占位符
+                #   写进了 .docx，文件里就留下了 `[PHONE_0_h5ko]`——因为这里以前只拿**本轮**的
+                #   `box` 去还原，跨轮占位符一个都换不回来（而界面上那段回答是还原过的，
+                #   于是"用户看到的"与"落盘的"不一致）。写盘与展示必须共用同一份映射。
+                if self.privacy_shield:
+                    _merged_args_map = dict(self._box_mapping or {})
+                    if isinstance(box, dict):
+                        _merged_args_map.update(box)
+                    # ★ 映射表为空也要走一遍（V3.6.11）：这时正是"占位符无对应真值"的情形，
+                    #   必须数出来并点破，而不是因为"没有映射"就整段跳过、把占位符写进文件。
+                    tool_args, _left = self._deanon_args(tool_args, engine, _merged_args_map)
+                    if _left:
+                        # 还原不了的**不能静默**：这是要落盘/交付的内容
+                        self._unresolved_in_write = getattr(self, "_unresolved_in_write", 0) + _left
+                        self.status.emit(
+                            f"⚠️ 写入内容里有 {_left} 处占位符未能还原（映射表里没有对应值）")
 
                 # 0. 参数净化：丢掉模型传入的内部/越界授权类参数（越界放行只能由宿主授予）
                 tool_args = self._sanitize_tool_args(tool_name, tool_args)
@@ -1345,9 +1370,15 @@ class Worker:
                     continue
 
                 elif policy_result == "confirm":
+                    # ★ 措辞与"风险等级"解耦（V3.6.11，负责人实测）：
+                    #   旧文案是「🚨 检测到敏感操作 X，等待人工审批」——但这一行**只表示
+                    #   "当前档位要求你确认一下"**，和"危险不危险"是两回事；于是出现
+                    #   "插件说紧张、风险分级说低危、状态行说敏感操作"三行互相打架的观感。
+                    #   现在如实说清是三件事里的哪一件：审批触发的原因（档位要求），
+                    #   风险高低交给风险分级那一行，用户看到的就是一致的一套话。
                     self.status.emit(
-                        f"[思考 {round_count}/{max_rounds}] 🚨 检测到敏感操作 "
-                        f"{tool_display_name}，等待人工审批..."
+                        f"[思考 {round_count}/{max_rounds}] ✋ 需要你确认："
+                        f"{tool_display_name}（当前档位要求人工审批）"
                     )
                     # ★ 弹窗必须显示**完整真实路径**：越界时的审批是"你同意这次越界"，
                     #   只给文件名或相对路径等于让人盲签（payload 里 path 就是解析后的绝对路径）。
@@ -1883,8 +1914,9 @@ class Worker:
 
         # confirm：需人工审批
         if policy_result == "confirm":
+            # 同上：这行只说明"档位要求确认"，不做风险定性（风险由风险分级那一行负责）
             self.status.emit(
-                f"🚨 检测到敏感操作 {tool_display_name}，等待人工审批..."
+                f"✋ 需要你确认：{tool_display_name}（当前档位要求人工审批）"
             )
             if not self._request_approval(tool_display_name, args, target_path):
                 # 驳回 / 取消 / 超时
@@ -2140,6 +2172,36 @@ class Worker:
                        ("什么", "怎么", "为什么", "如何", "多少", "哪些", "帮我", "请",
                         "写", "总结", "分析", "整理", "创建", "改成", "讲讲", "说明",
                         "介绍", "列一下", "看一下", "核对", "检查")))
+
+    @staticmethod
+    def _deanon_args(args: dict, engine, mapping: dict):
+        """把工具参数里的占位符还原成真值（str / list / dict 都走一遍）。
+
+        返回 `(新参数, 仍未能还原的占位符个数)`。**写盘类工具的内容参数必须走这一步**：
+        模型看到的是掩码态，直接落盘就会把 `[PHONE_0_x]` 写进用户的文件（V3.6.11 实测：
+        写出的 .docx 正文里留着占位符，而界面上那段回答却是还原过的——两处口径不一致）。
+        """
+        # ★ 残留判定**不能依赖映射表非空**（V3.6.11 踩到）：映射为空时
+        #   `deanonymize_with_stats` 会提前返回、残留数恒为 0，于是"占位符无对应真值"
+        #   这种最该点破的情形反而静默通过。这里直接按占位符形状扫最终文本。
+        dangling = re.compile(
+            r"\[[A-Z][A-Z0-9_]*_\d+(?:_[a-z0-9]{4})?\]"
+            r"|(?<![A-Za-z0-9_])[A-Z][A-Z0-9_]{1,24}_\d+_[a-z0-9]{4}(?![A-Za-z0-9_])")
+        leftover = 0
+
+        def _one(value):
+            nonlocal leftover
+            if isinstance(value, str):
+                restored, _hits, _left = engine.deanonymize_with_stats(value, mapping)
+                leftover += len(dangling.findall(restored))
+                return restored
+            if isinstance(value, list):
+                return [_one(item) for item in value]
+            if isinstance(value, dict):
+                return {key: _one(item) for key, item in value.items()}
+            return value
+
+        return {key: _one(value) for key, value in (args or {}).items()}, leftover
 
     def _execute_tool(self, tool_name: str, args: dict) -> str:
         """根据工具名调用对应的工具对象，返回工具执行结果"""
