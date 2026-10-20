@@ -515,6 +515,27 @@ check("原因里给出可执行动作（启动 Ollama / 换模型 / 重新检测
           for word in ("ollama serve", "Ollama 已启动", "换成本机已装", "重新检测")),
       str(_dead_status.get("error"))[:160])
 
+# ── ①.66 不可用说明必须**短**（V3.6.13，负责人截图"回复太臃肿"）──
+#   旧文案把原因、连接错误、手动添加、serve、重新检测、换模型、pull 全堆在一条气泡里，
+#   四五行字没有重点。这里钉死：一条原因 + 一条下一步，且不重复同一句。
+import yindun.app.agent_service as _svc_mod                              # noqa: E402
+_real_detect = _svc_mod.detect_chat_models
+_svc_mod.detect_chat_models = lambda: []
+_dead2 = AgentService(settings=SettingsStore(path=TMP / "dead2_cfg.json"),
+                      sessions=SessionStore(path=TMP / "dead2_sess.json"))
+_dead2.settings.set("model", "qwen3.5:2b")
+_dead2.settings.set("ollama_host", "http://127.0.0.1:59999")
+_dead2.settings.save()
+_short = _dead2._diagnose_llm_unavailable(
+    catalog={"local_note": "没有检测到可对话的本机模型。连不上本机 Ollama 服务（http://127.0.0.1:59999）：连接等待超时"})
+_svc_mod.detect_chat_models = _real_detect
+check("★ 模型不可用说明压成一行（≤ 60 字）且不再堆四五个动作",
+      len(_short) <= 60 and _short.count("。") <= 2, f"{len(_short)}：{_short}")
+check("★ 说明按真实原因只给一条下一步（这里是启动 Ollama + 重新检测）",
+      "连不上" in _short and "重新检测" in _short and "ollama pull" not in _short, _short)
+check("说明不再重复「没有检测到可对话的模型」两次",
+      _short.count("没有检测到可对话") == 0, _short)
+
 
 # ── ①.67 公网模型接入：地址归一化 + 多候选探测（V3.6.4，负责人接 GLM 一直失败的根因）──
 #   实测：用户把**完整端点**（https://open.bigmodel.cn/api/paas/v4/chat/completions）
@@ -1059,11 +1080,16 @@ check("★ 原因可行动：点名模型 + 指出重新选择或 ollama pull",
 check("不覆盖用户手选的模型（用户的选择优先，只如实报不可用）",
       _svc_b.settings.get("model") == "本机没有的模型:9b")
 _errors = []
-_svc_b.set_listener(lambda ev, payload: _errors.append((ev, str(payload))))
+_sync_events = []
+_svc_b.set_listener(lambda ev, payload: (_errors.append((ev, str(payload))),
+                                         _sync_events.append((ev, payload))))
 check("★ 不可用时发送被拒并如实报原因（绝不假装在跑）",
       _svc_b.send("你好") is False and any(ev == "error" and "本机没有的模型:9b" in text
                                            for ev, text in _errors),
       str(_errors)[:160])
+check("★ 发送被拒时同步刷新算力状态（同屏不再一边「就绪」一边「连不上」）",
+      any(ev == "llm_status" and isinstance(p, dict) and p.get("ready") is False
+          for ev, p in _sync_events), str(_sync_events)[:200])
 
 # ③ 一个可对话模型都检测不到 → 保持空（界面显示"请选择模型"）
 _svc_c = AgentService(settings=SettingsStore(path=TMP / "k_c.json"),

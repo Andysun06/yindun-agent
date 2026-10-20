@@ -604,8 +604,10 @@ class AgentService:
                 return (f"本机没有这个模型：{model}（本机已装：{'、'.join(installed[:3])}）。"
                         f"在设置里换成本机已装的模型，或先 `ollama pull {model}`")
             if not installed:
-                # 一个可对话模型都没有：把"为什么空"如实说出来（连不上 / 只有嵌入模型…），
-                # 并把两种常见的自救动作都写清楚（Ollama 没起 / 模型没拉）。
+                # ★ 只说一句最该做的事（V3.6.13，负责人截图"回复太臃肿"）：
+                #   旧文案把"当前模型不可用 + 没检测到可对话模型 + 连不上服务 + 手动添加 +
+                #   ollama serve + 重新检测 + 换模型 + ollama pull"全堆在一条气泡里，
+                #   四五行字没有重点。这里按**真实原因**只给一条下一步。
                 note = ""
                 try:
                     if catalog is None:
@@ -613,10 +615,14 @@ class AgentService:
                     note = str(catalog.get("local_note") or "")
                 except Exception:
                     note = ""
-                return (f"当前选择的模型不可用：{model}——本机没有检测到可对话的模型。"
-                        f"{note}。请确认 Ollama 已启动（命令行执行 `ollama serve`，"
-                        f"或双击托盘图标）后点「重新检测」；或在「设置 → 模型接入」里换一个模型，"
-                        f"或先 `ollama pull {model}` 把它拉下来")
+                if "连不上" in note:
+                    return (f"模型 {model} 不可用：连不上本机 Ollama。"
+                            "请先启动，再点「重新检测」。")
+                if "向量" in note or "一个模型都没有" in note:
+                    return (f"模型 {model} 不可用：本机只有嵌入模型。"
+                            f"先 `ollama pull {model}`，或到设置换一个。")
+                return (f"模型 {model} 不可用：本机没有可对话模型。"
+                        f"先 `ollama pull {model}`，或到设置换一个。")
             return (f"连不上本机算力（{host or '默认地址'}）：请确认 Ollama 已启动"
                     f"（命令行执行 `ollama serve`，或双击托盘图标）后点「重新检测」")
         return (f"连不上算力端点（{host}）：请检查网络、地址与密钥是否正确；"
@@ -1934,6 +1940,13 @@ class AgentService:
                 return False
             if self._llm is None:
                 self._emit("error", self._llm_error or "算力未就绪")
+                # ★ 同一个屏幕上不能一边说"算力就绪"、一边说"连不上"
+                #   （V3.6.13 负责人截图）：发送被拒时顺手重算一次状态，
+                #   底部/顶栏会立刻从"就绪"变成"不可用 + 原因"。
+                try:
+                    self._emit("llm_status", self.llm_status())
+                except Exception:
+                    pass
                 return False
 
             sid = self.sessions.current_id or self.sessions.create()

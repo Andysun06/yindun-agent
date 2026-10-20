@@ -275,6 +275,21 @@ check("直答只调用一次模型（不因兜底多跑）", _llm3.calls == 1, f
 check("落库链尾＝该回答", tail_is_assistant_text(_worker3, _fin3),
       str([(m.get("role"), len(str(m.get("content") or ""))) for m in (_worker3.result_messages or [])]))
 
+# ★ 状态行前缀必须跟着当前模式走（V3.6.13，负责人截图：选了「思考」却显示「[快速回答]」）
+_llm3b = ScriptedLLM([{"content": "思考模式下的直答。"}])
+_worker3b = make_worker(_llm3b, {}, "介绍一下巴黎", think_mode="深度思考")
+_events3b, _, _ = run_worker(_worker3b)
+_status3b = [str(x) for x in all_of(_events3b, "status")]
+check("★ 思考模式的直答状态行写「[思考]」，不再冒充「[快速回答]」",
+      any("[思考] 直接作答" in s for s in _status3b)
+      and not any("[快速回答]" in s for s in _status3b), str(_status3b))
+_llm3c = ScriptedLLM([{"content": "快速模式下的直答。"}])
+_worker3c = make_worker(_llm3c, {}, "介绍一下巴黎", think_mode="快速回答")
+_events3c, _, _ = run_worker(_worker3c)
+_status3c = [str(x) for x in all_of(_events3c, "status")]
+check("快速模式仍写「[快速回答]」（不是一刀切改名）",
+      any("[快速回答] 直接作答" in s for s in _status3c), str(_status3c))
+
 print("\n" + "=" * 78)
 print("【4】无进展收敛：工具「正常返回警告」的打转不再跑满轮次，如实收尾")
 print("=" * 78)

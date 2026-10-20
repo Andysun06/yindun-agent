@@ -639,7 +639,11 @@ class Worker:
                     )
 
             if (_is_simple or _is_audio_request) and not _has_attachment and not _kb_has_docs:
-                self.status.emit("[快速回答] 直接回答问题...")
+                # ★ 状态行前缀按**当前模式**取（V3.6.13，负责人截图：选了「思考」却显示
+                #   「[快速回答] 直接回答问题…」）。直答快路径在两种模式下都会走，
+                #   但它不是"快速模式"——把模式名写在状态行里会让人以为设置没生效。
+                _mode_tag = "快速回答" if "快速" in str(self.think_mode or "") else "思考"
+                self.status.emit(f"[{_mode_tag}] 直接作答…")
                 # ★ 进度事件（真机事故整改）：聊天区的"正在思考"等待动画只挂在
                 #   intermediate_result 上（前端 ensureStreamBubble）；直答路径以前一条都不发，
                 #   用户在整段模型生成期间**在对话区看不到任何东西**（反馈原话：
@@ -679,7 +683,7 @@ class Worker:
                 if getattr(reply_msg, "tool_calls", None):
                     # 直答这条车道本来就不执行工具；模型却明确要调工具 → 换到工具推理循环，
                     # 不把它的工具调用吞掉（用户问的是真实世界的信息，答案只能由工具给出）。
-                    self.status.emit("[快速回答] 模型需要调用工具，转入工具推理...")
+                    self.status.emit(f"[{_mode_tag}] 模型需要调用工具，转入工具推理…")
                     self._trace("thinking", "改用工具推理",
                                 "直答未产出文字：模型要求调用工具", "ok")
                 else:
@@ -687,7 +691,7 @@ class Worker:
                     # ★ 文案改成**可执行诊断**（V3.6.13，组员评审 BUG-0007/0008）：
                     #   旧文案把原因推给"小模型偶发空回复（每 5 次一次）"，与当前模型/配置无关，
                     #   用户既无法核对也无法行动。这里按"写类意图 / 其他"分情况给出下一步。
-                    self.status.emit("[快速回答] 模型没有给出回答，已如实说明")
+                    self.status.emit(f"[{_mode_tag}] 模型没有给出回答，已如实说明")
                     _no_answer = self._empty_output_message()
                     self._reply_is_fallback = True   # ★ 产品兜底文案不是模型输出（审计用）
                     if self.privacy_shield and (box or self._box_mapping):
