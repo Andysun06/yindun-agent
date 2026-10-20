@@ -34,7 +34,10 @@ edge = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
 # ★ 必须给独立 user-data-dir 并显式等待渲染完成：
 #   若本机已有 Edge 实例在跑，无头进程会把任务转交出去后立即返回，
 #   PDF 会静默保持旧文件（曾导致"文档改了但 PDF 没更新"）。
-profile_dir = os.path.join(tempfile.gettempdir(), "edge_pdf_profile")
+# ★ 每次生成用**全新的** user-data-dir（V3.6.15 修）：
+#   固定目录会被上一次无头 Edge 进程占住——新进程把任务转交出去就立即返回，
+#   PDF 静默保持旧文件（"文档改了但 PDF 没更新"）。唯一目录还能避免并发渲染互相覆盖。
+profile_dir = tempfile.mkdtemp(prefix="edge_pdf_profile_")
 before = os.path.getmtime(pdf_path) if os.path.exists(pdf_path) else None
 subprocess.run([edge, "--headless=new", "--disable-gpu", "--no-sandbox",
                 f"--user-data-dir={profile_dir}",
@@ -42,8 +45,14 @@ subprocess.run([edge, "--headless=new", "--disable-gpu", "--no-sandbox",
                 "--no-pdf-header-footer",
                 "file:///" + os.path.abspath(html_path).replace("\\", "/")],
                timeout=180)
-time.sleep(1)
+time.sleep(0.3)
 after = os.path.getmtime(pdf_path) if os.path.exists(pdf_path) else None
+# ★ 无头 Edge 有时在进程退出后才把 PDF 落完（实测：文件其实已更新，但 1 秒时
+#   mtime 还没变，脚本误报失败）。这里最多等 20 秒，确认落盘完成再判定。
+deadline = time.time() + 20
+while (after is None or after == before) and time.time() < deadline:
+    time.sleep(0.5)
+    after = os.path.getmtime(pdf_path) if os.path.exists(pdf_path) else None
 if after is None or after == before:
     raise SystemExit(f"❌ PDF 未生成或未更新：{pdf_path}（检查 Edge 无头渲染是否被占用/拦截）")
 print("PDF:", pdf_path)

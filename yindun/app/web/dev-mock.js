@@ -227,6 +227,15 @@
       capabilities: capOf("advisory_for_approval", "在人工审批弹窗里给出决策提示（只影响界面提示，不参与任何判定）", ""),
       runtime: { calls: 3, ts: Math.floor(Date.now() / 1000) - 620, ms: 4210, status: "ok", hook: "advisory_for_approval" },
       enabled: true, error: null, missing: [], usable: true },
+    { id: "intent_guard", category: "安全", name: "操作意图预判", version: "0.1.0",
+      description: "审批弹窗里先给一条「这次请求想干什么」的判断：意图、涉及数据、去向、用途，再交给「是否相符」与「操作风险」两条建议。确定性红线由内核用途检查给出，本地模型只补充细节、只能加重不能减轻。",
+      source: "builtin", hooks: ["advisory_for_approval"],
+      permissions: { network: "local-only", filesystem: "none" },
+      file_exts: [], export_formats: {}, config_files: [],
+      provides: ["审批弹窗：操作意图预判（意图 / 数据 / 去向 / 用途）"],
+      capabilities: capOf("advisory_for_approval", "在人工审批弹窗里给出决策提示（只影响界面提示，不参与任何判定）", ""),
+      runtime: { calls: 5, ts: Math.floor(Date.now() / 1000) - 300, ms: 380, status: "ok", hook: "advisory_for_approval" },
+      enabled: true, error: null, missing: [], usable: true },
     { id: "laya_risk", category: "安全", name: "laya 风险分级", version: "0.1.0",
       description: "审批弹窗补一行风险分级（高危/中危/低危）：本机装了 laya 决策模型就用模型打分；没装、加载失败或推理失败时自动回退到正则规则。提示都写明本次来源；推理与规则匹配全在本机，只影响弹窗提示、不参与放行判定。",
       source: "builtin", hooks: ["advisory_for_approval"],
@@ -559,13 +568,19 @@
   if (location.hash.indexOf("approval") >= 0) {
     setTimeout(() => {
       window.yindun && window.yindun.onEvent("need_confirm", {
-        name: "执行命令", path: "E:\\yindun-agent\\dist",
-        args: { command: "python report.py --month 2026-09" },
+        name: "移动文件", path: "C:\\Users\\Andy\\Desktop",
+        args: { source: "客户资料汇总.xlsx", target: "D:\\外发\\" },
+        intent_decision: "warn", intent_summary: "收集个人信息并外发/公开",
+        intent_warning: "请求用途风险：收集个人信息并外发/公开。请确认你已获得当事人授权；继续操作会写入审计。",
+        advisory_available: true,
       });
-      // 插件建议是异步补发的（本地模型判断可能慢），这里模拟慢一步到达
+      // 插件建议是异步补发的（本地模型判断可能慢），这里模拟慢一步到达；
+      // 红线命中时 decision_hint 会被抑制，只剩"意图预判"与"只评操作本身"的风险行。
       setTimeout(() => window.yindun && window.yindun.onEvent("advisories", [
-        { source: "审批决策提示", level: "warn",
-          text: "本地模型判断：与你的请求存疑。你只要求汇总要点，未要求生成新文件。" },
+        { source: "操作意图预判", level: "warn", order: 0,
+          text: "意图预判：意图=外发，数据=个人信息，去向=他人，用途=办公。（用途红线见弹窗顶部）" },
+        { source: "laya 风险分级", level: "info",
+          text: "风险分级（正则规则）：低危 · 未命中风险特征（本行只评操作本身，不评价请求用途；用途风险见弹窗顶部红色警示）" },
       ]), 900);
     }, 400);
   }

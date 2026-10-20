@@ -662,11 +662,16 @@
   function setBusy(busy) {
     state.busy = busy;
     const btn = $("btn-send");
-    btn.classList.toggle("icon-btn--stop", busy);
+    // 忙碌态：方形停止键 + 模型名前的小转圈（参考 ZCode 新输入区）；
+    // 两个类互斥，避免 pill--send 的浅底盖住 pill--stop 的红色。
+    btn.classList.toggle("pill--stop", busy);
+    btn.classList.toggle("pill--send", !busy);
     btn.title = busy ? "停止生成" : "发送";
     btn.innerHTML = busy
       ? `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>`
-      : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 8 6 8-16-8z"/></svg>`;
+      : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>`;
+    const spinner = $("composer-spinner");
+    if (spinner) spinner.hidden = !busy;
     $("input").disabled = busy;
     $("composer-hint").textContent = busy
       ? "推理中…（可随时点停止）"

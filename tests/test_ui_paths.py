@@ -1518,9 +1518,18 @@ def main() -> int:
               names == ["低", "中", "高", "最高"], str(names))
         check("解释性文字收进 title（悬停才看，不是删掉不告诉）",
               all(len(o["title"]) >= 8 for o in opts), str(opts))
-        check("触发器紧凑：只有档位词 + 小图标（含箭头），没有长说明",
+        check("触发器紧凑：只剩档位词 + 末尾箭头，与模型名并排读作「模型 高 ∨」",
               len((page.inner_text("#think-trigger") or "").strip()) <= 4
-              and page.eval_on_selector_all("#think-trigger svg", "els => els.length") >= 2,
+              and page.eval_on_selector_all("#think-trigger svg", "els => els.length") == 1
+              and page.eval_on_selector_all("#model-trigger .model-select__chev",
+                                            "els => els.filter(e => getComputedStyle(e).display !== 'none').length") == 0
+              and page.evaluate("""() => {
+                  const t = document.querySelector('#think-trigger');
+                  const m = document.querySelector('#model-trigger');
+                  if (!t || !m) return false;
+                  const tr = t.getBoundingClientRect(), mr = m.getBoundingClientRect();
+                  return Math.abs(tr.top - mr.top) < 6 && tr.left >= mr.right - 4;
+              }"""),
               repr(page.inner_text("#think-trigger")))
         check("触发器的 title 带着当前档说明（细看时口径还在）",
               len(page.get_attribute("#think-trigger", "title") or "") >= 10,
@@ -2306,6 +2315,63 @@ def main() -> int:
               "最多 14 轮推理" in think_toast and "约 7 轮" not in think_toast, repr(think_toast))
         check("BUG-0009 用例全程无 JS 运行时错误", not errors_think, "；".join(errors_think[:3]))
         page_think.close()
+
+        # ── 27) 新版输入区布局（参考 ZCode：左＝挂载/权限，右＝模型/思考/发送）──
+        # 负责人给的参考图：权限胶囊在左侧、模型名与思考档位并排、发送是方形箭头，
+        # 忙碌时模型名左侧出现小转圈。这里钉住**布局关系**，不锁具体像素。
+        print("\n" + "=" * 78)
+        print("【27】输入区新版布局：左权限 / 右模型+思考 / 方形发送 / 忙碌转圈")
+        print("=" * 78)
+        if page.evaluate("() => document.querySelector('.app').classList.contains('is-settings-open')"):
+            page.click("#set-back")
+            page.wait_for_timeout(250)
+        # 前面的时序用例可能把状态留在 busy（或反过来），先显式归零再量布局
+        page.evaluate("() => window.yindun.onEvent('state', {busy: false})")
+        page.wait_for_timeout(120)
+        layout = page.evaluate("""() => {
+            const attach = document.querySelector('#btn-attach');
+            const perm = document.querySelector('#perm-pill');
+            const right = document.querySelector('.composer__right');
+            const send = document.querySelector('#btn-send');
+            const spinner = document.querySelector('#composer-spinner');
+            const sr = send.getBoundingClientRect();
+            return {
+                permNextToAttach: !!attach && perm && perm.previousElementSibling === attach,
+                permBeforeSpacer: !!perm && (perm.nextElementSibling || {}).className === 'composer__spacer',
+                rightHasModel: !!right && !!right.querySelector('#model-select'),
+                rightHasThink: !!right && !!right.querySelector('#think-select'),
+                rightHasSend: !!right && right.contains(send),
+                sendSize: [Math.round(sr.width), Math.round(sr.height)],
+                sendRadius: getComputedStyle(send).borderTopLeftRadius,
+                spinnerHidden: !!spinner && spinner.hidden,
+            }; }""")
+        check("权限胶囊在左侧（紧跟「＋」挂载按钮）", layout["permNextToAttach"], str(layout))
+        check("模型 / 思考 / 发送同属右侧控件簇",
+              layout["rightHasModel"] and layout["rightHasThink"] and layout["rightHasSend"], str(layout))
+        check("发送键是 32×32 的圆角方形（不是圆形/长条）",
+              layout["sendSize"] == [32, 32] and float(layout["sendRadius"].rstrip("px") or 0) >= 8,
+              str(layout))
+        check("空闲时忙碌转圈隐藏（不占位）", layout["spinnerHidden"], str(layout))
+        page.evaluate("() => window.yindun.onEvent('state', {busy: true})")
+        page.wait_for_timeout(120)
+        busy_state = page.evaluate("""() => {
+            const s = document.querySelector('#composer-spinner');
+            const b = document.querySelector('#btn-send');
+            return { spinner: !!s && !s.hidden,
+                     stop: b.classList.contains('pill--stop'),
+                     send: b.classList.contains('pill--send'),
+                     title: b.title }; }""")
+        check("忙碌时出现小转圈 + 方形停止键（两个类互斥）",
+              busy_state["spinner"] and busy_state["stop"] and not busy_state["send"]
+              and "停止" in busy_state["title"], str(busy_state))
+        page.evaluate("() => window.yindun.onEvent('state', {busy: false})")
+        page.wait_for_timeout(120)
+        check("空闲后转圈收起、发送键恢复",
+              page.evaluate("""() => {
+                  const s = document.querySelector('#composer-spinner');
+                  const b = document.querySelector('#btn-send');
+                  return !!s && s.hidden && b.classList.contains('pill--send')
+                         && !b.classList.contains('pill--stop'); }"""))
 
         check("全程无 JS 运行时错误", not errors, "；".join(errors[:3]))
         browser.close()

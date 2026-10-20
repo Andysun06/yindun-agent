@@ -73,7 +73,7 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
 
   <header class="cover">
     <div class="badge-row">
-      <span class="badge">隐私计算 · 桌面智能体</span><span class="badge">技术报告</span><span class="badge">V3.5.0</span>
+      <span class="badge">隐私计算 · 桌面智能体</span><span class="badge">技术报告</span><span class="badge">V3.6.15</span>
     </div>
     <h1>🛡️ 隐盾安全智能体</h1>
     <div class="subtitle">面向涉密办公场景的本地化隐私防护桌面智能体</div>
@@ -83,7 +83,7 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
       大模型进入办公场景面临一个根本矛盾：待处理数据越敏感，越需要模型的能力，却也越不能让其跨越本地边界。本工作报告提出并实现隐盾安全智能体，其核心是一个内存级隐私脱敏网关——将敏感文本在进入模型前形式化地映射为占位符文本与一份加密映射表，使模型无法接触<b>已被识别出</b>的真实敏感值，同时保持任务可用性。系统配套本地沙箱、命令白名单、高危熔断审批与 HMAC 哈希链审计，构成覆盖"输入—推理—执行—落盘—审计"的纵深防御。为量化效果，我们把两条性质<b>分开度量</b>：<b>识别覆盖率</b>是依赖语料的经验量——在留出集（60 篇随机化文档 / 280 个注入敏感值，规则冻结后一次性运行）上完整脱敏 <b>222/280</b>，其中系统声明支持的写法为 <b>222/230</b>；<b>网关机密性</b>是架构保证、与识别覆盖率无关——对已识别实体，出网明文实例 <b>0</b>，还原劫持 500 轮成功 <b>0</b>，白盒持久化与审计产物明文命中 <b>0</b>，脱敏↔还原逐字一致 <b>60/60</b>。我们同时公开 <b>50 个未覆盖形态</b>的完整清单（实测命中 0/50）与由留出集发现并修复的三类实现缺陷。上述结论均限定在所述评测集与威胁模型内，不构成真实环境的普适安全保证。
     </div>
     <div class="meta">
-      <div><b>系统</b>隐盾安全智能体</div><div><b>版本</b>V3.5.0（2026-10）</div><div><b>技术栈</b>Python · LangChain · pywebview/WebView2 · Chroma</div>
+      <div><b>系统</b>隐盾安全智能体</div><div><b>版本</b>V3.6.15（2026-10）</div><div><b>技术栈</b>Python · LangChain · pywebview/WebView2 · Chroma</div>
     </div>
   </header>
 
@@ -277,7 +277,8 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
       <div class="card"><h4>哈希链审计</h4><p>每条日志哈希 $h_i=\mathrm{HMAC}_\kappa(h_{i-1}\,\|\,	ext{entry}_i)$，篡改即校验失败；审计自身落盘前统一复用脱敏管线掩码，只存脱敏预览（见 5.2.7）。</p></div>
       <div class="card"><h4>模式级防线</h4><p>快速模式禁用一切写操作（只读安全）；思考模式开放完整工具调用，推理深度 1–10 级可调。高危操作只在思考模式下存在，且始终经熔断审批。</p></div>
     </div>
-    <figure><img src="screenshots/05b_审批弹窗_含待审内容.png" alt="审批" style="max-width:52%"><figcaption><b>图 3</b>　高危操作熔断审批弹窗（"待审内容"审阅区完整展示即将写入的内容，消除盲签；工具决策由受控脚本注入以保证可复现，审批、沙箱写入、审计均为真实执行）</figcaption></figure>
+    <figure><img src="screenshots/05b_审批弹窗_含待审内容.png" alt="审批" style="max-width:70%"><figcaption><b>图 3</b>　高危操作熔断审批弹窗（V3.6.15）：顶部先给<b>请求用途警示</b>（收集个人信息并外发/公开），再展示申请工具、真实目标路径与待审参数；下方建议按「意图预判 → 操作风险」分层，风险行明确标注只评操作本身、不评价请求用途。工具决策由受控脚本注入以保证可复现，审批、沙箱写入、审计均为真实执行</figcaption></figure>
+    <figure><img src="screenshots/05c_审批弹窗_研判中.png" alt="审批研判中" style="max-width:70%"><figcaption><b>图 3b</b>　建议异步征集期间的「正在研判」占位：按两条建议预留高度并显示转圈，结果到达就地替换，弹窗不再先出上半部、半秒后整体下移</figcaption></figure>
     <figure><img src="screenshots/03_审计面板.png" alt="审计" style="max-width:58%"><figcaption><b>图 4</b>　审计黑匣子面板：统计概览 / 哈希链状态 / 事件筛选 / 报告导出</figcaption></figure>
     <p>实测：执行白名单外的 <span class="commit">tasklist</span> 触发拦截，模型如实说明"系统未能执行该命令"，全程无命令执行副作用。</p>
     <figure><img src="screenshots/07_命令拦截拒绝.png" alt="命令拦截" style="max-width:78%"><figcaption><b>图 5</b>　命令白名单实测：非白名单命令（tasklist）被内核拦截，模型基于真实拦截结果如实反馈（工具决策由受控脚本注入，拦截与回答为真实链路）</figcaption></figure>
@@ -381,6 +382,16 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
       <tr><td><b>同屏矛盾</b>：发送被拒时底部仍停在「算力就绪」，与错误气泡里的「连不上 Ollama」并存</td><td>发送因算力不可用被拒时顺手重算并广播 <code>llm_status</code>（<code>ready=false</code> + 原因）</td></tr>
     </table>
     <div class="tbl-caption">V3.6.14 回归：<code>test_agent_service</code> 新增 4 条（短说明 / 单一动作 / 不重复 / 拒发时状态同步）；<code>test_reply_feedback</code> 新增 2 条（两种模式的状态前缀各自正确）</div>
+    <h3>7.7　输入区改版：把"当前放得有多开"放在手边（V3.6.15）</h3>
+    <p>负责人给出 ZCode 新版输入区作为参考后，界面按同一信息层级重排：**左侧只放输入相关动作，右侧只放会话级设置与发送**。改版不改变任何权限/审批语义，只减少"模型名、权限、思考档位挤在一行"造成的误读。</p>
+    <table class="data">
+      <thead><tr><th style="width:24%">区域</th><th>改版后</th></tr></thead>
+      <tr><td>左下：输入动作</td><td><code>＋</code> 挂载与**权限胶囊**同组；权限自动/完全档整颗胶囊着色（琥珀/红），一眼看出当前放得有多开</td></tr>
+      <tr><td>右下：会话设置</td><td>模型名 + 思考档位并排，读作「本机 Ollama / qwen3.5:4b 高 ∨」；只有整簇末尾一个箭头，避免"两个箭头各管一半"</td></tr>
+      <tr><td>发送与忙碌</td><td>发送键为 32×32 圆角方形上箭头；推理中切换为方形停止键，模型名左侧出现 13px 小转圈（空闲隐藏、不占位）</td></tr>
+      <tr><td>弹层</td><td>模型 / 权限 / 思考三个弹层统一为 12–14px 圆角卡片；模型弹层仍保持"供应商列 + 模型列"两级，不引入搜索框</td></tr>
+    </table>
+    <div class="tbl-caption">V3.6.15 回归：<code>test_ui_paths</code> 新增【27】6 条（左权限 / 右簇 / 方形发送 / 转圈隐藏与忙碌切换），并更新思考触发器断言；报告配图同步为 V3.6.15 画面（图 3、3b、7、8）</div>
     <div class="tbl-caption">交付物完整性整改（V3.6.11；文件管理套件 +8：三种容器真文件、追加/替换后仍可打开；回复链路 +4：跨轮还原与残留提示）</div>
     <div class="tbl-caption">隐私与判据口径修正清单（V3.6.11；每条都有回归断言：隐私套件 +6、插件套件 +6、回复链路 +3）</div>
     <h2 class="sec">8　测试与质量保障</h2>
@@ -406,8 +417,9 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
       <tr><td><b>test_kb_pipeline（V3.4 新增）</b></td><td>知识库文本管线（不依赖向量库/网络）：占位符类型解析（含下划线/数字/PLUGIN_*）、长实体先脱敏后切块不被切碎、分块映射隔离、元数据无本机路径</td><td class="num">✅ 全部通过</td></tr>
       <tr><td>test_workflow / test_knowledge_base</td><td>工作流/审批链/入库检索/向量库零明文</td><td class="num">✅ 通过（知识库需 Ollama 在线）</td></tr>
     </table>
-    <div class="tbl-caption">表 6　测试套件汇总（2026-10 复赛评审整改 + V3.4.6 留出集评测后复测，共 21 个套件）</div>
-    <figure><img src="screenshots/04_设置面板.png" alt="设置" style="max-width:70%"><figcaption><b>图 8</b>　设置面板：对话模型选择、隐私与权限（含新增「允许执行本地脚本」严格模式开关）、深度思考强度与权限等级</figcaption></figure>
+    <div class="tbl-caption">表 6　测试套件汇总（2026-10 复赛评审整改 + V3.4.6 留出集评测后复测，共 23 个套件）</div>
+    <figure><img src="screenshots/06_插件设置.png" alt="插件" style="max-width:78%"><figcaption><b>图 7</b>　插件设置（V3.6.15）：七个内置插件全部默认关闭、按需启用；新增「操作意图预判」与「审批决策提示」「laya 风险分级」同列安全组，卡片上写明类型（建议型/增强型）、数据边界（无网络/仅本机网络）与提供的能力</figcaption></figure>
+    <figure><img src="screenshots/04_设置面板.png" alt="设置" style="max-width:70%"><figcaption><b>图 8</b>　设置面板（V3.6.15）：按数据边界分三档的模型接入（本机 / 局域网 / 公网）、可读写范围与隐私权限、严格模式开关、深度思考强度</figcaption></figure>
   </section>
 
   <section id="sec9">

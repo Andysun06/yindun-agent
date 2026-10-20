@@ -163,7 +163,6 @@
               <button class="pill pill--icon" id="btn-attach" type="button" title="挂载文档（PDF / Word / Excel / TXT / MD / CSV）">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
               </button>
-              <span class="composer__spacer"></span>
               <!-- 本对话权限：胶囊 + 下拉（设置页里的是"新对话默认"，这里是本对话覆盖） -->
               <div class="perm" id="perm-pill" data-mode="ask">
                 <button type="button" id="perm-trigger" class="perm__trigger" aria-haspopup="listbox" aria-expanded="false" title="本对话的 AI 权限模式（只影响本对话）">
@@ -173,40 +172,44 @@
                 </button>
                 <div class="perm__pop" id="perm-pop" role="listbox" hidden></div>
               </div>
-              <!-- 模型胶囊：两级下拉（一级供应商 → 二级该供应商的模型）；
-                   照 ZCode 的形态，**没有搜索框**——原"手输非匹配名＝内网模型入口"改由
-                   弹层底部「管理模型」跳设置页承担（见 app.js 注释）。 -->
-              <div class="model-select" id="model-select">
-                <button type="button" id="model-trigger" class="pill pill--model" aria-haspopup="listbox" aria-expanded="false" title="切换模型（供应商 / 模型；数据边界按三档分组）">
-                  <span class="tier-dot" id="model-tier-dot"></span>
-                  <span class="model-select__value" id="model-value"></span>
-                  <svg class="model-select__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
-                </button>
-                <div class="model-select__pop" id="model-pop" tabindex="-1" hidden>
-                  <div class="mpick">
-                    <div class="mpick__col mpick__col--prov" id="mpick-providers" role="listbox" aria-label="供应商"></div>
-                    <div class="mpick__col" id="mpick-models" role="listbox" aria-label="供应商下的模型"></div>
-                  </div>
-                  <div class="model-select__foot" id="model-hint">—</div>
-                  <button type="button" class="mpick__manage" id="mpick-manage">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M4 7h4M14 7h6M4 17h6M16 17h4"/></svg>
-                    管理模型
+              <span class="composer__spacer"></span>
+              <div class="composer__right">
+                <!-- 忙碌态小转圈（参考 ZCode 输入区；空闲时隐藏，不占位） -->
+                <span class="composer__spinner" id="composer-spinner" hidden aria-hidden="true"></span>
+                <!-- 模型胶囊：两级下拉（一级供应商 → 二级该供应商的模型）；
+                     照 ZCode 的形态，**没有搜索框**——原"手输非匹配名＝内网模型入口"改由
+                     弹层底部「管理模型」跳设置页承担（见 app.js 注释）。 -->
+                <div class="model-select" id="model-select">
+                  <button type="button" id="model-trigger" class="pill pill--model" aria-haspopup="listbox" aria-expanded="false" title="切换模型（供应商 / 模型；数据边界按三档分组）">
+                    <span class="tier-dot" id="model-tier-dot"></span>
+                    <span class="model-select__value" id="model-value"></span>
+                    <svg class="model-select__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
                   </button>
+                  <div class="model-select__pop" id="model-pop" tabindex="-1" hidden>
+                    <div class="mpick">
+                      <div class="mpick__col mpick__col--prov" id="mpick-providers" role="listbox" aria-label="供应商"></div>
+                      <div class="mpick__col" id="mpick-models" role="listbox" aria-label="供应商下的模型"></div>
+                    </div>
+                    <div class="model-select__foot" id="model-hint">—</div>
+                    <button type="button" class="mpick__manage" id="mpick-manage">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M4 7h4M14 7h6M4 17h6M16 17h4"/></svg>
+                      管理模型
+                    </button>
+                  </div>
                 </div>
-              </div>
-              <!-- 思考强度：胶囊 + 下拉（低 / 中 / 高 / 最高）。
-                   照 ZCode 的紧凑形态：触发器只显示档位词 + 图标，解释性文字全部进 title。 -->
-              <div class="think" id="think-select">
-                <button type="button" id="think-trigger" class="think__trigger" aria-haspopup="listbox" aria-expanded="false" title="思考强度">
-                  <svg class="think__ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4a3 3 0 00-3 3 3 3 0 00-1 5.8V16a3 3 0 003 3h1v1h5v-1h1a3 3 0 003-3v-3.2A3 3 0 0017 7a3 3 0 00-3-3 3 3 0 00-5 0z"/></svg>
-                  <span class="think__value" id="think-value">中</span>
-                  <svg class="think__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+                <!-- 思考强度：与模型触发器**视觉相连**（只显示档位词，读作「模型 高」）。
+                     点开仍是原来的四档下拉；解释性文字在 title 里。 -->
+                <div class="think" id="think-select">
+                  <button type="button" id="think-trigger" class="think__trigger" aria-haspopup="listbox" aria-expanded="false" title="思考强度（点开选择低 / 中 / 高 / 最高）">
+                    <span class="think__value" id="think-value">中</span>
+                    <svg class="think__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+                  </button>
+                  <div class="think__pop" id="think-pop" role="listbox" hidden></div>
+                </div>
+                <button class="pill pill--send" id="btn-send" type="submit" title="发送（Enter）">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
                 </button>
-                <div class="think__pop" id="think-pop" role="listbox" hidden></div>
               </div>
-              <button class="pill pill--send" id="btn-send" type="submit" title="发送（Enter）">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h15M12 6l6 6-6 6"/></svg>
-              </button>
             </div>
           </div>
           <div class="composer__hint" id="composer-hint">文本在本机脱敏后才送模型；真实值只在你的屏幕上还原</div>

@@ -6,14 +6,14 @@ Unicode true
 ; 构建：makensis tools\installer.nsi（需先 pyinstaller tools\yindun_agent.spec 产出 dist/）
 
 Name "隐盾安全智能体"
-OutFile "..\隐盾安全智能体_V3.6.14_安装包.exe"
+OutFile "..\隐盾安全智能体_V3.6.15_安装包.exe"
 InstallDir "$LOCALAPPDATA\Yindun\YindunSecurityAgent"
 InstallDirRegKey HKCU "Software\YindunSecurityAgent" "InstallDir"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
-VIProductVersion "3.6.14.0"
+VIProductVersion "3.6.15.0"
 VIAddVersionKey "ProductName" "隐盾安全智能体"
-VIAddVersionKey "FileVersion" "V3.6.14"
+VIAddVersionKey "FileVersion" "V3.6.15"
 VIAddVersionKey "LegalCopyright" "Yindun Team"
 
 !define APP_EXE "YindunSecurityAgent.exe"
@@ -48,7 +48,7 @@ Section "安装隐盾安全智能体" SecMain
 
   ; 注册表：控制面板卸载入口
   WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "隐盾安全智能体 V3.6.12"
-  WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "3.6.14"
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "3.6.15"
   WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "Yindun Team"
   WriteRegStr HKCU "${UNINST_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
   WriteRegStr HKCU "${UNINST_KEY}" "InstallLocation" "$INSTDIR"

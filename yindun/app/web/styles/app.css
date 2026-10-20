@@ -406,12 +406,13 @@ body.is-maximized .win-btn__ico-restore { display: block; }
 
 .composer__box {
   display: block;
-  padding: var(--sp-4) var(--sp-4) var(--sp-3);
-  background: var(--bg-input); border: 1px solid var(--border-2); border-radius: var(--r-block);
+  padding: 14px 14px 10px;
+  background: var(--bg-input); border: 1px solid var(--border-1); border-radius: 18px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.04);
   transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
-.composer__box:focus-within { border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--focus-ring); }
-.composer textarea { width: 100%; resize: none; border: none; outline: none; background: transparent; padding: 0; max-height: 180px; line-height: 1.6; font-size: var(--fs-base); }
+.composer__box:focus-within { border-color: var(--border-2); box-shadow: 0 0 0 3px var(--focus-ring), 0 8px 24px rgba(0,0,0,.05); }
+.composer textarea { width: 100%; min-height: 40px; resize: none; border: none; outline: none; background: transparent; padding: 2px 2px 0; max-height: 180px; line-height: 1.6; font-size: var(--fs-base); }
 /* ★ 焦点只由外层容器表达（V3.6.9 修「两个圈」）：下方那条全局
    `textarea:focus { border-color + box-shadow }` 也会给这个内层输入框加一圈，
    于是聚焦时外层 `.composer__box:focus-within` 与内层同时高亮、看着是两个套圈。
@@ -425,8 +426,18 @@ body.is-maximized .win-btn__ico-restore { display: block; }
 /* ── 输入区控件行（参考 ZCode：输入框在上，控件一行贴在下方）─────────
    左＝输入相关（挂载），右＝会话级设置（模型 / 思考强度）与发送。
    按钮一律"无边框胶囊、hover 才显形"，不抢正文注意力。 */
-.composer__row { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-3); }
+.composer__row { display: flex; align-items: center; gap: var(--sp-2); margin-top: 8px; }
 .composer__spacer { flex: 1; }
+.composer__right { display: flex; align-items: center; gap: 2px; min-width: 0; }
+/* 忙碌态小转圈：与 ZCode 一致，放在模型名前；空闲时隐藏，不占位 */
+.composer__spinner {
+  width: 13px; height: 13px; flex: none; margin-right: 6px; border-radius: 50%;
+  border: 2px solid var(--border-2); border-top-color: var(--text-2);
+  animation: composer-spin .8s linear infinite;
+}
+.composer__spinner[hidden] { display: none; }
+@keyframes composer-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .composer__spinner { animation: none; } }
 .pill {
   display: inline-flex; align-items: center; gap: var(--sp-2);
   height: 28px; padding: 0 var(--sp-3); border: 1px solid transparent; border-radius: 999px;
@@ -437,9 +448,14 @@ body.is-maximized .win-btn__ico-restore { display: block; }
 .pill:hover { background: var(--bg-hover); color: var(--text-1); }
 .pill:focus-visible { outline: none; border-color: var(--accent-500); }
 .pill svg { width: 15px; height: 15px; flex: none; }
-.pill--icon { width: 28px; padding: 0; justify-content: center; color: var(--text-3); }
-.pill--model { max-width: 340px; border-color: var(--border-2); background: var(--bg-canvas); }
-.pill--model:hover { border-color: var(--border-2); background: var(--bg-hover); }
+.pill--icon { width: 30px; height: 30px; padding: 0; justify-content: center; color: var(--text-2); border-radius: 10px; }
+.pill--icon svg { width: 17px; height: 17px; }
+/* 模型触发器按 ZCode 的新输入区：不再是带框胶囊，就是一段「模型名 档位」文本 */
+.pill--model { max-width: 360px; height: 30px; padding: 0 4px; border-color: transparent; background: transparent; }
+.pill--model:hover { border-color: transparent; background: var(--bg-hover); }
+/* 切换箭头的归属：模型名与思考档位并排后，箭头应读在整簇末尾（「模型 高 ∨」），
+   所以模型按钮自己的箭头收起，由思考触发器在右端画一个。 */
+.pill--model .model-select__chev { display: none; }
 .model-select__value { max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pill--select { position: relative; padding-right: var(--sp-2); }
 .pill__label { color: var(--text-3); white-space: nowrap; flex: none; }
@@ -448,24 +464,27 @@ body.is-maximized .win-btn__ico-restore { display: block; }
    为什么又改回下拉：四档是"一次设定、长期不动"的参数，常驻四个选项会
    把输入区挤成工具栏；下拉把它收成一个词 + 一个箭头，点开才是选项。 */
 .think { position: relative; flex: none; }
+/* 与模型名视觉相连：只保留档位词（读作「模型 高」），没有图标/边框/第二个箭头；
+   点开仍是四档下拉（title 说明）。 */
 .think__trigger {
-  display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 var(--sp-3);
-  border: 1px solid transparent; border-radius: 999px; background: transparent;
+  display: inline-flex; align-items: center; gap: 3px; height: 30px; padding: 0 2px;
+  border: 1px solid transparent; border-radius: 8px; background: transparent;
   color: var(--text-2); font-size: var(--fs-sm); cursor: pointer; white-space: nowrap;
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .think__trigger:hover { background: var(--bg-hover); color: var(--text-1); }
-.think.is-open .think__trigger { border-color: var(--border-2); background: var(--bg-canvas); box-shadow: 0 0 0 3px var(--focus-ring); }
+.think.is-open .think__trigger { background: var(--bg-hover); color: var(--text-1); }
 /* 紧凑形态（V3.6.8）：触发器只有 图标 + 档位词；解释性文字全部在 title 里（悬停才看） */
 .think__ico { width: 14px; height: 14px; color: var(--text-3); flex: none; }
-.think__value { color: var(--text-1); font-weight: 600; }
+.think__value { color: var(--text-2); font-weight: 500; }
+.think.is-open .think__value { color: var(--text-1); }
 .think__chev { width: 12px; height: 12px; color: var(--text-3); }
 .think.is-open .think__chev { transform: rotate(180deg); }
 .think__chev { transition: transform var(--dur) var(--ease); }
 .think__pop {
   position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 30;
-  min-width: 118px; padding: var(--sp-2); border: 1px solid var(--border-2);
-  border-radius: var(--r-ctrl); background: var(--bg-canvas); box-shadow: var(--shadow-pop);
+  min-width: 132px; padding: var(--sp-2); border: 1px solid var(--border-2);
+  border-radius: 12px; background: var(--bg-canvas); box-shadow: var(--shadow-pop);
 }
 /* 选项只留档位名 + 选中勾（说明文字在 title 上，不再铺第二行） */
 .think__opt {
@@ -482,13 +501,13 @@ body.is-maximized .win-btn__ico-restore { display: block; }
    让"我现在放得有多开"在输入框旁边一眼可见。 */
 .perm { position: relative; flex: none; }
 .perm__trigger {
-  display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 var(--sp-3);
-  border: 1px solid transparent; border-radius: 999px; background: transparent;
+  display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 10px;
+  border: 1px solid transparent; border-radius: 10px; background: transparent;
   color: var(--text-2); font-size: var(--fs-sm); cursor: pointer; white-space: nowrap;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
 .perm__trigger:hover { background: var(--bg-hover); color: var(--text-1); }
-.perm.is-open .perm__trigger { border-color: var(--border-2); background: var(--bg-canvas); box-shadow: 0 0 0 3px var(--focus-ring); }
+.perm.is-open .perm__trigger { border-color: var(--border-2); background: var(--bg-canvas); }
 .perm__ico { width: 14px; height: 14px; flex: none; }
 .perm__value { font-weight: 600; color: var(--text-1); }
 .perm__chev { width: 12px; height: 12px; color: var(--text-3); transition: transform var(--dur) var(--ease); }
@@ -497,10 +516,18 @@ body.is-maximized .win-btn__ico-restore { display: block; }
 .perm[data-mode="ask"] .perm__ico { color: var(--accent-600); }
 .perm[data-mode="auto"] .perm__ico { color: var(--warn-500); }
 .perm[data-mode="full"] .perm__ico { color: var(--danger-500); }
+/* 放宽档位给整颗胶囊着色（参考 ZCode：权限越松，提示越醒目），但只染底与字，不做红底白字 */
+.perm[data-mode="auto"] .perm__trigger {
+  color: var(--warn-500); background: color-mix(in srgb, var(--warn-500) 10%, transparent);
+}
+.perm[data-mode="full"] .perm__trigger {
+  color: var(--danger-500); background: color-mix(in srgb, var(--danger-500) 10%, transparent);
+}
+.perm[data-mode="auto"] .perm__value, .perm[data-mode="full"] .perm__value { color: inherit; }
 .perm__pop {
   position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 30;
-  min-width: 300px; padding: var(--sp-2); border: 1px solid var(--border-2);
-  border-radius: var(--r-ctrl); background: var(--bg-canvas); box-shadow: var(--shadow-pop);
+  min-width: 320px; padding: var(--sp-2); border: 1px solid var(--border-2);
+  border-radius: 12px; background: var(--bg-canvas); box-shadow: var(--shadow-pop);
 }
 .perm__opt {
   display: flex; align-items: flex-start; gap: var(--sp-3); width: 100%; padding: 8px 10px;
@@ -513,9 +540,12 @@ body.is-maximized .win-btn__ico-restore { display: block; }
 .perm__opt .perm__ico { margin-top: 2px; }
 .perm__sep { height: 1px; margin: var(--sp-2) var(--sp-2); background: var(--border-1); }
 .perm__note { padding: 4px 10px var(--sp-1); color: var(--text-3); font-size: var(--fs-meta); line-height: 1.5; }
-.pill--send { width: 28px; padding: 0; justify-content: center; background: var(--accent-600); color: #fff; }
-.pill--send:hover { background: var(--accent-500); color: #fff; }
-.pill--stop { width: auto; padding: 0 var(--sp-4); background: var(--danger-500); color: #fff; font-weight: 600; }
+.pill--send { width: 32px; height: 32px; padding: 0; justify-content: center; border-radius: 10px;
+  background: var(--text-1); color: var(--bg-canvas); }
+.pill--send:hover { background: var(--text-2); color: var(--bg-canvas); }
+.pill--send svg { width: 17px; height: 17px; }
+.pill--stop { width: 32px; height: 32px; padding: 0; justify-content: center; border-radius: 10px;
+  background: var(--danger-500); color: #fff; }
 .pill--stop:hover { background: var(--danger-500); opacity: .9; color: #fff; }
 
 /* 档位小圆点：本机＝绿（不出机器）· 局域网＝蓝灰（不出企业）· 公网＝琥珀（出企业，已脱敏） */
@@ -787,11 +817,11 @@ body.is-maximized .win-btn__ico-restore { display: block; }
 .model-select__chev { width: 14px; height: 14px; flex: none; color: var(--text-3); transition: transform var(--dur) var(--ease); }
 .model-select.is-open .model-select__chev { transform: rotate(180deg); }
 .model-select__pop { position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 4px);
-  background: var(--bg-canvas); border: 1px solid var(--border-2); border-radius: var(--r-ctrl);
-  box-shadow: var(--shadow-pop); padding: var(--sp-2); display: flex; flex-direction: column; gap: var(--sp-2); }
+  background: var(--bg-canvas); border: 1px solid var(--border-2); border-radius: 14px;
+  box-shadow: var(--shadow-pop); padding: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); }
 /* 输入区里的模型弹层改为**向上弹**：输入框贴着窗口底部，向下弹会整个掉出视口。
    两级（供应商列 + 模型列）需要比单列更宽；两个列表各自滚，整体不会溢出屏幕。 */
-.composer .model-select__pop { top: auto; bottom: calc(100% + 6px); width: 396px; left: auto; right: 0; }
+.composer .model-select__pop { top: auto; bottom: calc(100% + 8px); width: 428px; left: auto; right: 0; }
 /* 显式 display 会盖掉 UA 的 [hidden]{display:none}，必须自己补一条，否则浮层弹出后收不回 */
 .model-select__pop[hidden] { display: none; }
 .model-opt { display: flex; align-items: center; gap: var(--sp-3); width: 100%; padding: 6px var(--sp-3);
