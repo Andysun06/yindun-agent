@@ -479,22 +479,8 @@ body.is-maximized .win-btn__ico-restore { display: block; }
 .think__value { color: var(--text-2); font-weight: 500; }
 .think.is-open .think__value { color: var(--text-1); }
 .think__chev { width: 12px; height: 12px; color: var(--text-3); }
-.think.is-open .think__chev { transform: rotate(180deg); }
 .think__chev { transition: transform var(--dur) var(--ease); }
-.think__pop {
-  position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 30;
-  min-width: 132px; padding: var(--sp-2); border: 1px solid var(--border-2);
-  border-radius: 12px; background: var(--bg-canvas); box-shadow: var(--shadow-pop);
-}
-/* 选项只留档位名 + 选中勾（说明文字在 title 上，不再铺第二行） */
-.think__opt {
-  display: flex; align-items: center; gap: var(--sp-3); width: 100%; padding: 7px 10px;
-  border-radius: var(--r-chip); text-align: left; color: var(--text-2); font-size: var(--fs-sm);
-}
-.think__opt:hover { background: var(--bg-hover); color: var(--text-1); }
-.think__opt.is-cur { background: var(--bg-active); color: var(--text-1); font-weight: 600; }
-.think__opt b { flex: 1; font-weight: inherit; }
-.think__tick { color: var(--accent-600); font-style: normal; font-weight: 700; }
+/* 思考档位已并入模型卡片底部的滑杆（照 ZCode），不再有独立下拉弹层 */
 
 /* ── AI 权限：输入区胶囊 + 下拉（本对话生效；设置页里的是"新对话默认"）──
    盾牌按档位着色：越松越警示（计划=中性 · 确认=常规 · 自主=琥珀 · 完全=红），
@@ -554,31 +540,84 @@ body.is-maximized .win-btn__ico-restore { display: block; }
 .tier-dot--lan { background: #4A7DBF; }
 .tier-dot--wan { background: var(--warn-500); }
 
-/* ── 模型选择器：两级弹层（一级供应商 / 二级模型，照 ZCode）────────
-   **没有搜索框**：清单是有限的两级结构，搜索框反而多一层焦点争夺；
-   "手输模型名"那条路改由底部「管理模型」跳设置页承担（见 app.js 注释）。 */
-.mpick { display: grid; grid-template-columns: 186px minmax(0, 1fr); gap: var(--sp-2); min-height: 190px; }
-.mpick__col { max-height: min(46vh, 340px); overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
-.mpick__col--prov { border-right: 1px solid var(--border-1); padding-right: var(--sp-2); }
+/* ── 模型选择器（照 ZCode）：单卡片 + 右侧供应商子菜单 + 底部思考强度滑杆 ──
+   **没有搜索框**：清单是有限结构，搜索框只会多一层焦点争夺；
+   "手输模型名"那条路由供应商子菜单底部的「管理模型」跳设置页承担。 */
+.mpick__head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 7px 8px; border-radius: 10px; text-align: left;
+}
+.mpick__head:hover { background: var(--bg-hover); }
+.mpick__logo {
+  width: 20px; height: 20px; border-radius: 6px; flex: none;
+  display: grid; place-items: center; background: var(--bg-subtle); color: var(--text-2);
+}
+.mpick__logo svg { width: 14px; height: 14px; }
+.mpick__head-name {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--fs-sm); font-weight: 600;
+}
+.mpick__api {
+  flex: none; padding: 1px 5px; border-radius: 4px; background: var(--bg-subtle);
+  color: var(--text-3); font-family: var(--font-mono); font-size: 10px; text-transform: uppercase;
+}
+.mpick__chev { width: 14px; height: 14px; flex: none; color: var(--text-3); transition: transform var(--dur) var(--ease); }
+.mpick__head[aria-expanded="true"] .mpick__chev { transform: rotate(90deg); }
+.mpick__label { padding: 8px 8px 4px; font-size: var(--fs-meta); color: var(--text-3); }
+.mpick__col { max-height: min(42vh, 300px); overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+.mpick__think { margin-top: 8px; padding: 9px 8px 2px; border-top: 1px solid var(--border-1); }
+.mpick__think-head { display: flex; align-items: center; gap: 6px; font-size: var(--fs-sm); color: var(--text-2); }
+.mpick__think-head b { color: var(--text-1); font-weight: 600; }
+.mpick__shortcut {
+  margin-left: auto; padding: 0 4px; border: 1px solid var(--border-1); border-radius: 4px;
+  color: var(--text-3); font-family: var(--font-mono); font-size: 10px;
+}
+/* 四档连续滑杆：填充比例用 --pct 控制；最高档用绿→蓝渐变（与参考图一致） */
+#think-slider {
+  -webkit-appearance: none; appearance: none; display: block; width: 100%; height: 6px;
+  margin: 11px 0 7px; border-radius: 999px; outline: none;
+  background: linear-gradient(90deg, var(--accent-500) 0 var(--pct, 33%), var(--bg-active) var(--pct, 33%) 100%);
+}
+#think-slider.is-max { background: linear-gradient(90deg, #3ddc84, #3b82f6); }
+#think-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%;
+  background: #fff; border: none; box-shadow: 0 1px 4px rgba(0,0,0,.35); cursor: pointer;
+}
+#think-slider::-moz-range-thumb {
+  width: 16px; height: 16px; border-radius: 50%; background: #fff; border: none;
+  box-shadow: 0 1px 4px rgba(0,0,0,.35); cursor: pointer;
+}
+/* 供应商子菜单：浮在主卡片右侧；窄窗口落到下方（不做横向溢出） */
+.mpick__prov-pop {
+  position: absolute; left: calc(100% + 8px); top: 0; width: 236px;
+  max-height: min(62vh, 430px); overflow-y: auto; padding: 8px;
+  border: 1px solid var(--border-2); border-radius: 12px;
+  background: var(--bg-canvas); box-shadow: var(--shadow-pop); z-index: 31;
+}
+.mpick__prov-pop[hidden] { display: none; }
+@media (max-width: 900px) {
+  .mpick__prov-pop { left: 0; top: calc(100% + 8px); width: 100%; }
+}
 .mpick__gt {
-  display: flex; align-items: center; gap: 5px; padding: var(--sp-2) var(--sp-2) 3px;
+  display: flex; align-items: center; gap: 5px; padding: 6px 8px 3px;
   font-size: var(--fs-meta); color: var(--text-3); white-space: nowrap;
 }
 .mpick__gt:first-child { padding-top: 2px; }
 .mpick__gt b { font-weight: 600; }
 .mpick__prov {
-  display: flex; align-items: center; gap: 5px; width: 100%; padding: 6px 8px;
-  border-radius: var(--r-chip); text-align: left; color: var(--text-1); font-size: var(--fs-sm);
+  display: flex; align-items: center; gap: 6px; width: 100%; padding: 7px 8px;
+  border-radius: 8px; text-align: left; color: var(--text-1); font-size: var(--fs-sm);
 }
 .mpick__prov:hover { background: var(--bg-hover); }
 .mpick__prov.is-open { background: var(--bg-active); font-weight: 600; }
 .mpick__prov.is-hl { background: var(--bg-hover); }
 .mpick__pname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mpick__pmeta { color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-meta); flex: none; }
+.mpick__check { margin-left: auto; color: var(--accent-600); font-weight: 700; flex: none; }
 .mpick__manage {
-  display: flex; align-items: center; gap: var(--sp-2); width: 100%; padding: 7px var(--sp-3);
-  border-top: 1px solid var(--border-1); color: var(--accent-600); font-size: var(--fs-sm);
-  font-weight: 600; text-align: left; border-radius: 0 0 var(--r-ctrl) var(--r-ctrl);
+  display: flex; align-items: center; gap: var(--sp-2); width: 100%; margin-top: 4px;
+  padding: 8px; border-top: 1px solid var(--border-1); border-radius: 0 0 8px 8px;
+  color: var(--accent-600); font-size: var(--fs-sm); font-weight: 600; text-align: left;
 }
 .mpick__manage:hover { background: var(--accent-50); }
 .mpick__manage svg { width: 14px; height: 14px; flex: none; }
@@ -590,7 +629,7 @@ body.is-maximized .win-btn__ico-restore { display: block; }
 }
 .model-opt__name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-opt__meta { color: var(--text-3); font-family: var(--font-mono); font-size: var(--fs-meta); max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.model-opt__tick { color: var(--accent-600); font-weight: 700; }
+.model-opt__tick { margin-left: auto; color: var(--accent-600); font-weight: 700; flex: none; }
 
 /* ══ 设置视图（独立视图：左设置导航 + 右内容，参考主流 agent 设置页范式）═══ */
 /* 明暗切换过渡（V3.6.6）：View Transitions 的页级交叉淡入淡出时长与缓动。
@@ -821,14 +860,13 @@ body.is-maximized .win-btn__ico-restore { display: block; }
   box-shadow: var(--shadow-pop); padding: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); }
 /* 输入区里的模型弹层改为**向上弹**：输入框贴着窗口底部，向下弹会整个掉出视口。
    两级（供应商列 + 模型列）需要比单列更宽；两个列表各自滚，整体不会溢出屏幕。 */
-.composer .model-select__pop { top: auto; bottom: calc(100% + 8px); width: 428px; left: auto; right: 0; }
+.composer .model-select__pop { top: auto; bottom: calc(100% + 8px); width: 336px; left: auto; right: 0; }
 /* 显式 display 会盖掉 UA 的 [hidden]{display:none}，必须自己补一条，否则浮层弹出后收不回 */
 .model-select__pop[hidden] { display: none; }
-.model-opt { display: flex; align-items: center; gap: var(--sp-3); width: 100%; padding: 6px var(--sp-3);
-  border-radius: var(--r-chip); font-family: var(--font-mono); font-size: var(--fs-sm);
-  color: var(--text-1); text-align: left; }
+.model-opt { display: flex; align-items: center; gap: var(--sp-3); width: 100%; padding: 7px 8px;
+  border-radius: 8px; font-size: var(--fs-sm); color: var(--text-1); text-align: left; }
 .model-opt:hover, .model-opt.is-hl { background: var(--bg-hover); }
-.model-opt.is-cur { color: var(--accent-600); font-weight: 600; }
+.model-opt.is-cur { color: var(--text-1); font-weight: 500; }
 .model-opt--empty { color: var(--text-3); cursor: default; }
 .model-select__foot { font-size: var(--fs-meta); color: var(--text-2); padding: 0 var(--sp-2) var(--sp-1); }
 select, input[type="text"] { width: 100%; padding: 7px var(--sp-4); border-radius: var(--r-ctrl); background: var(--bg-canvas); border: 1px solid var(--border-2); outline: none; font-size: var(--fs-sm); }

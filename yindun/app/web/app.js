@@ -3038,44 +3038,41 @@
   }
 
   /* ── 设置抽屉 ─────────────────────────────────────── */
-  /* ── 思考强度（V3.6.8 收紧为 ZCode 式紧凑形态）─────────────
-     下拉里只留**档位名 + 选中态**；原来挂在选项里的解释文字全部收进 `title`
-     （悬停才看，不再每项铺两行说明）。触发器同样只留图标 + 档位词，完整口径进 title。
-     语义不变：点击仍然落库同一档（thinking_depth）。 */
+  /* ── 思考强度（照 ZCode：模型卡片底部的四档滑杆）─────────────
+     触发器只显示档位词；真正的控制在模型卡片里（滑杆 + Ctrl+T 循环）。
+     语义不变：四档仍映射到同一份 thinking_depth。 */
   function paintThinkLevel(depth) {
     const box = $("think-select");
     if (!box) return;
     const cur = levelOf(depth);
+    const idx = Math.max(0, THINK_LEVELS.findIndex((lv) => lv.key === cur.key));
     if ($("think-value")) $("think-value").textContent = cur.label;
     const trg = $("think-trigger");
     // 轮次口径统一（BUG-0009）：thinking_depth 是"推理轮次档"，后端实际用
     // `max_rounds = think_depth × 2`，所以界面上说「最多 2N 轮」，不写「约 N 轮」。
-    if (trg) trg.title = `思考强度：${cur.label}（最多 ${cur.depth * 2} 轮推理）—— ${cur.hint}`;
-    const pop = $("think-pop");
-    if (pop) {
-      pop.innerHTML = THINK_LEVELS.map((lv) => `
-        <button type="button" class="think__opt${lv.key === cur.key ? " is-cur" : ""}"
-                role="option" aria-selected="${lv.key === cur.key}" data-level="${lv.key}"
-                title="${esc(lv.hint)}">
-          <b>${esc(lv.label)}</b>${lv.key === cur.key ? '<i class="think__tick">✓</i>' : ""}
-        </button>`).join("");
+    if (trg) trg.title = `思考强度：${cur.label}（最多 ${cur.depth * 2} 轮推理）—— ${cur.hint}（Ctrl+T 循环）`;
+    const slider = $("think-slider");
+    if (slider) {
+      slider.value = String(idx);
+      slider.classList.toggle("is-max", idx === THINK_LEVELS.length - 1);
+      slider.style.setProperty("--pct", `${(idx / (THINK_LEVELS.length - 1)) * 100}%`);
+      slider.title = `思考强度：${cur.label}（最多 ${cur.depth * 2} 轮推理）—— ${cur.hint}`;
     }
+    if ($("mpick-think-label")) $("mpick-think-label").textContent = cur.label;
     box.setAttribute("data-level", cur.key);
   }
 
-  function closeThinkPop() {
-    const pop = $("think-pop"), box = $("think-select"), trg = $("think-trigger");
-    if (pop) pop.hidden = true;
-    if (box) box.classList.remove("is-open");
-    if (trg) trg.setAttribute("aria-expanded", "false");
-  }
-
-  function openThinkPop() {
-    const pop = $("think-pop"), box = $("think-select"), trg = $("think-trigger");
+  /** 点思考档位 = 打开模型卡片并聚焦滑杆（ZCode 里思考强度就长在模型卡片底部）。 */
+  function openThinkPanel() {
+    const pop = $("model-pop");
     if (!pop) return;
-    pop.hidden = false;
-    if (box) box.classList.add("is-open");
-    if (trg) trg.setAttribute("aria-expanded", "true");
+    if (pop.hidden) {
+      // 交给模型选择器自己的打开逻辑（会在下一段绑定里定义）
+      if (typeof window.__openModelPop === "function") window.__openModelPop();
+      else { pop.hidden = false; }
+    }
+    const slider = $("think-slider");
+    if (slider) { try { slider.focus(); } catch (_) {} }
   }
 
   /** 权限四档（设置页）：高亮当前档并同步说明文案（文案与内核 HINTS 一致）。
@@ -3664,22 +3661,36 @@
       };
       document.addEventListener("click", (e) => { if (!permPill.contains(e.target)) closePermPop(); });
     }
-    // 思考强度：胶囊 + 下拉（点选即落库；点浮层外或 Esc 关闭）
+    // 思考强度（照 ZCode）：档位词在输入区，真正的控制在模型卡片底部的滑杆；
+    // Ctrl+T 循环四档。四条路径（滑杆 / 快捷键 / 触发器 / 设置回填）都走同一份 paintThinkLevel。
     const thinkSel = $("think-select");
     if (thinkSel) {
-      const thinkTrig = $("think-trigger"), thinkPop = $("think-pop");
-      thinkTrig.onclick = () => (thinkPop.hidden ? openThinkPop() : closeThinkPop());
-      thinkPop.onclick = (e) => {
-        const btn = e.target.closest(".think__opt");
-        if (!btn) return;
-        const lv = THINK_LEVELS.find((l) => l.key === btn.dataset.level);
-        closeThinkPop();
-        if (!lv) return;
+      $("think-trigger").onclick = () => openThinkPanel();
+      const slider = $("think-slider");
+      const applyLevel = (idx) => {
+        const i = Math.max(0, Math.min(THINK_LEVELS.length - 1, Number(idx) || 0));
+        const lv = THINK_LEVELS[i];
+        paintThinkLevel(lv.depth);
+        return lv;
+      };
+      if (slider) {
+        slider.oninput = () => applyLevel(slider.value);
+        slider.onchange = () => {
+          const lv = applyLevel(slider.value);
+          persist({ thinking_depth: lv.depth });
+          toast(`思考强度 · ${lv.label}（最多 ${lv.depth * 2} 轮推理）`);
+        };
+      }
+      document.addEventListener("keydown", (e) => {
+        if (!(e.ctrlKey || e.metaKey) || String(e.key || "").toLowerCase() !== "t") return;
+        e.preventDefault();
+        const cur = levelOf(state.settings.thinking_depth);
+        const idx = Math.max(0, THINK_LEVELS.findIndex((l) => l.key === cur.key));
+        const lv = THINK_LEVELS[(idx + 1) % THINK_LEVELS.length];
+        paintThinkLevel(lv.depth);
         persist({ thinking_depth: lv.depth });
         toast(`思考强度 · ${lv.label}（最多 ${lv.depth * 2} 轮推理）`);
-      };
-      document.addEventListener("click", (e) => { if (!thinkSel.contains(e.target)) closeThinkPop(); });
-      document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeThinkPop(); });
+      });
     }
     // 上下文容量浮层：点顶栏「上下文 x/y」开合；点外部 / Esc 关闭。
     // 数字随一轮结束刷新（renderStats 里在浮层打开时重取，不新增轮询）。
@@ -3699,15 +3710,11 @@
        交互：↑↓ 列内移动、Enter（供应商列＝进入它；模型列＝选中并关闭）、←→ 切列、
        Esc 关闭、点浮层外关闭；默认展开当前模型所在的供应商，当前项带勾。 */
     const mSel = $("model-select"), mTrig = $("model-trigger"), mPop = $("model-pop"),
-          mProvBox = $("mpick-providers"), mModelBox = $("mpick-models");
-    let mProvKey = "";                             // 一级：当前展开的供应商 key
-    let mCol = "prov";                             // 键盘所在列：prov / model
-    let mHl = -1;                                  // 列内高亮序号
+          mProvBox = $("mpick-providers"), mModelBox = $("mpick-models"),
+          mHead = $("mpick-head");
+    let mProvKey = "";                             // 当前供应商（主卡片展示它下面的模型）
+    let mHl = -1;                                  // 当前可见列表里的高亮序号
 
-    const closeModelPop = () => {
-      mPop.hidden = true; mTrig.setAttribute("aria-expanded", "false");
-      mSel.classList.remove("is-open"); mHl = -1; mCol = "prov";
-    };
     const groupsAll = () => {
       const out = [];
       ["local", "lan", "wan"].forEach((tier) =>
@@ -3715,13 +3722,36 @@
       return out;
     };
     const groupByKey = (key) => groupsAll().find((g) => g.key === key) || null;
-    const colItems = () => mCol === "prov"
-      ? [...mProvBox.querySelectorAll(".mpick__prov")]
-      : [...mModelBox.querySelectorAll("[data-model]")];
+    const ensureProv = () => {
+      if (mProvKey && groupByKey(mProvKey)) return;
+      const place = placementOf(activeModel()), groups = groupsAll();
+      mProvKey = place ? place.key : (groups[0] ? groups[0].key : "");
+    };
+    const visibleItems = () => mProvBox.hidden
+      ? [...mModelBox.querySelectorAll("[data-model]")]
+      : [...mProvBox.querySelectorAll("[data-pkey]")];
     const paintHl = () => {
-      const items = colItems();
+      const items = visibleItems();
       items.forEach((el, i) => el.classList.toggle("is-hl", i === mHl));
       if (items[mHl]) items[mHl].scrollIntoView({ block: "nearest" });
+    };
+
+    const closeProvPop = () => {
+      mProvBox.hidden = true;
+      mHead.setAttribute("aria-expanded", "false");
+      mHl = -1;
+    };
+    const closeModelPop = () => {
+      mPop.hidden = true;
+      mTrig.setAttribute("aria-expanded", "false");
+      mSel.classList.remove("is-open");
+      closeProvPop();
+    };
+
+    const renderHeader = () => {
+      const g = groupByKey(mProvKey);
+      $("mpick-prov-name").textContent = g ? g.provider : "选择供应商";
+      $("mpick-api-badge").textContent = g ? (g.tier === "local" ? "本机" : "API") : "—";
     };
 
     const renderModelCol = () => {
@@ -3729,52 +3759,53 @@
       if (!g) { mModelBox.innerHTML = `<div class="model-opt model-opt--empty">先选一个供应商</div>`; return; }
       if (!g.models.length) { mModelBox.innerHTML = `<div class="model-opt model-opt--empty">该供应商还没有模型</div>`; return; }
       mModelBox.innerHTML = g.models.map((m) => {
-        const tags = (m.tags || []).map((t) => `<i class="mtag">${esc(t)}</i>`).join("");
+        const tags = (m.tags || []).slice(0, 2).map((t) => `<i class="mtag">${esc(t)}</i>`).join("");
         const meta = m.source === "ollama" ? "本机已安装"
           : (m.model_id && m.model_id !== m.name ? m.model_id : "");
-        return `<button type="button" class="model-opt${m.name === cur ? " is-cur" : ""}" role="option"
-            aria-selected="${m.name === cur}" data-model="${esc(m.name)}"
+        const on = m.name === cur;
+        return `<button type="button" class="model-opt${on ? " is-cur" : ""}" role="option"
+            aria-selected="${on}" data-model="${esc(m.name)}"
             title="${esc(m.name + (meta ? " · " + meta : ""))}">
           <span class="model-opt__name">${esc(m.name)}</span>
           ${meta ? `<span class="model-opt__meta">${esc(String(meta).slice(0, 30))}</span>` : ""}
-          ${tags}
-          ${m.name === cur ? `<span class="model-opt__tick">✓</span>` : ""}
+          <span class="model-opt__tags">${tags}</span>
+          ${on ? `<span class="model-opt__tick">✓</span>` : ""}
         </button>`;
       }).join("");
     };
 
     const renderProvCol = () => {
-      const cur = activeModel(), groups = groupsAll();
-      if (!mProvKey || !groupByKey(mProvKey)) {
-        // 默认展开"当前模型所在供应商"；没有当前模型就落到第一个（本机档内置供应商）
-        const place = placementOf(cur);
-        mProvKey = place ? place.key : (groups[0] ? groups[0].key : "");
-      }
+      ensureProv();
+      const groups = groupsAll();
       let html = "", lastTier = "";
       groups.forEach((g) => {
         if (g.tier !== lastTier) {
           lastTier = g.tier;
-          // 分组标题只放档位名：弹层窄，塞下边界说明会把标题挤成竖排（观感实测）；
-          // 边界说明移到 title（悬停即得），选择器触发器上的档位点也带着同一句。
           html += `<div class="mpick__gt"><span class="tier-dot tier-dot--${g.tier}"></span>
             <b>${esc(TIER_META[g.tier].label)}</b></div>`;
         }
-        const usedBy = g.models.find((m) => m.name === cur);
-        html += `<button type="button" class="mpick__prov${g.key === mProvKey ? " is-open" : ""}" role="option"
-            aria-selected="${g.key === mProvKey}" data-pkey="${esc(g.key)}">
+        const on = g.key === mProvKey;
+        html += `<button type="button" class="mpick__prov${on ? " is-open" : ""}" role="option"
+            aria-selected="${on}" data-pkey="${esc(g.key)}" title="${esc(TIER_META[g.tier].boundary)}">
+          <span class="tier-dot tier-dot--${g.tier}"></span>
           <span class="mpick__pname">${esc(g.provider)}</span>
-          <span class="mpick__pmeta">${g.models.length} 个</span>
-          ${usedBy ? usageFlag(usedBy.name, true) : ""}
+          <span class="mpick__api">${g.tier === "local" ? "本机" : "API"}</span>
+          <span class="mpick__pmeta">${g.models.length}</span>
+          ${on ? `<span class="mpick__check">✓</span>` : ""}
         </button>`;
       });
-      mProvBox.innerHTML = html || `<div class="model-opt model-opt--empty">没有可用模型</div>`;
+      html += `<button type="button" class="mpick__manage" id="mpick-manage" data-manage="1">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M4 7h4M14 7h6M4 17h6M16 17h4"/></svg>
+        管理模型
+      </button>`;
+      mProvBox.innerHTML = html;
     };
 
     const renderPick = () => {
+      ensureProv();
+      renderHeader();
       renderProvCol();
       renderModelCol();
-      // 一个可选模型都没有时，底部给**可行动的**提示（而不是只写"没有可用模型"）：
-      // 优先用后端给的 local_note（它知道是"连不上服务"还是"一个都没装"），再退到通用建议。
       const total = groupsAll().reduce((n, g) => n + g.models.length, 0);
       if ($("model-hint")) {
         $("model-hint").textContent = total
@@ -3782,35 +3813,35 @@
           : ((state.catalog && state.catalog.local_note)
              || "还没有可用模型：点「管理模型」手动添加，或先 `ollama pull <模型名>`");
       }
-      const items = colItems(), cur = activeModel();
-      if (mHl < 0 || mHl >= items.length) {
-        mHl = items.findIndex((el) => el.dataset.model === cur || el.dataset.pkey === mProvKey);
-        if (mHl < 0) mHl = items.length ? 0 : -1;
-      }
+      const items = visibleItems();
+      // 打开时**不预高亮**当前项：ZCode 的当前模型只用 ✓ 表示，键盘按下 ↑↓ 才出现高亮。
+      if (mHl >= items.length) mHl = -1;
       paintHl();
     };
 
+    const openProvPop = () => {
+      renderProvCol();
+      mProvBox.hidden = false;
+      mHead.setAttribute("aria-expanded", "true");
+      const provs = [...mProvBox.querySelectorAll("[data-pkey]")];
+      mHl = Math.max(0, provs.findIndex((el) => el.dataset.pkey === mProvKey));
+      paintHl();
+    };
     const openModelPop = () => {
-      mPop.hidden = false; mTrig.setAttribute("aria-expanded", "true");
+      ensureProv();
+      mPop.hidden = false;
+      mTrig.setAttribute("aria-expanded", "true");
       mSel.classList.add("is-open");
-      mCol = "prov"; mHl = -1;
+      closeProvPop();
+      mHl = -1;
       renderPick();
       mPop.focus();
     };
+    // 思考档位触发器要能打开同一张卡片并聚焦滑杆（见 openThinkPanel）
+    window.__openModelPop = openModelPop;
     const pickModel = (name) => { if (name) persist({ model: name }); closeModelPop(); };
 
-    mTrig.onclick = () => (mPop.hidden ? openModelPop() : closeModelPop());
-    mProvBox.onclick = (e) => {
-      const btn = e.target.closest("[data-pkey]");
-      if (!btn) return;
-      mProvKey = btn.dataset.pkey; mCol = "model"; mHl = 0;
-      renderPick();
-    };
-    mModelBox.onclick = (e) => {
-      const btn = e.target.closest("[data-model]");
-      if (btn) pickModel(btn.dataset.model);
-    };
-    $("mpick-manage").onclick = async () => {
+    const gotoManage = async () => {
       // 「管理模型」＝原"手输模型名"那条路的正式落点：去设置页填地址 / 密钥 / 模型 ID / 标签
       closeModelPop();
       const place = placementOf(activeModel());
@@ -3818,36 +3849,62 @@
       openSettings("model");
       renderProv(await call("model_catalog"));
     };
+
+    mTrig.onclick = () => (mPop.hidden ? openModelPop() : closeModelPop());
+    mHead.onclick = () => {
+      if (mProvBox.hidden) openProvPop();
+      else { closeProvPop(); renderPick(); }
+    };
+    mProvBox.onclick = (e) => {
+      if (e.target.closest("[data-manage]")) { gotoManage(); return; }
+      const btn = e.target.closest("[data-pkey]");
+      if (!btn) return;
+      mProvKey = btn.dataset.pkey;
+      closeProvPop();
+      renderPick();
+      const first = mModelBox.querySelector("[data-model]");
+      if (first) { try { first.focus(); } catch (_) {} }
+    };
+    mModelBox.onclick = (e) => {
+      const btn = e.target.closest("[data-model]");
+      if (btn) pickModel(btn.dataset.model);
+    };
     mPop.onkeydown = (e) => {
-      const items = colItems();
+      const items = visibleItems();
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
         if (!items.length) return;
         mHl = (mHl + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
         paintHl();
-      } else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
-        e.preventDefault();
-        mCol = mCol === "prov" ? "model" : "prov";
-        mHl = 0;
-        renderPick();
+      } else if (e.key === "ArrowRight") {
+        if (mProvBox.hidden) { e.preventDefault(); openProvPop(); }
+      } else if (e.key === "ArrowLeft") {
+        if (!mProvBox.hidden) { e.preventDefault(); closeProvPop(); renderPick(); }
       } else if (e.key === "Enter") {
         e.preventDefault();
         const el = items[Math.max(0, mHl)];
         if (!el) return;
-        if (mCol === "prov") { mProvKey = el.dataset.pkey; mCol = "model"; mHl = 0; renderPick(); }
-        else pickModel(el.dataset.model);
+        if (!mProvBox.hidden) {
+          mProvKey = el.dataset.pkey; closeProvPop(); renderPick();
+        } else pickModel(el.dataset.model);
       } else if (e.key === "Escape") {
         e.preventDefault();
-        closeModelPop();
+        if (!mProvBox.hidden) { closeProvPop(); renderPick(); }
+        else closeModelPop();
       }
     };
     document.addEventListener("click", (e) => {
-      // ★ 用事件路径判断"点在外面"，而不是 `mSel.contains(e.target)`：点一级供应商时
-      //   处理函数会同步重绘两列（innerHTML），**e.target 已经被摘出 DOM**，
-      //   contains() 恒为 false —— 于是每次点供应商都会把弹层自己关掉（真机表现是
-      //   "点供应商没反应/弹层一闪而过"）。composedPath 在派发时固定，不受重绘影响。
+      // ★ 用事件路径判断"点在外面"，而不是 `mSel.contains(e.target)`：点供应商时
+      //   处理函数会同步重绘子菜单（innerHTML），**e.target 已经被摘出 DOM**，
+      //   contains() 恒为 false —— 于是每次点供应商都会把弹层自己关掉。
+      //   composedPath 在派发时固定，不受重绘影响。
       const path = typeof e.composedPath === "function" ? e.composedPath() : [];
-      const inside = path.length ? path.includes(mSel) : mSel.contains(e.target);
+      // 思考档位触发器也在"模型区域"里：点它打开同一张卡片，不能被这条外部点击
+      // 监听器当成"点外面"立刻关掉（真机表现为"点高没反应"）。
+      const thinkBox = $("think-select");
+      const inside = path.length
+        ? (path.includes(mSel) || path.includes(thinkBox))
+        : (mSel.contains(e.target) || (thinkBox && thinkBox.contains(e.target)));
       if (!inside) closeModelPop();
     });
     // Ollama 地址的绑定在 renderProv() 里（该输入框随详情面板一起渲染/重建）

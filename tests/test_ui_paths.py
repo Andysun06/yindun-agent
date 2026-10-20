@@ -38,7 +38,7 @@
  15. 设置页内容限宽居中（1920 / 1000 两档）
  16. 模型选择器：两级弹层（供应商 → 模型）、**没有搜索框**、键盘 ↑↓/Enter、点外部关闭、
      「管理模型」跳设置页
- 17. 思考强度：下拉只留档位名（解释收进 title）、触发器紧凑、语义不变（仍落库同一档）
+ 17. 思考强度：模型卡片底部四档滑杆（Ctrl+T 循环）、触发器紧凑、语义不变（仍落库同一档）
  18. 上下文容量浮层：进度条与分类占比**逐项等于后端给的值**、底部两行来自预算表、
      不出现"缓存命中率"这类我们没有的指标
  19. 窗口按钮：正好四个（置顶/最小化/最大化/关闭）、点最大化调桥并切图标、置顶高亮与
@@ -190,17 +190,24 @@ def main() -> int:
         check("调用了 set_session_permission('plan')",
               any(c[1][0] == "plan" for c in session_calls), str(session_calls[:2]))
 
-        # ── 3) 思考强度四档 ──
+        # ── 3) 思考强度四档（V3.6.15：模型卡片底部滑杆）──
         print("\n" + "=" * 78)
-        print("【3】思考强度下拉（四档）")
+        print("【3】思考强度滑杆（四档）")
         print("=" * 78)
         page.click("#think-trigger")
-        check("点开后出现下拉选项", page.is_visible("#think-pop"))
-        levels = page.eval_on_selector_all("#think-pop [data-level]", "els => els.map(e => e.dataset.level)")
-        check("四档齐全（低/中/高/最高）", levels == ["low", "mid", "high", "max"], str(levels))
-        page.click('#think-pop [data-level="max"]')
-        page.wait_for_timeout(120)
-        check("选「最高」后顶栏文案更新", (page.inner_text("#think-value") or "").strip() == "最高",
+        page.wait_for_timeout(200)
+        check("点开后出现模型卡片与四档滑杆", page.is_visible("#model-pop") and page.is_visible("#think-slider"))
+        levels = page.eval_on_selector("#think-slider", """el => ({
+            min: Number(el.min), max: Number(el.max), step: Number(el.step) })""")
+        check("四档齐全（0..3，步长 1）",
+              levels == {"min": 0, "max": 3, "step": 1}, str(levels))
+        page.eval_on_selector("#think-slider", """el => {
+            el.value = '3';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        }""")
+        page.wait_for_timeout(200)
+        check("拖到「最高」后顶栏文案更新", (page.inner_text("#think-value") or "").strip() == "最高",
               page.inner_text("#think-value"))
         # 思考强度存的是**推理轮次**（thinking_depth），不是顶栏那个"快速/思考"开关——两者别混
         depth_saved = [c for c in calls("save_settings")
@@ -1432,7 +1439,7 @@ def main() -> int:
 
         # ── 16) 模型选择器：两级弹层 + 无搜索框（负责人要求照 ZCode）──
         print("\n" + "=" * 78)
-        print("【16】模型选择器：两级（供应商 → 模型）/ 无搜索框 / 管理模型")
+        print("【16】模型选择器：单卡片 + 供应商子菜单（照 ZCode）/ 无搜索框 / 管理模型")
         print("=" * 78)
         # §15 停在设置视图里（设置会隐藏顶栏与输入区），先回到对话视图
         page.click("#set-back")
@@ -1442,29 +1449,41 @@ def main() -> int:
         page.click("#model-trigger")
         page.wait_for_timeout(300)
         check("弹层里**没有**搜索框（D：照 ZCode 的形态）",
-              page.query_selector("#model-pop input") is None
+              page.query_selector("#model-pop input[type=search]") is None
               and page.query_selector("#model-search") is None, "")
         src_index = (WEB_DIR / "index.html").read_text(encoding="utf-8")
         src_app = (WEB_DIR / "app.js").read_text(encoding="utf-8")
         check("源码里也不再引用 model-search / model-list（整条老路径退场）",
               "model-search" not in src_index and "model-search" not in src_app
               and "model-list" not in src_index, "")
-        prov_opts = page.eval_on_selector_all(".mpick__prov", "els => els.map(e => e.dataset.pkey)")
-        check("一级列出供应商，并按三档分组（保留数据边界说明）",
-              len(prov_opts) >= 3
-              and page.eval_on_selector_all(".mpick__gt", "els => els.length") >= 2, str(prov_opts))
-        check("默认展开当前模型所在供应商（一级有 is-open）",
-              page.eval_on_selector_all(".mpick__prov.is-open", "els => els.length") == 1, "")
-        check("二级里当前模型打勾（一眼看出在用哪个）",
+        check("主卡片头部写明当前供应商 + 数据边界徽标（本机 / API）",
+              bool((page.inner_text("#mpick-prov-name") or "").strip())
+              and (page.inner_text("#mpick-api-badge") or "").strip() in ("本机", "API"),
+              f"{page.inner_text('#mpick-prov-name')} / {page.inner_text('#mpick-api-badge')}")
+        check("主卡片只列当前供应商的模型（不是两列并排）",
+              page.query_selector("#model-pop .mpick") is None
+              and page.eval_on_selector_all("#mpick-models [data-model]", "els => els.length") >= 1, "")
+        check("当前模型打勾（一眼看出在用哪个）",
               page.eval_on_selector_all("#mpick-models .model-opt.is-cur .model-opt__tick",
+                                        "els => els.length") == 1, "")
+        # 供应商子菜单：点头部展开
+        page.click("#mpick-head")
+        page.wait_for_timeout(250)
+        prov_opts = page.eval_on_selector_all(".mpick__prov", "els => els.map(e => e.dataset.pkey)")
+        check("点头部展开供应商子菜单，列出全部供应商（含三档分组）",
+              page.is_visible("#mpick-providers") and len(prov_opts) >= 3
+              and page.eval_on_selector_all("#mpick-providers .mpick__gt", "els => els.length") >= 2,
+              str(prov_opts))
+        check("子菜单里当前供应商打勾",
+              page.eval_on_selector_all("#mpick-providers .mpick__prov.is-open .mpick__check",
                                         "els => els.length") == 1, "")
         page.click('.mpick__prov[data-pkey="wan::open.bigmodel.cn::0"]')
         page.wait_for_timeout(250)
-        check("点一级供应商 → 弹层保持打开（重绘不会把它自己关掉）",
-              page.is_visible("#model-pop"), "")
+        check("点供应商 → 子菜单收起、主卡片保持打开（不会被自己重绘关掉）",
+              page.is_visible("#model-pop") and not page.is_visible("#mpick-providers"), "")
         sel_models = page.eval_on_selector_all(
             "#mpick-models [data-model]", "els => els.map(e => ({n: e.dataset.model, tags: [...e.querySelectorAll('.mtag')].map(t => t.textContent)}))")
-        check("二级列出该供应商的模型，带标签",
+        check("主卡片换成该供应商的模型，带标签",
               any(m["n"] == "云端GLM" for m in sel_models)
               and any(m["tags"] == ["低成本"] for m in sel_models), str(sel_models))
         page.click('#mpick-models [data-model="云端GLM"]')
@@ -1473,19 +1492,22 @@ def main() -> int:
               not page.is_visible("#model-pop")
               and page.inner_text("#model-value").strip() == "open.bigmodel.cn / 云端GLM",
               page.inner_text("#model-value"))
-        # 键盘：↑↓ 移动、Enter 进二级/选中、Esc 关闭
+        # 键盘：↑↓ 移动、Enter 选中、→ 展开供应商、Esc 关闭
         page.click("#model-trigger")
         page.wait_for_timeout(250)
         page.keyboard.press("ArrowDown")
         page.keyboard.press("Enter")
-        page.wait_for_timeout(250)
-        check("键盘：↓ 移动 + Enter（供应商列 → 进入模型列，且有高亮项）",
-              page.eval_on_selector_all("#mpick-models .is-hl", "els => els.length") == 1, "")
-        page.keyboard.press("Enter")
         page.wait_for_timeout(450)
-        check("键盘 Enter 在模型列选中 → 弹层关闭", not page.is_visible("#model-pop"), "")
+        check("键盘 Enter 在模型列表选中 → 弹层关闭", not page.is_visible("#model-pop"), "")
         page.click("#model-trigger")
         page.wait_for_timeout(250)
+        page.keyboard.press("ArrowRight")
+        page.wait_for_timeout(250)
+        check("键盘 → 展开供应商子菜单", page.is_visible("#mpick-providers"), "")
+        page.keyboard.press("ArrowLeft")
+        page.wait_for_timeout(200)
+        check("键盘 ← 收起子菜单（主卡片仍打开）",
+              page.is_visible("#model-pop") and not page.is_visible("#mpick-providers"), "")
         page.keyboard.press("Escape")
         page.wait_for_timeout(200)
         check("键盘 Esc 关闭弹层", not page.is_visible("#model-pop"), "")
@@ -1496,28 +1518,32 @@ def main() -> int:
         check("点弹层外部关闭", not page.is_visible("#model-pop"), "")
         page.click("#model-trigger")
         page.wait_for_timeout(250)
+        page.click("#mpick-head")
+        page.wait_for_timeout(200)
         page.click("#mpick-manage")
         page.wait_for_timeout(600)
-        check("底部「管理模型」跳到设置页「模型接入」（原手输模型名那条路的正式落点）",
+        check("子菜单底部「管理模型」跳到设置页「模型接入」（原手输模型名那条路的正式落点）",
               page.evaluate("() => document.querySelector('.app').classList.contains('is-settings-open')")
               and page.evaluate("""() => { const p = document.querySelector('.setpage[data-set="model"]');
                                           return !!p && p.classList.contains('is-active'); }"""), "")
         page.click("#set-back")
         page.wait_for_timeout(250)
 
-        # ── 17) 思考强度：紧凑形态（解释进 title）──
+        # ── 17) 思考强度：模型卡片底部滑杆 + Ctrl+T ──
         print("\n" + "=" * 78)
-        print("【17】思考强度：下拉只留档位名（解释收进 title）")
+        print("【17】思考强度：模型卡片底部四档滑杆（Ctrl+T 循环）")
         print("=" * 78)
         page.click("#think-trigger")
-        page.wait_for_timeout(250)
-        opts = page.eval_on_selector_all(
-            "#think-pop .think__opt", "els => els.map(e => ({ t: e.innerText.trim(), title: e.title }))")
-        names = [o["t"].replace("✓", "").strip() for o in opts]
-        check("下拉只有档位名（低/中/高/最高），不再铺一行解释",
-              names == ["低", "中", "高", "最高"], str(names))
-        check("解释性文字收进 title（悬停才看，不是删掉不告诉）",
-              all(len(o["title"]) >= 8 for o in opts), str(opts))
+        page.wait_for_timeout(300)
+        check("点思考档位 → 打开模型卡片并显示滑杆（ZCode 形态）",
+              page.is_visible("#model-pop") and page.is_visible("#think-slider"), "")
+        slider = page.eval_on_selector("#think-slider", """el => ({
+            min: el.min, max: el.max, step: el.step, value: el.value,
+            label: document.querySelector('#mpick-think-label').textContent,
+            pct: getComputedStyle(el).getPropertyValue('--pct').trim() })""")
+        check("滑杆是四档离散值（0..3），当前档与文字一致",
+              slider["min"] == "0" and slider["max"] == "3" and slider["step"] == "1"
+              and slider["label"] in ("低", "中", "高", "最高"), str(slider))
         check("触发器紧凑：只剩档位词 + 末尾箭头，与模型名并排读作「模型 高 ∨」",
               len((page.inner_text("#think-trigger") or "").strip()) <= 4
               and page.eval_on_selector_all("#think-trigger svg", "els => els.length") == 1
@@ -1534,15 +1560,29 @@ def main() -> int:
         check("触发器的 title 带着当前档说明（细看时口径还在）",
               len(page.get_attribute("#think-trigger", "title") or "") >= 10,
               repr(page.get_attribute("#think-trigger", "title")))
-        page.click('#think-pop [data-level="low"]')
-        page.wait_for_timeout(300)
+        page.eval_on_selector("#think-slider", """el => {
+            el.value = '0';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        }""")
+        page.wait_for_timeout(350)
         depth_saved = [c for c in calls("save_settings")
                        if c[1] and isinstance(c[1][0], dict) and "thinking_depth" in c[1][0]]
-        check("语义不变：点「低」仍落库同一档（thinking_depth=2）",
-              depth_saved and depth_saved[-1][1][0]["thinking_depth"] == 2, str(depth_saved[-1:]))
-        page.click("#think-trigger")                    # 点选后下拉自动收起，重新打开
+        check("拖到「低」→ 落库同一档（thinking_depth=2）且两处文字同步",
+              depth_saved and depth_saved[-1][1][0]["thinking_depth"] == 2
+              and (page.inner_text("#think-value") or "").strip() == "低"
+              and (page.inner_text("#mpick-think-label") or "").strip() == "低",
+              f"{str(depth_saved[-1:])[:120]} value={page.inner_text('#think-value')}")
+        page.keyboard.press("Control+t")
+        page.wait_for_timeout(350)
+        depth_saved2 = [c for c in calls("save_settings")
+                        if c[1] and isinstance(c[1][0], dict) and "thinking_depth" in c[1][0]]
+        check("Ctrl+T 循环到下一档（低 → 中，depth=4）",
+              depth_saved2 and depth_saved2[-1][1][0]["thinking_depth"] == 4
+              and (page.inner_text("#think-value") or "").strip() == "中",
+              f"{str(depth_saved2[-1:])[:120]} value={page.inner_text('#think-value')}")
+        page.keyboard.press("Escape")
         page.wait_for_timeout(200)
-        page.click('#think-pop [data-level="mid"]')     # 还原成日常档，供后续用例
 
         # ── 18) 上下文容量浮层（数字全部来自后端）──
         print("\n" + "=" * 78)
@@ -2307,7 +2347,11 @@ def main() -> int:
             "() => document.querySelectorAll('#toast-root .toast').forEach(e => e.remove())")
         page_think.click("#think-trigger")
         page_think.wait_for_timeout(150)
-        page_think.click('#think-pop [data-level="high"]')
+        page_think.eval_on_selector("#think-slider", """el => {
+            el.value = '2';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        }""")
         page_think.wait_for_timeout(200)
         think_toast = page_think.eval_on_selector_all(
             "#toast-root .toast", "els => els.map(e => e.textContent).join(' | ')")

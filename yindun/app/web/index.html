@@ -185,26 +185,38 @@
                     <span class="model-select__value" id="model-value"></span>
                     <svg class="model-select__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
                   </button>
-                  <div class="model-select__pop" id="model-pop" tabindex="-1" hidden>
-                    <div class="mpick">
-                      <div class="mpick__col mpick__col--prov" id="mpick-providers" role="listbox" aria-label="供应商"></div>
-                      <div class="mpick__col" id="mpick-models" role="listbox" aria-label="供应商下的模型"></div>
+                <div class="model-select__pop" id="model-pop" tabindex="-1" hidden>
+                  <!-- 主卡片照 ZCode：供应商头（点开右侧子菜单）→ 模型列表 → 思考强度滑杆 -->
+                  <button type="button" class="mpick__head" id="mpick-head" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="mpick__logo" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="14" rx="3"/><path d="M8 10h8M8 14h5"/></svg>
+                    </span>
+                    <span class="mpick__head-name" id="mpick-prov-name">—</span>
+                    <span class="mpick__api" id="mpick-api-badge">API</span>
+                    <svg class="mpick__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+                  </button>
+                  <div class="mpick__label">模型</div>
+                  <div class="mpick__col" id="mpick-models" role="listbox" aria-label="供应商下的模型"></div>
+                  <div class="mpick__think" id="mpick-think">
+                    <div class="mpick__think-head">
+                      <span>思考强度</span><b id="mpick-think-label">中</b>
+                      <span class="mpick__shortcut">Ctrl+T</span>
                     </div>
-                    <div class="model-select__foot" id="model-hint">—</div>
-                    <button type="button" class="mpick__manage" id="mpick-manage">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M4 7h4M14 7h6M4 17h6M16 17h4"/></svg>
-                      管理模型
-                    </button>
+                    <input type="range" id="think-slider" min="0" max="3" step="1" value="1"
+                           aria-label="思考强度" title="思考强度（低 / 中 / 高 / 最高）">
                   </div>
+                  <div class="model-select__foot" id="model-hint">—</div>
+                  <!-- 供应商子菜单：浮在主卡片右侧（窄窗口落到下方），照 ZCode 的二级浮层 -->
+                  <div class="mpick__prov-pop" id="mpick-providers" role="listbox" aria-label="供应商" hidden></div>
+                </div>
                 </div>
                 <!-- 思考强度：与模型触发器**视觉相连**（只显示档位词，读作「模型 高」）。
                      点开仍是原来的四档下拉；解释性文字在 title 里。 -->
                 <div class="think" id="think-select">
-                  <button type="button" id="think-trigger" class="think__trigger" aria-haspopup="listbox" aria-expanded="false" title="思考强度（点开选择低 / 中 / 高 / 最高）">
+                  <button type="button" id="think-trigger" class="think__trigger" aria-haspopup="dialog" aria-expanded="false" title="思考强度（点开选择低 / 中 / 高 / 最高；Ctrl+T 快速循环）">
                     <span class="think__value" id="think-value">中</span>
                     <svg class="think__chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
                   </button>
-                  <div class="think__pop" id="think-pop" role="listbox" hidden></div>
                 </div>
                 <button class="pill pill--send" id="btn-send" type="submit" title="发送（Enter）">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>

@@ -375,16 +375,16 @@ check("后端把档位立刻下发到内核环境变量（不是只写配置文�
       and "apply_runtime_env()" in webview_src.split("def save_settings")[1][:2000])
 check("启动即下发（界面画出来之前工具层已按设置行事）",
       "apply_runtime_env()" in service_src.split("def initialize")[1][:600])
-check("思考强度是胶囊 + 下拉（低 / 中 / 高 / 最高），旧的 1–10 下拉已移除",
-      'id="think-select"' in html and 'id="think-pop"' in html
+check("思考强度是模型卡片底部四档滑杆（低 / 中 / 高 / 最高），旧的 1–10 下拉已移除",
+      'id="think-select"' in html and 'id="think-slider"' in html and 'id="mpick-think"' in html
       and "sel-depth" not in html and "sel-depth" not in js
-      and all(f'"{lv}"' in js for lv in ("low", "mid", "high", "max"))
-      and 'data-level="${lv.key}"' in js)
-check("点开下拉才展开选项、点选项即落库（一个词 + 一个箭头，不占输入区）",
-      "function openThinkPop" in js and "function closeThinkPop" in js
-      and 'thinkTrig.onclick = () => (thinkPop.hidden ? openThinkPop() : closeThinkPop())' in js)
-check("两个输入区下拉都以「点击外部关闭」收尾（不靠用户猜怎么关）",
-      js.count("!thinkSel.contains(e.target)") == 1 and js.count("!permPill.contains(e.target)") == 1)
+      and all(f'key: "{lv}"' in js for lv in ("low", "mid", "high", "max")))
+check("滑杆改动即落库、Ctrl+T 可循环（不再有独立下拉弹层）",
+      "slider.onchange" in js and "openThinkPanel" in js
+      and "think-pop" not in html and "think-pop" not in js)
+check("输入区弹层都以「点击外部关闭」收尾（不靠用户猜怎么关）",
+      js.count("!permPill.contains(e.target)") == 1
+      and "if (!inside) closeModelPop();" in js and "const closeProvPop" in js)
 check("四档映射到 worker 的 thinking_depth 且旧数值能折算回档位",
       "THINK_LEVELS" in js and re.search(r'key: "max",\s*label: "最高",\s*depth: 10', js) is not None
       and "levelOf" in js)
@@ -411,9 +411,9 @@ tokens = (ROOT / "yindun" / "app" / "web" / "styles" / "tokens.css").read_text(e
 check("焦点环是**两套显式取值**（浅色水洗铺在深色底上会变成刺眼光晕）",
       "--focus-ring:" in tokens.split('html[data-theme="dark"]')[0]
       and "--focus-ring:" in tokens.split('html[data-theme="dark"]')[1])
-check("输入框/文本域/开关的高亮都走同一个 token（不再各写一份 --accent-50）",
+check("输入框/文本域的焦点环都走同一个 token（不再各写一份 --accent-50）",
       css.count("var(--focus-ring)") >= 5
-      and ".composer__box:focus-within { border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--focus-ring); }" in css
+      and ".composer__box:focus-within { border-color: var(--border-2); box-shadow: 0 0 0 3px var(--focus-ring), 0 8px 24px rgba(0,0,0,.05); }" in css
       and "textarea:focus { border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--focus-ring); }" in css)
 check("提示条（含置顶提示）颜色也来自 token，明暗各自取值",
       "--toast-bg:" in tokens and "--toast-fg:" in tokens
@@ -421,8 +421,8 @@ check("提示条（含置顶提示）颜色也来自 token，明暗各自取值"
       and 'html[data-theme="dark"] .toast' not in css)
 check("设置页的窗口按钮固定在窗口右上角（原来跟着头部内边距走，看起来没对齐）",
       ".win-ctrls--head { position: fixed; top: 6px; right: 10px;" in css)
-check("发送按钮箭头朝右（旧路径的顶点在左侧，渲染出来像「◀」）",
-      'id="btn-send"' in html and 'M4 12h15M12 6l6 6-6 6' in html.split('id="btn-send"')[1][:220])
+check("发送按钮箭头朝上（与 ZCode 新版一致，不再是纸飞机/右箭头）",
+      'id="btn-send"' in html and 'M12 19V5M6 11l6-6 6 6' in html.split('id="btn-send"')[1][:260])
 
 check("输入区有本对话权限胶囊（设置页那份是「新对话默认」）",
       'id="perm-pill"' in html and 'id="perm-pop"' in html

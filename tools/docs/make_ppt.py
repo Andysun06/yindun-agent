@@ -155,7 +155,7 @@ para(tf, "面向涉密办公场景的本地化隐私防护桌面智能体", size
 rect(s, M, 6.15, 6.2, 0.02, fill="2E6B50")
 tf = box(s, M, 6.35, 11, 0.6)
 para(tf, [("Yindun Security Agent", {"bold": True, "color": "FFFFFF"}),
-          ("    ·    V3.6.15    ·    LangChain · pywebview/WebView2 · 本地/云端双算力    ·    2026", {"color": "8FD3B4"})],
+          ("    ·    V3.6.16    ·    LangChain · pywebview/WebView2 · 本地/云端双算力    ·    2026", {"color": "8FD3B4"})],
      size=13, first=True)
 
 # ══════════════════ 2 · 背景痛点 ══════════════════
