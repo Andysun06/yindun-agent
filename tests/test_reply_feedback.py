@@ -56,10 +56,15 @@ def check(name, cond, detail=""):
 DESKTOP_QUESTION = "我的桌面有几张图片？"      # 事故原话
 
 
-def _ai(content="", tool_calls=None):
+def _ai(content="", tool_calls=None, done_reason=None):
     """真 AIMessage（不是自造桩）：`SummarizableChatHistory.to_dict_list` 只认 langchain 的
-    消息类型，自造桩会被静默跳过 —— 那样测到的"落库链"就不是线上那条链了。"""
-    return AIMessage(content=content, tool_calls=list(tool_calls or []))
+    消息类型，自造桩会被静默跳过 —— 那样测到的"落库链"就不是线上那条链了。
+
+    done_reason="length" 复现 Ollama 的单次生成长度上限（V3.6.13）。
+    """
+    meta = {"done_reason": done_reason} if done_reason else {}
+    return AIMessage(content=content, tool_calls=list(tool_calls or []),
+                     response_metadata=meta)
 
 
 def _tool_call(name, args, cid="call_1"):
@@ -78,7 +83,7 @@ class ScriptedLLM:
         self.calls += 1
         self.seen.append(list(messages))
         step = self.script[min(self.calls - 1, len(self.script) - 1)]
-        return _ai(step.get("content", ""), step.get("tool_calls"))
+        return _ai(step.get("content", ""), step.get("tool_calls"), step.get("done_reason"))
 
     def bind_tools(self, tools):
         return self
@@ -394,6 +399,8 @@ print("=" * 78)
 # 「文件 "aaa.txt" 已成功创建在你的桌面上。」——审计里那轮**没有任何 tool_call**，
 # 桌面上也没有文件；而且"没弹审批"（审批只在真的执行工具时才弹）。
 _FAKE_OK = '文件 "aaa.txt" 已成功创建在你的桌面上。'
+_prev_perm57 = os.environ.get("YINDUN_PERMISSION")
+os.environ["YINDUN_PERMISSION"] = "full"     # 深度模式下写工具会走审批；满权档直接执行
 _llm58 = ScriptedLLM([
     {"content": _FAKE_OK},                                   # 假成功
     {"content": "", "tool_calls": [                          # 被纠正后真做
@@ -402,7 +409,10 @@ _llm58 = ScriptedLLM([
 ])
 _worker58 = make_worker(_llm58, {"create_local_file": FakeTool("create_local_file",
                                                               lambda a: "✅ 物理创建成功")},
-                        "帮我在桌面创建一个 aaa.txt")
+                        "帮我在桌面创建一个 aaa.txt",
+                        # ★ 写类请求在快速模式下会被**前置拦截**（BUG-0007）；这里要测的
+                        #   是"模型假成功"的自纠错，所以必须走允许写操作的思考模式。
+                        think_mode="深度思考")
 _events58, _, _stuck58 = run_worker(_worker58)
 _fin58 = last_of(_events58, "finished")
 check("有限时间内结束", not _stuck58)
@@ -417,7 +427,7 @@ check("最终回答是工具执行后的如实说明（不再是假成功）",
 
 _llm59 = ScriptedLLM([{"content": _FAKE_OK}])                # 纠正也不改口：压根不支持工具调用
 _worker59 = make_worker(_llm59, {"create_local_file": FakeTool("create_local_file", lambda a: "x")},
-                        "帮我在桌面创建一个 aaa.txt")
+                        "帮我在桌面创建一个 aaa.txt", think_mode="深度思考")
 _events59, _, _ = run_worker(_worker59)
 _fin59 = str(last_of(_events59, "finished") or "")
 check("★ 模型始终不调工具时，最终回答里带「事实核对：本轮一次工具都没有调用」",
@@ -426,6 +436,10 @@ check("事实核对里说明「审批也不会弹」（正是负责人遇到的�
       "审批也不会弹" in _fin59, repr(_fin59[-160:]))
 check("事实核对给了下一步（换支持工具调用的模型）",
       "function calling" in _fin59 and "模型接入" in _fin59, repr(_fin59[-160:]))
+if _prev_perm57 is None:
+    os.environ.pop("YINDUN_PERMISSION", None)
+else:
+    os.environ["YINDUN_PERMISSION"] = _prev_perm57
 
 print("\n" + "=" * 78)
 print("【6】失败路径：错误必须变成用户可见的回复文本并落库（不再删掉用户提问）")
@@ -639,6 +653,155 @@ if _prev_perm2 is None:
     _os.environ.pop("YINDUN_PERMISSION", None)
 else:
     _os.environ["YINDUN_PERMISSION"] = _prev_perm2
+
+print("\n" + "=" * 78)
+print("【5.11】快速模式 + 写类意图：前置拦截（不调模型）+ 空产出诊断（BUG-0007/0008）")
+print("=" * 78)
+# 现场（V3.6.11 组员评审 BUG-0007）：权限「变更前确认」+ 快速模式，发
+# 「在当前沙箱目录创建 approval_probe.txt 并写入 alpha/beta/gamma」→ 模型 4/4 返回空
+# content + 无 tool_calls → 用户只得到一句"小模型偶发空回复"，审计 0 条 tool_call。
+# 根因：快速模式拦写操作的提示只在**模型真的发起工具调用之后**才出现。现在前置到进入模型之前。
+_intent = Worker()
+_write_positives = [
+    ("创建 + 带扩展名文件", "在当前沙箱目录创建 approval_probe.txt 并写入 alpha/beta/gamma"),
+    ("删除 + 文档", "把桌面上的报告.docx 删除"),
+    ("新建文件夹", "在沙箱里新建文件夹 backup"),
+    ("移动 + 目录名词", "把照片挪到备份文件夹"),
+    ("运行 + 脚本", "运行这个脚本"),
+    ("修改 + 绝对路径", r"修改 E:\yindun\demo.txt"),
+]
+for _label, _text in _write_positives:
+    check(f"写意图正例：{_label}", _intent._looks_like_write_request(_text) is True, _text)
+_write_negatives = [
+    ("只读清点", "读一下桌面有几个文件"),
+    ("只读分析", "分析这个目录"),
+    ("咨询：怎么创建", "怎么创建一个文件"),
+    ("创作：写一段代码", "帮我写一段代码生成几张图片的说明"),
+    ("创作：写个函数", "写个函数打印 hello"),
+]
+for _label, _text in _write_negatives:
+    check(f"写意图负例：{_label}", _intent._looks_like_write_request(_text) is False, _text)
+
+_WRITE_REQ = "在当前沙箱目录创建 approval_probe.txt 并写入 alpha/beta/gamma"
+_llm_w = ScriptedLLM([{"content": "这一句绝不该被使用"}])
+_worker_w = make_worker(_llm_w, {}, _WRITE_REQ, fast_path=True)
+_events_w, _elapsed_w, _stuck_w = run_worker(_worker_w)
+_fin_w = str(last_of(_events_w, "finished") or "")
+check("★ 前置拦截：一次模型都没有调用", _llm_w.calls == 0, f"invoke={_llm_w.calls}")
+check("★ 不是故障：不发 error 事件", not all_of(_events_w, "error"), str(all_of(_events_w, "error"))[:120])
+check("有 status + finished（用户看得到限制说明，而不是一直转圈）",
+      bool(all_of(_events_w, "status")) and bool(_fin_w), str(all_of(_events_w, "status"))[:160])
+check("★ 说明点明：模式限制 + 怎么切 + 切后弹审批",
+      "快速" in _fin_w and "思考" in _fin_w and "审批" in _fin_w, _fin_w[:160])
+check("前置拦截的说明也落库（刷新/重启后仍能看到）",
+      tail_is_assistant_text(_worker_w, _fin_w),
+      str([(m.get("role"), len(str(m.get("content") or ""))) for m in (_worker_w.result_messages or [])[-3:]]))
+check("前置拦截没有产生工具调用（审计里也不会有 tool_call）",
+      _worker_w.tool_call_attempts == 0 and _worker_w.tool_call_count == 0,
+      f"attempts={_worker_w.tool_call_attempts} count={_worker_w.tool_call_count}")
+
+_llm_ro = ScriptedLLM([{"content": "桌面上一共有 3 个文件。"}])
+_worker_ro = make_worker(_llm_ro, {}, "读一下桌面有几个文件", fast_path=True)
+_events_ro, _, _ = run_worker(_worker_ro)
+_fin_ro = str(last_of(_events_ro, "finished") or "")
+check("★ 只读请求不被误拦（照常调用模型并回答）",
+      _llm_ro.calls == 1 and _fin_ro == "桌面上一共有 3 个文件。",
+      f"invoke={_llm_ro.calls} reply={_fin_ro[:60]!r}")
+
+# 空产出兜底：不再是"每 5 次一次"的运气论，而是可核对的诊断
+check("★ 通用空产出说明可执行（测试连接 / 切思考 / 换模型）",
+      "测试连接" in _fin2 and "思考" in _fin2 and "换一个模型" in _fin2, _fin2[:180])
+check("★ 不再写「偶发空回复 / 每 5 次」这类与当前模型无关的统计",
+      "偶发空回复" not in _fin2 and "每 5 次" not in _fin2, _fin2[:180])
+
+# 写类意图的空产出：必须解释"为什么没弹审批"
+_llm_wf = ScriptedLLM([{"content": ""}])
+_worker_wf = make_worker(_llm_wf, {}, _WRITE_REQ, think_mode="深度思考")
+_events_wf, _elapsed_wf, _stuck_wf = run_worker(_worker_wf)
+_fin_wf = str(last_of(_events_wf, "finished") or "")
+check("写类请求空产出：说明本轮没有工具调用、所以不会弹审批",
+      "没有产生任何工具调用" in _fin_wf and "不会弹出审批" in _fin_wf, _fin_wf[:200])
+check("写类请求空产出：给出「测试连接」与「切到思考」的下一步",
+      "测试连接" in _fin_wf and "思考" in _fin_wf, _fin_wf[:200])
+check("写类请求空产出：落库链尾＝该说明",
+      tail_is_assistant_text(_worker_wf, _fin_wf),
+      str([(m.get("role"), len(str(m.get("content") or ""))) for m in (_worker_wf.result_messages or [])[-3:]]))
+
+# BUG-0008：兜底文案不是模型输出，审计必须能看出"模型空产出"
+from yindun.core.audit_log import AuditLog as _AuditLog                     # noqa: E402
+_audit = _AuditLog()
+_llm_outputs = _audit.get_entries({"event_type": "llm_output"})
+_last_out = _llm_outputs[-1] if _llm_outputs else None
+check("★ 审计：兜底文案不计为模型输出（content_length=0）",
+      _last_out is not None and _last_out.details.get("content_length") == 0,
+      str(_last_out.details if _last_out else None))
+check("★ 审计：带 empty_output=True 可区分标记",
+      _last_out is not None and _last_out.details.get("empty_output") is True,
+      str(_last_out.details if _last_out else None))
+check("审计：preview 看得出「模型本轮没有产出任何内容」",
+      _last_out is not None and "没有产出" in str(_last_out.details.get("preview") or ""),
+      str(_last_out.details.get("preview") if _last_out else None))
+check("正常回答不会被误标为兜底", getattr(_worker3, "_reply_is_fallback", None) is False,
+      str(getattr(_worker3, "_reply_is_fallback", None)))
+
+# ── V3.6.13：长回答被单次生成上限截断（负责人实测停在「（最好、平均」）──────
+# 判据不是标点，而是模型返回的 done_reason=length：自动从断点续写一次，
+# 两段拼成完整回答；续写仍到上限才如实标注。
+class NoKBWorker(Worker):
+    def _get_knowledge_base(self):
+        return None
+
+
+_llm_len = ScriptedLLM([
+    {"content": "第一部分：先澄清定义与约束条件。", "done_reason": "length"},
+    {"content": "第二部分：结论是计数排序在特定条件下可达到 O(n)。"},
+])
+_worker_len = NoKBWorker()
+_worker_len.llm = _llm_len
+_worker_len.tools_map = {}
+_worker_len.user_input = "研究一下快速排序的复杂度"
+_worker_len.messages_snapshot = []
+_worker_len.think_mode = "深度思考"
+_worker_len.privacy_shield = False
+_worker_len.sandbox_path = str(SANDBOX_ROOT)
+_worker_len.attachment_fulltext = {}
+_worker_len._kb_instance = None
+_events_len, _, _ = run_worker(_worker_len)
+_fin_len = str(last_of(_events_len, "finished") or "")
+check("★ done_reason=length 会自动续写（而不是把半句话当完整回答）",
+      _llm_len.calls == 2, f"invoke={_llm_len.calls}")
+check("★ 续写后的两段被拼成完整回答",
+      "第一部分" in _fin_len and "第二部分" in _fin_len, _fin_len[:200])
+check("续写成功时不再额外提示「被截断」", "单次生成长度上限" not in _fin_len, _fin_len[-120:])
+check("续写拼接结果已落库", tail_is_assistant_text(_worker_len, _fin_len))
+
+_llm_len2 = ScriptedLLM([
+    {"content": "第一段：", "done_reason": "length"},
+    {"content": "第二段仍没写完", "done_reason": "length"},
+])
+_worker_len2 = NoKBWorker()
+_worker_len2.llm = _llm_len2
+_worker_len2.tools_map = {}
+_worker_len2.user_input = "研究一下快速排序的复杂度"
+_worker_len2.messages_snapshot = []
+_worker_len2.think_mode = "深度思考"
+_worker_len2.privacy_shield = False
+_worker_len2.sandbox_path = str(SANDBOX_ROOT)
+_worker_len2.attachment_fulltext = {}
+_worker_len2._kb_instance = None
+_events_len2, _, _ = run_worker(_worker_len2)
+_fin_len2 = str(last_of(_events_len2, "finished") or "")
+check("★ 续写后仍到上限：如实标注并给出「继续」",
+      "单次生成长度上限" in _fin_len2 and "继续" in _fin_len2, _fin_len2[-160:])
+check("仍到上限时两段都不丢", "第一段" in _fin_len2 and "第二段" in _fin_len2, _fin_len2[:160])
+
+# ── V3.6.13：通用知识题不该被拽去检索知识库 ──
+check("知识库门控：算法/研究类问题不走知识库",
+      not _worker_len._looks_like_kb_question("有没有时间复杂度 O(n) 的排序算法，请你研究"),
+      "误判为知识库问题")
+check("知识库门控：本机资料类问题照常走知识库",
+      _worker_len._looks_like_kb_question("帮我查一下合同里的付款条款") and
+      _worker_len._looks_like_kb_question("公司报销制度是怎么规定的"))
 
 if failures:
     print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))

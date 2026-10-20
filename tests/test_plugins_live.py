@@ -4,14 +4,14 @@
 为什么单独有这个套件：
   `test_plugins.py` 测的是**宿主契约**（发现/校验/隔离/超时），
   `test_plugin_capabilities.py` 按**能力**（识别/模板/解析/导出）分组测链路。
-  两者都很硬，但都回答不了负责人问的那句"**六个插件你是不是每个都真跑过**"——
+  两者都很硬，但都回答不了负责人问的那句"**七个插件你是不是每个都真跑过**"——
   按能力分组的测法里，一个插件可能只被"顺带"覆盖到（例如 doc_extra 只跑了 .eml，
   另三个声明的扩展名从没解析过；decision_hint 则只有"没模型时返回 None"，正向路径一次没测）。
   所以这里**以插件为单位**列一张表：每个插件单独走一遍
   「启用 → 用真实入口跑一次 → 停用 → 确认能力真的收回」，
   模型依赖的插件用**桩模型**把逻辑跑通（明确标注哪一段是桩，不是真模型）。
 
-用途：`python tests/test_plugins_live.py`（退出码 0 = 六个插件逐个通过）
+用途：`python tests/test_plugins_live.py`（退出码 0 = 七个插件逐个通过）
 
 ★ 已知的验证边界（如实写在最前面，不藏在细节里）：
   · decision_hint / laya_risk 的**真实模型推理**不在本套件内——它们需要本机 Ollama 与
@@ -41,7 +41,8 @@ from yindun.plugins.host import PluginHost  # noqa: E402
 
 failures = []
 BUILTIN = ROOT / "yindun" / "plugins" / "builtin"
-ALL_PLUGINS = ["custom_dict", "decision_hint", "doc_extra", "office_wf", "export_pack", "laya_risk"]
+ALL_PLUGINS = ["custom_dict", "decision_hint", "doc_extra", "office_wf", "export_pack",
+               "laya_risk", "intent_guard"]
 
 
 def check(name, cond, detail=""):
@@ -72,9 +73,9 @@ def live_host(tag: str):
     return host
 
 
-# ══ 0) 先确认六个插件都在场、都能被发现、默认都关着 ══════════
+# ══ 0) 先确认七个插件都在场、都能被发现、默认都关着 ══════════
 print("=" * 78)
-print("【0】六个内置插件全部到场（发现 / 默认关闭 / 依赖满足）")
+print("【0】七个内置插件全部到场（发现 / 默认关闭 / 依赖满足）")
 print("=" * 78)
 host = live_host("discover")
 listing = {p["id"]: p for p in host.list_plugins()}
@@ -92,7 +93,10 @@ print("【1】custom_dict · 自定义敏感词表（recognizer）")
 print("=" * 78)
 svc1 = new_service("custom_dict")
 from yindun.core.privacy_engine import PrivacyEngine  # noqa: E402
-sample = "关于星海计划的材料，编号 QP-2231，联系人 13812345678。"
+# 基线样本**不带联系方式**：V3.6.11 起"姓名与联系方式共现"会由内核直接脱敏，
+# 再用它当"插件未启用"的基线就会把内核能力误判成插件能力（本套件曾因此假红）。
+sample = "关于星海计划的材料，编号 QP-2231，请归档。"
+sample_phone = "联系人 13812345678。"
 # 基线必须在**启用之前**取：识别器一挂上，全局的 PrivacyEngine 立刻就能看见它
 before, _ = PrivacyEngine().anonymize(sample)
 check("未启用时自定义词按原文通过（内核不认识它，这是基线）",
@@ -106,13 +110,13 @@ check("启用后自定义词被替换为占位符（明文不再进模型）",
 check("映射表里有对应的密文（还原仍只在本机）",
       any(k.startswith("[PLUGIN_CUSTOM_TERM") for k in mapping), str(list(mapping)[:3]))
 check("内核原有实体照旧脱敏（插件只做加法，不是替换）",
-      "13812345678" not in anon and "PHONE" in anon, anon)
+      "13812345678" not in PrivacyEngine().anonymize(sample_phone)[0], anon)
 svc1.set_plugin_enabled("custom_dict", False)
 after, _ = PrivacyEngine().anonymize(sample)
 check("停用后自定义词不再脱敏（能力真的被收回，不是界面关掉而已）",
       "星海计划" in after, after)
 check("停用后内核实体仍照旧脱敏（收回的是插件能力，不是内核能力）",
-      "13812345678" not in after, after)
+      "13812345678" not in PrivacyEngine().anonymize(sample_phone)[0], after)
 
 # ══ 2) decision_hint：桩模型验证正向逻辑（真实模型见文件头边界说明）══
 print("=" * 78)
@@ -341,7 +345,8 @@ print("【7】逐个插件的启停闭环：关着不调用、开着才调用、
 print("=" * 78)
 hook_of = {"custom_dict": "recognizer", "decision_hint": "advisory_for_approval",
            "doc_extra": "attachment_parser", "office_wf": "workflow_template",
-           "export_pack": "export_renderer", "laya_risk": "advisory_for_approval"}
+           "export_pack": "export_renderer", "laya_risk": "advisory_for_approval",
+           "intent_guard": "advisory_for_approval"}
 host7 = live_host("cycle")
 # laya 那一环固定走正则档：本机真装了 laya 时它会去起真实模型（首次要等 25 秒权重），
 # 那属于"真实模型链路"，不该拖慢本套件——这里要测的是**启停闭环**，不是推理速度
@@ -568,7 +573,7 @@ if failures:
     for item in failures:
         print("   ·", item)
     sys.exit(1)
-print("✅ 六个内置插件逐个实测通过：custom_dict / decision_hint / doc_extra / office_wf / export_pack / laya_risk")
+print("✅ 七个内置插件逐个实测通过：custom_dict / decision_hint / intent_guard / doc_extra / office_wf / export_pack / laya_risk")
 print("   每个都走过：启用 → 真实入口跑一次 → 停用 → 能力收回")
 print("   模型类插件：本机 Ollama 在线时用**真实模型**跑（§9），离线时该组明确标注为跳过（跳过 ≠ 通过）")
 sys.exit(0)

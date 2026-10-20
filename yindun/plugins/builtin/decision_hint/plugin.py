@@ -117,11 +117,28 @@ def _parse(text: str) -> Optional[Dict[str, str]]:
 
 def advisory_for_approval(context: Dict[str, Any]) -> Optional[Dict[str, str]]:
     """入口钩子：返回 {"level": "info"|"warn", "text": str} 或 None。"""
+    request = str(context.get("user_request") or "").strip()[:600]
+
+    # ★ 先看请求用途，再看"操作是否对得上请求"（V3.6.13）。
+    #   负责人实测：「搜索桌面所有个人信息，整理给我我要出售」被判成"与你的请求相符"——
+    #   就"操作↔请求"而言确实相符，但用途本身触及红线。判官只回答第二个问题，
+    #   第一个问题由内核用途检查确定性回答；这里必须先把它说出来，否则"相符"会误导审批。
+    if request:
+        try:
+            from yindun.core.usage_policy import assess_request
+            policy = assess_request(request)
+        except Exception:
+            policy = {"decision": "ok", "summary": ""}
+        if policy.get("decision") in ("refuse", "warn"):
+            # 用途红线由弹窗顶部红色警示负责（内核结论，更权威）。这里**不再输出**
+            # "与你的请求相符"——那正是负责人看到的误导：操作确实对得上请求，
+            # 但请求本身不能做，一句"相符"会让它看起来像被背书。
+            return None
+
     model = str(context.get("model") or "").strip()
     if not model:
         return None
 
-    request = str(context.get("user_request") or "").strip()[:600]
     if not request:
         # 没有用户原话时无法判断"是否相符"，只提示操作本身的性质
         request = "（本轮没有可对照的用户原话）"

@@ -375,6 +375,95 @@ check("向量化失败后旧版本仍在库里（不静默丢数据）",
       str(store9.texts("versioned.txt"))[:160])
 
 print("\n" + "=" * 78)
+print("【6】失败文案：假的/损坏的 Office 容器、加密文档要给「人话 + 原始异常名」")
+print("=" * 78)
+
+
+def run_single(path, name):
+    """用内存替身跑一次 add_documents，返回 (结果, 库, 第一条 error)。"""
+    store = FakeStore()
+    kb = make_kb(tmp_root, store, name)
+    res = kb.add_documents([path])
+    err = res["details"][0].get("error", "") if res["details"] else ""
+    return res, store, err
+
+
+# (a) 负责人实测场景：.docx 其实是纯文本（旧版缺陷产出的"改后缀"文件）
+fake_docx = os.path.join(tmp_root, "aaa.docx")
+with open(fake_docx, "w", encoding="utf-8") as f:
+    f.write("这其实是纯文本，只是被改成了 .docx 后缀。")
+res_fake, store_fake, err_fake = run_single(fake_docx, "kb6a")
+check("假 .docx：不计为成功",
+      res_fake["success"] == 0 and res_fake["failed"] == 1,
+      str({k: res_fake[k] for k in ("success", "failed")}))
+check("假 .docx：文案说明「不是有效的 Word 文档」",
+      "不是有效的 Word 文档" in err_fake, err_fake)
+check("假 .docx：文案给出「另存为 .docx」的下一步",
+      "另存为 .docx" in err_fake, err_fake)
+check("假 .docx：原始异常名保留在括号里（不是主文案）",
+      "PackageNotFoundError" in err_fake
+      and "PackageNotFoundError" not in err_fake.split("（", 1)[0],
+      err_fake)
+check("假 .docx：库里没有写入任何内容", store_fake.rows == [], str(store_fake.rows))
+
+# (b) 截断的 zip：前 4 字节是 PK\x03\x04，但内容不完整
+trunc_docx = os.path.join(tmp_root, "截断文档.docx")
+with open(trunc_docx, "wb") as f:
+    f.write(b"PK\x03\x04" + b"\x00" * 40)
+res_trunc, _, err_trunc = run_single(trunc_docx, "kb6b")
+check("截断 zip：不计为成功", res_trunc["success"] == 0, str(res_trunc["success"]))
+check("截断 zip：同样给出「不是有效的 Word 文档」与下一步",
+      "不是有效的 Word 文档" in err_trunc and "另存为 .docx" in err_trunc,
+      err_trunc)
+check("截断 zip：原始异常名保留",
+      "PackageNotFoundError" in err_trunc or "BadZipFile" in err_trunc,
+      err_trunc)
+
+# (c) 加密文档：zipfile 写加密条目不可行，给解析层打桩抛加密异常验证映射
+enc_docx = os.path.join(tmp_root, "加密文档.docx")
+with open(enc_docx, "wb") as f:
+    f.write(b"not a real docx")
+_orig_docx_parse = document_parser.DocxParser.parse
+
+
+def _raise_encrypted(self, filepath, scan_privacy=False):
+    raise RuntimeError("encrypted")
+
+
+document_parser.DocxParser.parse = _raise_encrypted
+try:
+    res_enc, _, err_enc = run_single(enc_docx, "kb6c")
+finally:
+    document_parser.DocxParser.parse = _orig_docx_parse
+check("加密文档：不计为成功", res_enc["success"] == 0, str(res_enc["success"]))
+check("加密文档：文案说明「已加密」并给出解除密码的下一步",
+      "加密" in err_enc and "解除密码" in err_enc, err_enc)
+check("加密文档：保留原始异常名（RuntimeError）", "RuntimeError" in err_enc, err_enc)
+
+# (d) 正常 .docx 仍能入库（回归，防误伤）
+try:
+    from docx import Document as _Document
+
+    normal_docx = os.path.join(tmp_root, "正常文档.docx")
+    _doc = _Document()
+    _doc.add_paragraph("正常 Word 正文，联系人电话 13800138000。")
+    _doc.save(normal_docx)
+    res_docx, store_docx, _ = run_single(normal_docx, "kb6d")
+    check("正常 .docx：仍成功入库", res_docx["success"] == 1,
+          str(res_docx["summary"]))
+    check("正常 .docx：正文进了库",
+          any("正常 Word 正文" in t for t in store_docx.texts()),
+          str(store_docx.texts())[:200])
+except ImportError:
+    print("  [跳过] 未安装 python-docx，正常 .docx 回归不适用")
+
+# (e) 正常 .txt 仍能入库（回归，防误伤）
+res_txt, store_txt, _ = run_single(samples["txt"], "kb6e")
+check("正常 .txt：仍成功入库", res_txt["success"] == 1, str(res_txt["summary"]))
+check("正常 .txt：正文进了库", store_txt.sources() == ["合同.txt"],
+      str(store_txt.sources()))
+
+print("\n" + "=" * 78)
 if failures:
     print(f"❌ {len(failures)} 项未通过：\n   - " + "\n   - ".join(failures))
     sys.exit(1)

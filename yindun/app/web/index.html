@@ -318,7 +318,7 @@
                 </div>
                 <div class="setrow">
                   <div class="setrow__text"><b>思考强度</b>
-                    <span title="四档约对应 2 / 4 / 7 / 10 轮推理；是否先做内部推理由顶栏的「快速 / 思考」决定">低 / 中 / 高 / 最高四档，控件在输入框下方</span></div>
+                    <span title="四档对应最多 4 / 8 / 14 / 20 轮推理；是否先做内部推理由顶栏的「快速 / 思考」决定">低 / 中 / 高 / 最高四档，控件在输入框下方</span></div>
                   <div class="setrow__ctrl"><span class="setrow__ro">见输入区</span></div>
                 </div>
               </div>
@@ -453,6 +453,13 @@
 
 
           <section class="pane" id="pane-audit">
+      <!-- 审计链失败横幅（BUG-0011）：失败时由 renderAudit 取消 hidden，并把原因写进
+           #audit-banner-text；「重建锚点」只在锚点缺失 / 迁移这类可执行原因下出现。 -->
+      <div class="audit-banner" id="audit-banner" role="alert" hidden>
+        <span class="audit-banner__text" id="audit-banner-text"></span>
+        <button class="btn btn--ghost" id="btn-reanchor" type="button" hidden
+                title="把当前链作为新的信任起点。确认后，此前的尾部截断将无法再被发现">重建锚点（接受当前链）</button>
+      </div>
       <div class="stat-grid" id="audit-stats"></div>
       <div class="chain-badge" id="audit-chain">—</div>
       <div class="chain-detail" id="audit-chain-detail"></div>
@@ -488,7 +495,8 @@
         <span id="approval-title">隐盾安全决策网关拦截</span>
       </div>
       <div class="modal__body">
-        <div style="color:var(--text-2);font-size:var(--fs-sm)">
+        <div class="intent-warning" id="approval-intent" style="display:none"></div>
+        <div style="color:var(--text-2);font-size:var(--fs-sm)" id="approval-lead">
           检测到高危操作，已挂起等待人工审批。
         </div>
         <dl class="kv">
@@ -501,6 +509,10 @@
         </div>
         <div id="approval-advisory-wrap" style="display:none">
           <div class="advisory__title">插件建议 <span class="advisory__hint">仅供参考；放行与否由你决定</span></div>
+          <div class="advisory__loading" id="approval-advisory-loading">
+            <span class="advisory__spinner" aria-hidden="true"></span>
+            <span id="approval-advisory-loading-text">正在研判：请求用途 → 是否相符 → 操作风险…</span>
+          </div>
           <div class="advisory" id="approval-advisory"></div>
         </div>
       </div>

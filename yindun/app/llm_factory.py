@@ -579,7 +579,11 @@ def build_llm(settings: Dict[str, Any], tools: List[Any],
                 timeout=60,
                 options={
                     "num_ctx": MODEL_WINDOW_TOKENS,   # 预算表唯一来源（C-13）
-                    "num_predict": 4096,
+                    # 深度思考（reasoning=None，思考型模型会先生成内部推理）时给 8192：
+                    # 内部推理也吃 num_predict，4096 在长回答上会把正文硬截断
+                    # （负责人实测：停在「堆排序…（最好、平均」）。快速模式仍给 4096，
+                    # 不让普通问答为长输出多等。
+                    "num_predict": 8192 if reasoning is None else 4096,
                     "temperature": 0.7,
                     "top_p": 0.9,
                 },

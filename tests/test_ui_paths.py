@@ -2051,11 +2051,35 @@ def main() -> int:
 
         # 审批弹窗正文：一句话说清（危险操作确认文案宁可短而准）
         approval_intro = page.evaluate("""() => {
-            const el = document.querySelector('#approval-root .modal__body > div');
+            const el = document.querySelector('#approval-lead');
             return el ? el.textContent.replace(/\\s+/g, '').trim() : ''; }""")
         check("审批弹窗正文一句话（≤ 40 字：检测到高危操作 + 等人工审批）",
               0 < len(approval_intro) <= 40 and "高危" in approval_intro and "审批" in approval_intro,
               repr(approval_intro))
+
+        # 异步建议的占位（V3.6.13，负责人实测"弹窗会抖一下"）：
+        # 静态层必须有"研判中"占位 + 旋转动画，且预留两条建议的高度。
+        skeleton = page.evaluate("""() => {
+            const box = document.querySelector('#approval-advisory-loading');
+            const spinner = box && box.querySelector('.advisory__spinner');
+            const style = box ? getComputedStyle(box) : null;
+            return {
+                exists: !!box,
+                text: box ? (box.textContent || '').trim() : '',
+                spinner: !!spinner,
+                minHeight: style ? style.minHeight : '',
+            }; }""")
+        check("审批弹窗有「研判中」占位（含动画与预留高度）",
+              skeleton["exists"] and skeleton["spinner"]
+              and "正在研判" in skeleton["text"] and skeleton["minHeight"] not in ("", "0px"),
+              repr(skeleton))
+        css_text = (WEB_DIR / "styles" / "app.css").read_text(encoding="utf-8")
+        check("占位动画有 keyframes，且尊重 reduced-motion",
+              "@keyframes advisory-spin" in css_text and "prefers-reduced-motion" in css_text)
+        check("用途红线占位存在（默认隐藏，命中才显示）",
+              page.evaluate("""() => {
+                  const el = document.querySelector('#approval-intent');
+                  return !!el && el.style.display === 'none'; }"""))
 
         # 设置页：不许出现"长段落墙"；且细节确实被搬进 title（不是删掉了不告诉）
         page.click("#btn-settings")
@@ -2075,6 +2099,213 @@ def main() -> int:
             "els => els.filter(e => (e.getAttribute('title') || '').length >= 12).length")
         check("设置页没有「长段落墙」（单条可见文本 ≤ 120 字），且隐私与权限页把细节收进 title（≥ 4 处）",
               not wall and titled >= 4, f"wall={wall[:2]} titled={titled}")
+
+        # ── 24) BUG-0010：桥未就绪时等待注入，而不是点了没反应 ──
+        print("\n" + "=" * 78)
+        print("【24】桥未就绪：窗口按钮等待桥注入（BUG-0010）")
+        print("=" * 78)
+        page_bridge = browser.new_page(viewport={"width": 1440, "height": 900})
+        errors_bridge = []
+        page_bridge.on("pageerror", lambda err: errors_bridge.append(str(err)))
+        page_bridge.goto(url, wait_until="domcontentloaded")
+        page_bridge.wait_for_function(
+            "() => { const v = document.querySelector('#brand-version');"
+            " return v && v.textContent.trim() && v.textContent.trim() !== '—'; }", timeout=20000)
+        # 把桥整体摘掉：window.pywebview 存在但 api 尚未注入（真实 pywebview 的启动瞬间形态）。
+        # 保存下来的桥对象给 window_action 计数，用来验证"只发 1 次桥接调用"。
+        page_bridge.evaluate("""() => {
+            const saved = window.__YINDUN_MOCK__.api;
+            const orig = saved.window_action;
+            window.__bridgeCalls = 0;
+            saved.window_action = (...a) => { window.__bridgeCalls += 1; return orig(...a); };
+            window.__savedBridge = saved;
+            window.__YINDUN_MOCK__.api = null;
+            window.pywebview = {};
+            document.querySelectorAll('#toast-root .toast').forEach((e) => e.remove());
+        }""")
+        page_bridge.click("#btn-pin")
+        page_bridge.wait_for_timeout(400)                 # 仍在 2.5s 等待窗口内
+        page_bridge.evaluate("() => { window.pywebview.api = window.__savedBridge; }")
+        page_bridge.wait_for_timeout(800)
+        bridge_calls = page_bridge.evaluate("() => window.__bridgeCalls")
+        toast_bridge = page_bridge.eval_on_selector_all(
+            "#toast-root .toast", "els => els.map(e => e.textContent).join(' | ')")
+        check("★ 桥在点击后注入：窗口动作在等待窗口内调用成功（只发 1 次）",
+              bridge_calls == 1, str(bridge_calls))
+        check("★ 等待成功时不出现「桥接未就绪 / 界面还在初始化」提示",
+              "桥接未就绪" not in toast_bridge and "界面还在初始化" not in toast_bridge,
+              repr(toast_bridge))
+        check("等待结束后窗口按钮恢复可用（不被永久 disabled）",
+              page_bridge.evaluate("() => !document.getElementById('btn-pin').disabled"), "")
+        # ② 超过等待窗口仍未注入：文案必须是「界面还在初始化」，而不是「桥接未就绪」。
+        page_bridge.evaluate("""() => {
+            window.pywebview = {};
+            window.__YINDUN_MOCK__.api = null;
+            document.querySelectorAll('#toast-root .toast').forEach((e) => e.remove());
+        }""")
+        page_bridge.click("#btn-pin")
+        page_bridge.wait_for_timeout(2900)
+        toast_timeout = page_bridge.eval_on_selector_all(
+            "#toast-root .toast", "els => els.map(e => e.textContent).join(' | ')")
+        check("★ 超过等待窗口：提示「界面还在初始化，请稍候再点」",
+              "界面还在初始化，请稍候再点" in toast_timeout, repr(toast_timeout))
+        check("★ 超时提示不再使用「桥接未就绪」措辞",
+              "桥接未就绪" not in toast_timeout, repr(toast_timeout))
+        page_bridge.evaluate("""() => {
+            window.pywebview.api = window.__savedBridge;
+            window.__YINDUN_MOCK__.api = window.__savedBridge;
+        }""")
+        check("BUG-0010 用例全程无 JS 运行时错误", not errors_bridge, "；".join(errors_bridge[:3]))
+        page_bridge.close()
+
+        # ── 25) BUG-0011：审计校验失败自动展开 + 红色横幅 + 重建锚点 ──
+        print("\n" + "=" * 78)
+        print("【25】审计链失败：自动展开 / 横幅 / 重建锚点（BUG-0011）")
+        print("=" * 78)
+        page_audit = browser.new_page(viewport={"width": 1440, "height": 900})
+        errors_audit = []
+        page_audit.on("pageerror", lambda err: errors_audit.append(str(err)))
+        # 本用例会多次派发 pywebviewready；主题层用 View Transition 做交叉淡入，
+        # 连续触发会出现可预期的 "Transition was skipped" DOMException（与断言目标无关）。
+        # 用 reduced-motion 让界面走无动画分支。
+        page_audit.emulate_media(reduced_motion="reduce")
+        page_audit.goto(url, wait_until="domcontentloaded")
+        page_audit.wait_for_function(
+            "() => { const v = document.querySelector('#brand-version');"
+            " return v && v.textContent.trim() && v.textContent.trim() !== '—'; }", timeout=20000)
+        page_audit.evaluate("""() => {
+            // 用例里会多次手动派发 pywebviewready（复用 bootstrap 通路）；
+            // 关掉 View Transition，避免"上一次过渡未结束"的 DOMException 干扰断言。
+            try { delete document.startViewTransition; } catch (e) { document.startViewTransition = undefined; }
+            window.__calls = [];
+            const api = window.__YINDUN_MOCK__.api;
+            for (const key of Object.keys(api)) {
+                if (typeof api[key] !== 'function') continue;
+                const fn = api[key];
+                api[key] = (...args) => { window.__calls.push([key, args]); return fn(...args); };
+            }
+            window.__auditFailure = {
+                chain_ok: false,
+                stats: {
+                    total_entries: 128, tool_calls: 23, privacy_events: 41, approvals: 6,
+                    chain_valid: false, chain_anchor: 'none',
+                    chain_reason: '锚点缺失：可能是从旧版本迁移（首次升级）',
+                },
+                entries: [],
+            };
+            window.__auditOk = {
+                chain_ok: true,
+                stats: {
+                    total_entries: 128, tool_calls: 23, privacy_events: 41, approvals: 6,
+                    chain_valid: true, chain_anchor: 'verified', chain_reason: '',
+                },
+                entries: [],
+            };
+            window.__YINDUN_MOCK__.api.audit_snapshot = () => Promise.resolve(window.__auditFailure);
+        }""")
+        page_audit.wait_for_timeout(200)
+        # 前置：先让右栏处于展开态，再手动收起——自动展开才有可观测的方向。
+        if page_audit.evaluate(
+                "() => document.querySelector('.app').classList.contains('is-right-collapsed')"):
+            page_audit.click("#btn-toggle-right")
+            page_audit.wait_for_timeout(250)
+        page_audit.click("#btn-panel-collapse")
+        page_audit.wait_for_timeout(250)
+        check("（前置）审计失败前右栏处于收起态",
+              page_audit.evaluate(
+                  "() => document.querySelector('.app').classList.contains('is-right-collapsed')"), "")
+        # 复用 bootstrap 的 audit_snapshot 通路（启动 / 重载后拿到失败结果的真实入口）
+        page_audit.evaluate("() => window.dispatchEvent(new Event('pywebviewready'))")
+        page_audit.wait_for_timeout(700)
+        collapsed_after = page_audit.evaluate(
+            "() => document.querySelector('.app').classList.contains('is-right-collapsed')")
+        banner_text = (page_audit.inner_text("#audit-banner-text") or "").strip()
+        check("★ 校验失败时右侧审计面板自动展开", not collapsed_after, str(collapsed_after))
+        check("★ 审计面板顶部出现红色失败横幅", page_audit.is_visible("#audit-banner"), "")
+        check("★ 横幅写明「审计链校验未通过：<原因>」（原因来自 payload）",
+              banner_text.startswith("审计链校验未通过：") and "锚点缺失" in banner_text,
+              repr(banner_text))
+        check("迁移/锚点缺失原因下出现「重建锚点」按钮",
+              page_audit.is_visible("#btn-reanchor"), "")
+        # 用户手动收起后，再来一次相同失败：不得反复弹开。
+        page_audit.click("#btn-panel-collapse")
+        page_audit.wait_for_timeout(250)
+        page_audit.evaluate("() => window.dispatchEvent(new Event('pywebviewready'))")
+        page_audit.wait_for_timeout(700)
+        check("★ 用户收起后再次相同失败：不再自动展开",
+              page_audit.evaluate(
+                  "() => document.querySelector('.app').classList.contains('is-right-collapsed')"), "")
+        # 状态恢复：横幅消失（且不会把用户收起的面板重新弹开）。
+        page_audit.evaluate("""() => {
+            window.__YINDUN_MOCK__.api.audit_snapshot = () => Promise.resolve(window.__auditOk);
+        }""")
+        page_audit.evaluate("() => window.dispatchEvent(new Event('pywebviewready'))")
+        page_audit.wait_for_timeout(700)
+        check("★ 校验状态恢复后横幅消失", not page_audit.is_visible("#audit-banner"), "")
+        # 恢复后再次失败 = 新一次"正常 → 失败"迁移：应重新自动展开，重建锚点走桥。
+        page_audit.evaluate("""() => {
+            window.__YINDUN_MOCK__.api.audit_snapshot = () => Promise.resolve(window.__auditFailure);
+        }""")
+        page_audit.evaluate("() => window.dispatchEvent(new Event('pywebviewready'))")
+        page_audit.wait_for_timeout(700)
+        check("恢复后再次失败会按新的状态迁移重新展开",
+              not page_audit.evaluate(
+                  "() => document.querySelector('.app').classList.contains('is-right-collapsed')"), "")
+        page_audit.click("#btn-reanchor")
+        page_audit.wait_for_timeout(400)
+        reanchor_calls = page_audit.evaluate(
+            "(n) => (window.__calls || []).filter(c => c[0] === n)", "audit_reanchor")
+        check("★ 点「重建锚点」调用桥 audit_reanchor（带上确认说明）",
+              bool(reanchor_calls) and reanchor_calls[-1][1][0] == "用户在审计面板确认重建锚点",
+              str(reanchor_calls[-1:]))
+        check("BUG-0011 用例全程无 JS 运行时错误", not errors_audit, "；".join(errors_audit[:3]))
+        page_audit.close()
+
+        # ── 26) BUG-0009：状态行「思考」→「推理」+ 轮次口径统一 ──
+        print("\n" + "=" * 78)
+        print("【26】状态行前缀「推理」+ 轮次口径「最多 2N 轮」（BUG-0009）")
+        print("=" * 78)
+        page_think = browser.new_page(viewport={"width": 1440, "height": 900})
+        errors_think = []
+        page_think.on("pageerror", lambda err: errors_think.append(str(err)))
+        page_think.goto(url, wait_until="domcontentloaded")
+        page_think.wait_for_function(
+            "() => { const v = document.querySelector('#brand-version');"
+            " return v && v.textContent.trim() && v.textContent.trim() !== '—'; }", timeout=20000)
+        page_think.evaluate("() => window.yindun.onEvent('status', '【思考 1/6】模型判断中…')")
+        page_think.wait_for_timeout(120)
+        status_text = (page_think.inner_text("#status-line") or "").strip()
+        check("★ 状态行前缀改写为「推理 1/6」",
+              status_text.startswith("【推理 1/6】"), repr(status_text))
+        check("★ 状态行不再出现「思考 1/6」", "思考 1/6" not in status_text, repr(status_text))
+        check("顶栏模式胶囊仍是「思考」（只改状态行显示前缀）",
+              (page_think.inner_text('#mode-switch [data-mode="深度思考"]') or "").strip() == "思考",
+              repr(page_think.inner_text('#mode-switch [data-mode="深度思考"]')))
+        page_think.evaluate("() => window.yindun.onEvent('state', {busy: true})")
+        page_think.evaluate("() => window.yindun.onEvent('intermediate_result', '正在整理要点。')")
+        page_think.evaluate("() => window.yindun.onEvent('finished', '这是回答。')")
+        page_think.wait_for_timeout(160)
+        tag = page_think.evaluate("""() => {
+            const rows = [...document.querySelectorAll('#chat .entry')];
+            const row = rows[rows.length - 1];
+            return (row.querySelector('.bubble__tag') || {}).textContent || '';
+        }""")
+        check("★ 气泡模式标签不受前缀改写影响（仍为「思考」）", tag == "思考", repr(tag))
+        think_title = page_think.get_attribute("#think-trigger", "title") or ""
+        check("★ 思考强度提示写「最多 14 轮推理」而不是「约 7 轮」",
+              "最多 14 轮推理" in think_title and "约 7 轮" not in think_title, repr(think_title))
+        page_think.evaluate(
+            "() => document.querySelectorAll('#toast-root .toast').forEach(e => e.remove())")
+        page_think.click("#think-trigger")
+        page_think.wait_for_timeout(150)
+        page_think.click('#think-pop [data-level="high"]')
+        page_think.wait_for_timeout(200)
+        think_toast = page_think.eval_on_selector_all(
+            "#toast-root .toast", "els => els.map(e => e.textContent).join(' | ')")
+        check("★ 选中档位后的浮条文案同样写「最多 14 轮推理」",
+              "最多 14 轮推理" in think_toast and "约 7 轮" not in think_toast, repr(think_toast))
+        check("BUG-0009 用例全程无 JS 运行时错误", not errors_think, "；".join(errors_think[:3]))
+        page_think.close()
 
         check("全程无 JS 运行时错误", not errors, "；".join(errors[:3]))
         browser.close()

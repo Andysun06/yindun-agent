@@ -26,6 +26,108 @@ _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp")
 _TEXT_EXTS = (".txt", ".text", ".md", ".csv", ".tsv", ".json", ".html", ".htm",
               ".log", ".yaml", ".yml", ".xml", ".ini", ".conf", ".rst")
 
+# Office（OOXML）扩展名 → 给用户看的类型名与"另存为"目标
+_OFFICE_KINDS = {
+    ".docx": ("Word 文档", ".docx", "Word/WPS"),
+    ".xlsx": ("Excel 工作簿", ".xlsx", "Excel/WPS"),
+    ".pptx": ("PowerPoint 演示文稿", ".pptx", "PowerPoint/WPS"),
+}
+
+# 已经是"可执行说明"的文案特征：命中就不再翻译，避免 KB/解析层叠出两层提示。
+_ACTIONABLE_MARKERS = (
+    "不是有效的", "已加密", "请先解除密码", "另存为", "请先解压",
+    "请用 PDF 阅读器", "文件超过", "页数超过上限", "疑似 zip 炸弹",
+)
+
+# 加密/受密码保护的线索（python-docx 对加密 OOXML 只报 PackageNotFoundError，
+# 因此异常名本身不足以下结论，必须看消息关键字 + 文件头）。
+_ENCRYPT_HINTS = ("encrypt", "password", "passwd", "decrypt", "crypto",
+                  "needs_pass", "authenticat", "密码", "加密")
+
+# 假的/损坏的 zip 容器线索（python-docx / openpyxl / python-pptx 各有各的说法）
+_ZIP_HINTS = ("packagenotfounderror", "badzipfile", "not a zip file",
+              "package not found", "file is not a zip", "invalid file",
+              "does not appear to be a")
+
+# 损坏/无效 PDF 线索（PyMuPDF 的 FileDataError、PyPDF2 的 PdfReadError 等）
+_PDF_BROKEN_HINTS = ("filedataerror", "cannot open", "broken document",
+                     "not a pdf", "no /root", "syntax error", "invalid pdf",
+                     "no objects found", "pdfreaderror", "emptyfileerror")
+
+# 旧版 Office / 加密 OOXML 都是 OLE 复合文档，而不是 .docx 该有的 zip 容器
+_OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def _has_ole_header(file_path: str) -> bool:
+    try:
+        with open(file_path, "rb") as f:
+            return f.read(8) == _OLE_MAGIC
+    except (OSError, TypeError):
+        return False
+
+
+def describe_parse_error(exc, file_path: str = "") -> str:
+    """把解析器底层异常翻译成**用户能照着做**的中文说明（保留原始异常便于排障）。
+
+    为什么要在解析层做：`.docx` 只是把文本文件改了后缀时，python-docx 抛的是
+    `PackageNotFoundError: Package not found at ...`；直接把原文透到界面，用户既不知道
+    "文件坏了"，也不知道下一步该做什么。这里统一翻成"不是有效的 Word 文档 / 另存为 .docx"
+    这类可执行说明，并把原始 `异常名: 消息` 放在括号里，排障信息不丢。
+
+    返回空串表示没有专门解释（由调用方保留原有错误格式）。已经是可执行说明的文案原样返回，
+    避免同一条失败被翻译两层。
+    """
+    raw = str(exc or "").strip()
+    name = type(exc).__name__
+    detail = f"{name}: {raw}" if raw else name
+
+    # 上游已经翻过（或本来就是解析器的失败串）→ 原样返回，绝不叠加
+    if raw.startswith("[文档解析") or any(m in raw for m in _ACTIONABLE_MARKERS):
+        return raw
+
+    low = f"{name} {raw}".lower()
+    ext = os.path.splitext(file_path or "")[1].lower()
+    basename = os.path.basename(file_path) if file_path else "该文件"
+
+    # 1) 加密/受密码保护：必须排在"容器损坏"之前（加密 OOXML 同样不是 zip）
+    if any(k in low for k in _ENCRYPT_HINTS):
+        return (f"文档已加密（受密码保护），无法读取内容；请先解除密码后再导入"
+                f"（{detail}）")
+
+    kind = _OFFICE_KINDS.get(ext)
+    if kind and _has_ole_header(file_path):
+        # 旧版 .doc 改名 .docx，或 Office 加密后的 OOXML：两种情况都给人话
+        label, save_as, app = kind
+        return (f"{basename} 不是有效的 {label}：文件实际是旧版 Office 或加密容器。"
+                f"若是加密文档，请先解除密码；若是旧版格式，请用 {app}"
+                f"「另存为 {save_as}」后再导入（{detail}）")
+
+    # 2) 假的/损坏的 Office 容器（扩展名与实际内容不符、文件被截断、zip 缺部件）
+    if kind and (name in ("PackageNotFoundError", "BadZipFile", "InvalidFileException")
+                 or any(k in low for k in _ZIP_HINTS)):
+        label, save_as, app = kind
+        return (f"{basename} 不是有效的 {label}"
+                f"（可能已损坏，或只是把文本文件改了后缀）。"
+                f"请用 {app} 打开确认；能打开就「另存为 {save_as}」后再导入，"
+                f"打不开就重新获取原文件（{detail}）")
+
+    # 3) 损坏/无效的 PDF
+    if ext == ".pdf" and any(k in low for k in _PDF_BROKEN_HINTS):
+        return (f"{basename} 无法作为 PDF 打开（可能已损坏，或不是真正的 PDF）。"
+                f"请用 PDF 阅读器确认能打开，必要时重新导出/获取后再导入（{detail}）")
+
+    return ""
+
+
+def _parse_failure_text(exc, filepath: str) -> str:
+    """异常 → 解析失败提示串（保留既有的 `[文档解析失败: …]` 契约）。"""
+    explained = describe_parse_error(exc, filepath)
+    if explained:
+        return f"[文档解析失败: {explained}]"
+    ext = os.path.splitext(filepath)[1].lower().lstrip('.')
+    return f"[文档解析失败: {ext or '未知'} -> {type(exc).__name__}: {exc}]"
+
+
 # 已知但内核不解析的二进制格式 → 给"下一步怎么做"（而不是笼统一句"已跳过"）
 _UNSUPPORTED_BINARY_ACTIONS = {
     ".doc": "旧版 Word（.doc，OLE 二进制）内核读不了；请在 Word/WPS 里「另存为 .docx」后重新上传",
@@ -892,9 +994,8 @@ def extract_file_text(filepath):
             return f"[文档解析拒绝: 文件超过 {MAX_FILE_SIZE // (1024 * 1024)}MB 大小上限]"
         return _parse_by_type(filepath, scan_privacy=False)
     except Exception as e:
-        # 区分文档类型给出更友好的错误信息
-        ext = os.path.splitext(filepath)[1].lower().lstrip('.')
-        return f"[文档解析失败: {ext or '未知'} -> {type(e).__name__}: {e}]"
+        # 底层异常 → 可执行的中文说明（原始异常名保留在括号里）
+        return _parse_failure_text(e, filepath)
 
 
 def _read_text_file(filepath) -> str:
@@ -1000,8 +1101,7 @@ def extract_file_text_with_report(filepath, scan_privacy: bool = True) -> str:
                 return base_text
             return base_text + f"\n\n[隐私扫描失败，已回退纯文本模式: {type(e).__name__}: {e}]"
         except Exception:
-            ext = os.path.splitext(filepath)[1].lower().lstrip('.')
-            return f"[文档解析失败: {ext or '未知'} -> {type(e).__name__}: {e}]"
+            return _parse_failure_text(e, filepath)
 
 
 def _scan_and_append_report(text: str, scan_privacy: bool) -> str:

@@ -73,7 +73,9 @@
   function mdInline(text) {
     return text
       .replace(/`([^`\n]+)`/g, "<code>$1</code>")
-      .replace(/^#{1,3}\s+(.*)$/gm, "<strong>$1</strong>")
+      // 标题层级：模型常用 #### / #####（四级以上旧实现不认，原样漏出 "#"）。
+      // 统一渲染成加粗行——对话区不引入 h1~h6 的版式跳变，但绝不能再漏字面量。
+      .replace(/^#{1,6}\s+(.*)$/gm, "<strong>$1</strong>")
       .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
       .replace(/^\s*[-*]\s+(.*)$/gm, "• $1")
       .replace(/\n/g, "<br>");
@@ -156,9 +158,39 @@
     (window.pywebview && window.pywebview.api) ||
     (window.__YINDUN_MOCK__ && window.__YINDUN_MOCK__.api) ||   // 开发预览（#mock）
     null;
+
+  /* 桥接就绪等待（组员评审 BUG-0010）：
+     pywebview 的 `window.pywebview.api` 是**页面加载之后**才注入的（`pywebviewready`）。
+     旧实现桥对象一缺席就立刻 toast「桥接未就绪」，启动瞬间或重载后点窗口按钮 =
+     报一句没人看得懂的话、按钮毫无反应（"最大化后无法还原"的第二条路径）。
+     现在只在「桥对象整体不存在」时进入等待（每 80ms 探一次，最多约 2.5 秒）；
+     方法缺失（桥在、但后端没这个方法）仍然立即报「桥接未就绪：方法」，不改变其它
+     接口的调用时序。超时才提示「界面还在初始化」。 */
+  const BRIDGE_POLL_MS = 80;
+  const BRIDGE_WAIT_MS = 2500;
+  function waitForBridge() {
+    return new Promise((resolve) => {
+      const deadline = Date.now() + BRIDGE_WAIT_MS;
+      const tick = () => {
+        if (api()) { resolve(true); return; }
+        if (Date.now() >= deadline) { resolve(false); return; }
+        setTimeout(tick, BRIDGE_POLL_MS);
+      };
+      tick();
+    });
+  }
+
   async function call(method, ...args) {
-    const bridge = api();
-    if (!bridge || typeof bridge[method] !== "function") {
+    let bridge = api();
+    if (!bridge) {
+      await waitForBridge();
+      bridge = api();
+      if (!bridge) {
+        toast("界面还在初始化，请稍候再点");
+        return null;
+      }
+    }
+    if (typeof bridge[method] !== "function") {
       toast("桥接未就绪：" + method);
       return null;
     }
@@ -671,7 +703,15 @@
     if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
   }
 
-  function setStatus(text) { $("status-line").textContent = text || ""; }
+  /** 状态行显示层口径（组员评审 BUG-0009）：
+   *  后端状态文本形如 `【思考 1/6】模型判断中…`，但「思考」同时是顶栏模式名
+   *  （快速 / 思考）——同一屏出现「快速」模式标签 + 「思考 1/6」状态行，读起来互相打架。
+   *  这里只改写**显示前缀**为「推理」，不动后端语义，也不碰气泡底部的模式标签
+   *  （那条走 `finished` 的 turnMode 快照，是另一条路径）。 */
+  function displayStatusText(text) {
+    return String(text || "").replace(/^(\s*)【思考\s*(\d+)\s*\/\s*(\d+)】/, "$1【推理 $2/$3】");
+  }
+  function setStatus(text) { $("status-line").textContent = displayStatusText(text); }
 
   /* ── 极简闪发浮条（折叠态）──────────────────────────
      旧 Qt 界面「极简闪发折叠模式」的迁移：
@@ -795,7 +835,25 @@
   }
 
   function showApproval(payload) {
-    renderAdvisories([]);   // 建议是异步补发的（本地模型判断可能慢），先清空
+    // 建议是异步补发的（本地模型判断可能慢）。旧实现先清空，结果晚到半秒时
+    // 弹窗突然长高、内容整体下移——负责人实测"抖一下"。现在先占位并显示
+    // "研判中"动画，高度按两条建议预留；结果到达后就地替换，不再跳。
+    // 没有启用任何建议插件时不占位（否则会一直转到弹窗关闭，像卡住了）。
+    if (payload.advisory_available === false) setAdvisoryLoading(false);
+    else setAdvisoryLoading(true);
+    // 用途红线由内核在模型/工具之前判定（V3.6.13）。审批弹窗最上方先回答
+    // "这个请求想干什么"，再让人看"操作是否相符/操作风险"——顺序反了就会
+    // 出现"与请求相符 + 低危"给一单卖个人信息的操作背书。
+    const intent = String(payload.intent_warning || "").trim();
+    const intentBox = $("approval-intent");
+    if (intent) {
+      intentBox.textContent = intent;
+      intentBox.style.display = "";
+      $("approval-lead").textContent = "该请求涉及敏感用途，已挂起等待人工审批。";
+    } else {
+      intentBox.style.display = "none";
+      $("approval-lead").textContent = "检测到高危操作，已挂起等待人工审批。";
+    }
     $("approval-tool").textContent = payload.name || "—";
     $("approval-path").textContent = payload.path || "—";
     let text = formatPayload(payload.args);
@@ -811,6 +869,7 @@
   }
   function hideApproval() {
     $("approval-root").classList.remove("is-open");
+    setAdvisoryLoading(false);
     renderAdvisories([]);
   }
 
@@ -843,33 +902,97 @@
   /* ── 审计面板 ─────────────────────────────────── */
   const SEV_CLASS = { warning: "audit-item__type--warn", critical: "audit-item__type--crit", security: "audit-item__type--crit" };
 
+  /** 链校验是否失败。后端历史上给过三种同义写法，前端都认：
+   *  顶层 `chain_ok === false`、嵌套 `chain.ok === false`、`stats.chain_valid === false`。
+   *  注意：只在字段**明确为 false** 时算失败（缺字段不冒充实锤失败）。 */
+  function auditChainFailed(data) {
+    if (!data) return false;
+    if (typeof data.chain_ok === "boolean") return !data.chain_ok;
+    if (data.chain && typeof data.chain.ok === "boolean") return !data.chain.ok;
+    const stats = data.stats || {};
+    if (typeof stats.chain_valid === "boolean") return !stats.chain_valid;
+    return false;
+  }
+
+  function auditChainReason(data) {
+    const stats = (data && data.stats) || {};
+    const chain = (data && data.chain) || {};
+    return String(
+      (data && (data.chain_reason || data.reason)) || stats.chain_reason || chain.reason || "");
+  }
+
+  function auditChainAnchor(data) {
+    const stats = (data && data.stats) || {};
+    const chain = (data && data.chain) || {};
+    return String(stats.chain_anchor || chain.anchor || (data && data.chain_anchor) || "none");
+  }
+
+  /** 把右侧面板切到审计页（只改 DOM 状态，不调用 openPane —— 否则会和
+   *  PANE_LOADERS.audit → renderAudit 形成递归）。 */
+  function activateAuditPane() {
+    document.querySelectorAll(".ptab").forEach((t) =>
+      t.classList.toggle("is-active", t.dataset.pane === "audit"));
+    document.querySelectorAll(".pane").forEach((p) =>
+      p.classList.toggle("is-active", p.id === "pane-audit"));
+    state.pane = "audit";
+  }
+
   function renderAudit(data) {
     state.audit = data || { stats: {}, chain_ok: false, entries: [] };
     const stats = state.audit.stats || {};
-    const ok = !!state.audit.chain_ok;
+    const failed = auditChainFailed(state.audit);
+    const wasFailed = !!state.auditFailed;
+    // 没有明确的链信号时沿用旧口径（按"未通过"显示徽标），但不触发自动展开 / 横幅——
+    // 那两者必须有明确的 `false` 才动作，避免把"后端没给字段"当成实锤篡改。
+    const hasSignal = typeof state.audit.chain_ok === "boolean"
+      || (state.audit.chain && typeof state.audit.chain.ok === "boolean")
+      || typeof stats.chain_valid === "boolean";
+    const ok = hasSignal ? !failed : false;
     const badge = $("audit-chain");
     badge.className = "chain-badge " + (ok ? "chain-badge--ok" : "chain-badge--bad");
     badge.textContent = ok
       ? "✔ 哈希链完整性通过（HMAC-SHA256 + 链锚点）"
       : "⚠︎ 哈希链校验未通过";
-    // 校验未通过时给出**人话原因**，并在"锚点缺失"这一种情况下给出可执行动作。
-    // 只显示 ❌ 会让人无从下手：是数据坏了、还是刚升级需要重建锚点，必须说清楚。
-    const reason = String(stats.chain_reason || "");
-    const anchor = String(stats.chain_anchor || "none");
+    // 校验未通过时给出**人话原因**；"锚点缺失 / 迁移"这一类是可执行动作，必须给按钮。
+    const reason = auditChainReason(state.audit);
+    const anchor = auditChainAnchor(state.audit);
+    const needsAnchor = failed && !reason.includes("哈希不匹配") &&
+      (reason.includes("锚点缺失") || reason.includes("迁移") || reason.includes("首次升级") ||
+       anchor === "none");
+    // ★ 顶部红色横幅（BUG-0011）：校验失败这件事必须"看得见 + 点得到"，
+    //   而不是只在收起的右栏里变一个红字。
+    const banner = $("audit-banner");
+    const bannerText = $("audit-banner-text");
+    if (banner) {
+      banner.hidden = !failed;
+      if (failed && bannerText) {
+        bannerText.textContent = "审计链校验未通过：" + (reason || "未给出原因");
+      }
+      const reanchor = $("btn-reanchor");
+      if (reanchor) {
+        reanchor.hidden = !needsAnchor;
+        reanchor.onclick = async () => {
+          const res = await call("audit_reanchor", "用户在审计面板确认重建锚点");
+          toast(res && res.ok ? `已重建锚点（当前 ${res.count} 条）` : `重建失败：${(res && res.error) || "未知原因"}`);
+          renderAudit(await call("audit_snapshot", 300));
+        };
+      }
+    }
+    // ★ 自动展开（BUG-0011）：只在「状态从正常变为失败」时发生一次。
+    //   用户手动收起后，同样的失败反复到达也不会再把面板弹开（wasFailed 已为 true）；
+    //   状态恢复后 auditFailed 归零，下一次新的失败才会再次自动展开。
+    if (failed && !wasFailed) {
+      activateAuditPane();
+      if (rightCollapsed()) setRightCollapsed(false);
+      const scroller = document.querySelector(".panel__body");
+      if (scroller) scroller.scrollTop = 0;
+      if (banner) banner.scrollIntoView({ block: "start" });
+    }
+    state.auditFailed = failed;
     const box = $("audit-chain-detail");
     if (box) {
-      const needsAnchor = !ok && reason.includes("锚点缺失");
       box.innerHTML = (ok && !reason) ? "" :
-        `<span class="chain-detail__text">${esc(reason || "校验未通过")}</span>` +
-        (needsAnchor
-          ? `<button class="btn btn--ghost" id="btn-reanchor" title="把当前链作为新的信任起点。确认后，此前的尾部截断将无法再被发现">重建锚点（接受当前链）</button>`
-          : "");
-      const btn = $("btn-reanchor");
-      if (btn) btn.onclick = async () => {
-        const res = await call("audit_reanchor", "用户在审计面板确认重建锚点");
-        toast(res && res.ok ? `已重建锚点（当前 ${res.count} 条）` : `重建失败：${(res && res.error) || "未知原因"}`);
-        renderAudit(await call("audit_snapshot", 300));
-      };
+        `<span class="chain-detail__text">${esc(reason || "校验未通过")}</span>`;
     }
     const num = (v) => (v === undefined || v === null ? "—" : String(v));
     const pairs = [
@@ -2227,10 +2350,34 @@
   }
 
   /* ── 插件建议（审批弹窗内）──────────────────────── */
+  let advisoryLoadingTimer = null;
+  function setAdvisoryLoading(on) {
+    const wrap = $("approval-advisory-wrap");
+    const box = $("approval-advisory-loading");
+    if (!wrap || !box) return;
+    clearTimeout(advisoryLoadingTimer);
+    if (!on) { box.style.display = "none"; return; }
+    $("approval-advisory").innerHTML = "";
+    wrap.style.display = "";
+    box.style.display = "";
+    $("approval-advisory-loading-text").textContent =
+      "正在研判：请求用途 → 是否相符 → 操作风险…";
+    // 研判较久时不取消占位（否则又抖一次），只改文案：人可以先用上面的
+    // 目标路径/参数自行决定，建议晚到会继续补上。
+    advisoryLoadingTimer = setTimeout(() => {
+      const text = $("approval-advisory-loading-text");
+      if (text && $("approval-advisory-loading").style.display !== "none") {
+        text.textContent = "仍在研判…你可以先按自己的判断决定（建议结果会继续补上）";
+      }
+    }, 8000);
+  }
+
   function renderAdvisories(list) {
     const wrap = $("approval-advisory-wrap");
     const items = Array.isArray(list) ? list : [];
     if (!items.length) { wrap.style.display = "none"; return; }
+    clearTimeout(advisoryLoadingTimer);
+    $("approval-advisory-loading").style.display = "none";
     $("approval-advisory").innerHTML = items.map((a) => `
       <div class="advisory__item ${a.level === "warn" ? "advisory__item--warn" : ""}">
         <span class="advisory__src">${esc(a.source || "插件")}</span>${esc(a.text || "")}
@@ -2666,11 +2813,13 @@
           const ok = await call("window_action", action);
           if (action === "toggle_top") {
             if (ok === false) { toast("置顶切换失败"); return; }
-            await paintWindowState();     // 用真实状态刷新高亮（而不是本地取反）
+            if (!ok) return;                 // null = call() 已经提示过（超时 / 桥缺失 / 异常）
+            await paintWindowState();        // 用真实状态刷新高亮（而不是本地取反）
             toast(state.settings.topmost ? "已置顶显示" : "已取消置顶");
           } else if (action === "toggle_maximize") {
             if (ok === false) { toast("先退出闪发模式，再最大化窗口"); await paintWindowState(); return; }
-            await paintWindowState();     // 图标与 is-active 跟着原生状态走
+            if (!ok) return;                 // 同上：别在失败后假装图标已切换
+            await paintWindowState();        // 图标与 is-active 跟着原生状态走
           }
         } finally {
           btn.dataset.busy = "";
@@ -2894,7 +3043,9 @@
     const cur = levelOf(depth);
     if ($("think-value")) $("think-value").textContent = cur.label;
     const trg = $("think-trigger");
-    if (trg) trg.title = `思考强度：${cur.label} —— ${cur.hint}`;
+    // 轮次口径统一（BUG-0009）：thinking_depth 是"推理轮次档"，后端实际用
+    // `max_rounds = think_depth × 2`，所以界面上说「最多 2N 轮」，不写「约 N 轮」。
+    if (trg) trg.title = `思考强度：${cur.label}（最多 ${cur.depth * 2} 轮推理）—— ${cur.hint}`;
     const pop = $("think-pop");
     if (pop) {
       pop.innerHTML = THINK_LEVELS.map((lv) => `
@@ -3119,7 +3270,9 @@
   const onEvent = (event, payload) => {
     switch (event) {
       case "status": {
-        const text = String(payload || "").trim();
+        // 显示层统一改写轮次前缀（BUG-0009）：状态行 / 浮条 / 工具行都看到「推理 N/M」，
+        // 与顶栏的「快速 / 思考」模式名不再混用同一个词。
+        const text = displayStatusText(String(payload || "").trim());
         setStatus(text);
         // 折叠态下浮条也要能看出进展（否则用户不知道点没点上）
         if (miniOn()) setMiniStatus(text || (state.busy ? "推理中…" : ""), state.busy);
@@ -3258,7 +3411,9 @@
     renderStats({ model: state.settings.model, privacy: state.settings.privacy,
                   permission: state.settings.permission,
                   session_permission: state.sessionPermission, sandbox: state.settings.sandbox });
-    call("audit_snapshot", 1).then((snap) => { if (snap) { state.audit = snap; renderPosture(null); } });
+    // 审计快照走与审计页同一个渲染入口（BUG-0011）：bootstrap 返回的失败结果也要触发
+    // 顶部横幅与"自动展开一次"，不能等到用户自己点开审计页才发现。
+    call("audit_snapshot", 1).then((snap) => { if (snap) renderAudit(snap); });
     // 算力清单也在启动时预热一次：输入区触发器要显示「供应商 / 模型」，模型选择器也要按
     // 供应商分组——都不该等到"先打开一次设置页"才有数据（否则首屏触发器只有一个裸模型名）。
     call("model_catalog").then((cat) => {
@@ -3516,7 +3671,7 @@
         closeThinkPop();
         if (!lv) return;
         persist({ thinking_depth: lv.depth });
-        toast(`思考强度 · ${lv.label}（约 ${lv.depth} 轮推理）`);
+        toast(`思考强度 · ${lv.label}（最多 ${lv.depth * 2} 轮推理）`);
       };
       document.addEventListener("click", (e) => { if (!thinkSel.contains(e.target)) closeThinkPop(); });
       document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeThinkPop(); });

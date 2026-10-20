@@ -59,6 +59,12 @@ class JsApi:
         self._window = window_holder
         # 折叠前的完整几何（极简闪发折叠模式用；None = 当前未折叠）
         self._saved_geometry: Optional[Tuple[int, int, int, int]] = None
+        # ★ 最大化状态由**我们自己记账**（V3.6.13，组员评审 BUG-0010）：
+        #   pywebview 的 `Window.maximized` 依赖原生事件回填，事件没到/被后端吞掉时不可信。
+        #   只要这一轮是我们调过 maximize()，下一次点击就**无条件** restore()。
+        self._maximized_by_us: bool = False
+        # 最大化前的几何：restore() 失败时按它做一次 move/resize 兜底
+        self._pre_maximize_geometry: Optional[Tuple[int, int, int, int]] = None
         # ★ 窗口操作**串行化**（V3.6.12，组员评审 BUG-02）：
         #   pywebview 对每个 js_api 调用**新开一个线程**，前端连点就会并发进入这里；
         #   多个线程同时写 WinForms 的 `TopMost` 会让窗口假死（实测 10 次并发即稳定复现，
@@ -455,24 +461,74 @@ class JsApi:
           实际还是浮条/主界面仍隐藏"的半个状态里。前端会据此提示"先退出闪发模式"。
         ★ 与无边框 + 边缘热区共存：最大化交给系统（原生 SetWindowPos + WM_GETMINMAXINFO），
           前端热区只在非最大化时按起点几何改尺寸；最小尺寸约束来自创建窗口时的 min_size
-          （折叠态尺寸），它只限制"最小"，不会把最大化卡回小窗；还原后回到折叠前的几何。
-        ★ 降级：个别 pywebview 后端没有 maximize/restore，退回 toggle_fullscreen()，
-          并在日志里**如实**写明降级（不假装成功）。最大化状态由 pywebview 维护
-          （Window.maximized，随原生 maximized/restored 事件更新），我们不自己记账。
+          （折叠态尺寸），它只限制"最小"，不会把最大化卡回小窗；还原后回到最大化前的几何。
+        ★ V3.6.13（组员评审 BUG-0010）：
+          · **不再降级成全屏**。旧实现 maximize()/restore() 抛异常时调 toggle_fullscreen()——
+            全屏必然盖住任务栏，而且 `window.maximized` 仍是 False，下一次点击又走 maximize，
+            表现为"还原点了没反应"。现在失败就如实返回 False（日志写原因），由前端提示
+            「本窗口不支持最大化」。
+          · 最大化状态**自己记账**（`_maximized_by_us`）：不依赖 `window.maximized` 是否
+            及时更新；只要我们调用过 maximize()，下一次点击无条件走 restore()。
+          · maximize/restore 同样**调度到 UI 线程**（复用 `_ui_thread_dispatch`），
+            调用方 `window_action` 已持有 `_window_lock`，避免跨线程写 WinForms 控件。
+          · 进入最大化前记住几何；restore() 失败时用 move/resize 兜底恢复一次。
         """
         if self._saved_geometry is not None:
             print("[WebView] 当前处于闪发折叠态，已忽略最大化请求（先展开再最大化）")
             return False
+        # 还原判定：我们记过账 → 一定还原；否则以原生状态兜底（用户用系统手段最大化时）。
         try:
-            if bool(getattr(window, "maximized", False)):
-                window.restore()
-            else:
-                window.maximize()
-            return True
+            restoring = bool(self._maximized_by_us) or bool(getattr(window, "maximized", False))
+        except Exception:
+            restoring = bool(self._maximized_by_us)
+        if restoring:
+            return self._restore_from_maximize(window)
+
+        geometry = self._current_geometry(window)
+        try:
+            self._invoke_window_method(window, "maximize")
         except Exception as exc:
-            print(f"[WebView] maximize/restore 不可用（{type(exc).__name__}: {exc}），退回全屏切换")
-            window.toggle_fullscreen()
-            return True
+            print(f"[WebView] maximize 不可用（{type(exc).__name__}: {exc}）；"
+                  f"本窗口不支持最大化")
+            return False
+        self._pre_maximize_geometry = geometry
+        self._maximized_by_us = True
+        return True
+
+    def _restore_from_maximize(self, window) -> bool:
+        """还原最大化；restore() 不可用时按最大化前几何兜底一次（仍失败如实返回 False）。"""
+        geometry = self._pre_maximize_geometry
+        try:
+            self._invoke_window_method(window, "restore")
+        except Exception as exc:
+            print(f"[WebView] restore 不可用（{type(exc).__name__}: {exc}）；"
+                  f"尝试按最大化前的几何恢复")
+            if geometry is None:
+                return False
+            try:
+                window.move(int(geometry[0]), int(geometry[1]))
+                window.resize(int(geometry[2]), int(geometry[3]))
+            except Exception as fallback_exc:
+                print(f"[WebView] 按几何恢复窗口失败"
+                      f"（{type(fallback_exc).__name__}: {fallback_exc}）")
+                return False
+        self._maximized_by_us = False
+        self._pre_maximize_geometry = None
+        return True
+
+    def _invoke_window_method(self, window, name: str) -> None:
+        """调用窗口方法，优先调度到 WinForms UI 线程；调度不可用则直接调用。
+
+        异常不在调度层吞掉（`_ui_thread_dispatch` 失败会返回 False，随后这里直接调用，
+        真正的异常照常抛给 `_toggle_maximize` 的调用方处理）。
+        """
+        method = getattr(window, name)
+        if not callable(method):
+            raise TypeError(f"window.{name} 不可调用")
+        # 与 `_toggle_top` 保持同一调用形态（lambda 而非裸 bound method）：
+        # pywebview/ pythonnet 的 Form.Invoke 对可调用对象的转换以现有写法为准。
+        if not self._ui_thread_dispatch(window, lambda: method()):
+            method()
 
     def window_state(self) -> Dict[str, Any]:
         """窗口状态快照：{maximized, topmost, mini}（前端窗口按钮的图标/高亮用它校正）。
@@ -485,7 +541,10 @@ class JsApi:
         """
         window = self._window.get("window")
         return {
-            "maximized": bool(getattr(window, "maximized", False)) if window is not None else False,
+            # 自己记的账优先：原生事件可能没到（BUG-0010），但按钮必须立刻显示"已最大化"
+            "maximized": (bool(getattr(self, "_maximized_by_us", False))
+                          or (bool(getattr(window, "maximized", False))
+                              if window is not None else False)),
             "topmost": (bool(getattr(window, "on_top", False)) if window is not None
                         else bool(self._svc.settings.get("topmost", False))),
             "mini": self._saved_geometry is not None,

@@ -207,8 +207,10 @@ audit_src = (ROOT / "yindun" / "core" / "audit_log.py").read_text(encoding="utf-
 check("客户端入口调用 setup_from_argv", "setup_from_argv" in main_src)
 check("控制面入口支持 --log-level / --log-dir",
       "--log-level" in control_src and "--log-dir" in control_src and "setup_logging" in control_src)
-check("审计模块的告警走 log.*（审计链校验失败不带级别就白写了）",
-      'log.warning("审计链校验失败' in audit_src and 'print(f"[AuditLog] 审计链校验失败' not in audit_src)
+check("审计模块的告警走带级别的 log.*（校验失败经 _warn_verify_once，且不使用无级别 print）",
+      "def _warn_verify_once" in audit_src and "log.warning(" in audit_src
+      and "log.error(" in audit_src and "_warn_verify_once(" in audit_src
+      and 'print(f"[AuditLog] 审计链校验失败' not in audit_src)
 
 print("\n" + "=" * 78)
 if failures:

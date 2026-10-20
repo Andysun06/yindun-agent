@@ -843,6 +843,19 @@ html[data-theme="dark"] .modal__head { background: rgba(196, 54, 47, .12); }
 .chain-badge--ok { border-color: var(--accent-300); color: var(--accent-700); background: var(--accent-50); }
 html[data-theme="dark"] .chain-badge--ok { color: var(--accent-300); background: transparent; }
 .chain-badge--bad { border-color: var(--danger-500); color: var(--danger-500); }
+/* 审计链失败横幅（BUG-0011）：红色、置顶、带可执行动作。
+   失败原因可能很长（后端给的是人话解释），文本允许换行、按钮不允许被挤没。 */
+.audit-banner {
+  display: flex; align-items: flex-start; gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4); border: 1px solid var(--danger-500);
+  border-left-width: 3px; border-radius: var(--r-ctrl);
+  background: var(--danger-50); color: var(--danger-500);
+  font-size: var(--fs-sm); line-height: 1.6;
+}
+.audit-banner[hidden] { display: none; }
+.audit-banner__text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.audit-banner .btn { flex: none; color: var(--danger-500); border-color: var(--danger-500); }
+html[data-theme="dark"] .audit-banner { background: rgba(196, 54, 47, .14); }
 .audit-list { display: flex; flex-direction: column; max-height: 44vh; overflow-y: auto; border-top: 1px solid var(--border-1); }
 .audit-item { padding: var(--sp-4) 0; border-bottom: 1px solid var(--border-1); font-size: var(--fs-meta); }
 .audit-item__head { display: flex; align-items: center; gap: var(--sp-4); color: var(--text-3); flex-wrap: wrap; font-family: var(--font-mono); }
@@ -1135,6 +1148,33 @@ html[data-theme="dark"] .tool-fail { background: rgba(196, 54, 47, .12); }
 .advisory__item { padding: var(--sp-3) var(--sp-4); border-radius: var(--r-ctrl); background: var(--bg-subtle); font-size: var(--fs-sm); line-height: 1.6; border-left: 2px solid var(--accent-500); }
 .advisory__item--warn { border-left-color: var(--warn-500); }
 .advisory__src { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-3); margin-right: var(--sp-3); }
+/* 研判占位（V3.6.13）：建议是异步补发的，先按两条建议的高度占位，
+   避免半秒后内容插入把弹窗顶得抖一下。 */
+.advisory__loading {
+  display: flex; align-items: center; gap: var(--sp-3);
+  min-height: 76px; padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-ctrl); background: var(--bg-subtle);
+  border-left: 2px solid var(--border-2);
+  color: var(--text-3); font-size: var(--fs-sm); line-height: 1.6;
+}
+.advisory__spinner {
+  width: 12px; height: 12px; flex: none; border-radius: 50%;
+  border: 2px solid var(--border-2); border-top-color: var(--accent-500);
+  animation: advisory-spin .8s linear infinite;
+}
+@keyframes advisory-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .advisory__spinner { animation: none; border-top-color: var(--border-2); }
+}
+/* 用途红线（V3.6.13）：审批弹窗最上方的红色警示。存在即说明内核用途检查已命中，
+   "操作是否相符 / 操作风险"那两条建议只评价操作，不能用来抵消这条。 */
+.intent-warning {
+  padding: var(--sp-3) var(--sp-4); border-radius: var(--r-ctrl);
+  background: var(--danger-50); color: var(--danger-500);
+  border: 1px solid color-mix(in srgb, var(--danger-500) 35%, transparent);
+  border-left: 3px solid var(--danger-500);
+  font-size: var(--fs-sm); line-height: 1.6; font-weight: 600;
+}
 
 /* ── 提示 ─────────────────────────────────────────── */
 .toast-root { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); display: flex; flex-direction: column; gap: var(--sp-2); z-index: 80; }

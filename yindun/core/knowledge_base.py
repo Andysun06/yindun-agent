@@ -36,6 +36,7 @@ from yindun.utils.document_parser import (
     extract_file_text,
     is_parse_failure,
     parse_failure_reason,
+    describe_parse_error,
 )
 
 
@@ -486,7 +487,7 @@ class KnowledgeBase:
                     except Exception:
                         pass
             except Exception as e:
-                err_msg = f"{type(e).__name__}: {e}"
+                err_msg = self._describe_failure(e, path, fname)
                 details.append({"file": fname, "status": "failed", "error": err_msg})
                 # 环境级向量化错误（Ollama 不可达 / 模型缺失）后续文件必然同样失败：
                 # 停止逐个尝试以免用户等 N 次超时，但仍逐条记 failed（见上方循环开头的分支）
@@ -506,6 +507,23 @@ class KnowledgeBase:
             "total_chunks": total_chunks,
             "summary": self._format_batch_summary(total, success_count, details),
         }
+
+    @staticmethod
+    def _describe_failure(exc: Exception, file_path: str, file_name: str = "") -> str:
+        """逐文件失败 → "人话 + 原始异常名"（details[].error 的最终文案）。
+
+        解析层已经把常见底层异常（假的/损坏的 Office 容器、加密文档、坏 PDF）在
+        源头翻成可执行说明；这里再兜一层，覆盖"异常直接从解析器/插件抛到这里"的情况，
+        保证界面不会只看到 `PackageNotFoundError: Package not found at …` 这种原文。
+        已翻过的文案原样保留（`describe_parse_error` 以特征词判断），不会叠成
+        "入库失败：…入库失败：…"。
+        """
+        explained = describe_parse_error(exc, file_path)
+        if explained:
+            if file_name and file_name not in explained:
+                return f"{explained} [文件：{file_name}]"
+            return explained
+        return f"{type(exc).__name__}: {exc}"
 
     @staticmethod
     def _format_batch_summary(total: int, success: int, details: list) -> str:

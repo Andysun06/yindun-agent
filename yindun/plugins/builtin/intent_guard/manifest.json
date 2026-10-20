@@ -1,0 +1,24 @@
+{
+  "id": "intent_guard",
+  "category": "安全",
+  "name": "操作意图预判",
+  "version": "0.1.0",
+  "description": "审批弹窗里先给一条「这次请求想干什么」的判断：意图、涉及数据、去向、用途，再交给「是否相符」与「操作风险」两条建议。确定性红线由内核用途检查给出（出售/外发个人信息直接拒绝或红色警示），本地模型只补充细节、只能加重不能减轻；数据不出本机。只影响提示，不参与放行判定。",
+  "author": "隐盾（内置）",
+  "hooks": [
+    "advisory_for_approval"
+  ],
+  "requires": {
+    "python": [],
+    "ollama_models": []
+  },
+  "permissions": {
+    "network": "local-only",
+    "filesystem": "none"
+  },
+  "timeout_seconds": 10,
+  "provides": [
+    "审批弹窗：操作意图预判（意图 / 数据 / 去向 / 用途）",
+    "与内核用途红线联动：模型不可用时仍给出确定性结论"
+  ]
+}

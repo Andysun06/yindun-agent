@@ -517,6 +517,71 @@ def test_22_anchor_write_falls_back_and_reports_it():
     finally:
         _default_anchor_dirs()
 
+def test_23_verify_warning_dedup():
+    """测试23：校验失败告警**进程内去重**（第三轮评审附带观察）。
+
+    现场：同一次启动里同一条校验失败告警连续出现 4 次（多个消费者各自 verify + log）。
+    规则：同一 reason 只在状态变化时记一次；校验成功后清账，所以"好了又坏"会重新告警。
+    """
+    import logging
+    # 清掉所有候选落点的旧锚点：否则 test_22 在备用位置留下的高条数锚点会被
+    # `_read_anchor` 选中（它取条数最大的），新链反而被判"尾部被截断"。
+    _clear_anchor_files(_ANCHOR_PRIMARY, _ANCHOR_FALLBACK)
+    log = _fresh_chain(5)
+    original = log._entries[1].message
+    log._entries[1].message = "【测试23：被篡改的内容】"
+
+    records = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):        # noqa: D102
+            records.append(record)
+
+    handler = _Capture()
+    logger = _al.log
+    old_level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.WARNING)
+    try:
+        for _ in range(4):
+            detail = log.verify_chain_detail()
+            assert detail["valid"] is False, detail
+        warnings = [r for r in records if "校验失败" in r.getMessage()]
+        assert len(warnings) == 1, f"同一 reason 连续 4 次只应写 1 条告警，实际 {len(warnings)}"
+
+        # 结果变化：恢复 → 校验通过（并清掉记账）
+        log._entries[1].message = original
+        assert log.verify_chain_detail()["valid"] is True
+        # 再次失败 → 必须重新告警（不能把"结果变化"吞掉）
+        log._entries[1].message = "【测试23：再次被篡改】"
+        assert log.verify_chain_detail()["valid"] is False
+        warnings = [r for r in records if "校验失败" in r.getMessage()]
+        assert len(warnings) == 2, f"状态变化后应再写 1 条告警，实际 {len(warnings)}"
+        print("✅ 测试23通过: 校验失败告警去重（4 次→1 条；状态变化后再记 1 条）")
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+        log._entries[1].message = original
+
+
+def test_24_llm_output_empty_marker():
+    """测试24：产品兜底文案不是模型输出（empty_output 标记，BUG-0008）。"""
+    _clear_anchor_files(_ANCHOR_PRIMARY, _ANCHOR_FALLBACK)
+    log = _fresh_chain(2)
+    log.log_llm_output("", preview="（模型本轮没有产出任何内容）", empty_output=True)
+    entries = log.get_entries({"event_type": "llm_output"})
+    assert entries, "应写入一条 llm_output"
+    last = entries[-1]
+    assert last.details.get("content_length") == 0, last.details
+    assert last.details.get("empty_output") is True, last.details
+    assert "没有产出" in str(last.details.get("preview") or ""), last.details
+    # 正常输出不带该标记（不误伤既有语义）
+    log.log_llm_output("正常回答", preview="正常回答")
+    normal = log.get_entries({"event_type": "llm_output"})[-1]
+    assert normal.details.get("content_length") == 4, normal.details
+    assert "empty_output" not in normal.details, normal.details
+    print("✅ 测试24通过: 兜底输出记 content_length=0 + empty_output=True；正常输出不受影响")
+
 if __name__ == "__main__":
     print("=" * 60)
     print("隐盾全链路审计黑匣子 - 功能验证测试")
@@ -547,6 +612,8 @@ if __name__ == "__main__":
         test_20_fresh_run_does_not_alarm,
         test_21_migration_is_reported_as_migration_not_tamper,
         test_22_anchor_write_falls_back_and_reports_it,
+        test_23_verify_warning_dedup,
+        test_24_llm_output_empty_marker,
     ]
     passed = 0
     failed = 0

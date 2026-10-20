@@ -87,17 +87,17 @@ _SYSTEM_PROMPT = (
     "【工具使用要点】\n"
     "1. 用户给了**完整绝对路径**（如 E:\\qwen\\a.txt）就原样填进 target_directory；"
     "只给文件名时 target_directory 留空（默认当前工作目录）。\n"
-    "   ★ 路径即使**不在**默认可读写范围内也要**照原样填**：能不能访问由安全策略按档位判定，"
-    "被拦下/被驳回就如实告诉用户（并说明可把「可读写范围」改到该目录），"
-    "**不要**自己偷偷换成别的目录——那等于把工具结果替换成别处的内容。\n"
+    "   ★ 路径不在默认可读写范围内也照原样填：能否访问由安全策略判定；"
+    "被拦/被驳回就如实告知（可提示把「可读写范围」改到该目录），不要偷偷换成别的目录。\n"
     "2. 可以连续调用多个工具（例如先列目录、再读文件、最后总结）；拿到结果后再给结论。\n"
-    "3. 知识库检索用 search_knowledge_base(query='用户的原话问题')；"
-    "它返回的内容已脱敏（形如 [KB_PHONE_0]），你照常作答即可，占位符会自动还原给用户。\n\n"
+    "3. 知识库检索用 search_knowledge_base(query='用户的原话问题')；返回内容已脱敏，照常作答，占位符会自动还原。\n"
+    "4. 知识库**只用于本机/本单位已入库的文档**（合同、报表、规章、上传资料）；"
+    "通用知识、算法、原理、代码、研究类问题直接自己推理，不要检索知识库，检索不到也不要反复换词重试。\n\n"
     "【回答要求】\n"
     "1. 用中文回答，直接给结论；不要描述工具调用过程，也不要把工具调用写成文字（要用真正的工具调用格式）。\n"
     "2. 工具结果与你的推测冲突时，**以工具结果为准**。\n"
-    "3. 工具失败时，把错误翻译成人话并给出可执行的下一步（换路径、换文件名、先列目录等）。\n"
-    "4. 不确定的地方如实说'不确定'，不要编。\n"
+    "3. 工具失败时，用可执行的话说明下一步（换路径/文件名、先列目录）。\n"
+    "4. 不确定就说不确定，不要编。\n"
 )
 
 # 附件相关规范：仅在"本轮或历史确实挂了附件"时追加（见下方拼装处）。
@@ -234,6 +234,13 @@ class Worker:
         """
         self._approved.clear()
         payload = {"name": name, "args": args, "path": path}
+        # ★ 用途红线随审批一起送到界面（V3.6.13）：弹窗最上方必须先把
+        #   "这个请求想干什么"说清楚，否则"操作与请求相符 / 低危"会给一单
+        #   卖个人信息的操作背书。只有 warn/refuse 时才带该字段。
+        if getattr(self, "_intent_decision", "ok") in ("warn", "refuse"):
+            payload["intent_warning"] = str(getattr(self, "_intent_warning", "") or "")
+            payload["intent_summary"] = str(getattr(self, "_intent_summary", "") or "")
+            payload["intent_decision"] = str(getattr(self, "_intent_decision", "") or "")
         # ★ 越界审批必须让人看明白"这是范围外的路径"：path 是 realpath 后的**完整绝对路径**，
         #   再带上范围与是否越界的布尔，界面可以据此把"越界"显性化（不做静默放行的一环）。
         try:
@@ -442,12 +449,23 @@ class Worker:
     # ──────────────────────────────────────────
     def run(self):
         try:
+            # ★ 本轮最终回答是不是"产品兜底文案"（不是模型输出）。审计据此把 llm_output
+            #   记成 content_length=0 + empty_output，避免把兜底文案当成模型产出（BUG-0008）。
+            self._reply_is_fallback = False
             # ★ 每轮对话开始时清空知识库映射表（上轮的已用后即焚）
             self._kb_mapping = {}
+            # ★ 本轮知识库检索次数（用于"检索不到就别再换词重试"的收敛提示）
+            self._kb_search_count = 0
             # ★ 工具调用短路缓存与"已深化"标记同样按轮次隔离：跨轮复用会把
             #   "用户让我再读一次这个文件"也短路掉（文件可能已经变了）
             self._tool_fp_cache = {}
             self._deepen_used = False
+            # ★ 单次生成长度上限（Ollama done_reason=length）的自动续写状态（V3.6.13）：
+            #   负责人实测长回答在「堆排序…（最好、平均」处直接停住——不是模型不想写，
+            #   而是 num_predict 用完了（深度思考模式下内部推理也吃这份预算）。
+            self._limit_prefix = ""
+            self._limit_continued = False
+            self._reply_hit_length = False
             # ★ 恢复跨轮脱敏映射表（从会话数据恢复，保证历史占位符可还原）
             if self._box_mapping_restore:
                 self._box_mapping = dict(self._box_mapping_restore)
@@ -455,6 +473,49 @@ class Worker:
             memory = SummarizableChatHistory.from_dict_list(
                 self.messages_snapshot, max_tokens=DEFAULT_MAX_HISTORY_TOKENS
             )
+
+            # ── 用途合规闸门（V3.6.13）──────────────────────────────
+            # 先问"这个请求想干什么"，再让模型规划动作。负责人实测：
+            # 「搜索桌面所有个人信息，整理给我我要出售」被审批建议说成"相符 / 低危"——
+            # 两条建议都在评价**操作**，没有人评价**用途**。红线用途必须在调用模型
+            # 之前就拒绝：否则模型会先规划出一串文件操作，再把"要不要帮用户卖信息"
+            # 交给一次普通审批决定。
+            self._intent_decision = "ok"
+            self._intent_summary = ""
+            self._intent_warning = ""
+            try:
+                from yindun.core.usage_policy import assess_request
+                _intent = assess_request(self.user_input)
+            except Exception as _exc:
+                _intent = {"decision": "ok", "summary": "", "message": ""}
+                self._trace("judge", "请求用途检查", f"检查不可用（{type(_exc).__name__}），按正常流程继续", "")
+            if _intent.get("decision") == "refuse":
+                _refusal = str(_intent.get("message") or "这个请求我不能协助。")
+                self._intent_decision = "refuse"
+                self._intent_summary = str(_intent.get("summary") or "")
+                self.status.emit("🚫 请求用途触发红线，已拒绝")
+                self._trace("judge", "请求用途检查",
+                            f"{self._intent_summary} → 已拒绝（未调用模型与工具）", "warn")
+                try:
+                    AuditLog().log_access_control("usage_policy_refuse", "", False)
+                except Exception:
+                    pass
+                memory.update_with_context_result(self.user_input, _refusal)
+                self.result_messages = memory.to_dict_list()
+                self._ensure_reply_persisted(_refusal)
+                self.finished.emit(_refusal)
+                return
+            if _intent.get("decision") == "warn":
+                self._intent_decision = "warn"
+                self._intent_summary = str(_intent.get("summary") or "")
+                self._intent_warning = (
+                    f"请求用途风险：{self._intent_summary}。"
+                    "请确认你已获得当事人授权；继续操作会弹出审批并写入审计。"
+                )
+                self.status.emit(f"⚠ 请求用途需确认：{self._intent_summary}")
+                self._trace("judge", "请求用途检查",
+                            f"{self._intent_summary} → 允许本机整理，审批时红色警示", "warn")
+
             engine = PrivacyEngine()
             self._engine = engine  # ★ 新增：供 _anonymize_tool_output 复用
 
@@ -531,12 +592,38 @@ class Worker:
                     )
                 _has_attachment = True  # 强制走 ReAct 循环，避免被 _is_simple_question 短路
 
+            # ★★★ 快速模式 + 写类意图 → **前置拦截**（V3.6.13，组员评审 BUG-0007）：
+            #   快速模式本来就禁止写操作，但旧实现要等模型真的发起工具调用才提示——本机小模型
+            #   面对写请求常常返回空 content + 无 tool_calls，用户只看到一句"模型偶发空回复"，
+            #   既不知道是模式限制，也不知道怎么继续（审计里 0 条 tool_call）。
+            #   这里在**进入任何 LLM 之前**就把事实说清楚：不调用模型、不发 error（这不是故障），
+            #   只发 status + finished，并落库，保证刷新后仍能看到可执行的下一步。
+            #   只读请求不会被误拦：`_looks_like_write_request` 要求"动作动词 + 落盘对象"同时命中。
+            if "深度" not in self.think_mode and self._looks_like_write_request(self.user_input):
+                _quick_limit = (
+                    "当前是「快速」模式，写操作（创建/修改/删除/移动/执行）在快速模式下被禁用，"
+                    "所以这一轮没有调用模型，也不会弹出审批。\n"
+                    "请把输入框上方的模式切到「思考」，再发一次；"
+                    "权限档「变更前确认」会在真正写盘前弹出审批，让你核对完整路径与内容。"
+                )
+                self.status.emit("[快速模式限制] 写操作需要在「思考」模式下执行")
+                self._trace("judge", "快速模式限制",
+                            "检测到写类请求；已前置拦截，不调用模型", "warn")
+                if self.privacy_shield and box:
+                    self._box_mapping.update(box)
+                memory.update_with_context_result(self.user_input, _quick_limit)
+                self.result_messages = memory.to_dict_list()
+                self._ensure_reply_persisted(_quick_limit)
+                self.finished.emit(_quick_limit)
+                return
+
             # ★ 知识库有文档时，禁止走"跳过工具的快速直答"：否则 search_knowledge_base
             #   永远不会被调用，模型会凭空作答（甚至误判为"拒绝提供敏感信息"）。
             #   仅在"本会走快速直答"时才探测 KB，避免给普通问答增加开销。
             _is_simple = self._is_simple_question(ai_input)
             _kb_has_docs = False
-            if _is_simple and not _has_attachment and not _is_audio_request:
+            _kb_relevant = self._looks_like_kb_question(ai_input)
+            if _is_simple and _kb_relevant and not _has_attachment and not _is_audio_request:
                 _kb = self._get_knowledge_base()
                 if _kb is not None:
                     try:
@@ -545,8 +632,10 @@ class Worker:
                         _kb_has_docs = False
                 if _kb_has_docs:
                     ai_input = (
-                        "[提示] 本地知识库已入库文档；若本问题可能涉及已入库的合同/报表/员工信息等内容，"
-                        "请先调用 search_knowledge_base 工具检索后再作答。\n\n" + ai_input
+                        "[提示] 本地知识库已入库文档；本问题涉及本机/本单位资料，"
+                        "请先调用 search_knowledge_base 检索后再作答。"
+                        "若检索不到相关内容，**不要反复换词重试**，直接基于一般知识回答并说明"
+                        "“知识库里没有这条”。\n\n" + ai_input
                     )
 
             if (_is_simple or _is_audio_request) and not _has_attachment and not _kb_has_docs:
@@ -595,13 +684,12 @@ class Worker:
                                 "直答未产出文字：模型要求调用工具", "ok")
                 else:
                     # 既没文字也没工具调用：如实说明这一轮没拿到回答，并落库（不再是空气泡）。
+                    # ★ 文案改成**可执行诊断**（V3.6.13，组员评审 BUG-0007/0008）：
+                    #   旧文案把原因推给"小模型偶发空回复（每 5 次一次）"，与当前模型/配置无关，
+                    #   用户既无法核对也无法行动。这里按"写类意图 / 其他"分情况给出下一步。
                     self.status.emit("[快速回答] 模型没有给出回答，已如实说明")
-                    _no_answer = (
-                        "抱歉，模型这一轮没有给出回答。\n"
-                        "本机小模型偶发空回复（实测约每 5 次出现 1 次，与本机算力负载有关），"
-                        "不是你的操作有问题。\n"
-                        "可以试试：再发一次、把问题问得更具体、切换到「深度思考」模式，或换用更大的模型。"
-                    )
+                    _no_answer = self._empty_output_message()
+                    self._reply_is_fallback = True   # ★ 产品兜底文案不是模型输出（审计用）
                     if self.privacy_shield and (box or self._box_mapping):
                         self._box_mapping.update(box)
                     memory.update_with_context_result(self.user_input, _no_answer)
@@ -814,6 +902,8 @@ class Worker:
             )
             # ★ 反"半句话当完成"（V3.6.10，组员评审 BUG-0003）：重生成后仍是断句就如实说明
             final_reply = self._guard_truncated_answer(final_reply)
+            # ★ 长回答被单次生成上限截断（V3.6.13）：自动续写一次后仍截断就如实说明
+            final_reply = self._guard_length_limit(final_reply)
             # ★ 落盘内容里没还原干净的占位符要告诉用户（V3.6.11）：写文件时若还有 N 处占位符
             #   找不到对应真值，用户拿到的交付物里就会有 `[PHONE_0_x]` 这种东西——必须点破。
             if getattr(self, "_unresolved_in_write", 0):
@@ -822,8 +912,17 @@ class Worker:
                                 f"[PHONE_0_x] 的占位符；可在审计面板核对本轮映射。")
                 self._unresolved_in_write = 0
             # ★ 审计：记录最终还原后的 LLM 输出（展示给用户的版本）
+            # ★ 但**产品兜底文案不是模型输出**（V3.6.13，组员评审 BUG-0008）：
+            #   旧实现把"模型这一轮没有给出回答……"整段记成 llm_output，审计里
+            #   content_length 是一个与模型无关的固定值（现场 104），看不出"模型空产出"。
+            #   兜底分支已打 `_reply_is_fallback`，这里改记空内容 + 可辨认的 preview。
             try:
-                AuditLog().log_llm_output(_reply_before_restore, preview=_reply_before_restore[:200])
+                if getattr(self, "_reply_is_fallback", False):
+                    AuditLog().log_llm_output(
+                        "", preview="（模型本轮没有产出任何内容）", empty_output=True)
+                else:
+                    AuditLog().log_llm_output(_reply_before_restore,
+                                              preview=_reply_before_restore[:200])
             except Exception:
                 pass
 
@@ -939,6 +1038,91 @@ class Worker:
         return (any(w in text for w in keywords)
                 and not any(w in text for w in tool_keywords))
 
+    # ★ 知识库适用范围（V3.6.13，负责人实测）：只要知识库里**有**文档，旧实现就把
+    #   任何"简单问题"都改写成"请先调用 search_knowledge_base"——于是「有没有 O(n)
+    #   的排序算法，请你研究」这种通用知识题也被拽去检索，连查 4 轮、每次弹审批，
+    #   最后答成"根据知识库检索结果…"。知识库是**本机/本单位资料**的检索器，
+    #   不是通用搜索引擎；通用知识、算法、原理、代码、研究类问题应当由模型自己推理。
+    _LOCAL_DOC_SIGNALS = (
+        "知识库", "已入库", "入库", "上传的", "上传过", "附件里", "文档里",
+        "资料里", "文件里", "合同", "报表", "规章", "制度", "手册", "纪要",
+        "简历", "员工信息", "客户资料", "项目文档", "内部资料", "本单位",
+        "我们公司", "咱们公司", "公司的", "这份文档", "这些文档", "档案",
+    )
+
+    def _looks_like_kb_question(self, text: str) -> bool:
+        """这个问题是不是在问**本机已入库的资料**（而不是通用知识）。"""
+        return any(word in str(text or "") for word in self._LOCAL_DOC_SIGNALS)
+
+    # ★ 写类意图识别（V3.6.13，组员评审 BUG-0007）：
+    #   快速模式禁写操作，但旧实现只在**模型真的发起工具调用之后**才提示限制。
+    #   本机小模型面对写请求经常返回空 content + 无 tool_calls，于是用户只看到一句
+    #   "模型偶发空回复"，既不知道模式限制、也不知道怎么继续。这里把判定提前到
+    #   **进入模型之前**：只要"写/删除/建目录/执行类动作 + 落盘对象"同时出现就拦。
+    #   判据刻意收紧，只读请求（列出/读取/分析/清点）与咨询/创作问法绝不能误拦。
+    _WRITE_ACTION_WORDS = (
+        "创建", "新建", "写入", "写到", "写进", "保存", "另存为", "存到",
+        "修改", "改写", "替换", "删除", "移除", "移动", "挪到", "复制", "拷贝",
+        "改名", "重命名", "批量改", "建目录", "新建文件夹", "执行", "运行",
+    )
+    # 落盘对象：名词类（不含单独一个"写"字——"写一段代码/写个函数"是创作，不是落盘）
+    _WRITE_OBJECT_NOUNS = ("文件", "文件夹", "目录", "表格", "文档", "代码", "脚本", "附件")
+    # 咨询/创作问法：出现即不当作写操作请求（"怎么创建文件""帮我写一段代码"）
+    _WRITE_CONSULT_MARKERS = (
+        "怎么", "如何", "为什么", "能否", "可以吗", "写一段代码", "写个函数", "示例",
+    )
+    # 带扩展名的文件名（"approval_probe.txt"）：扩展名后允许直接跟中文，不用 \b
+    _FILE_WITH_EXT_RE = re.compile(
+        r"[^\s\"'，。；、：:()（）\[\]{}<>|]+?\."
+        r"(?:txt|csv|md|json|log|py|js|ts|html?|css|ya?ml|ini|cfg|conf|xlsx?|docx?|"
+        r"pptx?|pdf|zip|rar|7z|jpe?g|png|gif|bmp|webp|svg|mp3|wav|mp4|avi|mov|"
+        r"exe|bat|ps1|sh|sql|db)(?![A-Za-z0-9])",
+        re.I,
+    )
+    _ABS_PATH_RE = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\[^\\/\s]+[\\/])")
+
+    def _looks_like_write_request(self, text: str) -> bool:
+        """这句话是不是在要求**落盘/删除/移动/执行**（而不是只读或咨询）。
+
+        命中条件（全部满足）：
+          1. 有写/删除/建目录/执行类动作动词；
+          2. 有落盘对象——带扩展名的文件名、绝对路径，或文件/目录类名词；
+          3. 不是咨询/创作问法（怎么/如何/为什么/能否/可以吗/写一段代码/写个函数/示例）。
+        只读请求（"读一下桌面有几个文件""分析这个目录"）没有动作动词，不会命中。
+        """
+        body = str(text or "").strip()
+        if not body:
+            return False
+        if any(marker in body for marker in self._WRITE_CONSULT_MARKERS):
+            return False
+        if not any(word in body for word in self._WRITE_ACTION_WORDS):
+            return False
+        if self._FILE_WITH_EXT_RE.search(body) or self._ABS_PATH_RE.search(body):
+            return True
+        return any(noun in body for noun in self._WRITE_OBJECT_NOUNS)
+
+    def _empty_output_message(self) -> str:
+        """模型这一轮什么都没产出时的可执行诊断（替换"偶发空回复、每 5 次一次"的运气论）。
+
+        分两种情况：写类请求要额外解释"为什么没弹审批"；其他请求给出三类常见原因与
+        下一步动作。文案只讲**可核对、可操作**的事实，不做与当前模型无关的统计。
+        """
+        if self._looks_like_write_request(self.user_input):
+            return (
+                "模型这一轮没有给出回答——本轮没有产生任何工具调用，所以**不会弹出审批**。\n"
+                "请确认所选模型支持工具调用（可在设置页「模型接入」点「测试连接」核对"
+                "接入地址与模型名），然后把输入框上方的模式切到「思考」，再发一次。\n"
+                "切到「思考」后，权限档「变更前确认」会在真正写盘前弹出审批，"
+                "让你核对完整路径与内容。"
+            )
+        return (
+            "模型这一轮没有给出回答——既没有返回文字，也没有发起工具调用。常见原因：\n"
+            "1. 模型不支持工具调用（多数小模型 / 自定义端点）；\n"
+            "2. 接入地址或模型名与端点不符（先点设置页的「测试连接」核对）；\n"
+            "3. 上下文过长。\n"
+            "建议：切到「思考」模式重试；仍为空就换一个模型。"
+        )
+
     # ──────────────────────────────────────────
     # 核心：ReAct 循环 — 推理 -> 工具调用 -> 观察 -> 总结
     # ──────────────────────────────────────────
@@ -1044,6 +1228,7 @@ class Worker:
         #   （跨轮复用会把"用户让我再读一次这个文件"短路掉——文件可能已经变了）。
         self._tool_fp_cache = {}
         self._deepen_used = False
+        self._kb_search_count = 0
         self._text_call_retried = False   # "把工具调用写成了文字"只重试一次，再犯就如实标注
         self._trunc_retried = False       # "回答疑似被截断"只重生成一次（V3.6.10，组员评审 BUG-0003）
         self._tool_retry_used = False     # "一次工具没调却只讲权限"只纠正一次（见下方自纠错说明）
@@ -1091,6 +1276,52 @@ class Worker:
             if not tool_calls:
                 # 没有工具调用，模型给出了文本回答
                 content = getattr(ai_msg, "content", "")
+
+                # ★ 单次生成达到长度上限（V3.6.13）：`done_reason=length` 时模型不是
+                #   "答完了"，而是预算用尽被硬停——旧实现会把它当完整回答直接落库/展示，
+                #   用户看到的就是断在半句话。这里先自动续写一次（从断点继续，不重复），
+                #   仍被截断才如实标注。判据用模型返回的元数据，不靠标点猜测。
+                _limit_hit = self._hit_length_limit(ai_msg)
+                if _limit_hit and isinstance(content, str) and content.strip():
+                    if not getattr(self, "_limit_continued", False):
+                        self._limit_continued = True
+                        self._limit_prefix = self._clean(content)
+                        self.status.emit("[继续] 回答达到单次生成长度上限，正在接着写…")
+                        self._trace("thinking", "回答续写",
+                                    "单次生成达到长度上限，自动续写一次", "ok")
+                        messages.append(HumanMessage(
+                            content=("你上一条回答因达到**单次生成长度上限**被截断。"
+                                     "请从断点处继续输出：不要重复已经写过的内容，"
+                                     "也不要重新开头；直接接着写。"),
+                            additional_kwargs={"internal": True}))
+                        continue
+                    # 续写后仍然到上限：合并两段，交给末尾如实标注
+                    content = self._limit_prefix + "\n" + content
+                    self._limit_prefix = ""
+                    self._reply_hit_length = True
+                    # 链尾也要换成合并后的全文：落库口径必须与界面一致
+                    # （否则重开会话只剩"续写的那半段"）。
+                    if messages and isinstance(messages[-1], AIMessage):
+                        messages[-1] = AIMessage(
+                            content=content,
+                            additional_kwargs=dict(getattr(ai_msg, "additional_kwargs", {}) or {}))
+                elif _limit_hit and getattr(self, "_limit_prefix", ""):
+                    # 续写这一轮把预算全用在内部推理上、正文为空：保留已写内容
+                    content = self._limit_prefix
+                    self._limit_prefix = ""
+                    self._reply_hit_length = True
+                    if messages and isinstance(messages[-1], AIMessage):
+                        messages[-1] = AIMessage(
+                            content=content,
+                            additional_kwargs=dict(getattr(ai_msg, "additional_kwargs", {}) or {}))
+                elif isinstance(content, str) and getattr(self, "_limit_prefix", ""):
+                    # 续写正常结束：拼接成完整回答
+                    content = self._limit_prefix + "\n" + content
+                    self._limit_prefix = ""
+                    if messages and isinstance(messages[-1], AIMessage):
+                        messages[-1] = AIMessage(
+                            content=content,
+                            additional_kwargs=dict(getattr(ai_msg, "additional_kwargs", {}) or {}))
 
                 # 渐进输出：把当前轮次的回答显示给用户
                 if content and isinstance(content, str) and content.strip():
@@ -1149,6 +1380,7 @@ class Worker:
                 #   只重生成一次，避免死循环。重生成后仍很短的话，由末尾的
                 #   `_guard_truncated_answer` 如实标注（绝不假装"已完成"）。
                 if (not getattr(self, "_trunc_retried", False)
+                        and not getattr(self, "_reply_hit_length", False)
                         and isinstance(content, str)
                         and self._looks_truncated_answer(content, self.user_input)):
                     self._trunc_retried = True
@@ -1264,6 +1496,8 @@ class Worker:
                 # 兜底：如果仍然为空，给用户一个明确提示，避免静默返回空白。
                 # ★ 文案按场景分支（V3.5.9 修）：原来只有"附件"那一套话术，
                 #   于是**没挂附件**的时候也会收到"附件过长/扫描件 OCR 失败"的建议——答非所问。
+                # ★ V3.6.13（组员评审 BUG-0007/0008）：无附件分支改成可执行诊断，并标记
+                #   "这是产品兜底文案，不是模型输出"——审计据此记 content_length=0。
                 if not final_reply.strip():
                     if self.attachment_fulltext:
                         final_reply = (
@@ -1275,12 +1509,8 @@ class Worker:
                             "请尝试：精简提问、切换深度思考模式、或挂载更小的文档。"
                         )
                     else:
-                        final_reply = (
-                            "抱歉，模型这一轮没有给出回答。\n"
-                            "本机小模型偶发空回复（实测约每 5 次出现 1 次，与本机算力负载有关），"
-                            "不是你的操作有问题。\n"
-                            "可以试试：再发一次、把问题问得更具体、切换到「深度思考」模式，或换用更大的模型。"
-                        )
+                        final_reply = self._empty_output_message()
+                    self._reply_is_fallback = True
                 chain = messages[round_start_idx:]
                 memory.update_with_full_chain(chain)
                 self.result_messages = memory.to_dict_list()
@@ -1345,6 +1575,22 @@ class Worker:
 
                 # 1. 路径解析：从工具参数中提取并净化路径
                 target_path = self._resolve_target_path(tool_args)
+
+                # ★ 只读工具的重复调用必须在**审批之前**短路（V3.6.13，负责人实测：
+                #   通用问题连续 4 轮检索知识库，每轮都弹一次审批）。同一工具同一参数
+                #   本轮已经执行过，结果不会变；再让人点一次"授权"只是折磨人。
+                #   写类工具不在此列——每一次落盘都必须单独确认。
+                _fp_pre = self._call_fingerprint(tool_name, tool_args)
+                if (tool_name in self._READONLY_TOOLS
+                        and _fp_pre in getattr(self, "_tool_fp_cache", {})):
+                    tool_result = (str(self._tool_fp_cache[_fp_pre])
+                                   + "\n[提示] 你刚才已用完全相同的参数调用过这个工具，"
+                                     "结果不会变化；请直接基于上面的结果作答，不要再重复调用。")
+                    messages.append(ToolMessage(content=str(tool_result),
+                                                tool_call_id=tool_call_id))
+                    self._trace("tool", self._map_tool_display_name(tool_name),
+                                "重复调用已短路（无需重复审批）", "ok", ms=0)
+                    continue
 
                 # 2. 敏感操作检测与人工审批
                 tool_display_name = self._map_tool_display_name(tool_name)
@@ -1558,10 +1804,12 @@ class Worker:
         if not str(final_reply or "").strip():
             final_reply = (
                 f"抱歉，我在 {round_count} 轮推理内没有拿到可用的结果，已停止。\n"
-                "可能原因：模型一直没给出最终回答（本机小模型偶发空回复），"
-                "或目标内容在当前可读写范围之外、且当前档位不允许越界访问。\n"
-                "可以试试：再发一次、把问题问得更具体、切换到「深度思考」模式，或换用更大的模型。"
+                "可能原因：模型始终没有给出最终回答（也可能目标内容在当前可读写范围之外、"
+                "且当前档位不允许越界访问）。\n"
+                "可以试试：再发一次、把问题问得更具体、切换到「思考」模式，"
+                "或在设置页「模型接入」换一个支持工具调用的模型。"
             )
+            self._reply_is_fallback = True
         # 保存完整消息链
         chain = messages[round_start_idx:]
         memory.update_with_full_chain(chain)
@@ -2083,7 +2331,8 @@ class Worker:
         提示**只通过 finished 事件送到了界面**，而落库用的是 `result_messages` 里的消息链——
         链尾还停在那条内容为空的助手消息上。后果：界面上有答复、库里是空的，
         重启后再看那一轮是空白（E2E 套件正是这样逮到它的：user:89 | assistant:0）。
-        这里做一件小事：若链尾不是这段文字，就把它补上（不覆盖已有的非空内容）。
+        这里做一件小事：链尾不是这段文字时，**以最终答复为准**替换链尾
+        （续写拼接、安全提示追加都会让最终答复比链尾长）；链尾为空/非助手消息则补一条。
         """
         body = (final_reply or "").strip()
         if not body or not isinstance(self.result_messages, list) or not self.result_messages:
@@ -2091,8 +2340,17 @@ class Worker:
         last = self.result_messages[-1]
         if not isinstance(last, dict):
             return
-        if last.get("role") == "assistant" and str(last.get("content") or "").strip():
-            return                                   # 链尾已有内容：不动它（更可能是模型的原始回答）
+        if last.get("role") == "assistant":
+            if str(last.get("content") or "").strip() == body:
+                return                               # 链尾就是用户看到的那段：不动
+            # ★ 链尾与最终答复不一致时必须**以最终答复为准**（V3.6.13）：
+            #   自动续写会把两段拼成一条新文本，末尾的"被截断/未执行/未还原"提示
+            #   也可能追加在模型原文之后。旧实现只要链尾非空就不动，导致
+            #   "界面有完整回答、重开会话只剩半段"（负责人实测过长回答续写）。
+            self.result_messages = list(self.result_messages[:-1]) + [
+                {"role": "assistant", "content": final_reply}
+            ]
+            return
         self.result_messages = list(self.result_messages) + [
             {"role": "assistant", "content": final_reply}
         ]
@@ -2617,13 +2875,26 @@ class Worker:
         chunks = result.get("chunks", [])
         global_mapping = result.get("global_mapping", {})
 
+        # ★ 同一轮重复检索的收敛（V3.6.13，负责人实测：通用问题连查 4 轮、每轮弹审批）：
+        #   第一次没命中就该换策略，而不是换一种说法继续撞墙。
+        _kb_round = int(getattr(self, "_kb_search_count", 0)) + 1
+        self._kb_search_count = _kb_round
+        _repeat_note = ""
+        if _kb_round >= 2:
+            _repeat_note = ("\n[提示] 这是本轮第 "
+                            f"{_kb_round} 次知识库检索。请**停止重复检索**："
+                            "直接基于上面已有结果作答；若没有可靠内容，就基于一般知识回答，"
+                            "并说明“知识库里没有这条”。")
+
         if not chunks:
             return (
                 "🔍 [知识库检索] 未找到相关内容。\n"
+                "注意：检索不到不代表问题无解——通用知识类问题请直接基于你自己的知识回答。\n"
                 "建议：\n"
-                "  1. 换一种提问方式\n"
+                "  1. 换一种提问方式（仅限本机资料类问题）\n"
                 "  2. 确认文档已入库（可用知识库管理功能查看）\n"
                 "  3. 尝试增大 top_k 参数"
+                + _repeat_note
             )
 
         # 合并映射表到本轮全局映射（供输出层 deanonymize 使用）
@@ -2645,14 +2916,33 @@ class Worker:
             self._kb_mapping[new_placeholder] = real_value
 
         # 格式化检索结果给 LLM（同时把片段内的占位符也加 KB_ 前缀）
-        parts = [f"🔍 [知识库检索] 找到 {len(chunks)} 个相关片段（已脱敏）：\n"]
+        # ★ 必须说清"这只是一段摘录"（V3.6.13，负责人反馈"知识库检索像被截断"）：
+        #   CHUNK_SIZE=500/OVERLAP=50，模型拿到的从来不是全文；不点破，它就会
+        #   把片段当全文、回答到一半断掉，用户以为是产品截断。
+        best_score = min((float(c.get("score", 0) or 0) for c in chunks), default=0.0)
+        parts = [
+            f"🔍 [知识库检索] 找到 {len(chunks)} 个相关片段（已脱敏）：\n"
+            "说明：以下是**检索命中的片段（每段约 500 字），不是文档全文**；"
+            "不要声称“已读完整文档/全文”，需要精确上下文时请说明依据的是哪个片段。\n"
+        ]
         for i, chunk in enumerate(chunks, 1):
             source = chunk.get("source", "未知")
             score = chunk.get("score", 0)
             content = chunk.get("content", "")
             # 片段内容占位符也加前缀，保持与映射表一致
             content = kb_prefix_pattern.sub(_add_kb_prefix, content)
-            parts.append(f"--- 片段 {i}（来源: {source}，相似度: {score:.2f}）---\n{content}\n")
+            # Chroma 返回的是**距离**（越小越相关），旧文案写成"相似度"正好说反。
+            relevance = 1.0 / (1.0 + max(0.0, float(score or 0)))
+            parts.append(f"--- 片段 {i}（来源: {source}，相关度: {relevance:.2f}，距离: {float(score or 0):.2f}）---\n{content}\n")
+
+        if best_score > 1.0:
+            parts.append(
+                "⚠ 相关度提示：本次命中的片段与问题距离较大（最小距离 "
+                f"{best_score:.2f}），知识库很可能没有直接答案。"
+                "不要把这些片段当成事实依据；请基于一般知识回答，并说明“知识库里没有这条”。"
+            )
+        if _repeat_note:
+            parts.append(_repeat_note.strip())
 
         return "\n".join(parts)
 
@@ -2920,6 +3210,26 @@ class Worker:
         return (str(reply).rstrip() +
                 f"\n\n⚠️ 提示：{detail}，**以上内容未经核实**（可能是模型自行生成的示例），"
                 "请先让我读取文件后再确认。")
+
+    @staticmethod
+    def _hit_length_limit(ai_msg) -> bool:
+        """这次生成是不是被**单次长度上限**硬停的（不是模型自然说完）。
+
+        Ollama 在 num_predict 用尽时返回 `done_reason="length"`；OpenAI 兼容端点
+        在 response_metadata 里给 `finish_reason="length"`。两者都认，避免把
+        "断在半句话"当成完整回答（负责人实测：长回答停在「（最好、平均」）。
+        """
+        meta = getattr(ai_msg, "response_metadata", None) or {}
+        reason = str(meta.get("done_reason") or meta.get("finish_reason") or "").strip().lower()
+        return reason in ("length", "max_tokens", "length_limit")
+
+    def _guard_length_limit(self, reply: str) -> str:
+        """续写后仍到上限时如实标注（不假装写完，也不替模型补内容）。"""
+        if not isinstance(reply, str) or not getattr(self, "_reply_hit_length", False):
+            return reply
+        return (reply.rstrip() +
+                "\n\n⚠️ 提示：这次回答达到了**单次生成长度上限**，系统已自动续写一次；"
+                "如果内容还没写完，回复「继续」即可接着写。")
 
     def _guard_truncated_answer(self, reply: str) -> str:
         """最后一道网：重生成之后**仍然**是半句话时，如实标注（不假装"已完成"）。

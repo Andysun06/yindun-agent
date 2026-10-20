@@ -621,6 +621,142 @@ check("退回直接赋值真的把窗口置顶了", fallback_win.on_top is True,
 check("退回路径同样写回设置", svc.settings.get("topmost") is True,
       repr(svc.settings.get("topmost")))
 
+# ── 11) 最大化 / 还原（V3.6.13，组员评审 BUG-0010）──
+#   现场：点「最大化」铺满整个显示器（盖住任务栏）；再点「还原」没反应，只能重启。
+#   根因：① 按 window.maximized 判断（后端不回填就永远 False）；
+#         ② 异常时降级 toggle_fullscreen()——全屏必盖任务栏，且降级后 maximized 仍为 False，
+#            下次点击又走 maximize → 表现为「还原失效」。
+print("\n" + "=" * 78)
+print("【11】最大化 / 还原：不降级全屏、自己记账、失败时按几何兜底")
+print("=" * 78)
+
+
+class _MaxFakeWindow(FakeWindow):
+    """最大化/还原计数桩（记录是否被误用成全屏）。"""
+
+    def __init__(self, x=100, y=200, w=1180, h=780):
+        super().__init__(x, y, w, h)
+        self.maximized = False
+        self.max_calls = 0
+        self.restore_calls = 0
+        self.fullscreen_calls = 0
+
+    def maximize(self):
+        self.max_calls += 1
+
+    def restore(self):
+        self.restore_calls += 1
+
+    def toggle_fullscreen(self):
+        self.fullscreen_calls += 1
+
+
+def _reset_max_state():
+    api._saved_geometry = None
+    api._maximized_by_us = False
+    api._pre_maximize_geometry = None
+
+
+class _BrokenMaxWindow(_MaxFakeWindow):
+    def maximize(self):
+        raise RuntimeError("backend has no maximize")
+
+    def restore(self):
+        raise RuntimeError("backend has no restore")
+
+
+_reset_max_state()
+broken = _BrokenMaxWindow()
+holder["window"] = broken
+_broken_ok = api.window_action("toggle_maximize")
+check("maximize 抛异常时如实返回 False（不假装成功）", _broken_ok is False, str(_broken_ok))
+check("★ 不再降级成全屏（全屏必盖住任务栏）", broken.fullscreen_calls == 0,
+      f"toggle_fullscreen 调用 {broken.fullscreen_calls} 次")
+check("失败后不记成「已最大化」（下次点击还能重试）", api._maximized_by_us is False,
+      str(api._maximized_by_us))
+
+_reset_max_state()
+plain = _MaxFakeWindow()
+holder["window"] = plain
+_r1 = api.window_action("toggle_maximize")
+_r2 = api.window_action("toggle_maximize")
+check("第一次点击调用 maximize", _r1 is True and plain.max_calls == 1,
+      f"{_r1} / max={plain.max_calls}")
+check("★ 第二次点击无条件 restore（即使 maximized 属性根本没更新）",
+      _r2 is True and plain.restore_calls == 1, f"{_r2} / restore={plain.restore_calls}")
+check("最大化桩的 maximized 始终为 False（模拟事件未到）", plain.maximized is False)
+check("全程没有退回全屏", plain.fullscreen_calls == 0, str(plain.fullscreen_calls))
+
+
+class _StickyMaxWindow(_MaxFakeWindow):
+    """maximize 后 maxmized=True，但 restore 不会回填（模拟 restored 事件丢失）。"""
+
+    def maximize(self):
+        self.max_calls += 1
+        self.maximized = True
+
+    def restore(self):
+        self.restore_calls += 1
+
+
+_reset_max_state()
+sticky = _StickyMaxWindow()
+holder["window"] = sticky
+_s1 = api.window_action("toggle_maximize")
+_s2 = api.window_action("toggle_maximize")
+check("★ maximize 成功但 restored 事件没来，第二次仍能 restore",
+      _s1 is True and _s2 is True and sticky.restore_calls == 1,
+      f"{_s1}/{_s2} restore={sticky.restore_calls}")
+check("我们自己记账已复位（不会第三次还去 restore）", api._maximized_by_us is False,
+      str(api._maximized_by_us))
+
+
+class _RestoreFailWindow(_MaxFakeWindow):
+    """restore 抛异常，但 move/resize 可用：应回到最大化前的几何。"""
+
+    def restore(self):
+        self.restore_calls += 1
+        raise RuntimeError("restore failed")
+
+
+_reset_max_state()
+restore_fail = _RestoreFailWindow()
+holder["window"] = restore_fail
+_rf1 = api.window_action("toggle_maximize")
+_rf2 = api.window_action("toggle_maximize")
+check("★ restore 失败时按最大化前几何兜底恢复一次",
+      restore_fail.calls[-2:] == [("move", 100, 200), ("resize", 1180, 780, None)],
+      str(restore_fail.calls))
+check("几何兜底成功即视为已还原", _rf1 is True and _rf2 is True and api._maximized_by_us is False,
+      f"{_rf1}/{_rf2} by_us={api._maximized_by_us}")
+
+
+class _AllBrokenWindow(_MaxFakeWindow):
+    """restore 与 move/resize 全失败：必须如实返回 False。"""
+
+    def restore(self):
+        raise RuntimeError("restore failed")
+
+    def move(self, nx, ny):
+        raise RuntimeError("move failed")
+
+
+_reset_max_state()
+all_broken = _AllBrokenWindow()
+holder["window"] = all_broken
+api.window_action("toggle_maximize")
+_ab = api.window_action("toggle_maximize")
+check("restore 与几何兜底都失败 → 返回 False（不假装已还原）", _ab is False, str(_ab))
+check("兜底失败后仍记账为「已最大化」（下次点击继续尝试还原）",
+      api._maximized_by_us is True, str(api._maximized_by_us))
+
+check("源码里不再调用 toggle_fullscreen 降级",
+      ".toggle_fullscreen(" not in webview_src)
+check("最大化/还原也调度到 UI 线程（与置顶同一套 _ui_thread_dispatch）",
+      '_invoke_window_method(window, "maximize")' in webview_src
+      and '_invoke_window_method(window, "restore")' in webview_src)
+_reset_max_state()
+
 print("\n" + "=" * 78)
 if failures:
     print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))

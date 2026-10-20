@@ -550,7 +550,7 @@ def preload() -> None:
         _WARMED.set()
 
 
-def advisory_for_approval(context: Dict[str, Any]) -> Optional[Dict[str, str]]:
+def _advisory_impl(context: Dict[str, Any]) -> Optional[Dict[str, str]]:
     """钩子入口（三级来源，按数据边界由近及远）：
 
       source=local（默认）：本机 laya → 局域网（若配置了）→ 正则
@@ -561,6 +561,21 @@ def advisory_for_approval(context: Dict[str, Any]) -> Optional[Dict[str, str]]:
     """
     if not isinstance(context, dict):
         return None
+
+    # ★ 用途红线与"操作风险"必须分开说（V3.6.13）。laya 评的是**动作本身**，
+    #   看不出「收集个人信息去出售/外发」这种用途风险——负责人实测它就给出了「低危」，
+    #   与"请求用途"的判断自相矛盾。用途红线由弹窗顶部红色警示负责；这一行只保留
+    #   操作分级，并在命中用途红线时明确标注"只评操作本身"，不冒充用途判断。
+    try:
+        from yindun.core.usage_policy import assess_request
+        _flagged = assess_request(str(context.get("user_request") or "")).get("decision") in ("refuse", "warn")
+    except Exception:
+        _flagged = False
+    if _flagged:
+        # 用途已触发红线：这一行只跑确定性正则（快、可复现），不再加载模型
+        haystack = _build_haystack(context)
+        return _grade_with_rules(haystack) if haystack else None
+
     cfg = _source_config()
     choice = cfg["source"]
     auto = cfg["auto"]
@@ -591,6 +606,23 @@ def advisory_for_approval(context: Dict[str, Any]) -> Optional[Dict[str, str]]:
         if graded is not None:
             return _merge_with_rules(graded, haystack)
     return _grade_with_rules(haystack)
+
+
+def advisory_for_approval(context: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """钩子入口：操作风险分级；若请求用途已触及红线，明确标注适用范围。"""
+    result = _advisory_impl(context)
+    if not isinstance(result, dict):
+        return result
+    try:
+        from yindun.core.usage_policy import assess_request
+        flagged = assess_request(str((context or {}).get("user_request") or "")).get("decision") in ("refuse", "warn")
+    except Exception:
+        flagged = False
+    if flagged:
+        result = dict(result)
+        result["text"] = (str(result.get("text") or "") +
+                          "（本行只评操作本身，不评价请求用途；用途风险见弹窗顶部红色警示）")
+    return result
 
 
 def _merge_with_rules(graded: Dict[str, str], haystack: str) -> Dict[str, str]:

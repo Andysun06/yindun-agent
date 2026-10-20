@@ -672,18 +672,26 @@ class AuditLog:
             details
         )
 
-    def log_llm_output(self, content: str, token_count: int = 0, preview: str = ""):
+    def log_llm_output(self, content: str, token_count: int = 0, preview: str = "",
+                       empty_output: bool = False):
         """记录 LLM 输出。
 
         参数：
             content: 输出内容
             token_count: token 数（可选）
             preview: 可选的内容预览（前200字符），便于审计回看
+            empty_output: 本轮模型**没有产出任何内容**（文字与工具调用都没有）。
+                产品兜底文案不是模型输出，必须记 content_length=0 并带上这个标记，
+                否则审计无法区分"模型真说了这些"与"系统替模型解释了一句"
+                （组员评审 BUG-0008：兜底文案曾被当成 104 字的模型输出）。
+                默认 False，保持既有调用方语义不变。
         """
         details = {
             "content_length": len(content),
             "token_count": token_count
         }
+        if empty_output:
+            details["empty_output"] = True
         if preview:
             details["preview"] = preview[:200]
         return self.add_entry(
@@ -794,6 +802,23 @@ class AuditLog:
         """链完整性（兼容旧调用方）。判定细节见 verify_chain_detail()。"""
         return bool(self.verify_chain_detail().get("valid"))
 
+    def _warn_verify_once(self, reason: str, message: str, level: str = "warning") -> None:
+        """进程内去重地记一条校验告警（V3.6.13，第三轮评审附带观察）。
+
+        现场问题：同一次启动里同一条校验失败告警连续出现 4 次——多个消费者
+        （审计面板 / 顶栏 / 状态查询）各自 verify、各自 log，日志被同一句话刷屏。
+        规则：**同一 reason 只在状态变化时记一次**；校验成功时清掉记账，所以
+        "好了又坏"仍会重新告警（绝不吞掉结果变化）。
+        """
+        key = (str(level), str(reason or message))
+        if getattr(self, "_last_verify_warning", None) == key:
+            return
+        self._last_verify_warning = key
+        if level == "error":
+            log.error("%s", message)
+        else:
+            log.warning("%s", message)
+
     def verify_chain_detail(self, allow_missing_anchor: bool = False) -> dict:
         """完整校验审计链，返回结论与**人话原因**（界面直接展示，不让人猜）。
 
@@ -821,7 +846,7 @@ class AuditLog:
         if key is None:
             detail["state"] = "no_key"
             detail["reason"] = "密钥缺失，无法校验审计链（无法证明条目未被篡改）"
-            log.warning("审计链无法校验（密钥缺失）")
+            self._warn_verify_once(detail["reason"], "审计链无法校验（密钥缺失）")
             return detail
 
         anchor = self._read_anchor()
@@ -830,7 +855,8 @@ class AuditLog:
             detail["anchor"] = "tampered"
             detail["state"] = "tampered"
             detail["reason"] = anchor.get("reason") or "锚点不可信"
-            log.warning("审计链校验失败：%s", detail['reason'])
+            self._warn_verify_once(detail["reason"],
+                                   f"审计链校验失败：{detail['reason']}")
             return detail
         if anchor is not None and anchor.get("unreadable"):
             # 锚点读不了（权限 / 落点被占）：先当"没有锚点"，由分类器决定是降级还是可疑缺失
@@ -845,11 +871,17 @@ class AuditLog:
             if verdict.get("migration_source"):
                 detail["migration_source"] = verdict["migration_source"]
             if verdict["state"] == "degraded":
-                log.error("审计链锚点未生效（防篡改能力降级）：%s", detail["reason"])
+                self._warn_verify_once(
+                    detail["reason"],
+                    f"审计链锚点未生效（防篡改能力降级）：{detail['reason']}",
+                    level="error")
             elif verdict["state"] == "migrated":
-                log.warning("审计链校验：检测到审计目录迁移（待重建锚点）—— %s", verdict["reason"])
+                self._warn_verify_once(
+                    detail["reason"],
+                    f"审计链校验：检测到审计目录迁移（待重建锚点）—— {verdict['reason']}")
             else:
-                log.warning("审计链校验失败：%s", detail['reason'])
+                self._warn_verify_once(detail["reason"],
+                                   f"审计链校验失败：{detail['reason']}")
             return detail
 
         legacy_total = sum(1 for e in self._entries if e.legacy)
@@ -866,14 +898,16 @@ class AuditLog:
                 if index >= allowed_legacy:
                     detail["reason"] = (f"第 {index + 1} 条出现未受保护的旧版条目（超出锚定的历史前缀 "
                                         f"{allowed_legacy} 条）—— 疑似抹掉 HMAC 标记后重算整链")
-                    log.warning("审计链校验失败：%s", detail['reason'])
+                    self._warn_verify_once(detail["reason"],
+                                           f"审计链校验失败：{detail['reason']}")
                     return detail
                 expected_hash = hashlib.sha256(canonical).hexdigest()
             else:
                 expected_hash = hmac.new(key, canonical, hashlib.sha256).hexdigest()
             if entry.entry_hash != expected_hash:
                 detail["reason"] = f"第 {index + 1} 条哈希不匹配（该条内容被改动）"
-                log.warning("审计链校验失败：%s", detail['reason'])
+                self._warn_verify_once(detail["reason"],
+                                       f"审计链校验失败：{detail['reason']}")
                 return detail
             prev_hash = entry.entry_hash
 
@@ -881,15 +915,19 @@ class AuditLog:
             if len(self._entries) < int(anchor.get("count", 0)):
                 detail["reason"] = (f"条目数少于锚点记录（现有 {len(self._entries)} 条 / 锚点 "
                                     f"{anchor.get('count')} 条）—— 尾部被截断")
-                log.warning("审计链校验失败：%s", detail['reason'])
+                self._warn_verify_once(detail["reason"],
+                                       f"审计链校验失败：{detail['reason']}")
                 return detail
             anchor_count = int(anchor.get("count", 0))
             if anchor_count > 0 and self._entries[anchor_count - 1].entry_hash != anchor.get("head"):
                 detail["reason"] = "锚点位置的链头不匹配 —— 尾部条目被替换或重排"
-                log.warning("审计链校验失败：%s", detail['reason'])
+                self._warn_verify_once(detail["reason"],
+                                       f"审计链校验失败：{detail['reason']}")
                 return detail
 
         detail["valid"] = True
+        # ★ 校验成功即清掉告警记账：下次再失败（结果变化）仍会照常告警，不被去重吞掉。
+        self._last_verify_warning = None
         if anchor is None:
             if self._entries:
                 # 仅 reanchor 路径会走到这里：显式确认后由调用方写入锚点

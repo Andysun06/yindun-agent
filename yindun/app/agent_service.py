@@ -1742,15 +1742,32 @@ class AgentService:
         界面在弹窗上增量显示；用户随时可以先做决定。
         """
         try:
+            # 用途判定是"先问想干什么"，必须排在"是否相符""操作风险"之前（V3.6.13）。
+            # 这里把确定性结论一并交给插件：intent_guard 用它做红线，
+            # decision_hint / laya 用它避免给出"相符 + 低危"的自相矛盾提示。
+            try:
+                from yindun.core.usage_policy import assess_request
+                intent = assess_request(self._last_user_request)
+            except Exception:
+                intent = {"decision": "ok", "category": "", "summary": "", "message": ""}
             context = {
                 "tool": approval.get("name"),
                 "args": approval.get("args") or {},
                 "path": approval.get("path"),
                 "user_request": self._last_user_request,
+                "intent": intent,
                 "model": self.settings.get("model"),
                 "ollama_host": self.settings.get("ollama_host") or "http://127.0.0.1:11434",
             }
             advisories = self._plugins.call_hook("advisory_for_approval", context)
+            # 建议按 order 排序（0=意图预判，100=其余）：界面上的阅读顺序就是
+            # "先用途、再相符、最后操作风险"，而不是由插件目录名决定。
+            def _advice_order(item):
+                try:
+                    return int((item or {}).get("order", 100))
+                except Exception:
+                    return 100          # 插件给了脏 order 也不能让整组建议消失
+            advisories.sort(key=_advice_order)
         except Exception as exc:
             print(f"[AgentService] 征集插件建议失败：{exc}")
             return
@@ -1770,6 +1787,10 @@ class AgentService:
                     "detail": text[:200],
                     "status": "ok", "ms": 0,
                 })
+        else:
+            # ★ 空结果也要**明确收尾**（V3.6.13）：插件启用了但这次没给建议时，
+            #   界面在等一个 advisories 事件；不发就会让"正在研判"一直转。
+            self._emit("advisories", [])
 
     # ── 知识库（脱敏 RAG）─────────────────────────
     def knowledge_base(self):
@@ -2017,6 +2038,15 @@ class AgentService:
                 # 过程轨迹：先落库再推送（刷新后仍在），seq 由服务层统一分配
                 self._append_trace(payload if isinstance(payload, dict) else {})
                 return
+            if topic == "need_confirm" and isinstance(payload, dict):
+                # ★ 告知界面"有没有可征集的建议插件"（V3.6.13）：没有插件时不要
+                #   显示"正在研判"占位——否则它会一直转到弹窗关闭，像卡住了。
+                payload = dict(payload)
+                try:
+                    payload["advisory_available"] = bool(
+                        self._plugins.enabled_plugins("advisory_for_approval"))
+                except Exception:
+                    payload["advisory_available"] = True
             self._emit(topic, payload)
             # 审批弹窗出现后，后台征集插件建议（不阻塞弹窗与用户决策）
             if topic == "need_confirm" and isinstance(payload, dict):

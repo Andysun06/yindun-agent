@@ -58,7 +58,12 @@ CLIENT_SYMBOLS: Dict[str, Sequence[str]] = {
     "yindun.plugins.host": ["module_attr", "preload"],
     # 工作线程的工具面（V3.6.8）：文件管理族与"路径是文件→取父目录"的收敛必须在包里，
     # 否则用户拿到的是"能看见工具名、实际调不通"的旧行为
-    "yindun.worker.agent_worker": ["_as_directory_hint", "_range_notice", "_verify_tool_outcome"],
+    "yindun.worker.agent_worker": ["_as_directory_hint", "_range_notice", "_verify_tool_outcome",
+                                   # 用途红线 / 知识库范围 / 长回答续写（V3.6.13）
+                                   "_looks_like_kb_question", "_hit_length_limit",
+                                   "_guard_length_limit"],
+    # 请求用途红线（V3.6.13）：这个模块缺了，包里的智能体就会把"卖个人信息"当普通请求规划
+    "yindun.core.usage_policy": ["assess_request", "_has_pii", "_has_profit", "_has_exfil"],
     "yindun.utils.logger": ["setup_logging"],
     # ★ 插件是**按文件路径动态加载**的（plugins/host.py 的 spec_from_file_location），
     #   PyInstaller 的静态分析进不去那些 plugin.py —— 插件独有的 import 只能靠"碰巧被别的模块带进来"。
