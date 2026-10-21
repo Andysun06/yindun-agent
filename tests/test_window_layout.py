@@ -115,7 +115,7 @@ class BlindWindow(FakeWindow):
 from yindun.app.agent_service import AgentService  # noqa: E402
 from yindun.app.session_store import SessionStore  # noqa: E402
 from yindun.app.settings_store import SettingsStore  # noqa: E402
-from yindun.app.webview_app import JsApi  # noqa: E402
+from yindun.app.webview_app import JsApi, WebApp  # noqa: E402
 import tempfile  # noqa: E402
 
 TMP = Path(tempfile.mkdtemp(prefix="yindun_mini_test_"))
@@ -755,6 +755,167 @@ check("源码里不再调用 toggle_fullscreen 降级",
 check("最大化/还原也调度到 UI 线程（与置顶同一套 _ui_thread_dispatch）",
       '_invoke_window_method(window, "maximize")' in webview_src
       and '_invoke_window_method(window, "restore")' in webview_src)
+_reset_max_state()
+
+# ── 12) P1-06：系统方式还原/最大化时同步自记账 ──
+#   现场：用 Win+↓ / 双击顶栏还原后，按钮仍显示"已最大化"；再点还走 restore（空转）。
+#   根因：_maximized_by_us 只在 _restore_from_maximize() 里清零，原生 restored 事件不改账；
+#         window_state() 又用 `_maximized_by_us or window.maximized`，旧账永远压住真实状态。
+print("\n" + "=" * 78)
+print("【12】P1-06：原生 maximized/restored 事件同步记账（系统方式还原后状态正确）")
+print("=" * 78)
+
+
+class _StateAwareWindow(_MaxFakeWindow):
+    """带 evaluate_js 的窗口桩：让 WebApp 的状态推送走正常路径而不是抛异常。"""
+
+    def evaluate_js(self, *args, **kwargs):
+        return True
+
+
+webapp = WebApp(service=svc)
+webapp._api = api
+
+_reset_max_state()
+native_win = _StateAwareWindow()
+holder["window"] = native_win
+webapp._window = native_win
+_ok_max = api.window_action("toggle_maximize")
+check("先由我们最大化（记账=True，window_state 报 True）",
+      _ok_max is True and api._maximized_by_us is True
+      and api.window_state()["maximized"] is True, str(api.window_state()))
+
+# 模拟系统方式还原：原生 restored 事件到达（窗口属性同步变为 False）
+native_win.maximized = False
+webapp._on_window_native_state()
+check("原生 restored 后记账清零", api._maximized_by_us is False,
+      str(api._maximized_by_us))
+check("★ 系统还原后 window_state()['maximized'] 必须为 False",
+      api.window_state()["maximized"] is False, str(api.window_state()))
+
+_max_before, _restore_before = native_win.max_calls, native_win.restore_calls
+_next = api.window_action("toggle_maximize")
+check("★ 再点按钮走 maximize（不空转 restore）",
+      _next is True
+      and native_win.max_calls == _max_before + 1
+      and native_win.restore_calls == _restore_before,
+      f"max={native_win.max_calls} restore={native_win.restore_calls}")
+
+# 反向：用户用系统手段最大化 → 原生 maximized 事件 → 按钮也要显示"已最大化"
+_reset_max_state()
+native_win2 = _StateAwareWindow()
+holder["window"] = native_win2
+webapp._window = native_win2
+native_win2.maximized = True
+webapp._on_window_native_state(True)
+check("原生 maximized 后记账为 True", api._maximized_by_us is True,
+      str(api._maximized_by_us))
+check("原生 maximized 后 window_state()['maximized'] 为 True",
+      api.window_state()["maximized"] is True, str(api.window_state()))
+check("再点按钮走 restore（不重复 maximize）",
+      api.window_action("toggle_maximize") is True
+      and native_win2.restore_calls == 1 and native_win2.max_calls == 0,
+      f"max={native_win2.max_calls} restore={native_win2.restore_calls}")
+_reset_max_state()
+
+check("原生事件订阅按事件名显式传状态（不依赖 window.maximized 被回填）",
+      '_bind_native_state("maximized", True)' in webview_src
+      and '_bind_native_state("restored", False)' in webview_src)
+check("window_state 以原生状态优先、记账兜底",
+      "native_maximized = self._read_native_maximized(window)" in webview_src
+      and "FormWindowState.Maximized" in webview_src)
+
+# ── 13) P1-07：最大化前设置 MaximizedBounds（不盖任务栏）──
+#   现状：frameless=True（FormBorderStyle.None）下裸调 window.maximize()，pywebview 只设
+#   WindowState=Maximized；Windows 会把无边框窗体铺满整屏（含任务栏）。
+print("\n" + "=" * 78)
+print("【13】P1-07：最大化前设置 MaximizedBounds = Screen.WorkingArea")
+print("=" * 78)
+check("实现里给原生 Form 设置 MaximizedBounds 为当前屏幕 WorkingArea",
+      "MaximizedBounds" in webview_src
+      and "WorkingArea" in webview_src
+      and "Screen.FromControl" in webview_src)
+check("设置动作走现有 UI 线程调度（form.Invoke），失败只退回原最大化",
+      "def _set_maximized_bounds" in webview_src
+      and "设置 MaximizedBounds 失败（退回系统默认最大化）" in webview_src
+      and "设置最大化边界失败（继续最大化）" in webview_src)
+check("仍走原生 maximize（不改成 move/resize，也不用 toggle_fullscreen）",
+      '_invoke_window_method(window, "maximize")' in webview_src
+      and "window.move(" not in webview_src.split("def _toggle_maximize")[1].split("def _restore_from_maximize")[0]
+      and ".toggle_fullscreen(" not in webview_src)
+
+_reset_max_state()
+_nobounds_win = _MaxFakeWindow()
+holder["window"] = _nobounds_win
+check("取不到 Form 时 _set_maximized_bounds 如实返回 False（不抛异常）",
+      api._set_maximized_bounds(_nobounds_win) is False)
+
+# 设置边界失败/抛异常都绝不能阻止最大化
+_orig_set_bounds = JsApi._set_maximized_bounds
+
+
+def _raise_bounds(self, window):
+    raise RuntimeError("bounds unavailable")
+
+
+JsApi._set_maximized_bounds = _raise_bounds
+try:
+    _reset_max_state()
+    _bounds_fail_win = _MaxFakeWindow()
+    holder["window"] = _bounds_fail_win
+    _bounds_ok = api.window_action("toggle_maximize")
+finally:
+    JsApi._set_maximized_bounds = _orig_set_bounds
+check("★ 设置 MaximizedBounds 抛异常时仍照常 maximize",
+      _bounds_ok is True and _bounds_fail_win.max_calls == 1,
+      f"{_bounds_ok} / max={_bounds_fail_win.max_calls}")
+_reset_max_state()
+
+# ── 14) P1-10：窗口动作失败原因如实回传（后端部分）──
+#   前端新增 last_window_error()：mini / unsupported / restore_failed / ""。
+print("\n" + "=" * 78)
+print("【14】P1-10：last_window_error() 如实回传失败原因（bool 契约不变）")
+print("=" * 78)
+check("JsApi 暴露 last_window_error()", hasattr(api, "last_window_error"))
+
+# ① 折叠态拒绝最大化 → "mini"
+_reset_max_state()
+holder["window"] = _MaxFakeWindow()
+api._saved_geometry = (100, 200, 1180, 780)
+_mini_ok = api.window_action("toggle_maximize")
+check("折叠态拒绝最大化 → 'mini'",
+      _mini_ok is False and api.last_window_error() == "mini",
+      f"{_mini_ok} / {api.last_window_error()!r}")
+api._saved_geometry = None
+
+# ② maximize 不可用 → "unsupported"
+_reset_max_state()
+holder["window"] = _BrokenMaxWindow()
+_unsup_ok = api.window_action("toggle_maximize")
+check("maximize 抛异常/不可用 → 'unsupported'",
+      _unsup_ok is False and api.last_window_error() == "unsupported",
+      f"{_unsup_ok} / {api.last_window_error()!r}")
+
+# ③ restore 与几何兜底都失败 → "restore_failed"
+_reset_max_state()
+holder["window"] = _AllBrokenWindow()
+api.window_action("toggle_maximize")          # 先成功最大化
+_rf_ok = api.window_action("toggle_maximize")  # 再还原：restore + move 都失败
+check("restore 与几何兜底都失败 → 'restore_failed'",
+      _rf_ok is False and api.last_window_error() == "restore_failed",
+      f"{_rf_ok} / {api.last_window_error()!r}")
+
+# ④ 成功 → ""，并且下一次动作开始时清空上一次原因
+_reset_max_state()
+holder["window"] = _MaxFakeWindow()
+_ok_ok = api.window_action("toggle_maximize")
+check("成功动作后 last_window_error() 为空串",
+      _ok_ok is True and api.last_window_error() == "",
+      f"{_ok_ok} / {api.last_window_error()!r}")
+check("未知动作失败也给出原因（'unsupported'）",
+      api.window_action("no_such_action") is False
+      and api.last_window_error() == "unsupported",
+      repr(api.last_window_error()))
 _reset_max_state()
 
 print("\n" + "=" * 78)

@@ -1560,6 +1560,32 @@ def main() -> int:
         check("触发器的 title 带着当前档说明（细看时口径还在）",
               len(page.get_attribute("#think-trigger", "title") or "") >= 10,
               repr(page.get_attribute("#think-trigger", "title")))
+        # ★ P1-08：滑杆键盘可用（方向键不能被模型卡片的列表导航吞掉）+ aria-expanded 同步。
+        check("打开卡片后 #think-trigger 的 aria-expanded=true",
+              page.get_attribute("#think-trigger", "aria-expanded") == "true",
+              repr(page.get_attribute("#think-trigger", "aria-expanded")))
+        # 从中间档开始（2=高）：边界档按方向键"本来就不变"，会测不出真假。
+        page.eval_on_selector("#think-slider", """el => {
+            el.value = '2';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.focus();
+        }""")
+        page.wait_for_timeout(150)
+        kb_before = page.eval_on_selector("#think-slider", "el => el.value")
+        page.keyboard.press("ArrowDown")
+        page.wait_for_timeout(220)
+        kb_down = page.eval_on_selector("#think-slider", "el => el.value")
+        kb_down_label = (page.inner_text("#think-value") or "").strip()
+        check("★ 滑杆获得焦点后按 ArrowDown 真的降一档（方向键没被弹层吞掉）",
+              kb_before == "2" and kb_down == "1" and kb_down_label == "中",
+              f"{kb_before}→{kb_down} label={kb_down_label}")
+        page.keyboard.press("ArrowUp")
+        page.wait_for_timeout(220)
+        kb_up = page.eval_on_selector("#think-slider", "el => el.value")
+        kb_up_label = (page.inner_text("#think-value") or "").strip()
+        check("★ 按 ArrowUp 真的升一档（原生 range 默认行为生效）",
+              kb_up == "2" and kb_up_label == "高",
+              f"{kb_down}→{kb_up} label={kb_up_label}")
         page.eval_on_selector("#think-slider", """el => {
             el.value = '0';
             el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1583,6 +1609,20 @@ def main() -> int:
               f"{str(depth_saved2[-1:])[:120]} value={page.inner_text('#think-value')}")
         page.keyboard.press("Escape")
         page.wait_for_timeout(200)
+        check("关闭卡片后 #think-trigger 的 aria-expanded=false",
+              page.get_attribute("#think-trigger", "aria-expanded") == "false",
+              repr(page.get_attribute("#think-trigger", "aria-expanded")))
+        # 模型触发器打开的是同一张卡片：思考入口的 aria-expanded 也要同步。
+        page.click("#model-trigger")
+        page.wait_for_timeout(200)
+        check("模型触发器打开卡片时 #think-trigger aria-expanded 同步为 true",
+              page.get_attribute("#think-trigger", "aria-expanded") == "true",
+              repr(page.get_attribute("#think-trigger", "aria-expanded")))
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(200)
+        check("再次关闭后 #think-trigger aria-expanded 复位为 false",
+              page.get_attribute("#think-trigger", "aria-expanded") == "false",
+              repr(page.get_attribute("#think-trigger", "aria-expanded")))
 
         # ── 18) 上下文容量浮层（数字全部来自后端）──
         print("\n" + "=" * 78)
@@ -1661,6 +1701,57 @@ def main() -> int:
               page.evaluate("() => document.getElementById('sw-topmost').checked") == after_pin["topmost"], "")
         page.click("#btn-pin")                      # 复原，避免影响后续用例
         page.wait_for_timeout(350)
+        # ★ P1-10：失败提示按后端 last_window_error() 的真实原因分档。
+        #   dev-mock 没有该方法（不在本次改动清单里），按真实桥的形状在这里注入。
+        page.evaluate("""() => {
+            const api = window.__YINDUN_MOCK__.api;
+            window.__origWinAction = api.window_action;
+            window.__hadLastWinErr = Object.prototype.hasOwnProperty.call(api, 'last_window_error');
+            window.__origLastWinErr = api.last_window_error;
+            api.window_action = () => Promise.resolve(false);      // 固定失败，专测提示文案
+        }""")
+
+        def max_fail_toast() -> str:
+            page.evaluate(
+                "() => document.querySelectorAll('#toast-root .toast').forEach(e => e.remove())")
+            page.click("#btn-max")
+            page.wait_for_timeout(380)
+            return page.eval_on_selector_all(
+                "#toast-root .toast", "els => els.map(e => e.textContent).join(' | ')")
+
+        page.evaluate(
+            "() => { window.__YINDUN_MOCK__.api.last_window_error = () => Promise.resolve('mini'); }")
+        toast_mini = max_fail_toast()
+        check("★ 最大化失败且 last_window_error='mini' → 「先退出闪发模式，再最大化窗口」",
+              "先退出闪发模式，再最大化窗口" in toast_mini, repr(toast_mini))
+        page.evaluate(
+            "() => { window.__YINDUN_MOCK__.api.last_window_error = () => Promise.resolve('unsupported'); }")
+        toast_unsupported = max_fail_toast()
+        check("★ last_window_error='unsupported' → 「当前窗口环境不支持最大化」",
+              "当前窗口环境不支持最大化" in toast_unsupported, repr(toast_unsupported))
+        page.evaluate(
+            "() => { window.__YINDUN_MOCK__.api.last_window_error = () => Promise.resolve('restore_failed'); }")
+        toast_restore = max_fail_toast()
+        check("★ last_window_error='restore_failed' → 「还原失败，请重试或重启窗口」",
+              "还原失败，请重试或重启窗口" in toast_restore, repr(toast_restore))
+        page.evaluate(
+            "() => { window.__YINDUN_MOCK__.api.last_window_error = () => Promise.resolve(''); }")
+        toast_generic = max_fail_toast()
+        check("★ last_window_error 为空 → 回落通用文案「窗口操作失败」",
+              "窗口操作失败" in toast_generic, repr(toast_generic))
+        # 防御：方法缺失 / 返回 null 时也只给通用文案，不抛错、不冒出别的失败提示。
+        page.evaluate("""() => {
+            delete window.__YINDUN_MOCK__.api.last_window_error;
+        }""")
+        toast_missing = max_fail_toast()
+        check("★ last_window_error 方法缺失 → 仍回落「窗口操作失败」（不抛错）",
+              "窗口操作失败" in toast_missing, repr(toast_missing))
+        page.evaluate("""() => {
+            const api = window.__YINDUN_MOCK__.api;
+            if (window.__origWinAction) api.window_action = window.__origWinAction;
+            if (window.__hadLastWinErr) api.last_window_error = window.__origLastWinErr;
+            else delete api.last_window_error;
+        }""")
         # 折叠态：最大化按钮必须禁用，服务端也拒绝（别卡在"半个状态"）
         page.click("#btn-mini")
         page.wait_for_timeout(450)
@@ -2226,13 +2317,6 @@ def main() -> int:
             // 用例里会多次手动派发 pywebviewready（复用 bootstrap 通路）；
             // 关掉 View Transition，避免"上一次过渡未结束"的 DOMException 干扰断言。
             try { delete document.startViewTransition; } catch (e) { document.startViewTransition = undefined; }
-            window.__calls = [];
-            const api = window.__YINDUN_MOCK__.api;
-            for (const key of Object.keys(api)) {
-                if (typeof api[key] !== 'function') continue;
-                const fn = api[key];
-                api[key] = (...args) => { window.__calls.push([key, args]); return fn(...args); };
-            }
             window.__auditFailure = {
                 chain_ok: false,
                 stats: {
@@ -2240,7 +2324,17 @@ def main() -> int:
                     chain_valid: false, chain_anchor: 'none',
                     chain_reason: '锚点缺失：可能是从旧版本迁移（首次升级）',
                 },
-                entries: [],
+                // 多条记录：钉住"自动展开后列表条数 = 快照返回条数"（旧实现启动只取 1 条）。
+                entries: [
+                    { time: '2026-10-20T10:00:00', type: 'tool_call', severity: '内部',
+                      message: '读取文件 A', preview: '', hash: 'h1', prev: 'h0' },
+                    { time: '2026-10-20T10:00:01', type: 'privacy_event', severity: '机密',
+                      message: '发送前脱敏 2 处', preview: '', hash: 'h2', prev: 'h1' },
+                    { time: '2026-10-20T10:00:02', type: 'approval', severity: '内部',
+                      message: '用户批准写入', preview: '', hash: 'h3', prev: 'h2' },
+                    { time: '2026-10-20T10:00:03', type: 'tool_call', severity: '内部',
+                      message: '执行命令', preview: 'npm test', hash: 'h4', prev: 'h3' },
+                ],
             };
             window.__auditOk = {
                 chain_ok: true,
@@ -2250,7 +2344,15 @@ def main() -> int:
                 },
                 entries: [],
             };
-            window.__YINDUN_MOCK__.api.audit_snapshot = () => Promise.resolve(window.__auditFailure);
+            const api = window.__YINDUN_MOCK__.api;
+            // 先替换实现，再包调用记录——顺序反了会把记录器替换掉，参数断言就测不到。
+            api.audit_snapshot = () => Promise.resolve(window.__auditFailure);
+            window.__calls = [];
+            for (const key of Object.keys(api)) {
+                if (typeof api[key] !== 'function') continue;
+                const fn = api[key];
+                api[key] = (...args) => { window.__calls.push([key, args]); return fn(...args); };
+            }
         }""")
         page_audit.wait_for_timeout(200)
         # 前置：先让右栏处于展开态，再手动收起——自动展开才有可观测的方向。
@@ -2276,6 +2378,20 @@ def main() -> int:
               repr(banner_text))
         check("迁移/锚点缺失原因下出现「重建锚点」按钮",
               page_audit.is_visible("#btn-reanchor"), "")
+        # ★ P1-09：启动快照必须一次取足够多条（与审计页一致 300），且自动展开后的
+        #   列表条数 = 快照返回条数——旧实现只取 1 条，列表永远只有 1 条。
+        snap_calls = page_audit.evaluate(
+            "(n) => (window.__calls || []).filter(c => c[0] === n)", "audit_snapshot")
+        startup_snap = [c for c in snap_calls if c[1]]
+        check("★ 启动快照请求的参数不是 1（与审计页统一取 300 条）",
+              bool(startup_snap) and startup_snap[-1][1][0] == 300,
+              str(startup_snap[-2:]))
+        entries_n = page_audit.evaluate(
+            "() => (window.__auditFailure.entries || []).length")
+        list_n = page_audit.evaluate(
+            "() => document.querySelectorAll('#audit-list .audit-item').length")
+        check("★ 自动展开后审计列表条数 = 快照返回条数（不是永远 1 条）",
+              entries_n > 1 and list_n == entries_n, f"list={list_n} entries={entries_n}")
         # 用户手动收起后，再来一次相同失败：不得反复弹开。
         page_audit.click("#btn-panel-collapse")
         page_audit.wait_for_timeout(250)
@@ -2321,12 +2437,19 @@ def main() -> int:
         page_think.wait_for_function(
             "() => { const v = document.querySelector('#brand-version');"
             " return v && v.textContent.trim() && v.textContent.trim() !== '—'; }", timeout=20000)
-        page_think.evaluate("() => window.yindun.onEvent('status', '【思考 1/6】模型判断中…')")
+        # ★ P1-05：注入**后端真实发射串**（ASCII 括号，见 agent_worker.py）。
+        page_think.evaluate("() => window.yindun.onEvent('status', '[思考 1/6]模型判断中…')")
         page_think.wait_for_timeout(120)
         status_text = (page_think.inner_text("#status-line") or "").strip()
-        check("★ 状态行前缀改写为「推理 1/6」",
+        check("★ 后端真实 ASCII 串「[思考 1/6]」被改写为「推理 1/6」",
               status_text.startswith("【推理 1/6】"), repr(status_text))
         check("★ 状态行不再出现「思考 1/6」", "思考 1/6" not in status_text, repr(status_text))
+        # 兼容旧的全角发射串（历史版本 / 其它事件源仍可能给全角）。
+        page_think.evaluate("() => window.yindun.onEvent('status', '【思考 2/6】模型判断中…')")
+        page_think.wait_for_timeout(120)
+        status_full = (page_think.inner_text("#status-line") or "").strip()
+        check("★ 全角「【思考 N/M】」仍兼容改写为「推理 2/6」",
+              status_full.startswith("【推理 2/6】"), repr(status_full))
         check("顶栏模式胶囊仍是「思考」（只改状态行显示前缀）",
               (page_think.inner_text('#mode-switch [data-mode="深度思考"]') or "").strip() == "思考",
               repr(page_think.inner_text('#mode-switch [data-mode="深度思考"]')))

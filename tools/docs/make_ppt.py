@@ -155,7 +155,7 @@ para(tf, "面向涉密办公场景的本地化隐私防护桌面智能体", size
 rect(s, M, 6.15, 6.2, 0.02, fill="2E6B50")
 tf = box(s, M, 6.35, 11, 0.6)
 para(tf, [("Yindun Security Agent", {"bold": True, "color": "FFFFFF"}),
-          ("    ·    V3.6.16    ·    LangChain · pywebview/WebView2 · 本地/云端双算力    ·    2026", {"color": "8FD3B4"})],
+          ("    ·    V3.6.17    ·    LangChain · pywebview/WebView2 · 本地/云端双算力    ·    2026", {"color": "8FD3B4"})],
      size=13, first=True)
 
 # ══════════════════ 2 · 背景痛点 ══════════════════
@@ -670,13 +670,13 @@ kicker(s, "质量与交付")
 title(s, "全量回归通过 · 免安装单文件 exe 就绪")
 # 左：测试套件
 tf = box(s, M, 1.72, 6.2, 0.55)
-para(tf, "22 个测试/评测套件 · 全部通过（含攻防评测 9 项实验 + 留出集评测 + 控制面七组）", size=14.5, color=PRIM, bold=True, first=True)
+para(tf, "41 个测试/评测套件 · 全部通过（攻防 9 项实验 + 留出集 + 控制面七组 + V3.6.17 缺陷 12 条）", size=14.5, color=PRIM, bold=True, first=True)
 suites = [("隐私引擎 + 回归", "27 类实体；泄露 0 / 误伤 0 / 落盘扫描"),
           ("对抗集 + 真实文档", "14 项格式变体；8 种真实格式全链路"),
           ("审计黑匣子", "哈希链 + 链锚点 19/19"),
           ("命令白名单", "高危入口全拦截 + 进程容器 + 严格模式"),
           ("插件 + 记忆 + 工作流", "宿主契约 / 能力端到端 / 执行与导出"),
-          ("laya 插件 + 窗口", "模型与正则双后端；8 向拖拽锚定")]
+          ("laya 插件 + 窗口", "模型/正则双后端；8 向拖拽；12 条缺陷回归")]
 yy = 2.30
 for name, d in suites:
     rect(s, M, yy, 6.0, 0.66, fill=CARD, shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.1); 
@@ -708,7 +708,7 @@ para(tf, "总结与展望", size=14, color="8FD3B4", bold=True, first=True)
 tf = box(s, M, 1.4, W-2*M, 1.0)
 para(tf, "一套让大模型安全处理涉密办公数据的端到端方案", size=30, color="FFFFFF", bold=True, first=True)
 # 回顾指标
-recap = [("1.6万", "行 Python"), ("27", "类实体脱敏"), ("4", "层纵深防御"), ("20+", "项安全修复"), ("20", "套件回归通过")]
+recap = [("2.7万", "行 Python"), ("27", "类实体脱敏"), ("4", "层纵深防御"), ("20+", "项安全修复"), ("41", "套件回归通过")]
 bx, bw = M, (W-2*M-0.4*4)/5
 for i, (n, lab) in enumerate(recap):
     x = M + i*(bw+0.4)

@@ -73,7 +73,7 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
 
   <header class="cover">
     <div class="badge-row">
-      <span class="badge">隐私计算 · 桌面智能体</span><span class="badge">技术报告</span><span class="badge">V3.6.16</span>
+      <span class="badge">隐私计算 · 桌面智能体</span><span class="badge">技术报告</span><span class="badge">V3.6.17</span>
     </div>
     <h1>🛡️ 隐盾安全智能体</h1>
     <div class="subtitle">面向涉密办公场景的本地化隐私防护桌面智能体</div>
@@ -83,7 +83,7 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
       大模型进入办公场景面临一个根本矛盾：待处理数据越敏感，越需要模型的能力，却也越不能让其跨越本地边界。本工作报告提出并实现隐盾安全智能体，其核心是一个内存级隐私脱敏网关——将敏感文本在进入模型前形式化地映射为占位符文本与一份加密映射表，使模型无法接触<b>已被识别出</b>的真实敏感值，同时保持任务可用性。系统配套本地沙箱、命令白名单、高危熔断审批与 HMAC 哈希链审计，构成覆盖"输入—推理—执行—落盘—审计"的纵深防御。为量化效果，我们把两条性质<b>分开度量</b>：<b>识别覆盖率</b>是依赖语料的经验量——在留出集（60 篇随机化文档 / 280 个注入敏感值，规则冻结后一次性运行）上完整脱敏 <b>222/280</b>，其中系统声明支持的写法为 <b>222/230</b>；<b>网关机密性</b>是架构保证、与识别覆盖率无关——对已识别实体，出网明文实例 <b>0</b>，还原劫持 500 轮成功 <b>0</b>，白盒持久化与审计产物明文命中 <b>0</b>，脱敏↔还原逐字一致 <b>60/60</b>。我们同时公开 <b>50 个未覆盖形态</b>的完整清单（实测命中 0/50）与由留出集发现并修复的三类实现缺陷。上述结论均限定在所述评测集与威胁模型内，不构成真实环境的普适安全保证。
     </div>
     <div class="meta">
-      <div><b>系统</b>隐盾安全智能体</div><div><b>版本</b>V3.6.16（2026-10）</div><div><b>技术栈</b>Python · LangChain · pywebview/WebView2 · Chroma</div>
+      <div><b>系统</b>隐盾安全智能体</div><div><b>版本</b>V3.6.17（2026-10）</div><div><b>技术栈</b>Python · LangChain · pywebview/WebView2 · Chroma</div>
     </div>
   </header>
 
@@ -407,8 +407,25 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
     <div class="tbl-caption">V3.6.16 回归：<code>test_ui_paths</code> §16/§17 重写为单卡片 + 子菜单 + 滑杆（含 Ctrl+T 落库断言）；<code>test_window_layout</code> 同步更新滑杆/焦点环/发送箭头断言</div>
     <div class="tbl-caption">交付物完整性整改（V3.6.11；文件管理套件 +8：三种容器真文件、追加/替换后仍可打开；回复链路 +4：跨轮还原与残留提示）</div>
     <div class="tbl-caption">隐私与判据口径修正清单（V3.6.11；每条都有回归断言：隐私套件 +6、插件套件 +6、回复链路 +3）</div>
+
+    <h3>7.9　独立测试报告 12 条缺陷的复核与修复（V3.6.17）</h3>
+    <p>本版承接一份针对 V3.6.16（commit 3078cc7）的独立缺陷清单（P0 5 条 / P1 7 条）。我们没有直接按报告描述改代码，而是先逐条在源码里复现判据与调用链，确认根因后再修；其中报告标注为「测试假绿」的两条（状态行全角断言、启动审计快照只取 1 条）也一并修正。修复遵循同一原则：<b>宁可少还原/多问一次，也不静默失败或编造事实</b>。</p>
+    <table class="data">
+      <thead><tr><th style="width:18%">条目</th><th style="width:40%">根因（代码核对）</th><th>修复与回归判据</th></tr></thead>
+      <tr><td>P0-01 用途红线</td><td><code>(?&lt;![外买])卖</code> 对「买进卖出」无效（"卖"前是"出"）→ 误拒；牟利词表缺 买卖/倒卖/交易 → 漏判</td><td>先剔除良性短语再判定；新增动词性「交易」判定；裸「交易流水」不误伤。<code>test_usage_policy</code>【3b】11 条</td></tr>
+      <tr><td>P0-02 写类意图</td><td>只做「动作词 + 名词」共现；「可以吗/能否」整句豁免；过去时追问被当写请求</td><td>过去时追问显式排除；许可式请求仍算写；新增落盘位置词。<code>test_reply_feedback</code> 正/负例 +6</td></tr>
+      <tr><td>P0-03 知识库信号</td><td>「我们公司 / 文件里」等过泛片段命中通用题；缺报销/流水/账单等业务对象词</td><td>强/弱/业务对象三级信号 + 通用技术词让位；补业务词。<code>test_reply_feedback</code> +8</td></tr>
+      <tr><td>P0-04 长文续写</td><td>前缀只在「续写轮无工具调用」分支拼接；工具/总结/兜底/最大轮次直接返回导致前缀丢失</td><td>统一 <code>_merge_limit_prefix</code> 覆盖全部出口；链尾替换保留 id/tool_calls。<code>test_reply_feedback</code>【6】4 条</td></tr>
+      <tr><td>P0-05 占位符还原</td><td>只认精确 <code>[KB_TYPE_n_nonce]</code>；模型改写裸写/大小写/全角/连字符即漏</td><td>外形容错 + 归一解析，仍按唯一解还原、歧义保留并计数；两条还原通路不再互相计数。<code>test_kb_pipeline</code> §6 +8</td></tr>
+      <tr><td>P1-05 状态行</td><td>后端发 ASCII <code>[思考 N/M]</code>，前端只匹配全角；测试用全角串造成假绿</td><td>两种括号都认；测试改注入真实发射串；轨迹改「推理」</td></tr>
+      <tr><td>P1-06/07/10 窗口</td><td>自记账不随原生 restored 清零；无边框最大化未设 MaximizedBounds；失败原因固定文案</td><td>原生事件同步记账；最大化前设 <code>WorkingArea</code>；新增 <code>last_window_error()</code> 分档提示。<code>test_window_layout</code> +20</td></tr>
+      <tr><td>P1-08/09 界面</td><td>弹层无条件吞方向键；启动审计快照 limit=1</td><td>输入控件放行方向键、aria-expanded 同步；启动快照取 300 条。<code>test_ui_paths</code> 增补 10 条</td></tr>
+      <tr><td>P1-11 审批超时</td><td>超时被当普通驳回后继续执行；同轮可重复发起同一审批；检索卡显示项目目录</td><td>超时终止整轮并如实说明；同轮驳回不重试；检索显示「检索词」；未执行的 tool_call 补 ToolMessage。<code>test_reply_feedback</code>【7】9 条</td></tr>
+    </table>
+    <div class="tbl-caption">V3.6.17 回归：新增/加强断言 60+ 条；全量 41 个测试/评测套件退出码 0（Ollama 相关套件离线时明确跳过，不冒充通过）</div>
+
     <h2 class="sec">8　测试与质量保障</h2>
-    <p>项目建立 23 个测试/评测套件（另有 `test_e2e_local.py` 本地大模型端到端实测，需 YINDUN_E2E=1 显式开启），覆盖隐私引擎、审计链（含锚点）、留出集评测、**控制面（链删改/只收紧/不泄明文/并发）**、记忆、工作流、知识库管线、插件体系、**请求用途红线**与窗口几何；三轮自审与复赛整改发现的问题全部固化为回归用例。全部套件退出码 0（"知识库"为集成测试，需本地 Ollama，离线时明确跳过）。</p>
+    <p>项目建立 41 个测试/评测套件（另有 `test_e2e_local.py` 本地大模型端到端实测，需 YINDUN_E2E=1 显式开启），覆盖隐私引擎、审计链（含锚点）、留出集评测、**控制面（链删改/只收紧/不泄明文/并发）**、记忆、工作流、知识库管线、插件体系、**请求用途红线**与窗口几何；三轮自审与复赛整改发现的问题全部固化为回归用例。全部套件退出码 0（"知识库"为集成测试，需本地 Ollama，离线时明确跳过）。</p>
     <table class="data">
       <thead><tr><th>测试套件</th><th>覆盖范围</th><th class="num" style="width:110px">结果</th></tr></thead>
       <tr><td>privacy_eval（攻防评测）</td><td>黑盒/白盒/劫持/注入/无密钥 9 项实验（开发集 13 篇 / 41 实例，作回归基线）</td><td class="num">✅ 全部达标</td></tr>

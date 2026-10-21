@@ -65,6 +65,9 @@ class JsApi:
         self._maximized_by_us: bool = False
         # 最大化前的几何：restore() 失败时按它做一次 move/resize 兜底
         self._pre_maximize_geometry: Optional[Tuple[int, int, int, int]] = None
+        # 最近一次窗口动作的失败原因（P1-10）："" / "mini" / "unsupported" / "restore_failed"。
+        # `window_action` 仍只返回 bool（不改现有契约）；前端在失败后再读这里拿可操作提示。
+        self._last_window_error: str = ""
         # ★ 窗口操作**串行化**（V3.6.12，组员评审 BUG-02）：
         #   pywebview 对每个 js_api 调用**新开一个线程**，前端连点就会并发进入这里；
         #   多个线程同时写 WinForms 的 `TopMost` 会让窗口假死（实测 10 次并发即稳定复现，
@@ -329,6 +332,16 @@ class JsApi:
         return self._svc.kb_remove(file_name)
 
     # ── 窗口控制（无边框悬浮模式）─────────────────
+    def last_window_error(self) -> str:
+        """最近一次窗口动作的失败原因（P1-10）。
+
+        取值：""（成功 / 无错误）、"mini"（闪发折叠态下拒绝最大化）、
+        "unsupported"（后端不支持该动作 / 调用异常）、"restore_failed"
+        （restore 与几何兜底都失败）。每次 `window_action` 开始时会清空。
+        这是**只读解释**，不改变 `window_action` 的 bool 契约。
+        """
+        return str(getattr(self, "_last_window_error", "") or "")
+
     def window_action(self, action: str) -> bool:
         """无边框模式下的窗口操作：minimize / toggle_top / close / mini / restore_window。
 
@@ -343,11 +356,14 @@ class JsApi:
         """
         window = self._window.get("window")
         if window is None:
+            self._last_window_error = "unsupported"
             return False
         # ★ 所有窗口操作串行化（见 __init__ 里 `_window_lock` 的说明）：
         #   前端连点会产生 N 个并发 js_api 调用，pywebview 每个调用一个新线程；
         #   并发写 WinForms 窗口属性会假死。排队执行才是与"点一次"等价的语义。
         with self._window_lock:
+            # P1-10：动作真正开始执行时清空上一次的失败原因（成功路径因此是 ""）
+            self._last_window_error = ""
             try:
                 if action == "minimize":
                     window.minimize()
@@ -362,10 +378,12 @@ class JsApi:
                 elif action == "close":
                     window.destroy()
                 else:
+                    self._last_window_error = "unsupported"
                     return False
                 return True
             except Exception as exc:
                 print(f"[WebView] 窗口操作 {action} 失败：{exc}")
+                self._last_window_error = "unsupported"
                 return False
 
     # ── 置顶（UI 线程调度 + 去重）──────────────────────────
@@ -388,6 +406,94 @@ class JsApi:
             return True
         except Exception as exc:
             print(f"[WebView] UI 线程调度不可用（退回直接赋值）：{exc}")
+            return False
+
+    def _read_native_maximized(self, window) -> Optional[bool]:
+        """读取原生最大化状态；取不到返回 None（由调用方用记账兜底）。
+
+        原生状态优先级最高：WinForms 的 `Form.WindowState` 正是 pywebview 触发
+        maximized/restored 事件的依据，用户用 Win+↑ / Win+↓ / 双击顶栏改状态时它也
+        会立刻变化。
+        注意 pywebview 的 `Window.maximized` 在 WinForms 后端只是**创建时的初值**，
+        运行期不会被原生事件回填：因此它只有 True 可以当作"确实最大化"的证据，
+        False 不可信（否则刚调用过 maximize() 会被误判成未最大化，按钮空转）。
+        """
+        if window is None:
+            return None
+        result: Dict[str, bool] = {}
+
+        def _read() -> None:
+            try:
+                from webview.platforms import winforms as _wf
+                form = _wf.BrowserView.instances.get(getattr(window, "uid", None))
+                if form is None:
+                    return
+                result["value"] = (
+                    form.WindowState == _wf.WinForms.FormWindowState.Maximized
+                )
+            except Exception as exc:
+                print(f"[WebView] 读取原生最大化状态失败：{exc}")
+
+        # 即使 Invoke 自身报错，回调也可能已经执行过，先认结果
+        self._ui_thread_dispatch(window, _read)
+        if "value" in result:
+            return bool(result["value"])
+        # 取不到 Form（非 Windows / 浏览器后端 / 测试桩）：只把 True 当作原生证据
+        try:
+            if bool(getattr(window, "maximized", False)):
+                return True
+        except Exception:
+            pass
+        return None
+
+    def _sync_maximized_from_native(self, maximized: bool) -> None:
+        """原生 maximized/restored 事件到达时同步自记账（P1-06）。
+
+        旧实现只在**我们自己**调用 restore() 时清账：用户用 Win+↓ / 双击顶栏还原后，
+        `_maximized_by_us` 仍为 True，按钮继续显示"已最大化"，再点还会空转 restore。
+        原生事件是事实来源，这里按它同步：
+          · maximized → 记账 True（用户用系统手段最大化时按钮也要对）；
+          · restored  → 记账 False，并丢弃最大化前几何（已经回到普通状态）。
+        ★ 这里**不能**取 `_window_lock`：原生事件可能在 `form.Invoke` 执行 maximize 时
+          同步派发（UI 线程），而 `_toggle_maximize` 正持锁等待 Invoke 返回——再抢同一把
+          锁会死锁。两个布尔赋值本身是原子的，事件以"原生事实"覆盖记账即可。
+        """
+        if maximized:
+            self._maximized_by_us = True
+        else:
+            self._maximized_by_us = False
+            self._pre_maximize_geometry = None
+
+    def _set_maximized_bounds(self, window) -> bool:
+        """最大化前尽力把原生窗体的 MaximizedBounds 设为当前屏幕工作区（P1-07）。
+
+        frameless（FormBorderStyle.None）下 pywebview 的 maximize() 只写
+        `WindowState = Maximized`，没有设置 MaximizedBounds；Windows 会把无边框窗体
+        的最大化边界算成整屏，从而盖住任务栏。设置 `MaximizedBounds = WorkingArea`
+        后仍然走**原生最大化**（保留最大化语义与还原动画），只是边界排除了任务栏。
+
+        取不到 Form / 非 Windows / 设置失败都如实返回 False；调用方必须忽略这个结果、
+        照常 maximize——绝不能因为"边界优化"失败而让最大化不可用。
+        """
+        applied: Dict[str, bool] = {"ok": False}
+
+        def _apply() -> None:
+            try:
+                from webview.platforms import winforms as _wf
+                form = _wf.BrowserView.instances.get(getattr(window, "uid", None))
+                if form is None:
+                    return
+                # Screen.FromControl 取窗口所在显示器；WorkingArea 已排除任务栏
+                form.MaximizedBounds = _wf.WinForms.Screen.FromControl(form).WorkingArea
+                applied["ok"] = True
+            except Exception as exc:
+                print(f"[WebView] 设置 MaximizedBounds 失败（退回系统默认最大化）：{exc}")
+
+        try:
+            self._ui_thread_dispatch(window, _apply)
+            return bool(applied["ok"])
+        except Exception as exc:
+            print(f"[WebView] 调度 MaximizedBounds 失败（退回系统默认最大化）：{exc}")
             return False
 
     def _toggle_top(self, window) -> bool:
@@ -468,28 +574,42 @@ class JsApi:
             表现为"还原点了没反应"。现在失败就如实返回 False（日志写原因），由前端提示
             「本窗口不支持最大化」。
           · 最大化状态**自己记账**（`_maximized_by_us`）：不依赖 `window.maximized` 是否
-            及时更新；只要我们调用过 maximize()，下一次点击无条件走 restore()。
+            及时更新；但原生 maximized/restored 事件到达时会同步这笔账（P1-06），
+            `window_state()` 与还原判定都以**原生状态优先、记账兜底**，因此系统方式
+            （Win+↓ / 双击顶栏）还原后不会继续显示"已最大化"或空转 restore。
+          · maximize 前尽力设置原生 `MaximizedBounds = Screen.WorkingArea`（P1-07），
+            让无边框窗口最大化时不盖住任务栏；设置失败照常最大化。
           · maximize/restore 同样**调度到 UI 线程**（复用 `_ui_thread_dispatch`），
             调用方 `window_action` 已持有 `_window_lock`，避免跨线程写 WinForms 控件。
           · 进入最大化前记住几何；restore() 失败时用 move/resize 兜底恢复一次。
         """
         if self._saved_geometry is not None:
             print("[WebView] 当前处于闪发折叠态，已忽略最大化请求（先展开再最大化）")
+            self._last_window_error = "mini"
             return False
-        # 还原判定：我们记过账 → 一定还原；否则以原生状态兜底（用户用系统手段最大化时）。
-        try:
-            restoring = bool(self._maximized_by_us) or bool(getattr(window, "maximized", False))
-        except Exception:
-            restoring = bool(self._maximized_by_us)
+        # 还原判定与 window_state() 使用同一套策略：原生状态优先、记账兜底。
+        # （原生 WinForms WindowState 取不到时，pywebview 的 `maximized=True` 也可作为证据）
+        native_maximized = self._read_native_maximized(window)
+        restoring = (bool(native_maximized) if native_maximized is not None
+                     else bool(self._maximized_by_us))
         if restoring:
-            return self._restore_from_maximize(window)
+            if self._restore_from_maximize(window):
+                return True
+            self._last_window_error = "restore_failed"
+            return False
 
         geometry = self._current_geometry(window)
+        # P1-07：先设 MaximizedBounds（排除任务栏）；失败也继续原生最大化
+        try:
+            self._set_maximized_bounds(window)
+        except Exception as exc:
+            print(f"[WebView] 设置最大化边界失败（继续最大化）：{exc}")
         try:
             self._invoke_window_method(window, "maximize")
         except Exception as exc:
             print(f"[WebView] maximize 不可用（{type(exc).__name__}: {exc}）；"
                   f"本窗口不支持最大化")
+            self._last_window_error = "unsupported"
             return False
         self._pre_maximize_geometry = geometry
         self._maximized_by_us = True
@@ -535,16 +655,17 @@ class JsApi:
 
         为什么需要：置顶与最大化按钮必须显示**真实状态**，不能靠"点一下就翻转"记账——
         用户用系统快捷键、或窗口被别的方式改过状态时，本地记账会立刻与事实不符。
-        这里直接读原生窗口：`maximized` 由 pywebview 随原生 maximized/restored 事件维护；
+        最大化优先读原生 `Form.WindowState`（取不到才用 `_maximized_by_us` 兜底）；
         `topmost` 读窗口的 on_top（窗口未就绪时回落已保存的设置项）；`mini` 取折叠标记
         （折叠前保存了几何 = 当前处于闪发浮条形态）。
         """
         window = self._window.get("window")
+        # ★ 原生状态优先、记账兜底：原生 restored 事件（系统方式还原）后必须立刻是 False；
+        #   原生状态取不到（非 Windows / 测试桩）时才用 `_maximized_by_us`。
+        native_maximized = self._read_native_maximized(window)
         return {
-            # 自己记的账优先：原生事件可能没到（BUG-0010），但按钮必须立刻显示"已最大化"
-            "maximized": (bool(getattr(self, "_maximized_by_us", False))
-                          or (bool(getattr(window, "maximized", False))
-                              if window is not None else False)),
+            "maximized": (bool(native_maximized) if native_maximized is not None
+                          else bool(getattr(self, "_maximized_by_us", False))),
             "topmost": (bool(getattr(window, "on_top", False)) if window is not None
                         else bool(self._svc.settings.get("topmost", False))),
             "mini": self._saved_geometry is not None,
@@ -779,11 +900,26 @@ class WebApp:
         for event, payload in pending:
             self._on_service_event(event, payload)
 
-    def _on_window_native_state(self) -> None:
-        """原生最大化/还原事件 → 推给前端刷新窗口按钮（图标 / is-active / 禁用态）。"""
+    def _on_window_native_state(self, maximized: Optional[bool] = None) -> None:
+        """原生最大化/还原事件 → 同步自记账 + 推给前端刷新窗口按钮。
+
+        `maximized` 由订阅方按事件名显式传入（原生事件就是事实来源，P1-06）；
+        不传时按当前原生窗口状态推断，便于测试或外部直接触发。
+        ★ 必须先同步记账再取快照：否则系统方式还原后 `window_state()` 还会因为
+          旧记账值返回"已最大化"。
+        """
         if self._api is None:
             return
         try:
+            native = maximized
+            if native is None:
+                native = self._api._read_native_maximized(self._window)
+                if native is None and self._window is not None:
+                    # 没有原生 Form 可读（非 Windows / 测试桩）：退回 pywebview 属性。
+                    # 运行期的 maximized/restored 订阅走上面的显式值，不依赖这里。
+                    native = bool(getattr(self._window, "maximized", False))
+            if native is not None:
+                self._api._sync_maximized_from_native(bool(native))
             self._on_service_event("window_state", self._api.window_state())
         except Exception as exc:
             print(f"[WebView] 推送窗口状态失败：{exc}")
@@ -843,15 +979,22 @@ class WebApp:
         except Exception:
             pass
 
-        # 最大化 / 还原由**原生事件**驱动：pywebview 内部已经维护 Window.maximized，
-        # 这里再订阅一次是为了**主动通知前端**刷新窗口按钮图标——用户用系统手段最大化
-        # （双击标题栏、Win+↑ 等）时，界面不能停在旧图标上。订阅失败不影响功能
-        # （下一次点按钮时 window_state() 仍会读到真实状态）。
-        for event_name in ("maximized", "restored"):
+        # 最大化 / 还原由**原生事件**驱动：pywebview 内部会触发这两个事件，
+        # 这里订阅后做两件事（P1-06）：
+        #   ① 同步后端自记账（用户用系统手段最大化/还原时，按钮状态与下一次点击都正确）；
+        #   ② 主动通知前端刷新窗口按钮图标。
+        # 用零参数 lambda 显式绑定事件语义，避免依赖"事件触发时 window.maximized 已更新"
+        # （WinForms 后端运行期并不回填该属性）。订阅失败不影响功能（下一次点击时
+        # window_state() / _toggle_maximize 仍会读原生 Form.WindowState）。
+        def _bind_native_state(event_name: str, maximized: bool) -> None:
             try:
-                getattr(self._window.events, event_name).__iadd__(self._on_window_native_state)
+                getattr(self._window.events, event_name).__iadd__(
+                    lambda: self._on_window_native_state(maximized))
             except Exception as exc:
                 print(f"[WebView] 订阅原生窗口事件 {event_name} 失败：{exc}")
+
+        _bind_native_state("maximized", True)
+        _bind_native_state("restored", False)
 
         if driver is not None:
             webview.start(driver, self._window, debug=bool(os.environ.get("YINDUN_WEB_DEBUG")))

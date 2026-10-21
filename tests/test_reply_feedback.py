@@ -684,6 +684,9 @@ _write_positives = [
     ("移动 + 目录名词", "把照片挪到备份文件夹"),
     ("运行 + 脚本", "运行这个脚本"),
     ("修改 + 绝对路径", r"修改 E:\yindun\demo.txt"),
+    # P0-02：征求许可仍是写请求（旧实现把"可以吗"当咨询豁免 → 漏拦）
+    ("征求许可 + 落盘对象", "帮我把文件保存到桌面，可以吗"),
+    ("落盘位置（无文件名）", "把这份纪要保存到桌面"),
 ]
 for _label, _text in _write_positives:
     check(f"写意图正例：{_label}", _intent._looks_like_write_request(_text) is True, _text)
@@ -693,6 +696,12 @@ _write_negatives = [
     ("咨询：怎么创建", "怎么创建一个文件"),
     ("创作：写一段代码", "帮我写一段代码生成几张图片的说明"),
     ("创作：写个函数", "写个函数打印 hello"),
+    # P0-02：过去时追问是在问历史，不是写请求（旧实现按"动作词+名词"误拦）
+    ("过去时：何时被删除", "这份文件是什么时候被删除的？"),
+    ("过去时：谁修改的", "这个文档是谁修改的"),
+    ("过去时：谁删除了", "上次是谁删除了这个文件"),
+    # 咨询语义里仍带"能否"时，靠"怎么"识别为咨询（不能因为去掉"能否"而误拦）
+    ("咨询：能否告诉我怎么做", "能否告诉我怎么创建文件"),
 ]
 for _label, _text in _write_negatives:
     check(f"写意图负例：{_label}", _intent._looks_like_write_request(_text) is False, _text)
@@ -817,6 +826,147 @@ check("知识库门控：算法/研究类问题不走知识库",
 check("知识库门控：本机资料类问题照常走知识库",
       _worker_len._looks_like_kb_question("帮我查一下合同里的付款条款") and
       _worker_len._looks_like_kb_question("公司报销制度是怎么规定的"))
+# P0-03：弱信号（我们公司/公司的/文件里）遇上通用知识指向时不得强制检索；
+# 反向补齐"报销/流水/账单/台账"这类真实业务对象。
+for _text in ("我们公司的产品适合用哪种架构？",
+              "Python 里怎么读取文件里的内容",
+              "公司的一般纳税人和小规模纳税人有什么区别",
+              "Excel 怎么做报表",
+              "什么是数据流水线"):
+    check(f"知识库门控：通用题不误触发 · {_text[:16]}",
+          not _worker_len._looks_like_kb_question(_text), "误判为知识库问题")
+for _text in ("上个月报销了多少",
+              "把上个月的流水整理一下",
+              "台账里记了几笔账单"):
+    check(f"知识库门控：业务对象照常检索 · {_text[:16]}",
+          _worker_len._looks_like_kb_question(_text), "该查本机资料却没判为知识库问题")
+
+print("\n" + "=" * 78)
+print("【6】P0-04：续写轮返回工具调用时，已生成前缀不能丢")
+print("=" * 78)
+class NoKBWorker(Worker):
+    def _get_knowledge_base(self):
+        return None
+
+
+_list_ok = FakeTool("list_local_files", lambda args: "目录里有 a.txt、b.txt")
+_llm_prefix = ScriptedLLM([
+    {"content": "前缀甲：第一章已经写完。", "done_reason": "length"},
+    # 续写轮没写正文，而是要求调工具（旧实现在这里把前缀丢在 _limit_prefix 里）
+    {"content": "", "tool_calls": [_tool_call("list_local_files",
+                                              {"target_directory": str(SANDBOX_ROOT)}, "call_p1")]},
+    {"content": "后缀乙：第二章接着写完。"},
+])
+_w_prefix = NoKBWorker()
+_w_prefix.llm = _llm_prefix
+_w_prefix.tools_map = {"list_local_files": _list_ok}
+_w_prefix.user_input = "研究一下快速排序的复杂度"
+_w_prefix.messages_snapshot = []
+_w_prefix.think_mode = "深度思考"
+_w_prefix.think_depth = 2
+_w_prefix.privacy_shield = False
+_w_prefix.sandbox_path = str(SANDBOX_ROOT)
+_w_prefix.attachment_fulltext = {}
+_w_prefix._kb_instance = None
+_events_prefix, _elapsed_prefix, _stuck_prefix = run_worker(_w_prefix)
+_fin_prefix = str(last_of(_events_prefix, "finished") or "")
+check("续写轮工具调用后仍继续推理", _llm_prefix.calls == 3, f"invoke={_llm_prefix.calls}")
+check("★ 已生成前缀没有被丢弃",
+      "前缀甲" in _fin_prefix and "后缀乙" in _fin_prefix, _fin_prefix[:200])
+check("前缀 + 工具 + 后文都落库", tail_is_assistant_text(_w_prefix, _fin_prefix))
+
+# 续写轮工具调用后模型再也不给正文：兜底文案出现时前缀也必须保留
+_llm_prefix2 = ScriptedLLM([
+    {"content": "前缀丙：这一段不能丢。", "done_reason": "length"},
+    {"content": "", "tool_calls": [_tool_call("list_local_files",
+                                              {"target_directory": str(SANDBOX_ROOT)}, "call_p2")]},
+    {"content": ""},
+])
+_w_prefix2 = NoKBWorker()
+_w_prefix2.llm = _llm_prefix2
+_w_prefix2.tools_map = {"list_local_files": _list_ok}
+_w_prefix2.user_input = "研究一下快速排序的复杂度"
+_w_prefix2.messages_snapshot = []
+_w_prefix2.think_mode = "快速回答"
+_w_prefix2.privacy_shield = False
+_w_prefix2.sandbox_path = str(SANDBOX_ROOT)
+_w_prefix2.attachment_fulltext = {}
+_w_prefix2._kb_instance = None
+_events_prefix2, _, _ = run_worker(_w_prefix2)
+_fin_prefix2 = str(last_of(_events_prefix2, "finished") or "")
+check("★ 兜底/空产出路径也不丢前缀", "前缀丙" in _fin_prefix2, _fin_prefix2[:200])
+
+print("\n" + "=" * 78)
+print("【7】P1-11：审批超时停止本轮；驳回后同轮不自动重试；检索目标按语义展示")
+print("=" * 78)
+_write_tool = FakeTool("create_local_file", lambda args: "✅ 已创建")
+_llm_timeout = ScriptedLLM([
+    {"content": "", "tool_calls": [_tool_call(
+        "create_local_file",
+        {"filename": "timeout_probe.txt", "content": "x", "target_directory": str(SANDBOX_ROOT)},
+        "call_t1")]},
+    {"content": "这一句说明超时后还在继续推理（不应该出现）"},
+])
+_w_timeout = make_worker(_llm_timeout, {"create_local_file": _write_tool},
+                         "在当前沙箱目录创建 timeout_probe.txt",
+                         think_mode="深度思考")
+_approvals = []
+
+
+def _fake_timeout(name, args, path, timeout=300.0, display_path=""):
+    _approvals.append((name, path, display_path))
+    _w_timeout._approval_outcome = "timeout"
+    return False
+
+
+_w_timeout._request_approval = _fake_timeout
+_events_timeout, _elapsed_timeout, _stuck_timeout = run_worker(_w_timeout)
+_fin_timeout = str(last_of(_events_timeout, "finished") or "")
+check("★ 超时只询问一次（不会再次弹同一审批）", len(_approvals) == 1, str(_approvals))
+check("★ 超时后不再进入下一轮模型推理", _llm_timeout.calls == 1, f"invoke={_llm_timeout.calls}")
+check("★ 超时后工具没有执行", _write_tool.calls == [], str(_write_tool.calls))
+check("★ 回答如实说明超时并已停止", "超时" in _fin_timeout and "已停止" in _fin_timeout,
+      _fin_timeout[:200])
+
+# 明确驳回：同一轮内同一工具不再自动重试（第二轮请求会被告知不要再试）
+_llm_reject = ScriptedLLM([
+    {"content": "", "tool_calls": [_tool_call(
+        "create_local_file",
+        {"filename": "reject_probe.txt", "content": "x", "target_directory": str(SANDBOX_ROOT)},
+        "call_r1")]},
+    {"content": "", "tool_calls": [_tool_call(
+        "create_local_file",
+        {"filename": "reject_probe.txt", "content": "x", "target_directory": str(SANDBOX_ROOT)},
+        "call_r2")]},
+    {"content": "好的，这个操作已经停止，不会重试。"},
+])
+_reject_tool = FakeTool("create_local_file", lambda args: "✅ 已创建")
+_w_reject = make_worker(_llm_reject, {"create_local_file": _reject_tool},
+                        "在当前沙箱目录创建 reject_probe.txt",
+                        think_mode="深度思考")
+_reject_approvals = []
+
+
+def _fake_reject(name, args, path, timeout=300.0, display_path=""):
+    _reject_approvals.append(name)
+    _w_reject._approval_outcome = "rejected"
+    return False
+
+
+_w_reject._request_approval = _fake_reject
+_events_reject, _, _ = run_worker(_w_reject)
+_fin_reject = str(last_of(_events_reject, "finished") or "")
+check("★ 驳回后同轮内不再弹第二次审批", len(_reject_approvals) == 1, str(_reject_approvals))
+check("驳回后工具确实没有执行", _reject_tool.calls == [], str(_reject_tool.calls))
+check("驳回后不再自动重试，并如实收尾（不静默卡住）",
+      "停止重试" in _fin_reject, _fin_reject[:160])
+
+# 知识库检索的审批/状态目标应显示检索词，而不是项目目录（P1-11 附带问题）
+_dp = _worker_len._display_target_path(
+    "search_knowledge_base", {"query": "上个月报销"}, str(SANDBOX_ROOT))
+check("知识库检索的目标显示为检索词", "检索词" in _dp and "报销" in _dp, _dp)
+_dp2 = _worker_len._display_target_path("create_local_file", {}, r"D:\x\a.txt")
+check("写类工具仍显示真实路径", _dp2 == r"D:\x\a.txt", _dp2)
 
 if failures:
     print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))

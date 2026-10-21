@@ -1139,6 +1139,46 @@ class PrivacyEngine:
     # ──────────────────────────────────────────
     # 逆向还原（接口完全保持兼容）
     # ──────────────────────────────────────────
+    # 模型整理答案时会改写占位符"外形"（丢方括号、改大小写、全角括号、括号内空格、
+    # 把下划线写成连字符）。这里只放宽外形，语义仍要求解析出 type/num/nonce 后
+    # 回到同一张映射表求唯一解——外形再像也不能凭外形猜值。
+    _KB_TOKEN_RE = re.compile(
+        r"KB[_-](?P<type>[A-Za-z][A-Za-z0-9]*(?:[_-][A-Za-z0-9]+)*?)"
+        r"[_-](?P<num>\d+)(?:[_-](?P<nonce>[A-Za-z0-9]{4}))?",
+        re.IGNORECASE,
+    )
+    # 括号形态与裸形态共用一次扫描：括号分支在前，避免把括号内的 token 再当裸占位符
+    # 匹配一遍；裸形态的前后边界排除字母/数字/下划线/连字符/方括号，防止只吃掉
+    # 长串的一部分（如 `X-KB_NAME_1` 或 `KB-2024` 这种普通文本）。
+    _KB_PLACEHOLDER_RE = re.compile(
+        r"(?:[\[【]\s*(?P<bracketed>KB[_-][A-Za-z0-9_-]*?)\s*[\]】])"
+        r"|(?<![A-Za-z0-9_\[\-])(?P<bare>KB[_-][A-Za-z0-9_-]*?)(?![A-Za-z0-9_\]\-])",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _strip_kb_brackets(value: str) -> str:
+        value = value.strip()
+        if len(value) >= 2 and value[0] in "[【" and value[-1] in "]】":
+            return value[1:-1].strip()
+        return value
+
+    @classmethod
+    def _parse_kb_token(cls, token: str):
+        """把各种外形的 KB 占位符归一成 `(type, num, nonce)`，不是占位符则返回 None。
+
+        为什么从尾部切分：类型自身可能含下划线（MEDICAL_RECORD / PLUGIN_CUSTOM_TERM），
+        只有编号（和可选的 4 位 nonce）固定在末尾，从后往前切才不会把类型切碎。
+        """
+        if not token:
+            return None
+        match = cls._KB_TOKEN_RE.fullmatch(cls._strip_kb_brackets(token))
+        if not match:
+            return None
+        return (match.group("type").replace("-", "_").upper(),
+                match.group("num"),
+                (match.group("nonce") or "").lower())
+
     def restore_kb_placeholders(self, text: str, mapping: dict) -> tuple:
         """还原**知识库占位符**，且对编号变化不敏感（V3.6.0）。
 
@@ -1157,12 +1197,13 @@ class PrivacyEngine:
           那会把"没还原"变成"编造事实"，对安全/合规产品更糟。
 
         返回 `(还原后的文本, 未还原的数量)`；调用方应把未还原数量**如实告知用户**，不静默。
-        只接受 `[KB_…]`，其余占位符（用户输入脱敏）仍由 `deanonymize` 负责，两者互不越界。
+        只接受 KB_ 前缀的占位符（外形容错：大小写、全角/半角方括号、括号内空格、
+        裸占位符、下划线/连字符）；其余占位符（用户输入脱敏）仍由 `deanonymize` 负责，
+        两者互不越界。
         """
         if not text or not mapping:
             return text, 0
 
-        kb_re = re.compile(r"\[KB_([A-Z][A-Z0-9_]*)_(\d+)(?:_([a-z0-9]{4}))?\]")
         plain: Dict[str, str] = {}
         for key, encrypted_value in mapping.items():
             try:
@@ -1178,23 +1219,24 @@ class PrivacyEngine:
         by_type_num: Dict[tuple, list] = {}
         by_type: Dict[str, list] = {}
         for key in plain:
-            m = kb_re.match(key)
-            if not m:
+            parsed = self._parse_kb_token(str(key))
+            if not parsed:
                 continue
-            type_, num, nonce = m.group(1), m.group(2), m.group(3)
+            type_, num, nonce = parsed
             by_type.setdefault(type_, []).append(key)
             by_type_num.setdefault((type_, num), []).append(key)
             if nonce:
                 by_type_nonce.setdefault((type_, nonce), []).append(key)
 
-        unresolved = 0
-
         def _resolve(match: "re.Match") -> str:
-            nonlocal unresolved
-            key = match.group(0)
-            type_, num, nonce = match.group(1), match.group(2), match.group(3)
-            if key in plain:                                             # ①
-                return plain[key]
+            raw = match.group(0)
+            parsed = self._parse_kb_token(
+                match.group("bracketed") or match.group("bare") or "")
+            if not parsed:
+                return raw
+            type_, num, nonce = parsed
+            if raw in plain:                                             # ①
+                return plain[raw]
             for bucket, needle in ((by_type_nonce, (type_, nonce)),       # ②
                                    (by_type_num, (type_, num))):          # ③
                 if needle[1] and len(bucket.get(needle, [])) == 1:
@@ -1202,10 +1244,18 @@ class PrivacyEngine:
             same_type = by_type.get(type_, [])
             if len(same_type) == 1:                                      # ④
                 return plain[same_type[0]]
-            unresolved += 1                                              # ⑤
-            return key
+            return raw                                                   # ⑤
 
-        return kb_re.sub(_resolve, text), unresolved
+        restored = self._KB_PLACEHOLDER_RE.sub(_resolve, text)
+
+        # 计数放在替换之后：带括号残留与裸残留都还是"占位符形状"，一次扫描全部如实上报；
+        # 解析不出 type/num 的普通文本（如 KB-2024）不进入计数，避免虚报未还原。
+        unresolved = 0
+        for match in self._KB_PLACEHOLDER_RE.finditer(restored):
+            if self._parse_kb_token(
+                    match.group("bracketed") or match.group("bare") or ""):
+                unresolved += 1
+        return restored, unresolved
 
     def deanonymize(self, text: str, mapping: dict, strict: bool = False) -> str:
         """
@@ -1246,8 +1296,10 @@ class PrivacyEngine:
     # ★ 为什么必须兜这条（V3.6.10，组员评审 BUG-0005）：模型整理答案时经常把
     #   `[NAME_0_hgi6]` 写成 `` `NAME_0_hgi6` `` 或纯 `NAME_0_hgi6`——精确替换必然漏掉，
     #   用户看到的就是裸占位符，而「回答返回时自动还原」是对外承诺。
+    # (?!KB_)：知识库占位符由 `restore_kb_placeholders` 单独负责，不能在这里
+    # 既匹配不到又计入"未还原"，否则会虚报一处未还原（两条通路互不越界）。
     _BARE_PLACEHOLDER_RE = re.compile(
-        r"(?<![A-Za-z0-9_\[])([A-Z][A-Z0-9_]{1,24})_(\d+)(?:_([a-z0-9]{4}))?(?![A-Za-z0-9_\]])")
+        r"(?<![A-Za-z0-9_\[])(?!KB_)([A-Z][A-Z0-9_]{1,24})_(\d+)(?:_([a-z0-9]{4}))?(?![A-Za-z0-9_\]])")
 
     def deanonymize_with_stats(self, text: str, mapping: dict,
                               strict: bool = False) -> tuple:
@@ -1323,7 +1375,9 @@ class PrivacyEngine:
 
         restored = self._BARE_PLACEHOLDER_RE.sub(_replace_bare, restored)
         # 仍未还原的：带方括号的（含旧格式）与裸的都是"用户看得见的残留"
-        unresolved = len(re.findall(r"\[[A-Z][A-Z0-9_]*_\d+(?:_[a-z0-9]{4})?\]", restored))
+        # KB_ 占位符不在这里计数（见 `restore_kb_placeholders` 的分工）
+        unresolved = len(re.findall(
+            r"\[(?!KB_)[A-Z][A-Z0-9_]*_\d+(?:_[a-z0-9]{4})?\]", restored))
         unresolved += len(re.findall(self._BARE_PLACEHOLDER_RE, restored))
         return restored, hits, unresolved
 

@@ -709,12 +709,16 @@
   }
 
   /** 状态行显示层口径（组员评审 BUG-0009）：
-   *  后端状态文本形如 `【思考 1/6】模型判断中…`，但「思考」同时是顶栏模式名
-   *  （快速 / 思考）——同一屏出现「快速」模式标签 + 「思考 1/6」状态行，读起来互相打架。
-   *  这里只改写**显示前缀**为「推理」，不动后端语义，也不碰气泡底部的模式标签
-   *  （那条走 `finished` 的 turnMode 快照，是另一条路径）。 */
+   *  后端状态文本形如 `[思考 1/6] 模型判断中...`（ASCII 括号），但「思考」同时是
+   *  顶栏模式名（快速 / 思考）——同一屏出现「快速」模式标签 + 「思考 1/6」状态行，
+   *  读起来互相打架。这里只改写**显示前缀**为「推理」，不动后端语义，也不碰气泡底部
+   *  的模式标签（那条走 `finished` 的 turnMode 快照，是另一条路径）。 */
   function displayStatusText(text) {
-    return String(text || "").replace(/^(\s*)【思考\s*(\d+)\s*\/\s*(\d+)】/, "$1【推理 $2/$3】");
+    // ★ 后端真实发射的是 ASCII 括号（`[思考 1/6] 模型判断中...`，见 agent_worker.py），
+    //   旧正则只认全角 `【思考 N/M】`，真机上永远不命中——测试却用全角串，属于假绿。
+    //   这里两种括号都接受，输出统一成全角「【推理 N/M】」；后端保持 ASCII 不改。
+    return String(text || "").replace(
+      /^(\s*)[\[【]思考\s*(\d+)\s*\/\s*(\d+)[\]】]/, "$1【推理 $2/$3】");
   }
   function setStatus(text) { $("status-line").textContent = displayStatusText(text); }
 
@@ -2798,6 +2802,25 @@
     if (sw) sw.checked = !!st.topmost;
   }
 
+  /** 最大化/还原失败时按后端 `last_window_error()` 的真实原因分档提示。
+   *  旧实现固定说「先退出闪发模式」，但失败也可能是"本窗口不支持最大化"或"还原失败"。
+   *  桥方法缺失 / 返回 null / 调用异常一律回落通用文案——提示可以不够具体，绝不能因此抛错。 */
+  async function windowActionFailureText() {
+    let reason = "";
+    try {
+      const bridge = api();
+      // 先确认方法存在：call() 在方法缺失时会额外 toast「桥接未就绪」，这里不需要那条噪音。
+      if (bridge && typeof bridge.last_window_error === "function") {
+        const value = await call("last_window_error");
+        reason = typeof value === "string" ? value : "";
+      }
+    } catch (_) { reason = ""; }
+    if (reason === "mini") return "先退出闪发模式，再最大化窗口";
+    if (reason === "unsupported") return "当前窗口环境不支持最大化";
+    if (reason === "restore_failed") return "还原失败，请重试或重启窗口";
+    return "窗口操作失败";
+  }
+
   function bindWindowControls() {
     // 无边框悬浮是产品形态（不是设置项）：固定打开，让拖边缘热区与顶栏拖动始终可用，
     // 也就没有"改了要重启"这一说。
@@ -2822,7 +2845,12 @@
             await paintWindowState();        // 用真实状态刷新高亮（而不是本地取反）
             toast(state.settings.topmost ? "已置顶显示" : "已取消置顶");
           } else if (action === "toggle_maximize") {
-            if (ok === false) { toast("先退出闪发模式，再最大化窗口"); await paintWindowState(); return; }
+            if (ok === false) {
+              // 失败原因以后端为准（mini / unsupported / restore_failed / 空）；旧文案只覆盖第一种。
+              toast(await windowActionFailureText());
+              await paintWindowState();
+              return;
+            }
             if (!ok) return;                 // 同上：别在失败后假装图标已切换
             await paintWindowState();        // 图标与 is-active 跟着原生状态走
           }
@@ -3071,6 +3099,10 @@
       if (typeof window.__openModelPop === "function") window.__openModelPop();
       else { pop.hidden = false; }
     }
+    // ★ 卡片可能是通过这里（而不是模型触发器）打开的：aria-expanded 必须同步，
+    //   否则辅助技术与回归用例都读不到"卡片已展开"。
+    const trg = $("think-trigger");
+    if (trg) trg.setAttribute("aria-expanded", "true");
     const slider = $("think-slider");
     if (slider) { try { slider.focus(); } catch (_) {} }
   }
@@ -3415,7 +3447,9 @@
                   session_permission: state.sessionPermission, sandbox: state.settings.sandbox });
     // 审计快照走与审计页同一个渲染入口（BUG-0011）：bootstrap 返回的失败结果也要触发
     // 顶部横幅与"自动展开一次"，不能等到用户自己点开审计页才发现。
-    call("audit_snapshot", 1).then((snap) => { if (snap) renderAudit(snap); });
+    // ★ 启动快照必须与审计页同一个条数（300）：旧实现只取 1 条，自动展开走的
+    //   activateAuditPane() 又不会触发 PANE_LOADERS，于是右栏永远只有 1 条记录。
+    call("audit_snapshot", 300).then((snap) => { if (snap) renderAudit(snap); });
     // 算力清单也在启动时预热一次：输入区触发器要显示「供应商 / 模型」，模型选择器也要按
     // 供应商分组——都不该等到"先打开一次设置页"才有数据（否则首屏触发器只有一个裸模型名）。
     call("model_catalog").then((cat) => {
@@ -3744,6 +3778,9 @@
     const closeModelPop = () => {
       mPop.hidden = true;
       mTrig.setAttribute("aria-expanded", "false");
+      // 思考强度入口打开的是同一张卡片：关闭时把它的 aria-expanded 一并复位。
+      const thinkTrg = $("think-trigger");
+      if (thinkTrg) thinkTrg.setAttribute("aria-expanded", "false");
       mSel.classList.remove("is-open");
       closeProvPop();
     };
@@ -3831,6 +3868,9 @@
       ensureProv();
       mPop.hidden = false;
       mTrig.setAttribute("aria-expanded", "true");
+      // 同一张卡片也承载思考强度：两个入口的展开状态保持一致（见 closeModelPop）。
+      const thinkTrg = $("think-trigger");
+      if (thinkTrg) thinkTrg.setAttribute("aria-expanded", "true");
       mSel.classList.add("is-open");
       closeProvPop();
       mHl = -1;
@@ -3870,6 +3910,12 @@
       if (btn) pickModel(btn.dataset.model);
     };
     mPop.onkeydown = (e) => {
+      // ★ 卡片里有原生表单控件（#think-slider 是 range input）：方向键属于它们的
+      //   默认交互。旧实现无条件 preventDefault，焦点在滑杆上按 ↑↓ 被吞掉，键盘不可用。
+      //   这里只对输入类控件放行方向键，列表导航逻辑对其它元素保持不变。
+      const tag = ((e.target && e.target.tagName) || "").toLowerCase();
+      if ((e.key === "ArrowDown" || e.key === "ArrowUp")
+          && (tag === "input" || tag === "textarea" || tag === "select")) return;
       const items = visibleItems();
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();

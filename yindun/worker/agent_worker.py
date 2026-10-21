@@ -205,6 +205,12 @@ class Worker:
         self._box_mapping: dict = {}
         # 由 main_window 注入的上轮映射快照（从会话数据恢复，供本轮合并还原）
         self._box_mapping_restore: dict = {}
+        # ★ 审批结果（P1-11）：approved / rejected / timeout / cancelled。
+        #   调用方据此区分"用户明确驳回"与"5 分钟没人响应"——后者必须停止整轮，
+        #   否则超时驳回后模型还会继续调别的工具、甚至再次发起同一审批。
+        self._approval_outcome = ""
+        # ★ 本轮已被驳回/超时的工具：同一轮内不再自动重试（不再反复弹审批）
+        self._denied_tools: set = set()
 
     def approve(self, ok):
         """人工审批回调：ok=True 表示批准，ok=False 表示驳回"""
@@ -218,7 +224,8 @@ class Worker:
         self._approved_val = False
         self._approved.set()
 
-    def _request_approval(self, name, args, path, timeout: float = 300.0) -> bool:
+    def _request_approval(self, name, args, path, timeout: float = 300.0,
+                          display_path: str = "") -> bool:
         """统一的敏感操作人工审批等待。
 
         先 clear 审批事件再 emit need_confirm（修正 clear/emit 顺序，消除
@@ -233,7 +240,10 @@ class Worker:
         返回 True=批准；False=驳回/取消/超时（默认 timeout 300s）。
         """
         self._approved.clear()
-        payload = {"name": name, "args": args, "path": path}
+        self._approval_outcome = ""
+        # 展示路径可以与判定路径不同（例如知识库检索没有落盘目标）：
+        # 弹窗显示语义相符的文字，`outside` 仍按真实 path 计算，避免误报越界。
+        payload = {"name": name, "args": args, "path": display_path or path}
         # ★ 用途红线随审批一起送到界面（V3.6.13）：弹窗最上方必须先把
         #   "这个请求想干什么"说清楚，否则"操作与请求相符 / 低危"会给一单
         #   卖个人信息的操作背书。只有 warn/refuse 时才带该字段。
@@ -267,12 +277,15 @@ class Worker:
             # 取消请求优先：cancel() 置标志并 set 审批事件
             if self._cancel_requested.is_set():
                 approved = False
+                self._approval_outcome = "cancelled"
                 break
             if self._approved.wait(timeout=0.2):  # 0.2s 轮询取消标志
                 approved = bool(self._approved_val)
+                self._approval_outcome = "approved" if approved else "rejected"
                 break
             if time.monotonic() >= deadline:
                 approved = False  # 超时视为驳回，避免永久阻塞
+                self._approval_outcome = "timeout"
                 self.status.emit("🚨 人工审批超时（5 分钟未响应），已按驳回处理")
                 self.approval_expired.emit()  # 关闭残留审批弹窗，防止死弹窗误导
                 break
@@ -307,7 +320,9 @@ class Worker:
                 threading.Event().wait(check_interval)
             _result = future.result()
             # 思考耗时：主流 agent 会把这段显性化，用户据此判断"它在认真想还是在卡住"
-            self._trace("thinking", "思考", f"{len(messages)} 条上下文", "ok",
+            # ★ 轨迹名用「推理」而不是「思考」（P1-05）：顶栏的「思考」是模式名，
+            #   同屏再出现「思考 6 条上下文」会让人以为模式没切过去。
+            self._trace("thinking", "推理", f"{len(messages)} 条上下文", "ok",
                         ms=int((time.time() - _t0) * 1000))
             return _result
         finally:
@@ -379,7 +394,7 @@ class Worker:
         if merged is None:
             return self._invoke_llm_with_cancel_check(messages, check_interval)
         self._push_partial(raw_so_far, final=True)
-        self._trace("thinking", "思考", f"{len(messages)} 条上下文", "ok",
+        self._trace("thinking", "推理", f"{len(messages)} 条上下文", "ok",
                     ms=int((time.time() - _t0) * 1000))
         return merged
 
@@ -466,6 +481,10 @@ class Worker:
             self._limit_prefix = ""
             self._limit_continued = False
             self._reply_hit_length = False
+            self._limit_prefix_merged = False
+            # ★ 本轮被驳回/超时的工具集合（P1-11）：每轮重置，避免跨轮误伤
+            self._denied_tools = set()
+            self._approval_outcome = ""
             # ★ 恢复跨轮脱敏映射表（从会话数据恢复，保证历史占位符可还原）
             if self._box_mapping_restore:
                 self._box_mapping = dict(self._box_mapping_restore)
@@ -886,8 +905,10 @@ class Worker:
                 self._kb_mapping.clear()  # 用后即焚
                 if _kb_unresolved:
                     # 不静默：告诉用户有几处没能还原，以及为什么（宁可少还原，也不猜错值）
+                    self._trace("judge", "知识库占位符还原",
+                                f"{_kb_unresolved} 处无法唯一确定，已保留占位符", "fail")
                     final_reply += (f"\n\n（提示：有 {_kb_unresolved} 处知识库占位符未能还原——"
-                                    "模型改动了占位符编号，无法唯一确定对应实体。可在知识库面板按来源核对。）")
+                                    "模型改写了占位符写法，无法唯一确定对应实体。可在知识库面板按来源核对。）")
             # ★ 反编造兜底（V3.6.3）：本轮没有任何成功的工具结果、回答却在罗列"文件内容"时，
             #   如实加一句"未经核实"。放在还原之后、播报之前——用户看到的就是最终文本。
             final_reply = self._guard_ungrounded_dump(
@@ -1047,16 +1068,48 @@ class Worker:
     #   的排序算法，请你研究」这种通用知识题也被拽去检索，连查 4 轮、每次弹审批，
     #   最后答成"根据知识库检索结果…"。知识库是**本机/本单位资料**的检索器，
     #   不是通用搜索引擎；通用知识、算法、原理、代码、研究类问题应当由模型自己推理。
+    # ★ 判据分强弱两档（V3.6.17，缺陷 P0-03）：
+    #   旧实现把「我们公司 / 公司的 / 文件里」这类过泛片段也当信号词，于是
+    #   「Python 里怎么读取文件里的内容」「公司的一般纳税人有什么区别」都会被判成
+    #   "该查本机资料"，通用题被拖进检索。强信号直接命中；弱信号只有在**没有**
+    #   通用知识指向时才成立（"我们公司的合同放哪了"走知识库，"我们公司的产品适合
+    #   哪种架构"不走）。同时补入报销/流水/账单这类真实业务对象词。
+    # 显式指向本机资料：出现即认定该查知识库
     _LOCAL_DOC_SIGNALS = (
-        "知识库", "已入库", "入库", "上传的", "上传过", "附件里", "文档里",
-        "资料里", "文件里", "合同", "报表", "规章", "制度", "手册", "纪要",
-        "简历", "员工信息", "客户资料", "项目文档", "内部资料", "本单位",
-        "我们公司", "咱们公司", "公司的", "这份文档", "这些文档", "档案",
+        "知识库", "已入库", "入库", "上传的", "上传过", "附件里", "这份文档",
+        "这些文档", "本机资料", "内部资料", "本单位", "档案",
+    )
+    # 业务对象：合同/报销/流水…通常指本机资料，但"Excel 怎么做报表"是通用问题，
+    # 因此遇到明确的技术/工具词时让位给模型自己推理。
+    _LOCAL_DOC_OBJECT_SIGNALS = (
+        "合同", "报表", "规章", "制度", "手册", "纪要", "简历", "员工信息",
+        "客户资料", "项目文档", "报销", "流水", "账单", "台账", "收支", "支出",
+        "发票", "凭证",
+    )
+    _LOCAL_DOC_WEAK_SIGNALS = ("我们公司", "咱们公司", "公司的", "文件里", "文档里", "资料里")
+    # 弱信号遇到通用知识指向时不再强制检索
+    _GENERIC_KNOWLEDGE_SIGNALS = (
+        "算法", "原理", "编程", "代码", "区别", "教程", "示例", "复杂度",
+        "框架", "架构", "编程语言", "函数", "怎么", "如何", "为什么", "是什么",
+    )
+    # 业务对象只在这些"明显是通用技术问题"的词面前让位（不含"怎么/如何"——
+    # 「公司报销制度是怎么规定的」仍是本机资料问题）
+    _GENERIC_TECH_SIGNALS = (
+        "python", "excel", "word", "ppt", "sql", "数据库", "编程", "代码",
+        "算法", "公式", "函数", "框架", "架构", "教程", "原理", "复杂度",
     )
 
     def _looks_like_kb_question(self, text: str) -> bool:
         """这个问题是不是在问**本机已入库的资料**（而不是通用知识）。"""
-        return any(word in str(text or "") for word in self._LOCAL_DOC_SIGNALS)
+        body = str(text or "").replace("流水线", "")   # 数据流水线 ≠ 资金流水
+        if any(word in body for word in self._LOCAL_DOC_SIGNALS):
+            return True
+        lowered = body.lower()
+        if any(word in body for word in self._LOCAL_DOC_OBJECT_SIGNALS):
+            return not any(word in lowered for word in self._GENERIC_TECH_SIGNALS)
+        if any(word in body for word in self._LOCAL_DOC_WEAK_SIGNALS):
+            return not any(word in body for word in self._GENERIC_KNOWLEDGE_SIGNALS)
+        return False
 
     # ★ 写类意图识别（V3.6.13，组员评审 BUG-0007）：
     #   快速模式禁写操作，但旧实现只在**模型真的发起工具调用之后**才提示限制。
@@ -1071,9 +1124,20 @@ class Worker:
     )
     # 落盘对象：名词类（不含单独一个"写"字——"写一段代码/写个函数"是创作，不是落盘）
     _WRITE_OBJECT_NOUNS = ("文件", "文件夹", "目录", "表格", "文档", "代码", "脚本", "附件")
-    # 咨询/创作问法：出现即不当作写操作请求（"怎么创建文件""帮我写一段代码"）
+    # 落盘位置：即使没写文件名，"保存到桌面"也是明确的落盘请求
+    _WRITE_TARGET_PLACES = ("桌面", "下载", "文档目录", "当前目录", "沙箱目录", "本机")
+    # 咨询/创作问法：出现即不当作写操作请求（"怎么创建文件""帮我写一段代码"）。
+    # ★ 不再包含"能否 / 可以吗"（V3.6.17，缺陷 P0-02）：它们是**征求许可的请求**，
+    #   例如"帮我把文件保存到桌面，可以吗"仍是写请求，必须在快速模式前置拦截。
     _WRITE_CONSULT_MARKERS = (
-        "怎么", "如何", "为什么", "能否", "可以吗", "写一段代码", "写个函数", "示例",
+        "怎么", "如何", "为什么", "写一段代码", "写个函数", "示例",
+    )
+    # 过去时追问（"这份文件是什么时候被删除的""这个文档是谁修改的"）是在问历史，
+    # 不是要求执行；动作词命中也不能当写请求拦截，否则只读问句拿不到回答。
+    _PAST_INQUIRY_RE = re.compile(
+        r"(什么时候|何时|哪天|哪一天|谁|是谁|是否|有没有)\s*(?:被|已经|曾|是)?\s*"
+        r"(?:删除|删掉|修改|创建|新建|移动|复制|改名|重命名|保存|写入)"
+        r"|(?:被|已)\s*(?:删除|修改|创建|移动|复制|重命名|保存|写入)的"
     )
     # 带扩展名的文件名（"approval_probe.txt"）：扩展名后允许直接跟中文，不用 \b
     _FILE_WITH_EXT_RE = re.compile(
@@ -1089,13 +1153,16 @@ class Worker:
         """这句话是不是在要求**落盘/删除/移动/执行**（而不是只读或咨询）。
 
         命中条件（全部满足）：
-          1. 有写/删除/建目录/执行类动作动词；
-          2. 有落盘对象——带扩展名的文件名、绝对路径，或文件/目录类名词；
-          3. 不是咨询/创作问法（怎么/如何/为什么/能否/可以吗/写一段代码/写个函数/示例）。
+          1. 不是过去时追问（"什么时候被删除的""是谁修改的"）；
+          2. 不是咨询/创作问法（怎么/如何/为什么/写一段代码/写个函数/示例）；
+          3. 有写/删除/建目录/执行类动作动词；
+          4. 有落盘对象——带扩展名的文件名、绝对路径、文件/目录类名词，或落盘位置。
         只读请求（"读一下桌面有几个文件""分析这个目录"）没有动作动词，不会命中。
         """
         body = str(text or "").strip()
         if not body:
+            return False
+        if self._PAST_INQUIRY_RE.search(body):
             return False
         if any(marker in body for marker in self._WRITE_CONSULT_MARKERS):
             return False
@@ -1103,7 +1170,9 @@ class Worker:
             return False
         if self._FILE_WITH_EXT_RE.search(body) or self._ABS_PATH_RE.search(body):
             return True
-        return any(noun in body for noun in self._WRITE_OBJECT_NOUNS)
+        if any(noun in body for noun in self._WRITE_OBJECT_NOUNS):
+            return True
+        return any(place in body for place in self._WRITE_TARGET_PLACES)
 
     def _empty_output_message(self) -> str:
         """模型这一轮什么都没产出时的可执行诊断（替换"偶发空回复、每 5 次一次"的运气论）。
@@ -1300,32 +1369,20 @@ class Worker:
                             additional_kwargs={"internal": True}))
                         continue
                     # 续写后仍然到上限：合并两段，交给末尾如实标注
-                    content = self._limit_prefix + "\n" + content
-                    self._limit_prefix = ""
+                    content = self._merge_limit_prefix(content)
                     self._reply_hit_length = True
                     # 链尾也要换成合并后的全文：落库口径必须与界面一致
                     # （否则重开会话只剩"续写的那半段"）。
-                    if messages and isinstance(messages[-1], AIMessage):
-                        messages[-1] = AIMessage(
-                            content=content,
-                            additional_kwargs=dict(getattr(ai_msg, "additional_kwargs", {}) or {}))
+                    self._replace_last_ai_content(messages, ai_msg, content)
                 elif _limit_hit and getattr(self, "_limit_prefix", ""):
                     # 续写这一轮把预算全用在内部推理上、正文为空：保留已写内容
-                    content = self._limit_prefix
-                    self._limit_prefix = ""
+                    content = self._merge_limit_prefix("")
                     self._reply_hit_length = True
-                    if messages and isinstance(messages[-1], AIMessage):
-                        messages[-1] = AIMessage(
-                            content=content,
-                            additional_kwargs=dict(getattr(ai_msg, "additional_kwargs", {}) or {}))
+                    self._replace_last_ai_content(messages, ai_msg, content)
                 elif isinstance(content, str) and getattr(self, "_limit_prefix", ""):
                     # 续写正常结束：拼接成完整回答
-                    content = self._limit_prefix + "\n" + content
-                    self._limit_prefix = ""
-                    if messages and isinstance(messages[-1], AIMessage):
-                        messages[-1] = AIMessage(
-                            content=content,
-                            additional_kwargs=dict(getattr(ai_msg, "additional_kwargs", {}) or {}))
+                    content = self._merge_limit_prefix(content)
+                    self._replace_last_ai_content(messages, ai_msg, content)
 
                 # 渐进输出：把当前轮次的回答显示给用户
                 if content and isinstance(content, str) and content.strip():
@@ -1435,9 +1492,13 @@ class Worker:
                         has_executed_tool = False  # 重置标记，允许下一轮继续强制
                         continue  # 不返回，继续下一轮推理
 
-                if has_executed_tool and not self._looks_substantive(
-                        content if isinstance(content, str) else ""):
+                if (has_executed_tool
+                        and not getattr(self, "_limit_prefix_merged", False)
+                        and not self._looks_substantive(
+                            content if isinstance(content, str) else "")):
                     # 达到最低轮数且答案还很薄，追加总结轮次。
+                    # ★ 已拼接"长度上限前缀"的轮次不再跑总结：前缀就是用户已经看过的
+                    #   正文，再生成一次会把整段顶掉（P0-04 的第二个丢内容入口）。
                     # ★ 若模型这一轮已经给出实质回答（够长 + 有结构），**不跑**这一次
                     #   全量生成：省一次完整推理，也避免把已正确的答案改写坏。
                     self.status.emit("[总结] 工具执行完毕，正在生成最终总结...")
@@ -1446,6 +1507,8 @@ class Worker:
                                                 additional_kwargs={"internal": True}))
                     final_msg = self._invoke_llm_streaming(messages)
                     content = getattr(final_msg, "content", "")
+                    # 若此前有"长度上限前已生成的前缀"，总结轮不能把它顶掉（P0-04）
+                    content = self._merge_limit_prefix(content)
                     # ★ 总结轮的结果必须**进消息链**（V3.6.9 修复真实不一致）：
                     #   这一轮是在替用户生成最终答复，旧实现只 emit 给界面、没放进 `messages`——
                     #   而落库用的是链尾（`_ensure_reply_persisted` 只补空尾、不覆盖已有的非空尾），
@@ -1484,6 +1547,9 @@ class Worker:
                             continue
                         final_reply += ("\n\n（提示：模型这一轮把工具调用写成了文字，因此**没有被真正执行**；"
                                         "可以再发一次，或换用更大的模型。）")
+                    # ★ 续写前缀并回最终回答（P0-04）：放在重试判定之后——
+                    #   若这一轮要重生成，前缀必须留着，不能提前消费掉。
+                    final_reply = self._merge_limit_prefix(final_reply)
                     # ★ 落地性兜底：模型若无视工具结果（实测 7B 常发生），把真实读取结果一并呈现
                     if forced_tool_result and forced_tool_name:
                         final_reply = self._ensure_grounded(final_reply, forced_tool_name, forced_tool_result)
@@ -1515,6 +1581,8 @@ class Worker:
                     else:
                         final_reply = self._empty_output_message()
                     self._reply_is_fallback = True
+                # ★ 续写前缀不能因为兜底文案而丢失（P0-04）：用户先看到的正文必须还在
+                final_reply = self._merge_limit_prefix(final_reply)
                 chain = messages[round_start_idx:]
                 memory.update_with_full_chain(chain)
                 self.result_messages = memory.to_dict_list()
@@ -1527,7 +1595,7 @@ class Worker:
             round_had_failure = False
             round_made_progress = False   # 本轮是否拿到过成功工具结果（无进展收敛依据，见循环末尾）
 
-            for tc in tool_calls:
+            for _tc_idx, tc in enumerate(tool_calls):
                 # 取消检测
                 if self._cancel_requested.is_set():
                     self.status.emit("[已取消] 推理已被用户中断")
@@ -1541,6 +1609,21 @@ class Worker:
                 #   策略拦截、审批驳回）都算"发起过"，与"成功执行"分开计数——否则
                 #   守卫会把"工具被拦/被驳回"误判成"一次工具都没调用"，话就说得不准确了。
                 self.tool_call_attempts += 1
+
+                # ★ 同一轮内被驳回/超时过的工具不再自动重试（P1-11）：
+                #   旧实现驳回后模型可以立刻用同参数再来一次，于是同一个审批卡反复弹出；
+                #   超时那条更糟——用户离开 5 分钟回来，发现程序已经自己跑完了。
+                if tool_name in self._denied_tools:
+                    tool_result = (
+                        f"⚠️ 本轮「{self._map_tool_display_name(tool_name)}」已被驳回或审批超时，"
+                        "系统不会在同一轮内自动重试。请改用不需要该操作的办法，"
+                        "或让用户重新发送请求并重新授权。"
+                    )
+                    messages.append(ToolMessage(
+                        content=self._with_failure_directive(tool_result),
+                        tool_call_id=tool_call_id))
+                    all_success = False
+                    continue
 
                 # 快速模式：拦截写操作工具
                 if is_quick_mode and tool_name in _WRITE_TOOLS:
@@ -1579,6 +1662,10 @@ class Worker:
 
                 # 1. 路径解析：从工具参数中提取并净化路径
                 target_path = self._resolve_target_path(tool_args)
+                # ★ 展示用目标（P1-11）：知识库检索没有"目标路径"，旧实现回落成项目目录，
+                #   审批卡上看起来像要在那个目录写文件。判定仍用真实 target_path，
+                #   只有展示换成语义相符的文字。
+                display_path = self._display_target_path(tool_name, tool_args, target_path)
 
                 # ★ 只读工具的重复调用必须在**审批之前**短路（V3.6.13，负责人实测：
                 #   通用问题连续 4 轮检索知识库，每轮都弹一次审批）。同一工具同一参数
@@ -1603,7 +1690,7 @@ class Worker:
 
                 if policy_result == "deny":
                     # ★ 策略直接拒绝：不询问用户，直接驳回（给可行动的下一步，别让模型反复撞墙）
-                    tool_result = (f"已拦截：安全策略禁止在 {target_path} 执行 {tool_display_name}"
+                    tool_result = (f"已拦截：安全策略禁止在 {display_path} 执行 {tool_display_name}"
                                    + self._deny_hint(target_path))
                     tool_msg = ToolMessage(content=self._with_failure_directive(tool_result),
                                            tool_call_id=tool_call_id)
@@ -1632,9 +1719,12 @@ class Worker:
                     )
                     # ★ 弹窗必须显示**完整真实路径**：越界时的审批是"你同意这次越界"，
                     #   只给文件名或相对路径等于让人盲签（payload 里 path 就是解析后的绝对路径）。
-                    if not self._request_approval(tool_display_name, tool_args, target_path):
+                    if not self._request_approval(tool_display_name, tool_args, target_path,
+                                                  display_path=display_path):
                         # 用户驳回 / 取消 / 超时
-                        tool_result = f"已驳回：敏感操作被人工拦截（尝试在 {target_path} 执行 {tool_display_name}）"
+                        _outcome = getattr(self, "_approval_outcome", "")
+                        self._denied_tools.add(tool_name)
+                        tool_result = f"已驳回：敏感操作被人工拦截（尝试在 {display_path} 执行 {tool_display_name}）"
                         tool_msg = ToolMessage(content=self._with_failure_directive(tool_result),
                                                tool_call_id=tool_call_id)
                         messages.append(tool_msg)
@@ -1645,6 +1735,32 @@ class Worker:
                                 f"{tool_display_name}({tool_name})", target_path, approved=False)
                         except Exception:
                             pass
+                        # ★ 超时 ≠ 用户驳回（P1-11）：人不在场，整轮必须停下。
+                        #   旧实现把超时当普通驳回后继续跑工具链，用户回来时程序已经
+                        #   自己执行了 5+ 个只读工具、耗时 619 秒，甚至再次弹同一审批。
+                        if _outcome == "timeout":
+                            self.status.emit("[停止] 审批超时，已终止本轮（未执行该操作）")
+                            final_reply = (
+                                "⏱ 审批超时：这次操作需要你确认，但 5 分钟内没有收到授权，已按驳回处理。\n"
+                                "为避免在你不在场时继续执行未授权操作，本轮推理**已停止**；"
+                                "被拦截的那一步没有执行。\n"
+                                "需要继续的话，请重新发送请求，并在审批卡上点「授权」。"
+                            )
+                            # ★ 同一轮里排在后面的工具调用也必须各补一条 ToolMessage：
+                            #   协议要求每个 tool_call_id 都有回应，否则这条链落库后
+                            #   下一轮发给严格端点会直接 400（缺 tool 结果）。
+                            for _rest in tool_calls[_tc_idx + 1:]:
+                                _rid = (_rest.get("id", "") if isinstance(_rest, dict)
+                                        else getattr(_rest, "id", ""))
+                                messages.append(ToolMessage(
+                                    content="未执行：本轮因人工审批超时已停止。",
+                                    tool_call_id=_rid))
+                            final_reply = self._merge_limit_prefix(final_reply)
+                            chain = messages[round_start_idx:]
+                            memory.update_with_full_chain(chain)
+                            self.result_messages = memory.to_dict_list()
+                            self._ensure_reply_persisted(final_reply)
+                            return final_reply
                         continue
                     # ★ 审计：记录访问控制通过
                     try:
@@ -1659,12 +1775,12 @@ class Worker:
 
                 # 3. 执行工具
                 self.status.emit(
-                    f"[思考 {round_count}/{max_rounds}] 执行工具: {tool_display_name}（{target_path}）"
+                    f"[思考 {round_count}/{max_rounds}] 执行工具: {tool_display_name}（{display_path}）"
                 )
 
                 AuditLog().log_tool_call(tool_name, tool_args, target_path)
                 _tool_tid = int(getattr(self, "_trace_seq", 0)) + 1
-                self._trace("tool", tool_display_name, str(target_path or ""), "running")
+                self._trace("tool", tool_display_name, str(display_path or ""), "running")
 
                 try:
                     self.tool_call_count += 1
@@ -1743,6 +1859,7 @@ class Worker:
                         f"2. 如果涉及写操作，请切换到深度思考模式\n"
                         f"3. 用更具体的表述告诉我你想做什么"
                     )
+                    final_reply = self._merge_limit_prefix(final_reply)
                     chain = messages[round_start_idx:]
                     memory.update_with_full_chain(chain)
                     self.result_messages = memory.to_dict_list()
@@ -1788,6 +1905,7 @@ class Worker:
                         "可以试试：把文件放进可读写范围（或在设置页把「可读写范围」改到目标目录）、"
                         "把问题问得更具体，或者换一个更大的模型再试。"
                     )
+                    final_reply = self._merge_limit_prefix(final_reply)
                     chain = messages[round_start_idx:]
                     memory.update_with_full_chain(chain)
                     self.result_messages = memory.to_dict_list()
@@ -1801,7 +1919,13 @@ class Worker:
         final_msg = self._invoke_llm_with_cancel_check(messages)
         messages.append(final_msg)
         content = getattr(final_msg, "content", "")
-        final_reply = self._clean(content) if content and isinstance(content, str) else last_tool_result
+        if content and isinstance(content, str):
+            final_reply = self._clean(self._merge_limit_prefix(content))
+        elif getattr(self, "_limit_prefix", ""):
+            # 达到最大轮次时，模型这一轮没给正文：已生成的前缀仍是用户的回答（P0-04）
+            final_reply = self._merge_limit_prefix("")
+        else:
+            final_reply = last_tool_result
         # ★ 空产出兜底：`_clean` 之后可能是空串（只有空白/只有 tool_call 标签），而
         #   last_tool_result 也可能为空（本轮一个工具都没执行）——旧实现会把空串当回答返回，
         #   用户看到的就是一个空气泡。宁可如实说明，也不发空白。
@@ -2999,6 +3123,19 @@ class Worker:
         return self.sandbox_path
 
     @staticmethod
+    def _display_target_path(tool_name: str, args: dict, target_path: str) -> str:
+        """审批卡/状态行里的"目标"要按工具语义展示（P1-11）。
+
+        知识库检索没有落盘目标，旧实现回落到项目目录，审批卡上写成
+        `path=<项目目录>`，看起来像要在那里写文件。这里只改展示，判定仍用
+        `target_path`（策略与越界判断不能跟着展示文字走）。
+        """
+        if tool_name == "search_knowledge_base":
+            query = str((args or {}).get("query") or "").strip()
+            return f"检索词：{query[:40]}" if query else "知识库"
+        return target_path
+
+    @staticmethod
     def _det(text):
         """从用户输入文本中解析目标路径（支持多种中文描述格式）。"""
         if not text:
@@ -3226,6 +3363,41 @@ class Worker:
         meta = getattr(ai_msg, "response_metadata", None) or {}
         reason = str(meta.get("done_reason") or meta.get("finish_reason") or "").strip().lower()
         return reason in ("length", "max_tokens", "length_limit")
+
+    def _merge_limit_prefix(self, content: str) -> str:
+        """把"达到长度上限前已生成的前缀"并回本轮最终文本（缺陷 P0-04）。
+
+        旧实现只在「续写轮没有工具调用」的分支里拼接前缀；一旦续写轮返回的是
+        tool_calls，前缀就留在 `_limit_prefix` 里，而后续的工具执行、总结轮或
+        兜底文案各自直接返回，前缀被静默丢弃——用户看到的长回答会"前功尽弃"。
+        所有最终文本出口都必须经过这里；前缀只消费一次。
+        """
+        prefix = str(getattr(self, "_limit_prefix", "") or "")
+        if not prefix:
+            return content if isinstance(content, str) else ""
+        self._limit_prefix = ""
+        # 标记"本轮已经拼接过长回答前缀"：后续的总结轮不能再把这段正文顶掉。
+        self._limit_prefix_merged = True
+        text = content if isinstance(content, str) else ""
+        if not text.strip():
+            return prefix
+        return prefix + "\n" + text
+
+    @staticmethod
+    def _replace_last_ai_content(messages, ai_msg, content: str) -> None:
+        """替换链尾 AIMessage 的正文，同时保留 id / tool_calls / 元数据。
+
+        旧实现 `AIMessage(content=...)` 重建消息会丢掉原消息字段（缺陷 P0-04
+        的代码核对结论）；用 `model_copy(update=…)` 只改 content，其余原样保留。
+        """
+        if not messages:
+            return
+        try:
+            messages[-1] = ai_msg.model_copy(update={"content": content})
+        except Exception:
+            messages[-1] = AIMessage(
+                content=content,
+                additional_kwargs=dict(getattr(ai_msg, "additional_kwargs", {}) or {}))
 
     def _guard_length_limit(self, reply: str) -> str:
         """续写后仍到上限时如实标注（不假装写完，也不替模型补内容）。"""

@@ -167,6 +167,40 @@ _amb = {"[KB_NAME_0_aaaa]": eng._crypto.encrypt("张伟"),
 out, miss = eng.restore_kb_placeholders("联系人是 [KB_NAME_9_cccc]。", dict(_amb))
 check("★ 多候选且无线索时**保留占位符**、不猜值（宁可少还原也不编造事实）",
       "张伟" not in out and "李娜" not in out and miss == 1, f"{out} miss={miss}")
+
+# P0-05：模型会改写占位符写法。外形归一后仍按同一套 type/num/nonce 查表，
+# 优先级与上面完全一致（唯一解才还原，歧义照旧保留并计数）。
+out, miss = eng.restore_kb_placeholders("联系人是 KB_NAME_1_b7c2。", dict(_enc))
+check("★ 裸占位符（丢了方括号）→ 还原且 miss==0", "张伟" in out and miss == 0, out)
+out, miss = eng.restore_kb_placeholders("联系人是 [kb_name_1_b7c2]。", dict(_enc))
+check("★ 小写占位符 → 归一后还原", "张伟" in out and miss == 0, out)
+out, miss = eng.restore_kb_placeholders("联系人是 【KB_NAME_1_b7c2】。", dict(_enc))
+check("★ 全角方括号 → 还原", "张伟" in out and miss == 0, out)
+out, miss = eng.restore_kb_placeholders("联系人是 [ KB_NAME_1_b7c2 ]。", dict(_enc))
+check("★ 方括号内多余空格 → 还原", "张伟" in out and miss == 0, out)
+out, miss = eng.restore_kb_placeholders("联系人是 [KB-NAME-1-b7c2]。", dict(_enc))
+check("★ 连字符分隔变体 → 还原", "张伟" in out and miss == 0, out)
+out, miss = eng.restore_kb_placeholders("联系人是 KB_NAME_9_cccc。", dict(_amb))
+check("★ 歧义裸占位符：保留原样且计入未还原",
+      out == "联系人是 KB_NAME_9_cccc。" and miss == 1, f"{out} miss={miss}")
+out, miss = eng.restore_kb_placeholders("城市是 KB_CITY_0_ffff。", dict(_enc))
+check("★ 裸占位符未能还原时如实计入 miss（不静默丢弃）",
+      "KB_CITY_0_ffff" in out and miss == 1, f"{out} miss={miss}")
+out, miss = eng.restore_kb_placeholders("联系人是 【KB_NAME_9_cccc】。", dict(_amb))
+check("歧义带括号残留同样计入 miss",
+      "KB_NAME_9_cccc" in out and miss == 1, f"{out} miss={miss}")
+check("越界：裸的非 KB 占位符也不受影响",
+      eng.restore_kb_placeholders("手机 PHONE_0_zzzz", dict(_enc))[0] == "手机 PHONE_0_zzzz")
+check("普通连字符文本不会被当成占位符",
+      eng.restore_kb_placeholders("版本 KB-2024 与 KB-ABC", dict(_enc))
+      == ("版本 KB-2024 与 KB-ABC", 0))
+# 两条还原通路互不越界：非 KB 占位符的统计不能把 KB 占位符算成"未还原"
+_phone_map = {"[PHONE_0_abcd]": eng._crypto.encrypt("13812345678")}
+_out2, _hits2, _left2 = eng.deanonymize_with_stats(
+    "电话 [PHONE_0_abcd]，资料 [KB_NAME_1_b7c2] 与 KB_EMAIL_2_d1e4", _phone_map)
+check("★ 用户输入还原不把知识库占位符计入未还原",
+      "13812345678" in _out2 and _left2 == 0, f"{_out2!r} left={_left2}")
+
 out, miss = eng.restore_kb_placeholders("普通文本没有占位符。", dict(_enc))
 check("没有占位符时原样返回", out == "普通文本没有占位符。" and miss == 0, out)
 check("越界：只处理 [KB_…]，用户输入占位符不受影响",
