@@ -251,10 +251,12 @@ check("持久化文件损坏时按空实例启动（不崩溃）", isinstance(en
 print("\n" + "=" * 78)
 print("【8】token 口径：看板与摘要压缩共用同一估算器")
 print("=" * 78)
-from yindun.core.memory_manager import DEFAULT_MAX_HISTORY_TOKENS, estimate_tokens  # noqa: E402
+from yindun.core.memory_manager import estimate_tokens  # noqa: E402
+from yindun.core.context_budget import history_budget    # noqa: E402
 payload = svc._state_payload(None)
-check("状态载荷带上下文阈值（且来自共享常量）",
-      payload.get("context_limit") == DEFAULT_MAX_HISTORY_TOKENS == 5000, str(payload.get("context_limit")))
+_expected_limit = history_budget(svc.active_model_context_window())
+check("状态载荷的上下文阈值按当前模型窗口（不再是固定 5000）",
+      payload.get("context_limit") == _expected_limit, str(payload.get("context_limit")))
 cjk_text = "隐盾安全智能体" * 3000
 check("估算器对中文按字计数（不再是 len//2）",
       estimate_tokens(cjk_text) > len(cjk_text) // 2,

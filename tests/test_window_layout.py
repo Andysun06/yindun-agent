@@ -243,9 +243,10 @@ check("浮条输入是多行控件（单行 input 装不下换行，Shift+Enter 
       '<textarea class="minibar__input" id="mini-input"' in html)
 check("浮条输入框有高度上限（浮条窗口固定 60px，不能被文本撑破）",
       "max-height: 44px" in css and 'AUTOSIZE_MAX = { input: 180, "mini-input": 44 }' in js)
-check("Shift+Enter 在浮条里不发送（交给控件默认行为插入换行）",
-      'if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); miniSubmit(); }' in js
-      and 'if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); miniSubmit(); }' not in js)
+check("Shift+Enter / Ctrl+Enter 在浮条里都不发送（换行交给控件/显式插入）",
+      'if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.isComposing) {' in js
+      and 'if (e.key === "Enter" && !e.isComposing) {' not in js
+      and 'insertNewline($("mini-input"))' in js)
 check("草稿双向搬运：折叠时主输入 → 浮条，展开时浮条 → 主输入",
       'carryDraft("mini-input", "input")' in js and 'carryDraft("input", "mini-input")' in js
       and '$("mini-input").value = ""' not in js, "展开分支不得再直接清空浮条（丢字根因）")
