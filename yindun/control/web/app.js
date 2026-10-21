@@ -34,7 +34,7 @@ const AUTO_MS = 10000;
 const AUTO_PAGES = ["overview", "endpoints"];
 
 const state = {
-  base: "", token: "", page: "overview", timer: null, endpoints: [],
+  base: "", token: "", page: "overview", role: "admin", timer: null, endpoints: [],
   filters: { endpoint_id: "", event_type: "", severity: "", q: "" }, offset: 0, total: 0,
   // 策略页的"点选式"状态：presets 走 DOM（复选框），模型/插件因含"手动补一个"而需记住
   policyPick: { models: [], plugins: [] }, policyCands: { models: new Map(), plugins: new Map() },
@@ -243,11 +243,16 @@ async function boot() {
     } catch (e) { /* 解析失败就退回手输，不静默 */ }
   }
   if (!state.base || !state.token) return showAuth();
-  try { await api("/api/v1/overview"); start(); }
+  try { const who = await api("/api/v1/whoami"); state.role = (who && who.role) || "admin"; start(); }
   catch (e) { showAuth(e.unauthorized ? "令牌无效或已过期，请重新输入" : `无法连接控制面：${e.message}`); }
 }
 function start() {
   $("auth").hidden = true; $("shell").hidden = false;
+  // 报告 P1-03：只读令牌也能登录，但隐藏策略下发入口并标明角色。
+  const viewer = state.role === "viewer";
+  document.body.classList.toggle("is-viewer", viewer);
+  const badge = $("role-badge");
+  if (badge) badge.hidden = !viewer;
   bindKeys();
   document.querySelectorAll(".nav__item").forEach((b) => {
     b.onclick = () => go(b.dataset.page);
@@ -598,6 +603,10 @@ function bindPairModal() {
 
 /* ── 路由 ─────────────────────────────────────────────── */
 function go(page) {
+  if (state.role === "viewer" && page === "policy") {
+    toast("只读令牌不能访问策略下发页（需要管理令牌）");
+    return;
+  }
   state.page = page;
   document.querySelectorAll(".nav__item").forEach((b) =>
     b.classList.toggle("is-active", b.dataset.page === page));

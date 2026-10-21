@@ -753,7 +753,18 @@ class ControlStore:
         with self._lock:
             existing = self._get_setting("viewer_token_hash")
             if existing:
-                return self._read_token_file(existing, name="viewer_token.txt")
+                token = self._read_token_file(existing, name="viewer_token.txt")
+                if token:
+                    return token
+                # 报告 P1-03：库里的哈希与文件里的明文不一致时，旧实现返回空串，
+                # 导致"文件里的令牌登录不了"。以文件为准重建哈希。
+                path = self.dir / "viewer_token.txt"
+                if path.exists():
+                    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                        text = line.strip().lstrip("\ufeff")
+                        if text and not text.startswith("#"):
+                            self._set_setting("viewer_token_hash", _sha256(text))
+                            return text
             token = secrets.token_urlsafe(24)
             self._set_setting("viewer_token_hash", _sha256(token))
             (self.dir / "viewer_token.txt").write_text(
@@ -765,7 +776,19 @@ class ControlStore:
         if not token:
             return False
         expected = self._get_setting("viewer_token_hash")
-        return bool(expected) and _sha256(token) == expected
+        if expected and _sha256(token) == expected:
+            return True
+        # 文件为准的回退：库里哈希可能是旧库遗留，文件里的令牌仍是运维手里那份
+        try:
+            path = self.dir / "viewer_token.txt"
+            if path.exists():
+                for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                    text = line.strip().lstrip("\ufeff")
+                    if text and not text.startswith("#") and secrets.compare_digest(token, text):
+                        return True
+        except Exception:
+            pass
+        return False
 
     def close(self) -> None:
         conn = getattr(self._local, "conn", None)

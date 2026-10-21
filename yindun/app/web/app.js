@@ -737,6 +737,18 @@
     el.style.height = Math.min(el.scrollHeight, AUTOSIZE_MAX[el.id] || 180) + "px";
   }
 
+  /** Ctrl+Enter / Cmd+Enter 换行（报告 P1-06）：浏览器默认不会给 textarea 插入换行，
+   *  旧实现又把它当 Enter 直接发送，习惯这个组合的人会误发半截消息。 */
+  function insertNewline(el) {
+    if (!el) return;
+    const start = el.selectionStart == null ? el.value.length : el.selectionStart;
+    const end = el.selectionEnd == null ? start : el.selectionEnd;
+    el.value = el.value.slice(0, start) + "\n" + el.value.slice(end);
+    el.selectionStart = el.selectionEnd = start + 1;
+    autosizeInput(el);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
   /** 把草稿从一个输入框**搬**到另一个（复制 + 清空来源，光标落末尾）。
    *  为什么必须搬：主输入框与浮条是两个独立控件，不搬就会出现两种丢字——
    *    ① 折叠时：刚在主输入框打好的字跟着界面一起被隐藏（浮条里空着，只能重打）；
@@ -2874,10 +2886,14 @@
   async function renderControlPage() {
     const st = await call("control_status");
     if (!st) return;
+    const pending = Number(st.pending_events || 0);
+    const lastSync = st.last_report_at ? st.last_report_at.slice(11, 19) : "从未";
     const state = {
+      // P0-01：不再笼统写"上报中"，而是把"还有多少没同步、上次同步几时"摆出来。
       text: st.configured
-        ? `${st.enabled ? "上报中" : "已接入（未上报）"} · ${st.endpoint_id} · ${st.url}`
-          + (st.last_report_at ? ` · 最后上报 ${st.last_report_at.slice(11, 19)}` : "")
+        ? (st.enabled
+            ? `已连接 · ${pending ? `待同步 ${pending} 条` : "已同步"} · 上次同步 ${lastSync}`
+            : `已接入（未上报） · ${st.endpoint_id} · ${st.url}`)
           + (st.last_error ? ` · 最近错误：${st.last_error}` : "")
         : "未接入：向 IT 索取配对码后在下方接入",
       cls: st.last_error ? "is-bad" : (st.configured ? "is-ok" : ""),
@@ -3494,8 +3510,13 @@
     $("btn-mini-expand").onclick = () => setMini(false);
     $("btn-mini-send").onclick = miniSubmit;
     $("mini-input").addEventListener("keydown", (e) => {
-      // 只拦"不按 Shift 的 Enter"：Shift+Enter 交给控件默认行为插入换行
-      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); miniSubmit(); }
+      // Enter 发送；Shift+Enter / Ctrl+Enter 换行（报告 P1-06：旧实现 Ctrl+Enter 会发送）
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) {
+        e.preventDefault(); insertNewline($("mini-input")); return;
+      }
+      if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.isComposing) {
+        e.preventDefault(); miniSubmit();
+      }
       if (e.key === "Escape") { e.preventDefault(); setMini(false); }
     });
     $("mini-input").addEventListener("input", (e) => autosizeInput(e.target));
@@ -3505,7 +3526,10 @@
     });
 
     $("input").addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) {
+        e.preventDefault(); insertNewline($("input")); return;
+      }
+      if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.isComposing) {
         e.preventDefault(); $("composer").requestSubmit();
       }
     });
@@ -3596,6 +3620,15 @@
     if ($("sw-ctrl-report")) $("sw-ctrl-report").onchange = async (e) => {
       const res = await call("control_set_enabled", e.target.checked);
       if (!res || !res.ok) { toast("切换失败：" + ((res && res.error) || "")); e.target.checked = !e.target.checked; return; }
+      if (e.target.checked) {
+        const sync = res.sync || {}, rep = sync.report || {};
+        ctrlNote(sync.ok
+          ? `已启用上报 · 每 ${res.auto_interval || 30} 秒自动同步（本批 ${rep.events || 0} 条）`
+          : "已启用上报，但首次同步失败：" + (rep.error || "未知原因"),
+          sync.ok ? "is-ok" : "is-bad");
+      } else {
+        ctrlNote("已停用上报（已下发的策略规则保留，可一键撤销）", "");
+      }
       toast(e.target.checked ? "已启用上报（掩码事件与元数据）" : "已停用上报");
       renderControlPage();
     };

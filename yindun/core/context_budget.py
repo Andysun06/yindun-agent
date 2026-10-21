@@ -97,16 +97,16 @@ def output_budget(window: int, deep: bool = True) -> int:
 ATTACHMENT_TOTAL_CHARS = 4000
 
 
-def history_usage(messages: List[dict], estimate=None) -> Dict[str, object]:
+def history_usage(messages: List[dict], estimate=None, limit: int = None) -> Dict[str, object]:
     """给界面用：当前历史占了多少、阈值多少、还差多少触发压缩。
 
-    `estimate` 允许调用方注入估算器（默认用 memory_manager 的共享估算器，
-    避免"看板一套、记忆一套"的老问题）。
+    `limit` 由调用方传当前模型的 `history_budget(window)`——报告 P1-01：
+    界面曾固定写 5000，而 worker 实际按窗口压缩（32k 窗口约 11468），两边对不上。
     """
     if estimate is None:
         from yindun.core.memory_manager import estimate_tokens as estimate
     used = sum(estimate(str(m.get("content", ""))) for m in (messages or []))
-    limit = HISTORY_COMPRESS_TOKENS
+    limit = int(limit or HISTORY_COMPRESS_TOKENS)
     ratio = round(used / limit, 3) if limit else 0
     return {
         "used": used,
@@ -114,13 +114,13 @@ def history_usage(messages: List[dict], estimate=None) -> Dict[str, object]:
         "ratio": ratio,
         "remaining": max(0, limit - used),
         "will_compress": used >= limit,
-        "note": compress_note(used),
+        "note": compress_note(used, limit),
     }
 
 
-def compress_note(used: int) -> str:
+def compress_note(used: int, limit: int = None) -> str:
     """人话说明"什么时候会压缩"——界面上直接显示这句。"""
-    limit = HISTORY_COMPRESS_TOKENS
+    limit = int(limit or HISTORY_COMPRESS_TOKENS)
     if used >= limit:
         return (f"本次历史约 {used} token，已达压缩阈值 {limit}："
                 f"更早的对话会被摘要成一条（内容保留要点，不会直接丢弃）")

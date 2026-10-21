@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-隐盾 V3.6.18 — 🧠 智能记忆管理器
+隐盾 V3.6.19 — 🧠 智能记忆管理器
 基于 LangChain ChatMessageHistory 封装，提供：
 1. max_tokens 阈值控制
 2. 上下文自动摘要机制（超出阈值时压缩早期对话为摘要）

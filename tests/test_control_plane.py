@@ -32,6 +32,7 @@ from yindun.control.verify import ChainSnapshot, verify_report        # noqa: E4
 
 failures: list[str] = []
 TMP = Path(tempfile.mkdtemp(prefix="yindun_control_test_"))
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:
@@ -560,6 +561,15 @@ E2E.mkdir(parents=True, exist_ok=True)
 #   否则测试会写进本机真实 config/policy.json。
 pm = PolicyManager(config_dir=str(E2E / "policy"))
 pm.clear_control_rules()
+# 报告 P1-05：审批下限 deny + 敏感路径 `*` 不应产生两条规则（更不能被 confirm 抢先）
+from yindun.control.apply_policy import apply_policy_to_kernel                # noqa: E402
+_dedupe = apply_policy_to_kernel(
+    {"version": 1, "approval_floor": "deny", "sensitive_paths": ["*"]}, pm)
+_rules_after = pm.get_control_rules()
+check("★ 审批下限 deny + 敏感路径 * 只落一条规则，且策略为 deny",
+      len(_rules_after) == 1 and _rules_after[0].get("policy") == "deny",
+      str(_rules_after))
+pm.clear_control_rules()
 
 e2e_store = ControlStore(E2E / "control.db")
 httpd = serve_control("127.0.0.1", 8799, e2e_store, verbose=False)
@@ -805,6 +815,23 @@ check("管理令牌可签发只读令牌（明文只下发一次）", viewer_sta
       f"{viewer_status}/{str(viewer_payload)[:80]}")
 check("只读令牌与管理令牌不同一枚", viewer_tok and viewer_tok != admin_tok)
 check("只读令牌能读态势总览", call(prod_app, "GET", "/api/v1/overview", H(viewer_tok))[0] == 200)
+# 报告 P1-03：登录页要能识别"这是只读角色"，而不是说"令牌无效"
+_who_status, _who = call(prod_app, "GET", "/api/v1/whoami", H(viewer_tok))
+class _FakeAudit:
+    def get_entries(self):
+        return [1, 2, 3]
+_r = ControlReporter(config_path=TMP / "reporter_cfg.json", audit=_FakeAudit(), settings={})
+_r._config = {"enabled": True, "url": "http://127.0.0.1:1", "endpoint_id": "ep-test",
+              "last_sent_count": 1, "last_report_at": "2026-10-21T22:29:05"}
+_st = _r.status()
+check("状态里能回答「还有多少没同步」（P0-01）", _st.get("pending_events") == 2, str(_st))
+_svc_src = (ROOT / "yindun" / "app" / "agent_service.py").read_text(encoding="utf-8")
+check("启用上报后默认开 30 秒定时同步（P0-01）",
+      "control_start_auto(30)" in _svc_src)
+check("只读令牌可登录（whoami 返回 viewer）",
+      _who_status == 200 and (_who or {}).get("role") == "viewer", f"{_who_status}/{_who}")
+_who_admin = call(prod_app, "GET", "/api/v1/whoami", H(admin_tok))
+check("管理令牌 whoami 返回 admin", (_who_admin[1] or {}).get("role") == "admin", str(_who_admin))
 check("只读令牌能读统计", call(prod_app, "GET", "/api/v1/stats", H(viewer_tok))[0] == 200)
 check("只读令牌**不能**下发策略",
       call(prod_app, "POST", "/api/v1/policy", H(viewer_tok),
@@ -1111,6 +1138,14 @@ try:
 except Exception:
     pass
 server_mod._LISTEN_SERVER = None
+# 报告 P1-03：viewer_token.txt 与库哈希不一致（旧库遗留）时，文件里的令牌仍应可登录，
+# ensure_viewer_token 以文件为准重建哈希，而不是返回空串。
+_new_viewer = "viewer-file-token-" + "x" * 8
+(lan_store.dir / "viewer_token.txt").write_text("# test\n" + _new_viewer + "\n", encoding="utf-8")
+check("哈希与文件不一致时，文件里的 viewer 令牌仍有效",
+      lan_store.verify_viewer(_new_viewer) is True)
+check("ensure_viewer_token 以文件为准重建哈希",
+      lan_store.ensure_viewer_token() == _new_viewer)
 lan_store.close()
 
 # 收尾

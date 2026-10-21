@@ -177,12 +177,20 @@ class ControlReporter:
     def status(self) -> Dict[str, Any]:
         """本机控制面接入状态（给设置页显示，不泄露令牌）。"""
         applied = self._config.get("applied_policy") or {}
+        sent = int(self._config.get("last_sent_count", 0) or 0)
+        try:
+            total = len(self.audit.get_entries())
+        except Exception:
+            total = 0
         return {
             "configured": bool(self._config.get("url") and self._config.get("endpoint_id")),
             "enabled": bool(self._config.get("enabled")),
             "url": self._config.get("url", ""),
             "endpoint_id": self._config.get("endpoint_id", ""),
-            "last_sent_count": int(self._config.get("last_sent_count", 0) or 0),
+            "last_sent_count": sent,
+            # 报告 P0-01：界面要能回答"还有多少没同步"，而不是笼统写"上报中"
+            "pending_events": max(0, total - sent),
+            "total_events": total,
             "last_report_at": self._config.get("last_report_at", ""),
             "last_error": self._config.get("last_error", ""),
             "applied_policy_version": int(applied.get("version", 0) or 0),

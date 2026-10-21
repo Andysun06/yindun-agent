@@ -599,12 +599,22 @@ def build_llm(settings: Dict[str, Any], tools: List[Any],
         if model_name in custom_models:
             info = custom_models[model_name] or {}
             from langchain_openai import ChatOpenAI
+            # 报告 P1-02 / P0 候选-01：自定义分支也要接输出预算，否则长文由服务端
+            # 默认上限决定，出现"中途停住且没有继续提示"。
+            try:
+                _declared = int(info.get("context_window") or 0)
+            except Exception:
+                _declared = 0
+            _window = model_window(str(info.get("model_id") or model_name),
+                                   str(info.get("tier") or ""), _declared)
+            _max_out = output_budget(_window, reasoning is None)
             base_model = ChatOpenAI(
                 model=info.get("model_id", model_name),
                 # ★ 建客户端前再归一化一次（V3.6.4）：老配置里可能存着完整端点，
                 #   这里兜底修好，用户不必删了重建。
                 openai_api_base=normalize_base_url(info.get("base_url", "")),
                 openai_api_key=info.get("api_key", ""),
+                max_tokens=_max_out,
                 # ★ 必须显式给超时（V3.6.7）：不给就会落到 openai SDK 默认的 600 秒 × 重试，
                 #   端点挂死时用户要干等十几分钟，界面看起来就是「发出去了没反应」
                 #   （负责人实测的那次"等了好久没回复"里，这条是最坏情况的放大器）。

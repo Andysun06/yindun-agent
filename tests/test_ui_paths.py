@@ -688,10 +688,30 @@ def main() -> int:
         page.wait_for_timeout(200)
         check("Shift+Enter 不触发发送", len(calls("send")) == before_send_count,
               f"{before_send_count} → {len(calls('send'))}")
+        page.click("#mini-input")
+        before_ctrl = len(calls("send"))
+        page.keyboard.press("Control+Enter")
+        page.wait_for_timeout(200)
+        check("Ctrl+Enter 在浮条里是换行、不发送（报告 P1-06）",
+              len(calls("send")) == before_ctrl and "\n" in page.input_value("#mini-input"),
+              f"{before_ctrl} → {len(calls('send'))} value={page.input_value('#mini-input')!r}")
+        page.click("#mini-input")
         page.keyboard.press("Enter")
         page.wait_for_timeout(250)
         check("Enter 触发发送", len(calls("send")) > before_send_count,
               f"{before_send_count} → {len(calls('send'))}")
+        # 主输入框同样支持 Ctrl+Enter 换行（发送后会自动展开；先把忙碌态归零）
+        page.wait_for_timeout(250)
+        page.evaluate("() => window.yindun.onEvent('state', {busy: false})")
+        page.wait_for_timeout(150)
+        page.fill("#input", "第一行")
+        before_main_ctrl = len(calls("send"))
+        page.click("#input")
+        page.keyboard.press("Control+Enter")
+        page.wait_for_timeout(200)
+        check("Ctrl+Enter 在主输入框是换行、不发送",
+              len(calls("send")) == before_main_ctrl and "\n" in page.input_value("#input"),
+              f"{before_main_ctrl} → {len(calls('send'))} value={page.input_value('#input')!r}")
 
         # ── 10) 明暗切换 + 右栏折叠与窗口按钮归位 ──
         print("\n" + "=" * 78)

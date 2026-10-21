@@ -1383,8 +1383,16 @@ class AgentService:
         cfg = dict(reporter._config)          # noqa: SLF001 —— 同一模块内的受控访问
         cfg["enabled"] = True
         reporter.save_config(cfg)
+        # 报告 P0-01：启用后默认开**30 秒**定时同步（旧版只有手动同步，事件可滞留数十分钟）。
+        # 同时清掉"上报未启用"这类陈旧错误，避免界面一边写上报中、一边留红字。
+        try:
+            reporter._remember(last_error="")
+        except Exception:
+            pass
         sync = self.control_sync()
-        return {"ok": True, "enabled": True, "sync": sync}
+        auto = self.control_start_auto(30)
+        return {"ok": True, "enabled": True, "sync": sync, "auto": auto,
+                "auto_interval": 30}
 
     def control_sync(self) -> Dict[str, Any]:
         """同步一次：上报一批 → 取策略 → 验签 → 只收紧合并 → 落到本地生效。"""
@@ -2184,8 +2192,9 @@ class AgentService:
         #   旧实现 len//2 与触发摘要压缩的估算器不是一套，看板数字和"何时压缩"对不上。
         # ★ V3.6.2（C-13）：阈值与"什么时候压缩"的说明都来自 core/context_budget.py，
         #   界面直接显示后端给的 note，不再自己拼数字。
-        from yindun.core.context_budget import history_usage
-        usage = history_usage(messages)
+        from yindun.core.context_budget import history_budget, history_usage
+        # P1-01：看板阈值必须与 worker 实际压缩阈值同源（按当前模型窗口）
+        usage = history_usage(messages, limit=history_budget(self.active_model_context_window()))
         return {
             "busy": self.busy,
             "session_id": session_id,

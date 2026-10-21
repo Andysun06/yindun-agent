@@ -50,7 +50,7 @@ html[data-theme="dark"] {
 
 /* ── 基础 ─────────────────────────────────────────────── */
 * { box-sizing:border-box; }
-html,body { height:100%; }
+html,body { height:100%; overflow:hidden; }
 body {
   margin:0; background:var(--bg-canvas); color:var(--text-1);
   font:var(--fs-base)/1.6 var(--font-sans);
@@ -148,7 +148,7 @@ svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.6;
    （V3.6.7 修，实测 700/800/860/1000 四种窗口高度下 rail 都是 1074）。
    minmax(0,1fr) 让这一行**就是**容器高度，超出的部分由各栏自己滚。 */
 .shell { display:grid; grid-template-columns:var(--rail-w) 1fr; grid-template-rows:minmax(0,1fr);
-  height:100vh; }
+  height:100%; overflow:hidden; }
 /* 侧栏整体可滚：窗口不高时（笔记本 768/800 高）"数据边界"段会被挤到视口外，
    早先 rail 是 overflow 默认值 + 各段默认可收缩 → 内容被**裁掉且无法滚动**，
    管理员根本看不到那段边界说明（V3.6.7 修）。各段设 flex:0 0 auto 让"装不下"真的变成溢出，
@@ -159,6 +159,10 @@ svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.6;
 .rail__title { display:flex; flex-direction:column; line-height:1.35; }
 .rail__title b { font-size:var(--fs-base); font-weight:600; }
 .rail__title span { color:var(--text-3); font-family:var(--font-mono); font-size:var(--fs-meta); }
+/* 只读令牌标识（报告 P1-03）：可登录、可查看，但不能下发策略 */
+.role-badge { align-self:flex-start; margin-top:3px; padding:0 5px; border-radius:4px;
+  background:var(--warn-50); color:var(--warn-500); font-size:10px; font-style:normal; }
+.is-viewer .nav__item[data-page="policy"] { display:none; }
 
 .nav { display:flex; flex-direction:column; gap:2px; flex:0 0 auto; }
 .nav__item { display:flex; align-items:center; gap:var(--sp-4); padding:8px 10px; border:0;

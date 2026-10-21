@@ -499,6 +499,14 @@ def part_a3_static() -> None:
     check("app.js/styles.css 不再把 .pwdrag 当选择器用（不留死代码）",
           '".pwdrag"' not in js and "'.pwdrag'" not in js and ".pwdrag {" not in css
           and ".pwdrag." not in css)
+    # 报告 P1-04：只保留内容区/侧栏各自滚动，避免外层再滚一遍把整页滚走
+    check("控制台只保留内容区/侧栏滚动（html/body 与 shell 不滚）",
+          "html,body { height:100%; overflow:hidden; }" in css
+          and "height:100%; overflow:hidden; }" in css)
+    # 报告 P1-03：只读令牌可登录，界面上标明角色而不是当成坏令牌
+    check("只读令牌可登录（whoami + 角色徽标 + 隐藏策略入口）",
+          "/api/v1/whoami" in js and 'id="role-badge"' in html
+          and ".is-viewer" in css and "state.role" in js)
 
     check("配对码浮窗是模态结构（role=dialog + aria-modal）",
           'id="pair-modal"' in html and 'role="dialog"' in html and 'aria-modal="true"' in html)

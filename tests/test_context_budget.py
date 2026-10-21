@@ -62,6 +62,14 @@ check("输出预算随窗口缩放并给提示留空间（8k 模型不会被硬�
       and budget.output_budget(131072, True) == budget.MAX_OUTPUT_TOKENS
       and budget.output_budget(4096, False) >= 1024,
       str([budget.output_budget(8192, True), budget.output_budget(131072, True)]))
+# 报告 P1-01：看板阈值必须能按当前模型传入，而不是固定 5000
+_h = budget.history_usage([{"content": "字" * 120}], limit=2867)
+check("history_usage 接受按窗口算出的阈值（看板不再固定 5000）",
+      _h["limit"] == 2867 and "2867" in _h["note"], str(_h))
+# 报告 P1-02：自定义 OpenAI 兼容模型也要接输出预算
+_llm_src = (ROOT / "yindun" / "app" / "llm_factory.py").read_text(encoding="utf-8")
+check("自定义模型分支传 max_tokens（输出预算生效）",
+      "max_tokens=_max_out" in _llm_src and "output_budget(_window" in _llm_src)
 
 print("\n" + "=" * 78)
 print("【2】各模块改从预算表取数（不再各写数字）")

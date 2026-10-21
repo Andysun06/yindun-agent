@@ -392,12 +392,29 @@ class PolicyManager:
                     "policy": policy if policy in ("confirm", "deny") else "confirm",
                     "source": self.CONTROL_SOURCE, "from_control_version": int(policy_version or 0)}
 
+        # 敏感路径的默认策略由 `rules` 决定（floor=deny 时是 deny）；这里只补
+        # `rules` 里没出现的路径，避免同一条路径先以 confirm 注入、再以 deny 注入——
+        # 那会让首条命中变成 confirm，审批下限 deny 实际失效（报告 P1-05 的根因）。
+        _rule_patterns = {str(r.get("path_pattern") or "").strip()
+                          for r in (rules or []) if isinstance(r, dict)}
         for pattern in (sensitive_paths or []):
-            if isinstance(pattern, str) and pattern.strip():
+            if isinstance(pattern, str) and pattern.strip() and pattern.strip() not in _rule_patterns:
                 injected.append(_mk(pattern.strip(), "confirm"))
         for rule in (rules or []):
             if isinstance(rule, dict) and str(rule.get("path_pattern") or "").strip():
                 injected.append(_mk(str(rule["path_pattern"]).strip(), str(rule.get("policy") or "confirm")))
+
+        # 报告 P1-05：控制面把「审批下限=deny」和敏感路径 `*` 一起下发时，两条规则
+        # 语义完全相同（`*` + deny），界面上会显示两遍。按 (pattern, policy) 去重。
+        _seen = set()
+        _uniq = []
+        for rule in injected:
+            key = (rule["path_pattern"], rule["policy"])
+            if key in _seen:
+                continue
+            _seen.add(key)
+            _uniq.append(rule)
+        injected = _uniq
 
         # 兜底规则（"审批下限"）：放在队尾，只有前面的规则都没命中时才生效
         floor_rule = None
@@ -411,7 +428,12 @@ class PolicyManager:
 
         self._approval_rules = injected + self._approval_rules
         if floor_rule is not None:
-            self._approval_rules.append(floor_rule)
+            # 若注入里已有完全相同的 `*` + policy，就不再追加重复的兜底规则
+            if not any(r.get("path_pattern") == floor_rule["path_pattern"]
+                       and r.get("policy") == floor_rule["policy"]
+                       and r.get("source") == self.CONTROL_SOURCE
+                       for r in self._approval_rules):
+                self._approval_rules.append(floor_rule)
         if sensitive_paths is not None:
             self._custom_sensitive_paths = [p for p in self._custom_sensitive_paths
                                             if p not in set(sensitive_paths)]

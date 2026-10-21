@@ -159,6 +159,12 @@ class ControlServer:
             self.require_read(headers)
             self._check_silent_endpoints()
             return 200, self.store.overview()
+        if method == "GET" and path == "/api/v1/whoami":
+            # 报告 P1-03：登录页需要知道"这是只读令牌"而不是把它当成坏令牌；
+            # 只读令牌可登录控制台（只读），策略/配对码/备份等写操作仍只认管理令牌。
+            self.require_read(headers)
+            token = self._bearer(headers.get("authorization", ""))
+            return 200, {"role": "admin" if self.store.verify_admin(token) else "viewer"}
         if method == "GET" and path == "/api/v1/endpoints":
             self.require_read(headers)
             self._check_silent_endpoints()
