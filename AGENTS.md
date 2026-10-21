@@ -26,7 +26,7 @@
      `gh release upload v<版本> dist/Yindun-Portable-v<版本>.exe dist/Yindun-Control-v<版本>.exe --clobber`；
      新版本则 `gh release create v<版本> <两个资产> --title "隐盾安全智能体 V<版本>" --notes-file <说明>`。
   ★ 判据不是"构建成功"，而是**归档校验对 fresh 产物报 0 问题**且 **Release 上的资产能下回来**（curl 取 1KB 看 206/200）。
-- **提交**：中文提交信息，`主题：要点1；要点2`。先开分支、提交后快进合并到 `main`；**不要 push**（推送由项目负责人决定）——但负责人已明确要求"改完发 Release"，发版所需的 push 与 `gh release` 属其授权范围。
+- **提交与发布（负责人 2026-10-21 明确授权「以后都是」）**：中文提交信息，`主题：要点1；要点2`。先开分支、提交后快进合并到 `main`，**然后直接推送**（本机需带代理，见下）；**同一批次内自动完成重建两个 exe → 归档校验 → 发 Release → 同步技术报告/使用说明/PPT/README/开发记忆**，不需要再逐次询问。判据仍是"归档校验对 fresh 产物 0 问题 + Release 资产能下回来"。
 - **架构边界**：`yindun/core/`、`yindun/utils/` 必须保持**与界面无关**（不得引入 PySide6/Qt）。现状（V3.4.0）：`yindun/gui/` 已整体移除，界面只有 Web（pywebview），`core/`、`utils/`、`worker/` 全部零 Qt；需要向外通知就走 `yindun/core/event_bus.py`。
 - **插件只能做加法（不可破坏）**：`yindun/plugins/host.py` 的 `HOOK_SPECS` 是唯一钩子清单，`FORBIDDEN_HOOKS` 是永不开放的判定类能力。新增/修改钩子必须同时满足：
   1. 插件不得参与脱敏豁免 / 白名单 / 审批放行 / 审计写入；
