@@ -47,12 +47,27 @@ check("关系自洽：摘要目标 < 压缩阈值 < 模型窗口",
 check("记忆模块的阈值就是预算表的值",
       DEFAULT_MAX_HISTORY_TOKENS == table["history_compress"], str(DEFAULT_MAX_HISTORY_TOKENS))
 check("预算表带一句人话规则", "摘要压缩" in str(table.get("rule")), str(table.get("rule"))[:80])
+check("按模型定窗口：qwen 32k / deepseek 64k / 未知回退 16k",
+      budget.model_window("qwen3.5:2b") == 32768
+      and budget.model_window("deepseek-v3") == 65536
+      and budget.model_window("unknown-model") == budget.MODEL_WINDOW_TOKENS,
+      str([budget.model_window("qwen3.5:2b"), budget.model_window("deepseek-v3"),
+           budget.model_window("unknown-model")]))
+check("用户声明的窗口优先且被夹在合法区间",
+      budget.model_window("qwen3.5:2b", "", 131072) == 131072
+      and budget.model_window("x", "", 999999) == budget.MODEL_WINDOW_MAX
+      and budget.model_window("x", "", 1) == budget.MODEL_WINDOW_TOKENS)
+check("输出预算随窗口缩放并给提示留空间（8k 模型不会被硬塞 8k 输出）",
+      budget.output_budget(8192, True) < 8192
+      and budget.output_budget(131072, True) == budget.MAX_OUTPUT_TOKENS
+      and budget.output_budget(4096, False) >= 1024,
+      str([budget.output_budget(8192, True), budget.output_budget(131072, True)]))
 
 print("\n" + "=" * 78)
 print("【2】各模块改从预算表取数（不再各写数字）")
 print("=" * 78)
 sources = {
-    "yindun/app/llm_factory.py": ("MODEL_WINDOW_TOKENS", "16384"),
+    "yindun/app/llm_factory.py": ("model_window", "16384"),
     "yindun/core/workflow.py": ("MODEL_WINDOW_TOKENS", "16384"),
     "yindun/plugins/builtin/decision_hint/plugin.py": ("PLUGIN_SMALL_TOKENS", "2048"),
     "yindun/core/memory_manager.py": ("HISTORY_COMPRESS_TOKENS", None),

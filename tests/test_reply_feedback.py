@@ -897,6 +897,45 @@ _fin_prefix2 = str(last_of(_events_prefix2, "finished") or "")
 check("★ 兜底/空产出路径也不丢前缀", "前缀丙" in _fin_prefix2, _fin_prefix2[:200])
 
 print("\n" + "=" * 78)
+# ── V3.6.18：直答快路径也要处理 done_reason=length（报告 P0-04 同类）──
+def _direct_worker(llm, question="介绍一下常见的排序算法"):
+    w = NoKBWorker()
+    w.llm = llm
+    w.tools_map = {}
+    w.user_input = question
+    w.messages_snapshot = []
+    w.think_mode = "深度思考"
+    w.privacy_shield = False
+    w.sandbox_path = str(SANDBOX_ROOT)
+    w.attachment_fulltext = {}
+    w._kb_instance = None
+    return w
+
+_llm_d1 = ScriptedLLM([
+    {"content": "第一段：冒泡排序的复杂度是 O(n²)。", "done_reason": "length"},
+    {"content": "第二段：快速排序平均 O(n log n)。"},
+])
+_w_d1 = _direct_worker(_llm_d1)
+_ev_d1, _, _ = run_worker(_w_d1)
+_fin_d1 = str(last_of(_ev_d1, "finished") or "")
+check("★ 直答路径 done_reason=length 也会自动续写",
+      _llm_d1.calls == 2 and "第一段" in _fin_d1 and "第二段" in _fin_d1,
+      f"calls={_llm_d1.calls} reply={_fin_d1[:160]!r}")
+check("直答续写成功时不提示「被截断」", "单次生成长度上限" not in _fin_d1, _fin_d1[-120:])
+
+_llm_d2 = ScriptedLLM([
+    {"content": "第一段：很长的铺垫。", "done_reason": "length"},
+    {"content": "第二段：仍然没写完。", "done_reason": "length"},
+    {"content": "精炼版：冒泡 O(n²)、快排平均 O(n log n)、归并稳定 O(n log n)。"},
+])
+_w_d2 = _direct_worker(_llm_d2)
+_ev_d2, _, _ = run_worker(_w_d2)
+_fin_d2 = str(last_of(_ev_d2, "finished") or "")
+check("★ 续写仍到上限 → 请模型重写一份不超上限的精炼版（用户要求）",
+      _llm_d2.calls == 3 and "精炼版" in _fin_d2 and "按单次生成上限压缩" in _fin_d2,
+      f"calls={_llm_d2.calls} reply={_fin_d2[:180]!r}")
+
+print("\n" + "=" * 78)
 print("【7】P1-11：审批超时停止本轮；驳回后同轮不自动重试；检索目标按语义展示")
 print("=" * 78)
 _write_tool = FakeTool("create_local_file", lambda args: "✅ 已创建")

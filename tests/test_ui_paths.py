@@ -1477,6 +1477,15 @@ def main() -> int:
         check("子菜单里当前供应商打勾",
               page.eval_on_selector_all("#mpick-providers .mpick__prov.is-open .mpick__check",
                                         "els => els.length") == 1, "")
+        # 负责人截图：供应商子菜单往右弹，直接把右侧顶出空白。
+        # 判据：子菜单完整落在视口内，且页面没有横向滚动。
+        _prov_geom = page.evaluate("""() => {
+            const r = document.querySelector('#mpick-providers').getBoundingClientRect();
+            return { left: r.left, right: r.right, vw: window.innerWidth,
+                     scrollW: document.documentElement.scrollWidth }; }""")
+        check("★ 供应商子菜单不超出视口（右侧不再被顶出空白）",
+              _prov_geom["left"] >= 0 and _prov_geom["right"] <= _prov_geom["vw"] + 1
+              and _prov_geom["scrollW"] <= _prov_geom["vw"] + 1, str(_prov_geom))
         page.click('.mpick__prov[data-pkey="wan::open.bigmodel.cn::0"]')
         page.wait_for_timeout(250)
         check("点供应商 → 子菜单收起、主卡片保持打开（不会被自己重绘关掉）",
@@ -2581,12 +2590,13 @@ def main() -> int:
           all(fake_key not in json.dumps(getattr(e, "details", {}) or {}, ensure_ascii=False)
               and fake_key not in str(getattr(e, "message", "")) for e in fresh), "")
     usage = svc.context_usage()
-    from yindun.core.context_budget import (ATTACHMENT_TOTAL_CHARS,         # noqa: E402
-                                            MODEL_WINDOW_TOKENS)
+    from yindun.core.context_budget import (MODEL_WINDOW_TOKENS,           # noqa: E402
+                                            attachment_budget as _attachment_budget)
     check("context_usage 的窗口上限与预算表一致",
           usage.get("limit_tokens") == MODEL_WINDOW_TOKENS, str(usage.get("limit_tokens")))
-    check("context_usage 的底部两行来自预算表（附件预算写的就是内核那个数）",
-          any(str(ATTACHMENT_TOTAL_CHARS) in line for line in usage["footer"]["lines"]),
+    check("context_usage 的底部两行来自预算表（附件预算按当前模型窗口折算）",
+          any(str(_attachment_budget(usage["limit_tokens"])) in line
+              for line in usage["footer"]["lines"]),
           str(usage["footer"]))
     check("context_usage 的每一项都带真实 token 与占比（没有占位/编造）",
           all(isinstance(p.get("tokens"), int) and isinstance(p.get("percent"), (int, float))

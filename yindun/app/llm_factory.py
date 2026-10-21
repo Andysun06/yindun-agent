@@ -19,13 +19,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from yindun.core.context_budget import MODEL_WINDOW_TOKENS
+from yindun.core.context_budget import OLLAMA_CTX_CAP, model_window, output_budget
 
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
 
@@ -93,6 +94,51 @@ def _loopback_direct_http(url: str, timeout: float = 1.5) -> str:
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     with opener.open(req, timeout=timeout) as resp:
         return resp.read().decode("utf-8", "replace")
+
+
+_CTX_CACHE: Dict[str, Tuple[float, int]] = {}
+_CTX_TTL = 600.0
+
+
+def ollama_context_length(model: str, host: str = "") -> int:
+    """问 Ollama `/api/show` 要这个模型真实的上下文窗口（tokens）。
+
+    qwen3.5:2b 实测返回 262144；上层会按本机 `OLLAMA_CTX_CAP` 折算成 32768。
+    失败返回 0，由调用方回退到家族估值。只访问回环地址、绕过系统代理、1.5s 超时、缓存 10 分钟。
+    """
+    name = str(model or "").strip()
+    if not name:
+        return 0
+    base = normalize_base_url(host or DEFAULT_OLLAMA_HOST).rstrip("/")
+    key = f"{base}|{name}"
+    now = time.time()
+    cached = _CTX_CACHE.get(key)
+    if cached and now - cached[0] < _CTX_TTL:
+        return cached[1]
+    try:
+        body = json.dumps({"name": name}).encode("utf-8")
+        req = urllib.request.Request(
+            base + "/api/show", data=body,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST")
+        with _direct_opener().open(req, timeout=1.5) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace") or "{}")
+        info = data.get("model_info") or {}
+        value = 0
+        for k, v in info.items():
+            if str(k).endswith("context_length"):
+                try:
+                    value = int(v)
+                except Exception:
+                    value = 0
+                if value > 0:
+                    break
+        if value > 0:
+            _CTX_CACHE[key] = (now, value)
+            return value
+    except Exception:
+        pass
+    return 0
 
 
 def _describe_conn_error(exc: Exception) -> str:
@@ -303,6 +349,7 @@ def model_catalog(settings: Dict[str, Any]) -> Dict[str, Any]:
         entry = {"name": str(name), "model_id": str(info.get("model_id") or name), "tier": tier,
                  "source": "custom", "base_url": str(info.get("base_url") or ""),
                  "kind": "openai", "has_key": bool(info.get("api_key")),
+                 "context_window": int(info.get("context_window") or 0),
                  "key_invalid": bool(info.get("key_invalid")), "note": ""}
         tiers[tier] = [e for e in tiers[tier] if e["name"] != name]     # 覆盖同名
         tiers[tier].append(entry)
@@ -573,20 +620,28 @@ def build_llm(settings: Dict[str, Any], tools: List[Any],
                 # 只在明确要"关掉思考"时传；不传 = 保持模型默认。
                 # ★ 绝不对未知模型传 True：Ollama 会以 400 拒绝非思考型模型（实测）。
                 extra["reasoning"] = reasoning
+            _declared = 0
+            if model_name in custom_models:
+                try:
+                    _declared = int((custom_models.get(model_name) or {}).get("context_window") or 0)
+                except Exception:
+                    _declared = 0
+            _window = model_window(model_name, "", _declared)
+            _detected = ollama_context_length(model_name, ollama_host)
+            if _detected > 0:
+                _window = max(2048, min(_detected, OLLAMA_CTX_CAP))
+            _ctx = max(2048, min(int(_window), OLLAMA_CTX_CAP))
+            _deep = reasoning is None
             base_model = ChatOllama(
                 model=model_name,
                 base_url=ollama_host,
                 timeout=60,
-                options={
-                    "num_ctx": MODEL_WINDOW_TOKENS,   # 预算表唯一来源（C-13）
-                    # 深度思考（reasoning=None，思考型模型会先生成内部推理）时给 8192：
-                    # 内部推理也吃 num_predict，4096 在长回答上会把正文硬截断
-                    # （负责人实测：停在「堆排序…（最好、平均」）。快速模式仍给 4096，
-                    # 不让普通问答为长输出多等。
-                    "num_predict": 8192 if reasoning is None else 4096,
-                    "temperature": 0.7,
-                    "top_p": 0.9,
-                },
+                # ★ 顶层字段（V3.6.18）：ChatOllama 的 num_ctx/num_predict 是 pydantic
+                #   字段，塞进 options={...} 会被忽略——这是"调了预算照样截断"的根因。
+                num_ctx=_ctx,
+                num_predict=output_budget(_window, _deep),
+                temperature=0.7,
+                top_p=0.9,
                 keep_alive=300,
                 **extra,
             )

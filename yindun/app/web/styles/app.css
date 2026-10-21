@@ -587,16 +587,18 @@ body.is-maximized .win-btn__ico-restore { display: block; }
   width: 16px; height: 16px; border-radius: 50%; background: #fff; border: none;
   box-shadow: 0 1px 4px rgba(0,0,0,.35); cursor: pointer;
 }
-/* 供应商子菜单：浮在主卡片右侧；窄窗口落到下方（不做横向溢出） */
+/* 供应商子菜单：浮在主卡片**左侧**——模型卡片贴着输入区右边缘，
+   往右弹会直接超出视口（负责人截图：右侧被顶出空白）；往左弹始终在聊天区内。
+   窄窗口仍落到卡片下方，不做横向溢出。 */
 .mpick__prov-pop {
-  position: absolute; left: calc(100% + 8px); top: 0; width: 236px;
+  position: absolute; right: calc(100% + 8px); left: auto; top: 0; width: 236px;
   max-height: min(62vh, 430px); overflow-y: auto; padding: 8px;
   border: 1px solid var(--border-2); border-radius: 12px;
   background: var(--bg-canvas); box-shadow: var(--shadow-pop); z-index: 31;
 }
 .mpick__prov-pop[hidden] { display: none; }
 @media (max-width: 900px) {
-  .mpick__prov-pop { left: 0; top: calc(100% + 8px); width: 100%; }
+  .mpick__prov-pop { left: 0; right: auto; top: calc(100% + 8px); width: 100%; }
 }
 .mpick__gt {
   display: flex; align-items: center; gap: 5px; padding: 6px 8px 3px;

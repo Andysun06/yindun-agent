@@ -27,6 +27,66 @@ SUMMARY_TARGET_TOKENS = 900          # 摘要压缩后的目标长度
 PLUGIN_SMALL_TOKENS = 2048           # 插件小模型（审批提示 / laya 分级）的窗口
 PLUGIN_SMALL_MAX_NEW = 64            # 插件小模型的输出上限（只出短结论）
 
+# ── 按模型定窗口（V3.6.18）──────────────────────────────
+MODEL_WINDOW_MIN = 2048
+MODEL_WINDOW_MAX = 131072
+OLLAMA_CTX_CAP = 32768               # 本机 Ollama 的 num_ctx 上限（再大 KV cache 吃不消）
+MAX_OUTPUT_TOKENS = 8192             # 单次回答的输出上限（深度思考；快速模式用一半）
+
+
+def _family_window(name: str) -> int:
+    """按常见模型家族估窗口（只作预算；用户声明优先）。"""
+    n = str(name or "").lower()
+    if not n:
+        return 0
+    if "claude" in n:
+        return MODEL_WINDOW_MAX
+    if any(k in n for k in ("gpt-4.1", "gpt-4o", "gpt-4-turbo")):
+        return 128000
+    if "glm-4" in n or "glm4" in n:
+        return 131072
+    if "deepseek" in n:
+        return 65536
+    if "llama3.1" in n or "llama-3.1" in n or "llama3.2" in n or "llama-3.2" in n:
+        return 131072
+    if "qwen" in n:
+        return 32768
+    return 0
+
+
+def model_window(name: str = "", tier: str = "", declared: int = 0) -> int:
+    """当前模型的上下文窗口（tokens）：声明 → 家族估值 → 保守默认 16384。"""
+    try:
+        d = int(declared or 0)
+    except Exception:
+        d = 0
+    if d >= MODEL_WINDOW_MIN:
+        return max(MODEL_WINDOW_MIN, min(d, MODEL_WINDOW_MAX))
+    fam = _family_window(name)
+    if fam:
+        return max(MODEL_WINDOW_MIN, min(fam, MODEL_WINDOW_MAX))
+    return MODEL_WINDOW_TOKENS
+
+
+def history_budget(window: int) -> int:
+    """历史最多占窗口 35%（其余留给系统提示、工具结果与回答）。"""
+    w = max(MODEL_WINDOW_MIN, int(window or MODEL_WINDOW_TOKENS))
+    return max(2000, min(30000, int(w * 0.35)))
+
+
+def attachment_budget(window: int) -> int:
+    """单轮附件正文总量（字符，CJK≈1 token）最多占窗口 25%。"""
+    w = max(MODEL_WINDOW_MIN, int(window or MODEL_WINDOW_TOKENS))
+    return max(2000, min(30000, int(w * 0.25)))
+
+
+def output_budget(window: int, deep: bool = True) -> int:
+    """单次回答预算：小窗口给提示留 60%，其余留 4k，再封顶 8192/4096。"""
+    w = max(MODEL_WINDOW_MIN, int(window or MODEL_WINDOW_TOKENS))
+    reserve = 4096 if w >= 16384 else max(2048, int(w * 0.6))
+    cap = MAX_OUTPUT_TOKENS if deep else MAX_OUTPUT_TOKENS // 2
+    return max(1024, min(cap, w - reserve))
+
 # 单轮注入模型的**附件正文总量**上限（字符，见 app/attachment.build_attachment_context）。
 # 取值理由（不拍脑袋）：窗口 MODEL_WINDOW_TOKENS=16384 里，系统提示（常驻基线约 1.2k 字）
 # 与历史（压缩阈值 5000 token）已占去大半，只把约 1/4 留给附件正文，剩下的才够放工具结果

@@ -1286,6 +1286,9 @@
       <div class="medit__row"><label for="pm-tags">标签</label>
         <input type="text" id="pm-tags" spellcheck="false"
           placeholder="可选，逗号分隔；只标真实能力（如 长文 / 中文 / 低成本）"></div>
+      <div class="medit__row"><label for="pm-ctx">上下文窗口</label>
+        <input type="number" id="pm-ctx" min="2048" max="131072" step="1024"
+          placeholder="tokens，留空＝按模型家族估值（未知默认 16384）"></div>
       ${isNew ? "" : `<div class="medit__ops">
         <button class="btn btn--primary" type="button" data-msave="1">保存模型</button>
         <button class="btn" type="button" data-mcancel="1">取消</button></div>`}
@@ -1739,6 +1742,7 @@
       if ($("pm-model")) $("pm-model").value = model ? (model.model_id || "") : "";
       if ($("pm-name")) $("pm-name").value = model ? model.name : "";
       if ($("pm-tags")) $("pm-tags").value = model ? (model.tags || []).join("，") : "";
+      if ($("pm-ctx")) $("pm-ctx").value = model && model.context_window ? model.context_window : "";
       const note = $("pm-note");
       if (note) { note.textContent = ""; note.className = "medit__hint"; }
       if ($("pm-model")) $("pm-model").focus();
@@ -1764,8 +1768,9 @@
         if (!mid) { note.textContent = "模型 ID 不能为空"; note.className = "medit__hint is-bad"; return; }
         if (!f.url) { note.textContent = "先把上面的 Base URL 填上"; note.className = "medit__hint is-bad"; return; }
         const editing = (panel && panel.dataset.editing) || "";
+        const ctxWindow = Number(($("pm-ctx") && $("pm-ctx").value) || 0) || 0;
         const res = await call("add_custom_model", mname, mid, f.url, f.key, f.tier,
-                               f.provider, f.format, splitTags(val("pm-tags")));
+                               f.provider, f.format, splitTags(val("pm-tags")), ctxWindow);
         if (!res || !res.ok) {
           note.textContent = "保存失败：" + ((res && res.error) || "未知原因");
           note.className = "medit__hint is-bad"; return;

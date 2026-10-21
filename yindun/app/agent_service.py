@@ -1084,7 +1084,7 @@ class AgentService:
 
     def add_custom_model(self, name: str, model_id: str, base_url: str, api_key: str,
                          tier: str = "", provider: str = "", api_format: str = "",
-                         tags: Any = None) -> Dict[str, Any]:
+                         tags: Any = None, context_window: int = 0) -> Dict[str, Any]:
         """新增/覆盖一个外部模型配置。api_key 由设置层加密落盘（api_key_enc）。
 
         tier 为空时按地址自动分档（`llm_factory.infer_tier`）；界面会显示推断结果，
@@ -1133,6 +1133,18 @@ class AgentService:
             #   行为必须与界面承诺一致：留空＝不改动。（要真正清空密钥＝删除该条目后重新添加。）
             key = prev_key
             kept_key = True
+        try:
+            ctx_in = int(context_window or 0)
+        except Exception:
+            ctx_in = 0
+        if ctx_in:
+            ctx_in = max(2048, min(131072, ctx_in))
+        else:
+            # 未传 = 不改动（老调用方不传也安全）
+            try:
+                ctx_in = int((prev or {}).get("context_window") or 0) if isinstance(prev, dict) else 0
+            except Exception:
+                ctx_in = 0
         models[name] = {"model_id": model_id, "base_url": base_url,
                         "api_key": key, "tier": tier,
                         # provider：显式给的用显式值，否则按 final base_url 归组（同一 base_url
@@ -1140,6 +1152,7 @@ class AgentService:
                         "provider": str(provider or "").strip()[:40]
                                     or provider_of(name, {"base_url": base_url}),
                         "api_format": api_format_of({"api_format": api_format}),
+                        "context_window": ctx_in,
                         "tags": (clean_tags(tags) if tags is not None
                                  else clean_tags((prev or {}).get("tags") if isinstance(prev, dict) else None))}
         self.settings.set("custom_models", models)
@@ -1221,6 +1234,35 @@ class AgentService:
         return {"ok": True, "key": key}
 
     # ── 上下文容量浮层（V3.6.8）────────────────────
+    def active_model_context_window(self) -> int:
+        """当前模型的上下文窗口（tokens）：声明 → Ollama 实测（按 32k 上限折算）→ 家族估值。"""
+        from yindun.core.context_budget import OLLAMA_CTX_CAP, model_window
+        from yindun.app import llm_factory
+        name = str(self.settings.get("model") or "").strip()
+        if not name:
+            return model_window("", "", 0)
+        custom = self.settings.get("custom_models") or {}
+        info = custom.get(name) if isinstance(custom, dict) else None
+        if isinstance(info, dict):
+            try:
+                declared = int(info.get("context_window") or 0)
+            except Exception:
+                declared = 0
+            w = model_window(name, str(info.get("tier") or ""), declared)
+            if not declared:
+                w2 = model_window(str(info.get("model_id") or ""), str(info.get("tier") or ""), 0)
+                if w == 16384 and w2 != 16384:
+                    w = w2
+            return max(2048, w)
+        try:
+            detected = llm_factory.ollama_context_length(
+                name, str(self.settings.get("ollama_host") or ""))
+            if detected > 0:
+                return max(2048, min(detected, OLLAMA_CTX_CAP))
+        except Exception:
+            pass
+        return model_window(name, "local")
+
     def context_usage(self) -> Dict[str, Any]:
         """当前上下文的**真实构成**（顶栏「上下文 x/y」点开的浮层用）。
 
@@ -1234,11 +1276,13 @@ class AgentService:
         **没有的分类不显示**：我们没有 prompt 缓存、没有"技能 / MCP 工具"这些概念，
         知识库检索片段已经并进工具结果里——宁可少一项，也不编一个数字出来。
         """
-        from yindun.core.context_budget import (ATTACHMENT_TOTAL_CHARS, HISTORY_COMPRESS_TOKENS,
-                                                MODEL_WINDOW_TOKENS, SUMMARY_TARGET_TOKENS)
+        from yindun.core.context_budget import (SUMMARY_TARGET_TOKENS, attachment_budget,
+                                                history_budget)
         from yindun.core.memory_manager import estimate_tokens
         from yindun.worker.agent_worker import _ATTACHMENT_RULES, _SYSTEM_PROMPT
 
+        # ★ 窗口跟着模型走（V3.6.18）：16k 只用于未知模型
+        window = self.active_model_context_window()
         try:
             messages = self.sessions.get_messages(self.current_session_id()) or []
         except Exception:
@@ -1254,10 +1298,10 @@ class AgentService:
             prompt_text = _SYSTEM_PROMPT + _ATTACHMENT_RULES
         system = estimate_tokens(prompt_text)
 
-        # 附件：注入字符量（按总量预算截顶）折算 token
+        # 附件：注入字符量（按该模型窗口折算的总量预算截顶）折算 token
         attach_chars = sum(int(item.get("chars") or 0) for item in self._attachments
                            if not item.get("error"))
-        attach_chars = min(attach_chars, ATTACHMENT_TOTAL_CHARS)
+        attach_chars = min(attach_chars, attachment_budget(window))
 
         parts = []
         for key, label, tokens in (("history", "消息（历史）", history),
@@ -1267,18 +1311,19 @@ class AgentService:
             if tokens <= 0:
                 continue
             parts.append({"key": key, "label": label, "tokens": int(tokens),
-                          "percent": round(tokens / MODEL_WINDOW_TOKENS * 100, 1)})
+                          "percent": round(tokens / window * 100, 1)})
         used = sum(p["tokens"] for p in parts)
         return {
-            "limit_tokens": MODEL_WINDOW_TOKENS,
+            "limit_tokens": window,
             "used_tokens": used,
-            "percent": round(used / MODEL_WINDOW_TOKENS * 100, 1),
+            "percent": round(used / window * 100, 1),
+            "model": str(self.settings.get("model") or ""),
             "parts": parts,
             # 底部两行汇总：都是预算表里的真实口径（我们没有 prompt 缓存，
             # 所以这里绝不写"缓存命中率"这类我们没有的指标）
             "footer": {"lines": [
-                f"历史超过 {HISTORY_COMPRESS_TOKENS} token 就摘要压缩（压到约 {SUMMARY_TARGET_TOKENS}）",
-                f"单轮附件正文预算 {ATTACHMENT_TOTAL_CHARS} 字，超出部分改给检索指引",
+                f"历史超过 {history_budget(window)} token 就摘要压缩（压到约 {SUMMARY_TARGET_TOKENS}）",
+                f"单轮附件正文预算 {attachment_budget(window)} 字（按当前模型 {window} token 窗口折算）",
             ]},
         }
 
@@ -1986,6 +2031,10 @@ class AgentService:
         worker.think_mode = self.settings.get("think_mode") or "快速回答"
         worker.privacy_shield = bool(self.settings.get("privacy", True))
         worker.think_depth = int(self.settings.get("thinking_depth", 3) or 3)
+        try:
+            worker.model_context_window = self.active_model_context_window()
+        except Exception:
+            worker.model_context_window = 0
         # 思考开关跟着模式走：「快速回答」用关掉思考的算力（实测快 10~30 倍），
         # 「深度思考」用保持模型默认的算力——两套都在 prepare_llm 时建好了。
         worker.llm = self._llm_for(self.settings.get("think_mode"))

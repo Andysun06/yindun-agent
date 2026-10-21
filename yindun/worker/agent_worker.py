@@ -178,6 +178,8 @@ class Worker:
         self.user_input = ""
         self.messages_snapshot: list[dict] = []
         self.think_mode = "快速回答"
+        # 当前模型上下文窗口（tokens），由 AgentService 注入；0 = 未知
+        self.model_context_window = 0
         self.privacy_shield = True
         self.llm = None
         self.tools_map = {}
@@ -489,8 +491,10 @@ class Worker:
             if self._box_mapping_restore:
                 self._box_mapping = dict(self._box_mapping_restore)
                 self._box_mapping_restore.clear()
+            from yindun.core.context_budget import MODEL_WINDOW_TOKENS, history_budget
+            _window = int(getattr(self, "model_context_window", 0) or MODEL_WINDOW_TOKENS)
             memory = SummarizableChatHistory.from_dict_list(
-                self.messages_snapshot, max_tokens=DEFAULT_MAX_HISTORY_TOKENS
+                self.messages_snapshot, max_tokens=history_budget(_window)
             )
 
             # ── 用途合规闸门（V3.6.13）──────────────────────────────
@@ -671,6 +675,8 @@ class Worker:
                 self.intermediate_result.emit("正在生成回答…")
                 reply_msg = self._direct_answer_message(ai_input, memory)
                 reply = self._clean(getattr(reply_msg, "content", "") or "")
+                if reply and self._hit_length_limit(reply_msg):
+                    reply = self._finish_direct_with_limit(ai_input, memory, reply)
                 # ★ 空产出兜底（真机事故，V3.6.7）：实测 qwen3.5:4b 问"我的桌面有几张图片？"
                 #   会返回 content='' + tool_calls=[list_local_files(...)]——只取 content 就等于
                 #   把模型的工具调用静默丢掉，用户拿到一个**空气泡**，会话里那条空助手消息
@@ -3217,6 +3223,84 @@ class Worker:
         content = getattr(resp, "content", "")
         return content if isinstance(content, str) else str(content)
 
+    def _direct_system_prompt(self) -> str:
+        return (
+            "你是一个专业的中文智能助手，代号「隐盾」。请用中文直接、完整地回答用户的问题。\n\n"
+            "回答要求：\n"
+            "1. 回答必须完整，不要中途中断或省略关键步骤\n"
+            "2. 如果问题要求证明、解释、推理，请给出完整的推理过程\n"
+            "3. 如果是代码问题，给出完整的代码示例和解释\n"
+            "4. 如果是数学/逻辑问题，给出完整的推导过程\n"
+            "5. 使用清晰的标题、列表和分段，方便阅读\n"
+            "6. 使用 Markdown 格式增强可读性（代码块、加粗、列表）\n"
+        )
+
+    @staticmethod
+    def _looks_structurally_cut(text: str) -> bool:
+        """结构上明显没写完：未闭合代码块，或断在半行的 Markdown 表格。"""
+        body = str(text or "").rstrip()
+        if not body:
+            return False
+        if body.count("```") % 2 == 1:
+            return True
+        last = body.splitlines()[-1].strip()
+        return last.startswith("|") and not last.endswith("|")
+
+    def _condensed_char_budget(self) -> int:
+        from yindun.core.context_budget import MODEL_WINDOW_TOKENS
+        window = int(getattr(self, "model_context_window", MODEL_WINDOW_TOKENS)
+                     or MODEL_WINDOW_TOKENS)
+        return max(800, min(3000, window // 8))
+
+    def _finish_direct_with_limit(self, ai_input: str, memory, first_text: str) -> str:
+        """直答命中长度上限：续写一次 → 仍超就重写精炼版 → 最后才如实标注。
+
+        报告 P0-04 同类根因：直答快路径以前不看 `done_reason=length`，
+        把半张表格当完整回答。
+        """
+        sys_prompt = self._direct_system_prompt()
+        history = list(memory.get_context_messages(self.llm))
+        self.status.emit("[继续] 回答达到单次生成长度上限，正在接着写…")
+        self._trace("thinking", "回答续写", "直答达到单次生成上限，自动续写一次", "ok")
+        try:
+            msg2 = self._invoke_llm_with_cancel_check(
+                [SystemMessage(content=sys_prompt)] + history + [
+                    HumanMessage(content=ai_input),
+                    AIMessage(content=first_text),
+                    HumanMessage(content=(
+                        "你上一条回答因达到**单次生成长度上限**被截断。请从断点处继续："
+                        "不要重复已写内容、不要重新开头；表格从断行处继续，不要重复表头。")),
+                ])
+        except Exception:
+            msg2 = None
+        second = self._clean(getattr(msg2, "content", "") or "") if msg2 is not None else ""
+        merged = first_text + (("\n" + second) if second.strip() else "")
+        if msg2 is not None and second.strip() and not self._hit_length_limit(msg2):
+            return merged
+
+        budget = self._condensed_char_budget()
+        self.status.emit(f"[压缩] 仍到上限，正在生成完整精炼版（约 {budget} 字）…")
+        self._trace("thinking", "回答压缩", f"续写仍到上限，按 {budget} 字重写", "ok")
+        instruction = (
+            f"上一条回答超出单次长度上限（当前约 {len(merged)} 字）。请重新给出一个"
+            f"**完整但精炼**的版本，控制在约 {budget} 字以内：保留结论、表格关键行与必要代码，"
+            "删掉重复解释与客套话；不要提及截断。")
+        try:
+            msg3 = self._invoke_llm_with_cancel_check(
+                [SystemMessage(content=sys_prompt)] + history + [
+                    HumanMessage(content=ai_input + "\n\n" + instruction)])
+        except Exception:
+            msg3 = None
+        third = self._clean(getattr(msg3, "content", "") or "") if msg3 is not None else ""
+        if (third.strip() and not self._hit_length_limit(msg3)
+                and not self._looks_structurally_cut(third)):
+            return third + "\n\n（说明：为保证完整，已按单次生成上限压缩为精炼版。）"
+        if third.strip() and self._looks_structurally_cut(third):
+            self._reply_hit_length = True
+            return self._guard_length_limit(third)
+        self._reply_hit_length = True
+        return self._guard_length_limit(merged or third)
+
     def _direct_answer_message(self, ai_input: str, memory):
         """直接回答（不调用工具）的**原始模型消息**。
 
@@ -3226,16 +3310,7 @@ class Worker:
         旧写法只取 content，等于把模型的工具调用**静默丢掉**：工具一次没跑、回答是空串、
         用户拿到一个空气泡。调用方据此可以改走工具推理，而不是把空白当答案。
         """
-        messages = [SystemMessage(
-            content="你是一个专业的中文智能助手，代号「隐盾」。请用中文直接、完整地回答用户的问题。\n\n"
-                    "回答要求：\n"
-                    "1. 回答必须完整，不要中途中断或省略关键步骤\n"
-                    "2. 如果问题要求证明、解释、推理，请给出完整的推理过程\n"
-                    "3. 如果是代码问题，给出完整的代码示例和解释\n"
-                    "4. 如果是数学/逻辑问题，给出完整的推导过程\n"
-                    "5. 使用清晰的标题、列表和分段，方便阅读\n"
-                    "6. 使用 Markdown 格式增强可读性（代码块、加粗、列表）\n"
-        )]
+        messages = [SystemMessage(content=self._direct_system_prompt())]
         messages.extend(memory.get_context_messages(self.llm))
         messages.append(HumanMessage(content=ai_input))
         return self._invoke_llm_with_cancel_check(messages)

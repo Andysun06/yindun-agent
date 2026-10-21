@@ -385,7 +385,8 @@
     })()),
     // 保存/删除自定义模型（预览沙盘）：与真实后端**同一套契约**——
     // 密钥留空＝沿用已存的那把（回报 kept_key），provider / api_format / tags 一并保存。
-    add_custom_model: (name, model_id, base_url, api_key, tier, provider, api_format, tags) => {
+    add_custom_model: (name, model_id, base_url, api_key, tier, provider, api_format, tags,
+                       context_window) => {
       const key = String(api_key || "").trim();
       // 基础沙盘里已有两个自定义条目（云端GLM 有密钥）：留空保存要能"沿用已存"，
       // 所以除了 mockCustomModels 还要看这份底表——否则预览里第一次留空保存会误报"没密钥"。
@@ -396,6 +397,7 @@
       mockCustomModels.set(name, { model_id, base_url, tier: tier || "wan",
                                    provider: provider || hostOf(base_url),
                                    api_format: api_format || "chat_completions",
+                                   context_window: Number(context_window || 0) || 0,
                                    tags: Array.isArray(tags) ? tags : [],
                                    has_key: kept || !!key });
       return Promise.resolve({ ok: true, tier: tier || "wan",
