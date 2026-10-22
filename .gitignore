@@ -57,6 +57,7 @@ product-video/
 *.bak
 ~$*
 *_new.pptx
+*_backup.pptx
 
 # ── 第三方资料/研究素材（非本项目产物；含未发表稿件，勿入库）──
 论文研究/
