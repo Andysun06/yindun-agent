@@ -33,7 +33,7 @@
 | 🎬 **项目演示视频**（1080p，3分28秒） | [Release v3.3.0](https://github.com/Andysun06/yindun-agent/releases/tag/v3.3.0) → `Yindun-Demo-v3.3.0.mp4` |
 | 📄 **技术报告**（含隐私算法形式化 / 威胁模型 / 攻击实验 / 企业部署形态 · V3.6.20） | [docs/隐盾安全智能体_技术报告.pdf](docs/隐盾安全智能体_技术报告.pdf) |
 | 📽 **汇报 PPT**（21 页 · V3.6.20） | [docs/隐盾安全智能体_项目汇报.pptx](docs/隐盾安全智能体_项目汇报.pptx) |
-| 🎤 **正式答辩 PPT**（8 页 · 科研风 · 真实界面截图 + 审批动图） | [隐盾安全智能体汇报.pptx](隐盾安全智能体汇报.pptx)（逐页讲稿：[正式答辩_5分钟_讲稿.md](docs/dev/正式答辩_5分钟_讲稿.md)；演练版：[正式答辩_演讲稿_演练版.md](docs/dev/正式答辩_演讲稿_演练版.md) · [PDF](docs/dev/正式答辩_演讲稿_演练版.pdf)；原稿备份 `隐盾安全智能体汇报_backup.pptx`） |
+| 🎤 **正式答辩 PPT**（9 页 · 沿用原稿版式 · 真实界面截图 + 审批动图） | [隐盾安全智能体汇报.pptx](隐盾安全智能体汇报.pptx)（逐页讲稿：[正式答辩_5分钟_讲稿.md](docs/dev/正式答辩_5分钟_讲稿.md)；演练版：[正式答辩_演讲稿_演练版.md](docs/dev/正式答辩_演讲稿_演练版.md) · [PDF](docs/dev/正式答辩_演讲稿_演练版.pdf)；原稿备份 `隐盾安全智能体汇报_backup.pptx`） |
 | 📖 **使用说明**（安装/配置算力/功能演示 + 控制面 · V3.6.20） | [docs/使用说明.md](docs/使用说明.md) · [docs/使用说明.pdf](docs/使用说明.pdf) |
 | 🧩 **插件开发指南**（钩子契约 / 安全边界 / 最小示例） | [docs/插件开发.md](docs/插件开发.md) |
 | 🧪 **隐私攻防评测**（黑盒/白盒/劫持/注入，可复现） | [tests/privacy_eval.py](tests/privacy_eval.py)（`python tests/privacy_eval.py` 一键复现） |
