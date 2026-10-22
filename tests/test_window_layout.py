@@ -412,6 +412,11 @@ tokens = (ROOT / "yindun" / "app" / "web" / "styles" / "tokens.css").read_text(e
 check("焦点环是**两套显式取值**（浅色水洗铺在深色底上会变成刺眼光晕）",
       "--focus-ring:" in tokens.split('html[data-theme="dark"]')[0]
       and "--focus-ring:" in tokens.split('html[data-theme="dark"]')[1])
+# 判定行/通过态用 accent-50 做水洗底：深色主题若只继承浅色的 #EDF7F1，会变成一块白卡。
+_dark_tokens = tokens.split('html[data-theme="dark"]')[1]
+check("深色主题显式覆盖 accent-50 / accent-700（判定行与通过态不再变白卡）",
+      "--accent-50:" in _dark_tokens and "--accent-700:" in _dark_tokens
+      and 'html[data-theme="dark"] .trace--judge .trace__ico' in css)
 check("输入框/文本域的焦点环都走同一个 token（不再各写一份 --accent-50）",
       css.count("var(--focus-ring)") >= 5
       and ".composer__box:focus-within { border-color: var(--border-2); box-shadow: 0 0 0 3px var(--focus-ring), 0 8px 24px rgba(0,0,0,.05); }" in css

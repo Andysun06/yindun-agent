@@ -390,6 +390,8 @@ body.is-maximized .win-btn__ico-restore { display: block; }
 .trace--judge .trace__ico { color: var(--accent-600); }
 .trace--judge .trace__name { color: var(--accent-700); font-weight: 600; }
 .trace--judge .trace__detail { color: var(--text-2); font-family: var(--font-sans); font-size: var(--fs-sm); }
+/* 深色主题：判定行的暗绿底上，accent-600 的菱形几乎看不见，改用亮绿（V3.6.20） */
+html[data-theme="dark"] .trace--judge .trace__ico { color: var(--accent-300); }
 
 /* ── 企业控制面页 ───────────────────────────── */
 .ctrl-form { display: flex; gap: var(--sp-3); flex-wrap: wrap; }
@@ -971,6 +973,10 @@ html[data-theme="dark"] .plugin-item__runtime.is-bad { background: rgba(196, 54,
 /* 来源校验通过（本轮 C-15）：绿色表示"已签名且可信"，与告警黄区分开 */
 .plugin-badge--ok { color: var(--accent-600); border-color: var(--accent-500); }
 .plugin-badge--src { color: var(--accent-600); border-color: var(--accent-300); }
+/* 深色主题：accent-600 在近黑底上偏暗，标签换成亮绿才读得清（V3.6.20） */
+html[data-theme="dark"] .plugin-badge--ok,
+html[data-theme="dark"] .plugin-badge--src,
+html[data-theme="dark"] .cap__ok { color: var(--accent-300); }
 /* 能力清单：逐条写清"这个插件提供了什么"，而不是让人猜 */
 .plugin-caps { display: flex; flex-direction: column; gap: 2px; border-left: 2px solid var(--border-2); padding-left: var(--sp-3); }
 .cap { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--sp-2); align-items: baseline; font-size: var(--fs-meta); color: var(--text-3); }

@@ -73,7 +73,7 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
 
   <header class="cover">
     <div class="badge-row">
-      <span class="badge">隐私计算 · 桌面智能体</span><span class="badge">技术报告</span><span class="badge">V3.6.19</span>
+      <span class="badge">隐私计算 · 桌面智能体</span><span class="badge">技术报告</span><span class="badge">V3.6.20</span>
     </div>
     <h1>🛡️ 隐盾安全智能体</h1>
     <div class="subtitle">面向涉密办公场景的本地化隐私防护桌面智能体</div>
@@ -83,7 +83,7 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
       大模型进入办公场景面临一个根本矛盾：待处理数据越敏感，越需要模型的能力，却也越不能让其跨越本地边界。本工作报告提出并实现隐盾安全智能体，其核心是一个内存级隐私脱敏网关——将敏感文本在进入模型前形式化地映射为占位符文本与一份加密映射表，使模型无法接触<b>已被识别出</b>的真实敏感值，同时保持任务可用性。系统配套本地沙箱、命令白名单、高危熔断审批与 HMAC 哈希链审计，构成覆盖"输入—推理—执行—落盘—审计"的纵深防御。为量化效果，我们把两条性质<b>分开度量</b>：<b>识别覆盖率</b>是依赖语料的经验量——在留出集（60 篇随机化文档 / 280 个注入敏感值，规则冻结后一次性运行）上完整脱敏 <b>264/280（94.3%）</b>，其中系统声明支持的写法为 <b>264/264</b>（该口径为修复后复测；规则冻结首跑为 222/280，修复 42 例后在同一留出集复测，故读数含修复收益，不作真实分布的估计）；<b>网关机密性</b>是架构保证、与识别覆盖率无关——对已识别实体，出网明文实例 <b>0</b>，针对占位符还原做了 500 轮定向劫持尝试，未出现成功案例（限该攻击面）；白盒持久化与审计产物中未检出明文；60 篇真实格式文档的脱敏↔还原逐字一致（语料自建，真实分布更宽）。我们同时公开 <b>16 例未覆盖形态（4 类）</b>的完整清单（在这 16 例上实测均未命中）与由留出集发现并修复的三类实现缺陷。上述结论均限定在所述评测集与威胁模型内，不构成真实环境的普适安全保证。
     </div>
     <div class="meta">
-      <div><b>系统</b>隐盾安全智能体</div><div><b>版本</b>V3.6.19（2026-10）</div><div><b>技术栈</b>Python · LangChain · pywebview/WebView2 · Chroma</div>
+      <div><b>系统</b>隐盾安全智能体</div><div><b>版本</b>V3.6.20（2026-10）</div><div><b>技术栈</b>Python · LangChain · pywebview/WebView2 · Chroma</div>
     </div>
   </header>
 
@@ -444,6 +444,15 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
       <tr><td><b>P1-06 Ctrl+Enter 误发送</b></td><td>主输入框与闪发浮条都支持 Ctrl/Cmd+Enter 换行；占位文案同步</td></tr>
     </table>
     <div class="tbl-caption">P0 候选-02（控制端独立检出客户端篡改）本轮未现场复现：客户端在上报前已重建锚点，无法据该次上报判定；控制端 <code>verify_report</code> 的 TRUNCATED / HEAD_MISMATCH / BROKEN_LINK / REWRITTEN 检出均有既有回归用例，待下一轮"改一条立即同步"复核</div>
+
+    <h3>7.12　暗色主题回归（V3.6.20）</h3>
+    <p>暗色模式下，关键判定行（隐私隔离网关 / 快速模式限制）与插件标签仍显示为<b>白底深字</b>，在整页深色里像一块贴错主题的卡片。根因不是某个组件写死了颜色，而是语义 token <code>--accent-50</code>（"浅色水洗底"）只在浅色主题取值，深色主题没有覆盖：凡是拿它做背景的判定行、通过态徽标与悬停态都会继承 <code>#EDF7F1</code>。</p>
+    <table class="data">
+      <thead><tr><th style="width:26%">问题</th><th>修复</th></tr></thead>
+      <tr><td><b>判定行 / 插件标签暗色下变白卡</b></td><td>深色主题显式覆盖 <code>--accent-50: #12261B</code>（暗绿底）与 <code>--accent-700: #7BD3A4</code>（亮绿字）；判定行菱形与插件徽标改用 <code>--accent-300</code>，避免深绿在近黑底上读不清</td></tr>
+      <tr><td><b>同类隐患</b></td><td><code>.chain-badge--ok</code>、<code>.plugin-item__runtime.is-ok</code>、模型菜单悬停态同样依赖 <code>--accent-50</code>；在 token 层修一次即可全部覆盖，不再逐组件打补丁</td></tr>
+    </table>
+    <div class="tbl-caption">V3.6.20 回归：<code>test_window_layout</code> 新增「深色主题显式覆盖 accent-50 / accent-700 + 判定行菱形亮绿」断言；浏览器计算样式实测 dark 判定行 <code>bg=rgb(18,38,27)</code>、<code>name=rgb(123,211,164)</code>，浅色主题保持 <code>bg=rgb(237,247,241)</code> 不变</div>
 
     <h2 class="sec">8　测试与质量保障</h2>
     <p>项目建立 39 个测试/评测套件（另有 `test_e2e_local.py` 本地大模型端到端实测，需 YINDUN_E2E=1 显式开启），覆盖隐私引擎、审计链（含锚点）、留出集评测、**控制面（链删改/只收紧/不泄明文/并发）**、记忆、工作流、知识库管线、插件体系、**请求用途红线**与窗口几何；三轮自审与复赛整改发现的问题全部固化为回归用例。全部套件退出码 0（"知识库"为集成测试，需本地 Ollama，离线时明确跳过）。</p>

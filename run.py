@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-隐盾 V3.6.19 — 程序入口
+隐盾 V3.6.20 — 程序入口
 双击或 python run.py 启动
 """
 import sys

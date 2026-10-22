@@ -138,7 +138,7 @@ txt(s, M, 3.75, 10.8, 0.6, "让大模型“看不见”敏感数据，却依然�
 txt(s, M, 4.55, 11.0, 0.45,
     "YINDUN SECURITY AGENT  ·  PRIVACY-GATEWAY DESKTOP AGENT",
     size=11, color="8FD3B4", font=MONO)
-for i, (label, w) in enumerate((("V3.6.19", 1.25), ("本地化部署", 1.55),
+for i, (label, w) in enumerate((("V3.6.20", 1.25), ("本地化部署", 1.55),
                                 ("隐私计算 · 桌面智能体", 2.55), ("庆园杯预答辩", 1.85))):
     chip(s, M + sum(x[1] for x in (("", 0), ("", 0))) + i * 2.35, 5.55, w, label,
          color="FFFFFF", bg=DARK2, size=11)
@@ -347,7 +347,7 @@ s = slide(DARK)
 rect(s, W - 3.2, -1.0, 4.6, 4.6, fill=DARK2, shape=MSO_SHAPE.OVAL)
 txt(s, M, 2.15, 11.5, 0.5, "四、创新及应用前景", size=14, color="8FD3B4", bold=True)
 txt(s, M, 2.75, 11.5, 1.2, "不是概念，是能跑、能验证、\n能持续交付", size=34, color=WHITE, bold=True, line=1.15)
-txt(s, M, 4.55, 11.0, 0.5, "隐盾安全智能体 · V3.6.19", size=14, color="CFE8DA")
+txt(s, M, 4.55, 11.0, 0.5, "隐盾安全智能体 · V3.6.20", size=14, color="CFE8DA")
 txt(s, M, 5.05, 11.0, 0.4, "谢谢各位老师，欢迎提问。", size=16, color=WHITE)
 pagenum(s, 8)
 notes(s, "我们最想请评委看的是：这套东西不是概念，是能跑、能验证、能持续交付的。谢谢。")
