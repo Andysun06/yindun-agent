@@ -47,6 +47,10 @@ def new_host():
 TMP = Path(tempfile.mkdtemp(prefix="yindun_laya_test_"))
 CTX_DELETE = {"tool": "run_local_command", "path": "",
               "args": {"command": "rm -rf /data/backups"}, "user_request": "帮我清理一下磁盘"}
+# 审批弹窗给的是显示名（删除文件）；正则规则按内部工具名匹配——两个字段都要进 haystack。
+CTX_DELETE_DISPLAY = {"tool": "删除文件", "tool_id": "delete_local_file",
+                      "path": "E:/隐盾演示/客户名单演示.txt", "args": {},
+                      "user_request": "把这个文件删除"}
 CTX_WRITE = {"tool": "write_local_file", "path": "E:/notes/a.md",
              "args": {"content": "x"}, "user_request": "把要点写进笔记"}
 CTX_READ = {"tool": "read_local_file", "path": "E:/notes/a.md", "args": {}, "user_request": "读一下笔记"}
@@ -91,6 +95,10 @@ check("提示标明来源是正则规则（后端钉在正则时不冒充模型�
 check("宿主补齐了 plugin_id 与 kind",
       bool(advs) and advs[0]["plugin_id"] == "laya_risk" and advs[0]["kind"] == "advisory",
       str(advs))
+adv_disp = host.call_hook("advisory_for_approval", dict(CTX_DELETE_DISPLAY))
+check("显示名「删除文件」+ 内部 tool_id 仍判高危（审批 payload 必须带 tool_id）",
+      len(adv_disp) == 1 and adv_disp[0]["level"] == "warn"
+      and "高危" in adv_disp[0]["text"], str(adv_disp))
 adv_r = host.call_hook("advisory_for_approval", dict(CTX_READ))
 check("只读操作提示低危（info）", len(adv_r) == 1 and adv_r[0]["level"] == "info"
       and "低危" in adv_r[0]["text"], str(adv_r))

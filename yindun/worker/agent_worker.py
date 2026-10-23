@@ -227,7 +227,7 @@ class Worker:
         self._approved.set()
 
     def _request_approval(self, name, args, path, timeout: float = 300.0,
-                          display_path: str = "") -> bool:
+                          display_path: str = "", tool_id: str = "") -> bool:
         """统一的敏感操作人工审批等待。
 
         先 clear 审批事件再 emit need_confirm（修正 clear/emit 顺序，消除
@@ -245,7 +245,8 @@ class Worker:
         self._approval_outcome = ""
         # 展示路径可以与判定路径不同（例如知识库检索没有落盘目标）：
         # 弹窗显示语义相符的文字，`outside` 仍按真实 path 计算，避免误报越界。
-        payload = {"name": name, "args": args, "path": display_path or path}
+        payload = {"name": name, "args": args, "path": display_path or path,
+                   "tool_id": tool_id or name}
         # ★ 用途红线随审批一起送到界面（V3.6.13）：弹窗最上方必须先把
         #   "这个请求想干什么"说清楚，否则"操作与请求相符 / 低危"会给一单
         #   卖个人信息的操作背书。只有 warn/refuse 时才带该字段。
@@ -1726,7 +1727,7 @@ class Worker:
                     # ★ 弹窗必须显示**完整真实路径**：越界时的审批是"你同意这次越界"，
                     #   只给文件名或相对路径等于让人盲签（payload 里 path 就是解析后的绝对路径）。
                     if not self._request_approval(tool_display_name, tool_args, target_path,
-                                                  display_path=display_path):
+                                                  display_path=display_path, tool_id=tool_name):
                         # 用户驳回 / 取消 / 超时
                         _outcome = getattr(self, "_approval_outcome", "")
                         self._denied_tools.add(tool_name)
@@ -2300,7 +2301,7 @@ class Worker:
             self.status.emit(
                 f"✋ 需要你确认：{tool_display_name}（当前档位要求人工审批）"
             )
-            if not self._request_approval(tool_display_name, args, target_path):
+            if not self._request_approval(tool_display_name, args, target_path, tool_id=tool_name):
                 # 驳回 / 取消 / 超时
                 self.status.emit(f"🚫 已驳回: {tool_display_name}")
                 try:

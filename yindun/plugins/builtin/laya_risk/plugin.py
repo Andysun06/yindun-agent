@@ -244,6 +244,7 @@ def _load_rules() -> List[Tuple[int, Any, str]]:
 
 def _build_haystack(context: Dict[str, Any]) -> str:
     tool = str(context.get("tool") or "")
+    tool_id = str(context.get("tool_id") or "")
     path = str(context.get("path") or "")
     args = context.get("args") or {}
     try:
@@ -254,7 +255,9 @@ def _build_haystack(context: Dict[str, Any]) -> str:
         brief = str(args)[:400]
     if brief in ("{}", "[]", "''", '""'):
         brief = ""
-    hay = f"{tool} {path} {brief}".strip()
+    # tool_id 是内核真实工具名（delete_local_file / run_local_command…），
+    # 规则表按它匹配；tool 是给人看的显示名（删除文件…），两者都要进 haystack。
+    hay = f"{tool_id} {tool} {path} {brief}".strip()
     return "" if hay in ("{}", "[]") else hay[:4000]
 
 
