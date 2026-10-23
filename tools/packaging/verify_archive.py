@@ -61,7 +61,9 @@ CLIENT_SYMBOLS: Dict[str, Sequence[str]] = {
     "yindun.worker.agent_worker": ["_as_directory_hint", "_range_notice", "_verify_tool_outcome",
                                    # 用途红线 / 知识库范围 / 长回答续写（V3.6.13）
                                    "_looks_like_kb_question", "_hit_length_limit",
-                                   "_guard_length_limit"],
+                                   "_guard_length_limit",
+                                   # 明确删除指令在任何 LLM 之前由宿主执行（V3.6.21 热修）
+                                   "_forced_delete_target", "_run_forced_delete"],
     # 请求用途红线（V3.6.13）：这个模块缺了，包里的智能体就会把"卖个人信息"当普通请求规划
     "yindun.core.usage_policy": ["assess_request", "_has_pii", "_has_profit", "_has_exfil"],
     "yindun.utils.logger": ["setup_logging"],

@@ -1139,6 +1139,34 @@ finally:
         os.environ["SANDBOX_PATH"] = _saved_env3
 
 print(chr(10) + "=" * 78)
+print("【7】强制删除：明确指令在任何 LLM 之前由宿主执行")
+print("=" * 78)
+from yindun.worker.agent_worker import Worker  # noqa: E402
+
+_w = Worker()
+_demo = TMP / "客户名单演示.txt"
+_demo.write_text("演示数据", encoding="utf-8")
+_w.tools_map = {"delete_local_file": object()}
+_w.user_input = f"删除 {_demo}"
+check("删除 + 存在的完整路径 → 识别为强制删除目标",
+      _w._forced_delete_target() == str(_demo), _w._forced_delete_target())
+_w.user_input = f"删除 {TMP / '不存在.txt'}"
+check("文件不存在 → 不接管（交回工具层如实报错）", _w._forced_delete_target() == "")
+_w.user_input = f"查看 {_demo}"
+check("无删除动作词 → 不接管", _w._forced_delete_target() == "")
+
+_w.user_input = f"删除 {_demo}"
+_w._execute_with_approval = lambda name, args: "已驳回：敏感操作被人工拦截"
+_reply = _w._run_forced_delete(str(_demo))
+check("驳回后给确定性答复（不再让模型总结、不编造范围）",
+      _reply.startswith("已按你的选择驳回删除") and "文件未改动" in _reply, _reply)
+
+_w._execute_with_approval = lambda name, args: "✅ 物理删除成功！"
+_reply2 = _w._run_forced_delete(str(_demo))
+check("批准后给确定性成功答复并提示已审计",
+      _reply2.startswith("已删除") and "审计" in _reply2, _reply2)
+
+print(chr(10) + "=" * 78)
 if failures:
     print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))
     sys.exit(1)
