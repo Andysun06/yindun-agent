@@ -15,6 +15,7 @@ from pathlib import Path
 from PIL import Image
 from pptx import Presentation
 from pptx.dml.color import RGBColor
+from pptx.enum.dml import MSO_LINE_DASH_STYLE
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.oxml.ns import qn
@@ -344,7 +345,15 @@ def innovation_page(title, sub, items, page_no):
         text(s, x + 0.22, y + 0.12, 0.38, 0.30, num, 16, GREEN, True, TIMES)
         text(s, x + 0.62, y + 0.10, 5.05, 0.30, head, 16, GREEN, True)
         text(s, x + 0.62, y + 0.46, 5.05, 0.46, body, 12.5, TEXT, line=1.25)
-        pic(s, ASSETS / gif, x + 0.45, y + 1.02, 5.00, 3.12)
+        gif_path = ASSETS / gif if gif else None
+        if gif_path and gif_path.exists():
+            pic(s, gif_path, x + 0.45, y + 1.02, 5.00, 3.12)
+        else:
+            ph = rect(s, x + 0.45, y + 1.02, 5.00, 3.12, fill=GREEN_T2,
+                      line=RGBColor(0x9A, 0xB3, 0xA3), line_w=1.0)
+            ph.line.dash_style = MSO_LINE_DASH_STYLE.DASH
+            text(s, x + 0.45, y + 2.18, 5.00, 0.30, "演示 GIF 待补录", 15, MUTED, False, HEI, PP_ALIGN.CENTER)
+            text(s, x + 0.45, y + 2.55, 5.00, 0.24, gif or "待补录", 10.5, TAB, False, TIMES, PP_ALIGN.CENTER)
         text(s, x + 0.45, y + 4.18, 5.05, 0.24, "证据：" + ev, 10.5, MUTED2)
     pagenum(s, page_no)
     return s
@@ -353,8 +362,8 @@ s = innovation_page(
     "四个创新（一）：网关与用途",
     "每一项配一段真实操作，先看它解决什么问题",
     [
-        ("①", "内存级脱敏网关", "入口处完成替换：真值只在本机内存，模型上下文只有占位符", "审计里 LLM 输入只有 [NAME_0_x]", "demo_privacy_p.gif"),
-        ("②", "先判用途，再判操作", "用途触线时直接拒绝：不调用模型，也不给审批放行机会", "个人信息 + 出售/牟利 → 模型前拒绝", "demo_approval_p.gif"),
+        ("①", "内存级脱敏网关", "入口处完成替换：真值只在本机内存，模型上下文只有占位符", "审计里 LLM 输入只有 [NAME_0_x]", "06_网关占位符.gif"),
+        ("②", "先判用途，再判操作", "用途触线时直接拒绝：不调用模型，也不给审批放行机会", "个人信息 + 出售/牟利 → 模型前拒绝", "07_用途红线拒绝.gif"),
     ],
     8,
 )
@@ -365,7 +374,7 @@ s = innovation_page(
     "四个创新（二）：分级与知识库",
     "laya 第一时间适配；知识库入库即脱敏",
     [
-        ("③", "laya 决策模型：第一时间适配", "近一个月走红，我们第一时间接进项目", "本机→局域网→正则；只做建议、不参与放行", "demo_plugins_p.gif"),
+        ("③", "laya 决策模型：第一时间适配", "近一个月走红，我们第一时间接进项目", "本机→局域网→正则；只做建议、不参与放行", "08_laya决策模型.gif"),
         ("④", "脱敏知识库：入库即脱敏", "向量库只存占位符；检索标注“片段不是全文”", "入库即脱敏；向量库零明文", "demo_kb_p.gif"),
     ],
     9,
