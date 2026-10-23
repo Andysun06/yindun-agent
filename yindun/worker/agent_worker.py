@@ -741,8 +741,27 @@ class Worker:
             _has_analyze = any(w in self.user_input for w in ["分析", "项目结构", "代码", "项目"])
             _has_list = any(w in self.user_input for w in ["列出", "查看目录", "有什么文件", "目录下", "列出文件"])
             _has_read = "读取" in self.user_input or "读文件" in self.user_input or "文件内容" in self.user_input
+            _has_delete = any(w in self.user_input for w in ["删除", "删掉", "移除"])
 
-            if _path_match and (_has_analyze or _has_list or _has_read):
+            # ★ 明确“删除 + 具体路径”时由宿主直接调 delete_local_file：
+            #   弱模型经常先 list_local_files 去“确认”，然后就不再执行删除（实测 2B）。
+            #   删除仍走统一审批通道，工具名与 tool_id 会进风险分级，删除类判高危。
+            if _path_match and _has_delete and "delete_local_file" in self.tools_map:
+                _resolved_del = os.path.abspath(os.path.normpath(_path_match.group(1)))
+                if os.path.isfile(_resolved_del):
+                    try:
+                        self.status.emit(f"[工具执行] 删除文件: {_resolved_del}")
+                        _args = {"filename": os.path.basename(_resolved_del),
+                                 "target_directory": os.path.dirname(_resolved_del)}
+                        _raw = self._execute_with_approval("delete_local_file", _args)
+                        forced_tool_result, _ = self._anonymize_tool_output(_raw, "delete_local_file")
+                        forced_tool_name = "delete_local_file"
+                        forced_tool_args = dict(_args)
+                    except Exception as _e:
+                        forced_tool_result = f"[工具执行出错] {_e}"
+                    self.tool_call_count += 1
+
+            if forced_tool_result is None and _path_match and (_has_analyze or _has_list or _has_read):
                 _resolved_path = os.path.abspath(os.path.normpath(_path_match.group(1)))
                 if os.path.exists(_resolved_path):
                     # ★ 强制工具分支也必须走统一的审批执行通道：
