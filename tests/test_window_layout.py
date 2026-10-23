@@ -421,6 +421,11 @@ check("输入框/文本域的焦点环都走同一个 token（不再各写一份
       css.count("var(--focus-ring)") >= 5
       and ".composer__box:focus-within { border-color: var(--border-2); box-shadow: 0 0 0 3px var(--focus-ring), 0 8px 24px rgba(0,0,0,.05); }" in css
       and "textarea:focus { border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--focus-ring); }" in css)
+check("审计面板打开期间每 2 秒自动刷新，且重绘保留滚动位置",
+      "setInterval(refreshAuditLive, 2000)" in js
+      and 'state.pane !== "audit"' in js
+      and "list.scrollTop = top" in js
+      and 'id="audit-live"' in html)
 check("提示条（含置顶提示）颜色也来自 token，明暗各自取值",
       "--toast-bg:" in tokens and "--toast-fg:" in tokens
       and tokens.count("--toast-bg:") == 2 and "var(--toast-bg)" in css

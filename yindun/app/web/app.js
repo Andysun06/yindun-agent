@@ -956,10 +956,42 @@
     document.querySelectorAll(".pane").forEach((p) =>
       p.classList.toggle("is-active", p.id === "pane-audit"));
     state.pane = "audit";
+    startAuditLive();
+  }
+
+  /* 审计面板实时刷新：面板打开期间每 2 秒拉一次快照；没有新条目就不重绘，
+     重绘时保留滚动位置，避免用户正在翻看时被拉回顶部。 */
+  let auditLiveTimer = null;
+  let auditLiveSig = "";
+  function auditSig(data) {
+    const s = (data && data.stats) || {};
+    const e = ((data && data.entries) || [])[0] || {};
+    return [s.total_entries || 0, s.chain_valid, data && data.chain_ok,
+            e.hash || "", e.time || ""].join("|");
+  }
+  async function refreshAuditLive() {
+    if (state.pane !== "audit" || rightCollapsed() || document.visibilityState === "hidden") return;
+    try {
+      const data = await call("audit_snapshot", 300);
+      const sig = auditSig(data);
+      if (sig === auditLiveSig) return;
+      const list = $("audit-list");
+      const top = list ? list.scrollTop : 0;
+      renderAudit(data);
+      if (list) list.scrollTop = top;
+    } catch (e) { /* 下一次 tick 再试；不打断当前界面 */ }
+  }
+  function startAuditLive() {
+    stopAuditLive();
+    auditLiveTimer = setInterval(refreshAuditLive, 2000);
+  }
+  function stopAuditLive() {
+    if (auditLiveTimer) { clearInterval(auditLiveTimer); auditLiveTimer = null; }
   }
 
   function renderAudit(data) {
     state.audit = data || { stats: {}, chain_ok: false, entries: [] };
+    auditLiveSig = auditSig(state.audit);
     const stats = state.audit.stats || {};
     const failed = auditChainFailed(state.audit);
     const wasFailed = !!state.auditFailed;
@@ -2640,6 +2672,8 @@
    *  自动行为不能被当成用户意图存下来，否则"临时窄一下"会被永久记住。 */
   function setRightCollapsed(isCollapsed, persist = true) {
     document.querySelector(".app").classList.toggle("is-right-collapsed", isCollapsed);
+    if (isCollapsed) stopAuditLive();
+    else if (state.pane === "audit") startAuditLive();
     if (persist) {
       try { localStorage.setItem("yd_right_collapsed", isCollapsed ? "1" : "0"); } catch (e) {}
     }
@@ -2660,6 +2694,7 @@
     await renderPanelActions(name);
     const loader = PANE_LOADERS[name];
     if (loader) await loader();
+    if (name === "audit") startAuditLive(); else stopAuditLive();
   }
 
   /* ── 设置视图（独立视图：左设置导航 + 右内容）────────────

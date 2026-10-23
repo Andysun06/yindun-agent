@@ -915,6 +915,9 @@ html[data-theme="dark"] .modal__head { background: rgba(196, 54, 47, .12); }
 .chain-badge--ok { border-color: var(--accent-300); color: var(--accent-700); background: var(--accent-50); }
 html[data-theme="dark"] .chain-badge--ok { color: var(--accent-300); background: transparent; }
 .chain-badge--bad { border-color: var(--danger-500); color: var(--danger-500); }
+/* 审计实时刷新指示：面板打开期间每 2 秒拉一次快照 */
+.audit-live { display: flex; align-items: center; gap: 6px; margin-top: var(--sp-2); font-size: var(--fs-meta); color: var(--text-3); font-family: var(--font-mono); }
+.audit-live__dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-500); flex: none; }
 /* 审计链失败横幅（BUG-0011）：红色、置顶、带可执行动作。
    失败原因可能很长（后端给的是人话解释），文本允许换行、按钮不允许被挤没。 */
 .audit-banner {
