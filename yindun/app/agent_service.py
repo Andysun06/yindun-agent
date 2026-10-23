@@ -1811,6 +1811,7 @@ class AgentService:
                 intent = {"decision": "ok", "category": "", "summary": "", "message": ""}
             context = {
                 "tool": approval.get("name"),
+                "tool_id": approval.get("tool_id") or approval.get("name"),
                 "args": approval.get("args") or {},
                 "path": approval.get("path"),
                 "user_request": self._last_user_request,
