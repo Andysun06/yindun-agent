@@ -641,6 +641,21 @@ class Worker:
                 self.finished.emit(_quick_limit)
                 return
 
+            # ★ 明确「删除 + 完整路径」必须在**任何 LLM 调用之前**执行（V3.6.21）：
+            #   实测 2B 会先 list/analyze 再放弃，审批弹窗要等 1~2 分钟才出现，
+            #   最后还编造“路径不在可读写范围内”（实际就在沙箱里）。删除是确定性动作，
+            #   由宿主直接走统一审批通道，答复也由宿主给，不让模型总结。
+            _forced_del = self._forced_delete_target()
+            if _forced_del:
+                _del_reply = self._run_forced_delete(_forced_del)
+                if self.privacy_shield and box:
+                    self._box_mapping.update(box)
+                memory.update_with_context_result(self.user_input, _del_reply)
+                self.result_messages = memory.to_dict_list()
+                self._ensure_reply_persisted(_del_reply)
+                self.finished.emit(_del_reply)
+                return
+
             # ★ 知识库有文档时，禁止走"跳过工具的快速直答"：否则 search_knowledge_base
             #   永远不会被调用，模型会凭空作答（甚至误判为"拒绝提供敏感信息"）。
             #   仅在"本会走快速直答"时才探测 KB，避免给普通问答增加开销。
@@ -741,25 +756,6 @@ class Worker:
             _has_analyze = any(w in self.user_input for w in ["分析", "项目结构", "代码", "项目"])
             _has_list = any(w in self.user_input for w in ["列出", "查看目录", "有什么文件", "目录下", "列出文件"])
             _has_read = "读取" in self.user_input or "读文件" in self.user_input or "文件内容" in self.user_input
-            _has_delete = any(w in self.user_input for w in ["删除", "删掉", "移除"])
-
-            # ★ 明确“删除 + 具体路径”时由宿主直接调 delete_local_file：
-            #   弱模型经常先 list_local_files 去“确认”，然后就不再执行删除（实测 2B）。
-            #   删除仍走统一审批通道，工具名与 tool_id 会进风险分级，删除类判高危。
-            if _path_match and _has_delete and "delete_local_file" in self.tools_map:
-                _resolved_del = os.path.abspath(os.path.normpath(_path_match.group(1)))
-                if os.path.isfile(_resolved_del):
-                    try:
-                        self.status.emit(f"[工具执行] 删除文件: {_resolved_del}")
-                        _args = {"filename": os.path.basename(_resolved_del),
-                                 "target_directory": os.path.dirname(_resolved_del)}
-                        _raw = self._execute_with_approval("delete_local_file", _args)
-                        forced_tool_result, _ = self._anonymize_tool_output(_raw, "delete_local_file")
-                        forced_tool_name = "delete_local_file"
-                        forced_tool_args = dict(_args)
-                    except Exception as _e:
-                        forced_tool_result = f"[工具执行出错] {_e}"
-                    self.tool_call_count += 1
 
             if forced_tool_result is None and _path_match and (_has_analyze or _has_list or _has_read):
                 _resolved_path = os.path.abspath(os.path.normpath(_path_match.group(1)))
@@ -2288,6 +2284,41 @@ class Worker:
     # ──────────────────────────────────────────
     # 工具执行层：统一处理所有工具的调用
     # ──────────────────────────────────────────
+    def _forced_delete_target(self) -> str:
+        """识别「删除 + 完整路径」的明确指令，返回存在的文件绝对路径；否则空串。
+
+        只认宿主能确定的目标：动作词 + 盘符路径 + 文件真实存在。目录删除不在此列
+        （delete_local_file 只删单文件），仍交给 ReAct + 审批。
+        """
+        if "delete_local_file" not in getattr(self, "tools_map", {}):
+            return ""
+        if not any(w in self.user_input for w in ("删除", "删掉", "移除")):
+            return ""
+        m = re.search(r'([A-Za-z]:[\\/][^\s]+)', self.user_input)
+        if not m:
+            return ""
+        raw = m.group(1).strip('"\'“”')
+        path = os.path.abspath(os.path.normpath(raw))
+        return path if os.path.isfile(path) else ""
+
+    def _run_forced_delete(self, path: str) -> str:
+        """执行强制删除并返回确定性答复（不让模型总结，避免编造范围结论）。"""
+        args = {"filename": os.path.basename(path),
+                "target_directory": os.path.dirname(path)}
+        self.status.emit(f"[工具执行] 删除文件: {path}")
+        self.tool_call_count += 1
+        try:
+            raw = self._execute_with_approval("delete_local_file", args)
+        except Exception as e:
+            return f"删除未完成：{path}\n[工具执行出错] {e}"
+        if raw.startswith("已驳回"):
+            return f"已按你的选择驳回删除：{path}\n文件未改动。"
+        if raw.startswith("已拦截"):
+            return f"已拦截：{path}\n{raw}"
+        if raw.startswith("❌"):
+            return f"删除未完成：{path}\n{raw}"
+        return f"已删除：{path}\n该操作已写入审计。"
+
     def _execute_with_approval(self, tool_name: str, args: dict) -> str:
         """统一审批执行入口：策略检查 → 人工审批 → 执行工具。
 
