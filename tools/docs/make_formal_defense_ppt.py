@@ -237,7 +237,7 @@ notes(s, "功能按三组讲：对话与资料、文件操作与审计、统一�
 s = prs.slides.add_slide(prs.slide_layouts[6])
 header(s, 1, "模型全程看不见真值",
        "识别在本地、由规则完成；模型只负责推理，不负责判断哪些是隐私")
-pic(s, ASSETS / "demo_privacy_p.gif", 0.56, 1.98, 6.30, 3.94)
+pic(s, ASSETS / "demo_privacy_hi.gif", 0.56, 1.98, 6.30, 3.94)
 text(s, 0.56, 6.02, 6.30, 0.24, "完整流程：输入 → 发送 → 模型加载 → 回答还原", 10, MUTED)
 rect(s, 7.10, 1.98, 5.65, 4.10, fill=GREEN_T)
 text(s, 7.30, 2.12, 5.25, 0.32, "本地正则 + 精验，不调用模型", 16, GREEN, True)
@@ -260,7 +260,7 @@ notes(s, "先看脱敏对话。用户输入的是姓名、手机号、身份证�
 s = prs.slides.add_slide(prs.slide_layouts[6])
 header(s, 2, "先判用途，再判操作，最后才放行",
        "三层回答三个不同问题；判定权始终在人，不在模型")
-pic(s, ASSETS / "demo_approval_p.gif", 0.56, 1.98, 6.50, 4.06)
+pic(s, ASSETS / "demo_approval_hi.gif", 0.56, 1.98, 6.50, 4.06)
 text(s, 0.56, 6.12, 6.50, 0.24, "完整流程：写文件请求 → 弹窗 → 授权 → 执行成功", 10, MUTED)
 rect(s, 7.25, 1.98, 5.50, 4.45, fill=GREEN_T)
 layers = [
@@ -287,7 +287,7 @@ notes(s, "审批弹窗有三层。第一层是用途红线，内核确定性规�
 s = prs.slides.add_slide(prs.slide_layouts[6])
 header(s, 2, "审计不是“不可写”，是“可发现”",
        "HMAC-SHA256 哈希链 + 链锚点；每次打开面板都重新校验，不读缓存")
-pic(s, ASSETS / "demo_audit_p.gif", 0.56, 1.98, 6.30, 3.94)
+pic(s, ASSETS / "demo_audit_hi.gif", 0.56, 1.98, 6.30, 3.94)
 text(s, 0.56, 6.02, 6.30, 0.24, "完整流程：对话完成 → 打开审计 → 滚动查看事件", 10, MUTED)
 rect(s, 7.10, 1.98, 5.65, 4.10, fill=GREEN_T)
 pts = [
@@ -311,7 +311,7 @@ notes(s, "审计不是普通日志。每次打开面板都会重新校验 HMAC �
 s = prs.slides.add_slide(prs.slide_layouts[6])
 header(s, 2, "能力可以加，判定权不外包",
        "laya 决策模型快速适配；插件只做加法；控制面只能收紧")
-pic(s, ASSETS / "demo_plugins_p.gif", 0.56, 1.98, 5.90, 3.69)
+pic(s, ASSETS / "demo_plugins_hi.gif", 0.56, 1.98, 5.90, 3.69)
 text(s, 0.56, 5.76, 5.90, 0.24, "插件页：能力清单、运行状态与启停", 10, MUTED)
 rect(s, 6.70, 1.98, 6.05, 4.05, fill=GREEN_T)
 text(s, 6.90, 2.10, 5.65, 0.30, "laya 决策模型 · 快速适配", 16, GREEN, True)
@@ -375,7 +375,7 @@ s = innovation_page(
     "laya 第一时间适配；知识库入库即脱敏",
     [
         ("③", "laya 决策模型：第一时间适配", "近一个月走红，我们第一时间接进项目", "本机→局域网→正则；只做建议、不参与放行", "08_laya决策模型.gif"),
-        ("④", "脱敏知识库：入库即脱敏", "向量库只存占位符；检索标注“片段不是全文”", "入库即脱敏；向量库零明文", "demo_kb_p.gif"),
+        ("④", "脱敏知识库：入库即脱敏", "向量库只存占位符；检索标注“片段不是全文”", "入库即脱敏；向量库零明文", "demo_kb_hi.gif"),
     ],
     9,
 )
