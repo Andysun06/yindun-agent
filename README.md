@@ -30,7 +30,8 @@
 
 | 交付物 | 位置 |
 |---|---|
-| 📦 **免安装单文件 exe**（双击即用，无需安装与脚本） | [Release](https://github.com/Andysun06/yindun-agent/releases) → `Yindun-Portable-v3.6.20.exe`（GitHub 资产名不支持中文，会净化成下划线，故用英文名；本地构建产物名为 `隐盾安全智能体_V3.6.20_便携版.exe`，`python tools/packaging/build_portable.py`；**每次修复批次都会重建并同步到该 Release**） |
+| 🛠 **标准安装包**（推荐日常使用：开始菜单/桌面快捷方式、控制面板卸载，卸载默认保留本地数据） | [Release](https://github.com/Andysun06/yindun-agent/releases) → `Yindun-Setup-v3.6.20.exe`（本地产物 `dist/隐盾安全智能体_V3.6.20_安装包.exe`；构建：装好 NSIS 后在仓库根执行 `makensis tools/packaging/installer.nsi`） |
+| 📦 **免安装单文件 exe**（评委试用 / 临时机器：双击即用，数据写在 exe 同目录） | [Release](https://github.com/Andysun06/yindun-agent/releases) → `Yindun-Portable-v3.6.20.exe`（GitHub 资产名不支持中文，故用英文名；本地构建产物名为 `隐盾安全智能体_V3.6.20_便携版.exe`，`python tools/packaging/build_portable.py`；**每次修复批次都会重建并同步到该 Release**） |
 | 🏢 **企业控制端 exe**（集中管理服务 + 控制台，零依赖十几 MB，**无命令行黑窗**） | `python tools/packaging/build_control.py` → `dist/隐盾控制端_V3.6.20_便携版.exe`（拷到管理机**双击直接开控制台窗口**、自动登录、无黑命令行；启动信息在 `logs/yindun.log`，启动失败弹系统对话框说明原因；重复双击会提示「已经在运行」而不是抢端口。也可源码跑 `python -m yindun.control`） |
 | 🎬 **项目演示视频**（1080p，3分28秒） | [Release v3.3.0](https://github.com/Andysun06/yindun-agent/releases/tag/v3.3.0) → `Yindun-Demo-v3.3.0.mp4` |
 | 📄 **技术报告**（含隐私算法形式化 / 威胁模型 / 攻击实验 / 企业部署形态 · V3.6.20） | [docs/隐盾安全智能体_技术报告.pdf](docs/隐盾安全智能体_技术报告.pdf) |
@@ -201,14 +202,22 @@ python run.py          # 启动 Web 界面
 > 界面预览（不启动后端）：浏览器打开 `yindun/app/web/index.html#mock`（`#mock-audit` 审计、
 > `#mock-settings` 设置与知识库、`#mock-approval` 审批弹窗）。
 
-### 方式一：免安装单文件 exe（推荐给使用者）
+### 方式一：标准安装包（推荐日常使用）
 
-下载 `Yindun-Portable-<版本>.exe`，**双击即用**——无需安装、无需脚本。
+下载 `Yindun-Setup-<版本>.exe`，双击安装到当前用户目录 `%LOCALAPPDATA%\Programs\Yindun`：
 
-- 配置、会话、审计日志、知识库向量数据都写在 **exe 同目录**（放桌面/便携盘均可，卸载 = 删除 exe 与同目录生成的数据）
+- 自动创建开始菜单与桌面快捷方式，可在“设置 → 应用”里卸载；
+- 卸载时询问是否删除本地配置、聊天记录与审计数据，**默认保留**；
+- 不需要管理员权限；安装包未做代码签名，首次运行可能被 Windows Defender 提示，选择“仍要运行”即可；
+- 自行构建：装好 [NSIS](https://nsis.sourceforge.io/) 后在仓库根执行
+  `makensis tools/packaging/installer.nsi`，产物为 `dist/隐盾安全智能体_<版本>_安装包.exe`；
+  安装包直接复用 `build_portable.py` 产出的单文件 exe，装上的与便携试用的**是同一份**。
+
+**评委试用 / 临时机器**：下载 `Yindun-Portable-<版本>.exe`，**双击即用**——无需安装、无需脚本。
+
+- 配置、会话、审计日志、知识库向量数据都写在 **exe 同目录**（放桌面/便携盘均可，清理 = 删除 exe 与同目录生成的数据）
 - 主密钥由 Windows DPAPI 按当前用户保护，不随 exe 移动
 - 自行构建：`python tools/packaging/build_portable.py`（产物在 `dist/`；单文件模式首次启动约需 10~20 秒解压）
-- 打包不再包含 Qt（界面已改为 Web）：便携包 164MB → 127MB
 
 **企业控制端**（管理机用，与客户端相互独立）：
 
@@ -220,7 +229,7 @@ python tools/packaging/build_control.py      # 产物 dist/隐盾控制端_<版�
 
 ### 方式二：源码运行（仅开发调试用）
 
-> 交付形态只有 exe：**使用者一律用上面的便携包**（免安装、免脚本）。
+> 日常使用请用上面的**标准安装包**；评委试用/临时机器用免安装单文件 exe。
 > 下面这条路是给改代码的人用的——**不再提供 `.bat` 启动脚本**，直接命令行即可。
 
 ```bash
@@ -331,10 +340,10 @@ yindun-agent/
 ├── tools/                      # 🔨 工具（按用途分类）
 │   ├── packaging/              #   打包：build_portable.py（客户端）/ build_control.py（企业端）/ *.spec
 │   ├── docs/                   #   文档生成：make_ppt.py / md2pdf.py
-│   ├── build_portable.py       #   免安装单文件 exe 构建入口
-│   ├── yindun_agent_portable.spec #  onefile 打包配置（主推）
+│   ├── build_portable.py       #   评委试用/临时机器的单文件 exe 构建入口
+│   ├── yindun_agent_portable.spec #  onefile 打包配置（安装包复用这份产物）
 │   ├── yindun_agent.spec       #   onedir 打包配置（备选）
-│   ├── installer.nsi           #   NSIS 安装包脚本（备选分发形态）
+│   ├── installer.nsi           #   主推日常安装形态（NSIS 安装包）
 │   ├── make_ppt.py             #   生成 docs/汇报PPT
 
 │

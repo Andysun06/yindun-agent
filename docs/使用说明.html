@@ -56,9 +56,17 @@ Yindun Security Agent — 让本地 AI 更安全、更智能、更可控</p>
 <strong>默认是关闭的</strong>（V3.6.7 起：常驻最上层会挡住别的窗口），开了之后会记住，下次启动仍按你的选择。</p>
 <p>马上生效，不需要重启。</p>
 </blockquote>
-<h3>方式 A：免安装单文件 exe（推荐，双击即用）</h3>
+<h3>方式 A：标准安装包（推荐日常使用）</h3>
 <ol>
-<li>拿到 <code>Yindun-Portable-&lt;版本&gt;.exe</code>（约 140MB，单文件；从 GitHub Release 下载时为此名——资产名不支持中文；本地自行构建时产物名为 <code>隐盾安全智能体_&lt;版本&gt;_便携版.exe</code>）；</li>
+<li>从 Release 下载 <code>Yindun-Setup-&lt;版本&gt;.exe</code>（本地构建产物名为 <code>隐盾安全智能体_&lt;版本&gt;_安装包.exe</code>）；</li>
+<li>双击安装，默认装到当前用户目录 <code>%LOCALAPPDATA%\Programs\Yindun</code>，自动创建桌面与开始菜单快捷方式，不需要管理员权限；</li>
+<li>安装包未做代码签名，首次运行若被 Windows Defender 提示，选择“仍要运行”或添加信任即可；</li>
+<li>卸载：设置 → 应用 → 隐盾安全智能体，或开始菜单里的“卸载隐盾安全智能体”。卸载会询问是否删除本地配置、聊天记录与审计数据，<strong>默认保留</strong>。</li>
+</ol>
+<p><strong>数据落在哪</strong>：安装目录下的配置、会话记录、审计日志与知识库向量数据；卸载时选择“否”即可保留，重装后继续使用。</p>
+<h3>方式 B：免安装单文件 exe（评委试用 / 临时机器）</h3>
+<ol>
+<li>拿到 <code>Yindun-Portable-&lt;版本&gt;.exe</code>（约 160MB，单文件；从 GitHub Release 下载时为此名——资产名不支持中文；本地自行构建时产物名为 <code>隐盾安全智能体_&lt;版本&gt;_便携版.exe</code>）；</li>
 <li><strong>双击直接运行</strong>——无需安装、无需任何脚本、不需要管理员权限；</li>
 <li>首次启动约需 10~20 秒（单文件会先解压到临时目录，属正常现象），之后正常速度。
    界面底部会显示启动进度：<strong>探测算力 → 载入模型 → 已就绪</strong>；模型在后台载入内存（本机实测约 7~15 秒，
@@ -67,7 +75,7 @@ Yindun Security Agent — 让本地 AI 更安全、更智能、更可控</p>
 <p><strong>出问题看哪里</strong>：运行日志在 <strong>exe 同目录的 <code>logs/yindun.log</code></strong>（按 2MB × 3 份轮转，含启动、模型载入、插件与工具调用、异常栈；敏感值写盘前已掩码）。查更细的过程可加 <code>--log-level DEBUG</code> 启动；若需要把程序内部的常规输出也一并记下（排障用），再加 <code>--log-capture-prints</code>（<strong>默认不采集</strong>：日志是明文落盘面，默认只记关键事件）。
 <strong>数据落在哪</strong>：配置、会话记录、审计日志、知识库向量数据都写在 <strong>exe 同目录</strong>，所以请把 exe 放在可写目录（桌面、文档、便携盘均可）。
 <strong>卸载</strong>：删除 exe 及其同目录下生成的数据文件即可，不留残余。</p>
-<h3>方式 B：源码运行（开发者）</h3>
+<h3>方式 C：源码运行（开发者）</h3>
 <pre><code class="language-bash"># Python 3.10+，安装依赖
 pip install -r requirements.txt
 python run.py
@@ -513,8 +521,8 @@ python -m yindun.control --host 0.0.0.0 --window yes   # 对外监听（默认�
   与<strong>审计链锚点</strong>（<code>audit_chain.anchor.&lt;审计目录指纹&gt;.json</code>，用于发现"整链改写/尾部截断"）。
   这两样刻意放在用户目录而不是程序目录：<strong>不能与它们要保护的数据同盘</strong>，否则"删掉密钥/锚点"
   就能绕过保护。也因此它们不随 exe 移动（换机器后旧审计链需要重新确认，见 4.4）。</li>
-<li>免安装版：删除 exe 与其同目录生成的数据即可；如需彻底清除，再删除上述用户目录下的 <code>Yindun\</code> 文件夹。
-  安装版：卸载即清除程序目录数据，用户目录同上。</li>
+<li>免安装版：删除 exe 与其同目录生成的数据即可；如需彻底清除，再删除上述用户目录下的 <code>Yindun\</code> 文件夹。</li>
+<li>安装版：卸载时询问是否删除程序目录数据，<strong>默认保留</strong>；选“是”或手动删除 <code>%LOCALAPPDATA%\Programs\Yindun</code> 才会清除；用户目录同上。</li>
 </ul>
 <hr />
 <h2>七、常见问题（FAQ）</h2>
