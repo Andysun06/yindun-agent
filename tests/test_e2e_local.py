@@ -80,6 +80,9 @@ os.environ["SANDBOX_PATH"] = str(SANDBOX)
 svc = AgentService(settings=SettingsStore(path=TMP / "cfg.json"),
                    sessions=SessionStore(path=TMP / "sess.json"),
                    plugin_data_root=TMP / "plugins_data")
+# 工作流实例落盘改到临时目录：否则每跑一次 e2e 就往仓库根塞一个实例，
+# 真实使用报告 D-8 看到的“重启恢复 16 个实例”就是这些测试残留造成的。
+svc._workflow()._persistence_path = TMP / "workflow_instances.json"
 svc.settings.set("model", MODEL)
 svc.settings.save()
 

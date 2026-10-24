@@ -12,6 +12,7 @@
 
 用法：python tests/test_workflow_service.py   （退出码 0 = 全部通过）
 """
+import json
 import os
 import sys
 import tempfile
@@ -319,6 +320,73 @@ try:
           str(steps[4].get("result"))[:160])
 finally:
     data_csv.unlink(missing_ok=True)
+
+print("\n" + "=" * 78)
+print("【9】审批放行：waiting 落盘、重启可审批、execute_next 不再假成功")
+print("=" * 78)
+from yindun.core.workflow import StepStatus, WorkflowEngine  # noqa: E402
+
+def _force_to_manual(instance_id: str):
+    """把周报模板的前两步标成已完成，让第 3 步（人工审批）成为下一步。"""
+    eng = svc._workflow()
+    inst = eng.get_instance(instance_id)
+    for step in inst.steps[:2]:
+        step.status = StepStatus.COMPLETED
+        step.result = "ok"
+    eng._save_instances()
+    return inst
+
+_wf_manual = svc.workflow_start("wf_weekly_report")["instance_id"]
+_force_to_manual(_wf_manual)
+_start_manual = svc.workflow_execute_next(_wf_manual)
+check("进入人工审批步：execute_next 启动成功", _start_manual.get("ok"), str(_start_manual))
+wait_idle(svc)
+_status_manual = svc.workflow_status(_wf_manual)
+_manual_step = next((s for s in _status_manual["steps"]
+                     if s["status"] == "waiting_approval"), None)
+check("人工审批步进入 waiting_approval", _manual_step is not None,
+      str([(s["name"], s["status"]) for s in _status_manual["steps"]]))
+
+# waiting 状态必须落盘——否则进程重启后恢复成 pending，approve 永远匹配不到
+_raw_wf = json.loads(svc._workflow()._persistence_path.read_text(encoding="utf-8"))
+_inst_raw = next(i for i in _raw_wf["instances"] if i["instance_id"] == _wf_manual)
+_persisted = next((s for s in _inst_raw["steps"]
+                   if s["step_id"] == _manual_step["step_id"]), None)
+check("waiting_approval 已落盘（重启不会退回 pending）",
+      _persisted is not None and _persisted.get("status") == "waiting_approval",
+      str(_persisted))
+
+# 对“已经在等待审批”的步骤再点执行下一步：必须返回明确失败，而不是 ok=true 假成功
+_again = svc.workflow_execute_next(_wf_manual)
+check("等待审批时 execute_next 明确失败（不再 ok=true 假成功）",
+      not _again.get("ok") and "等待审批" in str(_again.get("error")), str(_again))
+
+# 正常审批与失败原因
+_ok_approve = svc.workflow_approve(_wf_manual, _manual_step["step_id"], True)
+check("审批 waiting 步骤成功", _ok_approve.get("ok"), str(_ok_approve))
+_bad_approve = svc.workflow_approve(_wf_manual, "no_such_step", True)
+check("审批失败带可读原因（不再是裸 False）",
+      not _bad_approve.get("ok") and "步骤不存在" in str(_bad_approve.get("error")),
+      str(_bad_approve))
+
+# 重启恢复后，用原 step_id 仍能审批（D-9 的跨进程场景）
+_wf_restart = svc.workflow_start("wf_weekly_report")["instance_id"]
+_force_to_manual(_wf_restart)
+svc.workflow_execute_next(_wf_restart)
+wait_idle(svc)
+_restart_step = next(s for s in svc.workflow_status(_wf_restart)["steps"]
+                     if s["status"] == "waiting_approval")
+_eng2 = WorkflowEngine()
+_eng2._instances = {}
+_eng2._persistence_path = svc._workflow()._persistence_path
+_eng2._load_instances()
+_check_inst = _eng2.get_instance(_wf_restart)
+check("重启后 waiting_approval 原样恢复",
+      _check_inst is not None
+      and next(s for s in _check_inst.steps if s.step_id == _restart_step["step_id"]).status
+      == StepStatus.WAITING_APPROVAL)
+check("重启后同一 step_id 仍可审批通过",
+      _eng2.approve_step(_wf_restart, _restart_step["step_id"]) is True)
 
 print("\n" + "=" * 78)
 if failures:

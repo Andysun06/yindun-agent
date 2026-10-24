@@ -562,8 +562,12 @@ class WorkflowEngine:
 
         # 审批检查
         if step.approval_type == ApprovalType.MANUAL and step.status == StepStatus.PENDING:
-            # 需要人工审批
+            # 需要人工审批：**必须立即落盘**（V3.6.21，真实使用报告 D-9）。
+            # 旧实现只改内存状态不保存，进程一重启该步骤恢复成 pending，
+            # approve_step 的 WAITING_APPROVAL 守卫自然匹配不到——这就是
+            # "状态明明显示等待审批，审批却返回失败"的根因。
             step.status = StepStatus.WAITING_APPROVAL
+            self._save_instances()
             return {"success": False, "result": None,
                     "error": "步骤需要人工审批", "needs_approval": True}
 

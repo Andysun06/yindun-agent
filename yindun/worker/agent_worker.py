@@ -1806,6 +1806,30 @@ class Worker:
                             self.result_messages = memory.to_dict_list()
                             self._ensure_reply_persisted(final_reply)
                             return final_reply
+                        # ★ 用户明确驳回（非超时）：与超时一样立即停止整轮，由宿主给
+                        #   确定性答复。旧实现 continue 让模型再跑 1~2 轮，最后把
+                        #   “用户拒绝了”说成“我失败了”（真实使用报告 D-7）。
+                        if _outcome in ("rejected", ""):
+                            self.status.emit("[停止] 已按你的选择驳回，本轮已终止（未执行该操作）")
+                            final_reply = (
+                                f"已按你的选择驳回：{tool_display_name} 未执行"
+                                f"（目标：{display_path}）。\n"
+                                "本轮推理已停止；被驳回的这一步没有执行，"
+                                "也没有改动任何文件或系统状态。\n"
+                                "需要继续的话，请重新发送请求，并在审批卡上点「授权」。"
+                            )
+                            for _rest in tool_calls[_tc_idx + 1:]:
+                                _rid = (_rest.get("id", "") if isinstance(_rest, dict)
+                                        else getattr(_rest, "id", ""))
+                                messages.append(ToolMessage(
+                                    content="未执行：本轮因你驳回人工审批已停止。",
+                                    tool_call_id=_rid))
+                            final_reply = self._merge_limit_prefix(final_reply)
+                            chain = messages[round_start_idx:]
+                            memory.update_with_full_chain(chain)
+                            self.result_messages = memory.to_dict_list()
+                            self._ensure_reply_persisted(final_reply)
+                            return final_reply
                         continue
                     # ★ 审计：记录访问控制通过
                     try:
