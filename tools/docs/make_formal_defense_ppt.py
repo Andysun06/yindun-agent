@@ -220,77 +220,89 @@ for i, (value, bold, line, space_after) in enumerate([
         p.space_after = Pt(space_after)
     r = p.add_run(); r.text = value
     _font(r, 19, GREEN if i == 0 else (MUTED if i == 5 else TEXT), bold, HEI)
-notes(s, "开场不念目录。第一句话：AI 越普及，用户越会把敏感数据交给智能体，我们做的是让这件事变得敢用。")
+notes(s, "开场不念目录。第一句话：涉密办公要用 AI，但敏感原文不能出本机——我们做的是让这件事可落地。")
 
 # ── 2 作品简介 ─────────────────────────────────────────
 s = prs.slides.add_slide(prs.slide_layouts[6])
-header(s, 0, "AI 越好用，越不能把原文交出去",
-       "四个常见泄露点 + 一张图：哪些由框架做，哪些交给模型")
+header(s, 0, "涉密办公用 AI：敏感原文不出本机",
+       "四个泄露环节，对应四道本地控制；模型只收到占位符")
 leaks = [
-    ("发给 AI 时", "聊天内容会离开这台电脑"),
-    ("存到电脑里", "缓存和日志可能留下原文"),
-    ("历史记录里", "会话、知识库越积越多"),
-    ("AI 动手时", "未经确认就写、删、改文件"),
+    ("发给 AI 时", "聊天内容会离开这台电脑", "入口脱敏"),
+    ("存到电脑里", "缓存和日志可能留下原文", "脱敏日志 + 加密存储"),
+    ("历史记录里", "会话、知识库越积越多", "会话加密 + 审计"),
+    ("AI 动手时", "未经确认就写、删、改文件", "审批 + 权限"),
 ]
-for i, (head, body) in enumerate(leaks):
+for i, (head, body, ctrl) in enumerate(leaks):
     x = 0.56 + (i % 2) * 2.55
-    y = 1.95 + (i // 2) * 1.55
-    rect(s, x, y, 2.45, 1.35, fill=GREEN_T)
-    text(s, x + 0.16, y + 0.14, 2.13, 0.30, head, 16, GREEN, True)
-    text(s, x + 0.16, y + 0.52, 2.15, 0.66, body, 11.5, TEXT, line=1.3)
+    y = 1.98 + (i // 2) * 1.72
+    rrect(s, x, y, 2.45, 1.58, fill=GREEN_T, line=None, radius=0.06)
+    text(s, x + 0.16, y + 0.15, 2.13, 0.30, head, 16, GREEN, True)
+    text(s, x + 0.16, y + 0.52, 2.13, 0.56, body, 11.5, TEXT, line=1.3)
+    hline(s, x + 0.16, y + 1.11, 2.13, GREEN_T3, 1.0)
+    text(s, x + 0.16, y + 1.19, 2.13, 0.24, "→ " + ctrl, 10, GREEN_D, True)
 
 # 架构分工图（V3.6.21 重绘）：本机可信域 vs 模型侧，圆角卡片 + 真实箭头 + 信任边界
 text(s, 5.95, 1.90, 6.83, 0.30, "架构分工：真值止于本机，模型只做推理", 15, GREEN, True)
-text(s, 6.02, 2.20, 2.00, 0.22, "本机可信域", 9.5, GREEN_D, True)
+text(s, 6.02, 2.22, 2.00, 0.22, "本机可信域", 9.5, GREEN_D, True)
 
 # 本机域容器：把"框架做的事"框在一起，和模型侧形成明确的信任边界
-rrect(s, 5.95, 2.42, 4.40, 1.78, fill=GREEN_T, line=None, radius=0.05)
+rrect(s, 5.95, 2.44, 4.40, 2.78, fill=GREEN_T, line=None, radius=0.05)
 
 # ① 用户数据
-rrect(s, 6.08, 2.62, 1.02, 0.78, fill=WHITE, line=LINE, line_w=0.75, radius=0.10)
-text(s, 6.12, 2.70, 0.94, 0.24, "① 你的数据", 11, TEXT, True, HEI, PP_ALIGN.CENTER)
-text(s, 6.12, 2.98, 0.94, 0.22, "姓名 / 文件", 8.5, MUTED, False, HEI, PP_ALIGN.CENTER)
+rrect(s, 6.08, 2.78, 1.02, 0.82, fill=WHITE, line=LINE, line_w=0.75, radius=0.10)
+text(s, 6.12, 2.86, 0.94, 0.24, "① 你的数据", 11, TEXT, True, HEI, PP_ALIGN.CENTER)
+text(s, 6.12, 3.14, 0.94, 0.22, "姓名 / 文件", 8.5, MUTED, False, HEI, PP_ALIGN.CENTER)
 
 # ② 隐盾内核：绿色实底，作为整张图的重心
-rrect(s, 7.52, 2.55, 1.72, 0.92, fill=GREEN, line=None, radius=0.07)
-text(s, 7.62, 2.64, 1.52, 0.24, "② 隐盾内核", 12, WHITE, True, HEI, PP_ALIGN.CENTER)
-text(s, 7.62, 2.93, 1.52, 0.40, "识别 · 脱敏 · 权限\n审批 · 审计", 8.5, GREEN_T3, False, HEI,
+rrect(s, 7.52, 2.70, 1.72, 1.00, fill=GREEN, line=None, radius=0.07)
+text(s, 7.62, 2.80, 1.52, 0.24, "② 隐盾内核", 12, WHITE, True, HEI, PP_ALIGN.CENTER)
+text(s, 7.62, 3.10, 1.52, 0.42, "识别 · 脱敏 · 权限\n审批 · 审计", 8.5, GREEN_T3, False, HEI,
      PP_ALIGN.CENTER, line=1.15)
 
 # ③ 模型：白色底 + 绿描边，标明"只能看见占位符"
-rrect(s, 10.55, 2.55, 2.08, 0.92, fill=WHITE, line=GREEN, line_w=1.0, radius=0.07)
-text(s, 10.65, 2.64, 1.88, 0.24, "③ 云端 / 本地模型", 11.5, GREEN_D, True, HEI, PP_ALIGN.CENTER)
-text(s, 10.65, 2.93, 1.88, 0.24, "只推理 · 只看见占位符", 8.5, MUTED, False, HEI, PP_ALIGN.CENTER)
+rrect(s, 10.55, 2.70, 2.08, 1.00, fill=WHITE, line=GREEN, line_w=1.0, radius=0.07)
+text(s, 10.65, 2.80, 1.88, 0.24, "③ 云端 / 本地模型", 11.5, GREEN_D, True, HEI, PP_ALIGN.CENTER)
+text(s, 10.65, 3.10, 1.88, 0.24, "只推理 · 只看见占位符", 8.5, MUTED, False, HEI, PP_ALIGN.CENTER)
 
 # ④ 本机还原：放在本机域底部，回程箭头进入这里
-rrect(s, 8.00, 3.62, 2.35, 0.43, fill=WHITE, line=GREEN, line_w=0.9, radius=0.14)
-text(s, 8.08, 3.70, 2.19, 0.24, "④ 本机还原：占位符换回真值", 9.5, GREEN_D, True, HEI,
+rrect(s, 8.00, 4.02, 2.35, 0.46, fill=WHITE, line=GREEN, line_w=0.9, radius=0.14)
+text(s, 8.08, 4.11, 2.19, 0.24, "④ 本机还原：占位符换回真值", 9.5, GREEN_D, True, HEI,
      PP_ALIGN.CENTER)
 
 # 主线：数据 → 内核 →（跨边界）模型
-arrow(s, 7.10, 3.01, 7.52, 3.01, GREEN, 1.25)
-arrow(s, 9.24, 3.01, 10.55, 3.01, GREEN, 1.25)
-text(s, 9.34, 2.64, 1.10, 0.26, "只发占位符", 9, GREEN, True, HEI, PP_ALIGN.CENTER)
+arrow(s, 7.10, 3.19, 7.52, 3.19, GREEN, 1.25)
+arrow(s, 9.24, 3.19, 10.55, 3.19, GREEN, 1.25)
+text(s, 9.34, 2.82, 1.10, 0.26, "只发占位符", 9, GREEN, True, HEI, PP_ALIGN.CENTER)
 
 # 回程：模型 → 本机还原（这条线跨过信任边界，强调"回来的也只是占位符"）
-arrow(s, 11.59, 3.47, 11.59, 3.84, GREEN, 1.1)
-arrow(s, 11.59, 3.84, 10.35, 3.84, GREEN, 1.1)
-text(s, 10.50, 3.49, 1.02, 0.22, "返回仍是占位符", 8.5, MUTED, False, HEI, PP_ALIGN.CENTER)
+arrow(s, 11.59, 3.70, 11.59, 4.25, GREEN, 1.1)
+arrow(s, 11.59, 4.25, 10.35, 4.25, GREEN, 1.1)
+text(s, 10.50, 3.82, 1.02, 0.22, "返回仍是占位符", 8.5, MUTED, False, HEI, PP_ALIGN.CENTER)
 
 # 信任边界：虚线穿过两条跨域箭头，和分区标题一起说明"真值不出本机"
-dline(s, 10.44, 2.48, 10.44, 4.06, GREEN, 1.0)
-text(s, 9.92, 2.20, 1.06, 0.22, "信任边界", 9, GREEN, True, HEI, PP_ALIGN.CENTER)
+dline(s, 10.44, 2.50, 10.44, 4.55, GREEN, 1.0)
+text(s, 9.92, 2.22, 1.06, 0.22, "信任边界", 9, GREEN, True, HEI, PP_ALIGN.CENTER)
 
-text(s, 5.95, 4.35, 6.83, 0.26,
-     "框架负责：识别 · 脱敏 · 权限 · 审批 · 审计；模型只做推理。", 10, GREEN_D, True)
-text(s, 5.95, 4.60, 6.83, 0.24,
-     "模型只收到占位符，真值不离开本机。适用：律所 / 医院 / 制造 / 政府外包", 9, MUTED)
-text(s, 0.56, 4.95, 12.22, 0.36, "隐盾 = 面向涉密办公的本地化隐私防护桌面智能体", 16, GREEN, True)
-text(s, 0.56, 5.35, 12.22, 0.26, "数据进模型前脱敏，回答回本机还原。", 11, MUTED)
+# 图内分工结论：填满本机域下半部，和左侧卡片底边对齐
+text(s, 6.10, 4.70, 4.10, 0.24,
+     "框架负责：识别 · 脱敏 · 权限 · 审批 · 审计", 10, GREEN_D, True)
+text(s, 6.10, 4.98, 4.10, 0.22,
+     "模型负责：只做推理，只收到占位符", 9, MUTED)
+
+# 产品介绍带：一句话说明"是什么"，不再用脚注式灰字
+hline(s, 0.56, 5.45, 12.22, LINE, 0.75)
+text(s, 0.56, 5.55, 12.22, 0.32,
+     "隐盾 = 面向涉密办公的本地化隐私防护桌面智能体", 15, GREEN, True)
+text(s, 0.56, 5.90, 12.22, 0.26,
+     "数据进模型前脱敏，回答回本机还原；模型侧看不到姓名、文件内容与历史记录。", 10.5, MUTED)
+
 rect(s, 0.56, 6.25, 12.22, 0.67, fill=GREEN_T)
-text(s, 0.56, 6.40, 12.22, 0.32, "不是「少用 AI」，而是「放心用 AI」", 17, GREEN_D, True, HEI, PP_ALIGN.CENTER)
+text(s, 0.76, 6.41, 7.60, 0.30,
+     "设计目标：可用 · 不可见 · 可审计 · 可部署", 15, GREEN_D, True)
+text(s, 8.30, 6.45, 4.30, 0.24,
+     "适用：律所 / 医院 / 制造 / 政府外包", 10, MUTED, False, HEI, PP_ALIGN.RIGHT)
 pagenum(s, 2)
-notes(s, "我们做隐盾的初衷很现实：AI 越普及，用户越会把个人信息、敏感文件甚至企业核心数据交给智能体；一旦在传输、存储或处理中泄露、被滥用，损失难以估量。一个值得信赖的智能体不仅要聪明，更要让人敢用。我们把脱敏做进模型入口：数据进模型前换成占位符，回答回本机再还原。这张图里，框架负责识别、脱敏、权限、审批、审计；模型只负责推理，而且只看见占位符。")
+notes(s, "出发点很直接：涉密办公要用 AI，但敏感原文不能出本机。风险集中在四个环节：发给 AI 时原文出网、存到电脑里留下副本、历史记录越积越多、AI 动手时未经确认就写删改。我们对应做了四道本地控制：入口脱敏、脱敏日志加加密存储、会话加密加审计、审批加权限。右边这张图说明分工：你的数据先经过隐盾内核，模型只收到占位符；回答回来由本机还原。框架负责识别、脱敏、权限、审批、审计，模型只做推理。")
 
 # ── 3 功能总览 ─────────────────────────────────────────
 s = prs.slides.add_slide(prs.slide_layouts[6])
