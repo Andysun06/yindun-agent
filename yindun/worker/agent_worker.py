@@ -957,6 +957,9 @@ class Worker:
             # ★ 去掉模型自带的“隐私说明/占位符说明”尾巴（真实使用报告 BUG-4）：
             #   用户没问隐私机制时，不要在回答里解释 [PHONE_x_y] / “落盘时替换”这类内部概念。
             final_reply = self._strip_internal_privacy_notes(final_reply)
+            # ★ 知识库占位符兜底（D-3）：模型改写写法导致 restore_kb_placeholders 仍认不出时，
+            #   不要把 `[KB_NAME_0_xtzr]` 这种内部 token 原样露给用户；换成可读占位。
+            final_reply = self._mask_unresolved_kb_tokens(final_reply)
             # ★ 落盘内容里没还原干净的占位符要告诉用户（V3.6.11）：写文件时若还有 N 处占位符
             #   找不到对应真值，用户拿到的交付物里就会有 `[PHONE_0_x]` 这种东西——必须点破。
             if getattr(self, "_unresolved_in_write", 0):
@@ -3442,6 +3445,19 @@ class Worker:
             if token not in uniq:
                 uniq.append(token)
         return uniq[:limit]
+
+    _KB_LEFT_RE = re.compile(
+        r"[\[【]?\s*KB[_-][A-Za-z][A-Za-z0-9_-]*?[_-]\d+(?:[_-][A-Za-z0-9]{4})?\s*[\]】]?")
+
+    def _mask_unresolved_kb_tokens(self, reply: str) -> str:
+        """把还原不了的知识库占位符换成用户能读的占位，而不是原始内部 token。
+
+        真实使用报告 D-3：模型把 `[KB_NAME_0_xtzr]` 写进回答后，restore 认不出就原样
+        露给用户。这里做最后一道展示兜底；具体“有几处没还原”仍由上面的提示如实说明。
+        """
+        if not reply:
+            return reply
+        return self._KB_LEFT_RE.sub("[未能还原的敏感片段]", str(reply))
 
     def _strip_internal_privacy_notes(self, reply: str) -> str:
         """删掉模型自动追加的“隐私说明/占位符说明”尾巴。
