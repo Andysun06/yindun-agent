@@ -25,6 +25,11 @@ import threading
 from typing import Any, Callable, Dict, List, Tuple
 
 from yindun.core.secret_manager import SecretManager
+from yindun.utils.logger import get_logger
+
+# 插件识别器的失败/截断必须进 logs/yindun.log：打包成 exe 后 print 看不见，
+# 而识别器整体失效会直接表现为"该类型敏感数据没脱敏"。
+log = get_logger("privacy")
 
 
 # 占位符 nonce 字符集：小写字母 + 数字（不含 ']' 等易与占位符结构冲突的字符）
@@ -638,7 +643,7 @@ class PrivacyEngine:
             try:
                 items = fn(text)
             except Exception as exc:
-                print(f"[PrivacyEngine] 追加识别器 {name} 失败：{exc}")
+                log.warning("追加识别器 %s 失败：%s", name, exc)
                 continue
             if isinstance(items, dict):
                 items = items.get("spans")
@@ -669,7 +674,7 @@ class PrivacyEngine:
                 if ph_spans and any(s < end and start < e for s, e in ph_spans):
                     continue                      # 覆盖既有占位符：丢弃（保护可还原性）
                 if len(raw_spans) >= _MAX_EXTRA_SPANS or covered + (end - start) > limit:
-                    print(f"[PrivacyEngine] 追加识别器 {name} 命中过多，超出上限的部分已忽略")
+                    log.warning("追加识别器 %s 命中过多，超出上限的部分已忽略", name)
                     break
                 level = item.get("level") if item.get("level") in _EXTRA_LEVELS else "机密"
                 with _EXTRA_LOCK:

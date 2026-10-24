@@ -1166,6 +1166,14 @@ _reply2 = _w._run_forced_delete(str(_demo))
 check("批准后给确定性成功答复并提示已审计",
       _reply2.startswith("已删除") and "审计" in _reply2, _reply2)
 
+# 错误分档：内部异常不得因为文本里带 "timeout" 就被报成网络问题
+_internal = Worker._translate_error(
+    TypeError("_fake_timeout() got an unexpected keyword argument 'tool_id'"))
+check("★ TypeError 报「内部错误」而非网络超时",
+      "内部错误" in _internal and "请求超时" not in _internal, _internal[:80])
+_timeout = Worker._translate_error(TimeoutError("timed out"))
+check("真正的超时仍报「请求超时」", "请求超时" in _timeout, _timeout[:80])
+
 print(chr(10) + "=" * 78)
 if failures:
     print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))

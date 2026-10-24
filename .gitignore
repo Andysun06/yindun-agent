@@ -65,6 +65,9 @@ product-video/
 # 归档：历史证据/备份（不外发，也不入语言统计）
 archive/
 
+# 根目录录屏原片：正式资产统一放 docs/formal_assets/，原片不入库（避免重复占仓）
+/*.gif
+
 # ZCode 客户端本地忽略文件（内容与 .gitignore 同步，属客户端配置不入库）
 .zcodeignore
 
