@@ -827,6 +827,8 @@
     // ★ 发送即建"等在那儿"的等待气泡：不等后端第一条事件（直答快路径以前一条都不发，
     //   整段生成期对话区毫无变化——用户看到的正是"点了没反应、也没有思考动画"）。
     ensureStreamBubble();
+    // 刚点完「快速/思考」就立刻回车时，先把防抖中的模式落库，保证本轮用的是用户看到的模式
+    await ensureThinkModeSaved();
     const ok = await call("send", text);
     if (!ok) {
       setBusy(false);
@@ -3391,6 +3393,12 @@
       _modeSaveBusy = false;
       if (_modeSavePending) flushThinkMode();
     }
+  }
+
+  async function ensureThinkModeSaved() {
+    if (_modeSaveTimer) { clearTimeout(_modeSaveTimer); _modeSaveTimer = null; }
+    while (_modeSaveBusy) await new Promise((r) => setTimeout(r, 20));
+    if (_modeSavePending) await flushThinkMode();
   }
 
   /* ── 事件：来自 Python ───────────────────────────── */
