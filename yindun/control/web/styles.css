@@ -204,10 +204,16 @@ svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.6;
 
 .main { display:flex; flex-direction:column; min-width:0; }
 .topbar { display:flex; align-items:center; justify-content:space-between; gap:var(--sp-5);
-  height:var(--top-h); padding:0 var(--sp-7); border-bottom:1px solid var(--border-1); flex:0 0 auto; }
+  height:var(--top-h); padding:0 var(--sp-7); border-bottom:1px solid var(--border-1); flex:0 0 auto;
+  min-width:0; overflow:hidden; }
+.topbar__title { min-width:0; flex:1 1 auto; }
 .topbar__title h2 { font-size:var(--fs-lg); font-weight:600; }
 .topbar__title p { color:var(--text-3); font-size:var(--fs-meta); }
-.topbar__tools { display:flex; align-items:center; gap:var(--sp-4); }
+/* 标题/副标题最多一行省略：全屏时不能让长副标题把工具区挤到换行 */
+.topbar__title h2, .topbar__title p { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.topbar__tools { display:flex; align-items:center; gap:var(--sp-4); flex:0 0 auto; min-width:0; }
+/* 工具按钮不收缩、不换行：旧实现在 1920 全屏下按钮被挤成竖排单字 */
+.topbar__tools .btn, .topbar__tools .switch { flex:0 0 auto; white-space:nowrap; }
 
 /* 内容用满可用宽度（V3.6.7 修）：早先 `.content > section{max-width:1180px}` 把内容钉死在
    1180px，窗口一宽右半边整片空白——而控制台最常看的是**台账/表格**，越宽越好读。
@@ -293,10 +299,12 @@ code { font-family:var(--font-mono); font-size:var(--fs-meta); }
 /* 原生勾选/单选统一强调色（默认蓝与这套设计语言不符） */
 input[type="checkbox"], input[type="radio"] { accent-color:var(--accent-500); }
 
-/* 状态点旁的常显说明；窄窗口收起（顶栏放不下时优先保住按钮） */
-.status { white-space:nowrap; }
-.status__note { color:var(--text-3); }
-@media (max-width:1279px) { .status__note { display:none; } }
+/* 状态点旁的常显说明；顶栏放不下时优先保住按钮（V3.6.21：1920 全屏下按钮被挤成竖排） */
+.status { white-space:nowrap; min-width:0; flex:0 1 auto; }
+.status__note { color:var(--text-3); display:inline-block; max-width:20ch;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom; }
+/* 1920 及以下直接收起长说明（"已连接"仍在），把宽度让给配对码/导出/刷新/自动刷新 */
+@media (max-width:2199px) { .status__note { display:none; } }
 
 /* 敏感路径预设库：按业务场景分组，每组一张小表 */
 .presets { display:flex; flex-direction:column; gap:var(--sp-4); margin-top:var(--sp-3); }
