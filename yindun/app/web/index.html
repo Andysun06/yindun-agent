@@ -12,14 +12,14 @@
        折叠后窗口本身会缩成一条浮条（底边对齐、水平居中），
        在这里输入指令回车 = 自动展开完整界面并发送；Shift+Enter 换行（不发送）。
        草稿由 carryDraft() 与主输入框互相搬运：折叠/展开都不丢字。 -->
-  <div class="minibar pywebview-drag-region" id="minibar">
+  <div class="minibar" id="minibar">
     <button class="minibar__expand" id="btn-mini-expand" title="展开完整界面（Esc）">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4v5H4M15 20v-5h5"/></svg>
     </button>
     <!-- textarea 而非 input：Shift+Enter 要真的能换行（单行控件装不下换行符） -->
     <textarea class="minibar__input" id="mini-input" rows="1" spellcheck="false" autocomplete="off"
            placeholder="闪发模式：Enter 发送 · Shift+Enter / Ctrl+Enter 换行"></textarea>
-    <span class="minibar__status" id="mini-status"></span>
+    <span class="minibar__status pywebview-drag-region" id="mini-status"></span>
     <button class="minibar__send" id="btn-mini-send" title="发送（Enter）">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h15M13 6l6 6-6 6"/></svg>
     </button>
@@ -76,7 +76,7 @@
 
     <!-- ── 主区 ─────────────────────────────── -->
     <main class="main">
-      <header class="band topbar pywebview-drag-region">
+      <header class="band topbar">
         <button class="btn btn--ghost" id="btn-sidebar" title="折叠 / 展开会话栏" style="display:inline-flex">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
@@ -257,8 +257,8 @@
         </aside>
 
         <div class="setmain">
-          <header class="setmain__head pywebview-drag-region">
-            <div>
+          <header class="setmain__head">
+            <div class="pywebview-drag-region">
               <h2 id="set-title">模型接入</h2>
               <p id="set-sub">按数据边界分三档：本机 / 局域网 / 公网</p>
             </div>
@@ -533,8 +533,8 @@
         </div>
       </div>
       <div class="modal__foot">
-        <button class="btn btn--danger" id="btn-deny">驳回拦截</button>
-        <button class="btn btn--primary" id="btn-allow">授权执行</button>
+        <button class="btn btn--danger" id="btn-deny" type="button">驳回拦截</button>
+        <button class="btn btn--primary" id="btn-allow" type="button">授权执行</button>
       </div>
     </div>
   </div>

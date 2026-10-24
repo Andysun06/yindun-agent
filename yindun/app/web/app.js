@@ -195,7 +195,14 @@
       return null;
     }
     try { return await bridge[method](...args); }
-    catch (err) { toast("调用失败：" + method); console.error(err); return null; }
+    catch (err) {
+      // ★ V3.6.21：以前只 toast "调用失败"，真实异常被吞，界面只能显示"未知原因"。
+      //   现在把异常原文一起抛给用户，并保留 console 堆栈供排障。
+      const detail = (err && (err.message || String(err))) || "未知异常";
+      toast("调用失败：" + method + " — " + detail);
+      console.error(err);
+      return null;
+    }
   }
 
   /* ── 渲染：会话列表 ───────────────────────────────── */

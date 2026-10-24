@@ -105,6 +105,9 @@ _SYSTEM_PROMPT = (
 # 但**不再常驻**——常驻会把小模型的注意力从"该调工具了"上引开（实测见文件头注释）。
 _ATTACHMENT_RULES = (
     "\n【附件文档处理规范】（当前会话挂有附件，按此执行）\n"
+    "0. **附件正文已经在下面的上下文里**：回答必须优先使用附件内容。"
+    "禁止说「文件不存在 / 请提供文件 / 请上传」，也不要再去磁盘查找同名文件——"
+    "除非用户明确要求对比磁盘上的另一个文件。\n"
     "1. 类型识别：先判断附件类型（PDF/Word/Excel/TXT/音频转写），并推断文档主题。\n"
     "2. 结构化提取（非音频）：提取标题与章节层级；表格用 Markdown 表格还原（保留行列对应）；"
     "列表/编号项保持原序。\n"
@@ -951,6 +954,9 @@ class Worker:
             final_reply = self._guard_truncated_answer(final_reply)
             # ★ 长回答被单次生成上限截断（V3.6.13）：自动续写一次后仍截断就如实说明
             final_reply = self._guard_length_limit(final_reply)
+            # ★ 去掉模型自带的“隐私说明/占位符说明”尾巴（真实使用报告 BUG-4）：
+            #   用户没问隐私机制时，不要在回答里解释 [PHONE_x_y] / “落盘时替换”这类内部概念。
+            final_reply = self._strip_internal_privacy_notes(final_reply)
             # ★ 落盘内容里没还原干净的占位符要告诉用户（V3.6.11）：写文件时若还有 N 处占位符
             #   找不到对应真值，用户拿到的交付物里就会有 `[PHONE_0_x]` 这种东西——必须点破。
             if getattr(self, "_unresolved_in_write", 0):
@@ -1288,6 +1294,7 @@ class Worker:
         # ★ V3.6.3：本轮是否存在"成功的工具结果" + 本轮调用过哪些工具（反编造兜底要用）
         self._turn_tool_success = False
         self._turn_tool_names = []
+        self._turn_write_facts = []
         if forced_tool_result and forced_tool_name:
             # ★ 协议要求：ToolMessage 必须回应一条"声明了对应 tool_call 的 AIMessage"。
             #   旧实现注入的是无 tool_calls 的 AIMessage + 孤立 ToolMessage —— 对模型属非法序列，
@@ -1593,6 +1600,7 @@ class Worker:
                     # 保存完整工具调用链（从本轮的 HumanMessage 之后到结束）
                     chain = messages[round_start_idx:]
                     memory.update_with_full_chain(chain)
+                    final_reply = self._append_write_facts(final_reply)
                     self.result_messages = memory.to_dict_list()
                     self._ensure_reply_persisted(final_reply)
                     return final_reply
@@ -1855,6 +1863,12 @@ class Worker:
                             self._tool_fp_cache = {}
                         self._tool_fp_cache[_fp] = str(tool_result)[:2000]
 
+                    # 写类操作记一笔“事实”，最终回答附在末尾（防模型总结与磁盘事实相反）
+                    if (tool_name in self._MUTATION_TOOLS
+                            and not any(mark in str(tool_result)[:200]
+                                        for mark in self._FAILURE_MARKS)):
+                        self._turn_write_facts.append((tool_name, str(tool_result)))
+
                     AuditLog().log_tool_result(tool_name, True, str(tool_result)[:500])
                     self._trace("tool", tool_display_name, "执行完成", "ok",
                                 ms=int((time.time() - _t_tool) * 1000))
@@ -1978,6 +1992,7 @@ class Worker:
         # 保存完整消息链
         chain = messages[round_start_idx:]
         memory.update_with_full_chain(chain)
+        final_reply = self._append_write_facts(final_reply)
         self.result_messages = memory.to_dict_list()
         self._ensure_reply_persisted(final_reply)
         return final_reply
@@ -2400,6 +2415,11 @@ class Worker:
     _READONLY_TOOLS = {"list_local_files", "read_local_file", "search_in_files",
                        "analyze_project", "scan_privacy", "read_attachment_chunk",
                        "search_knowledge_base", "list_attachments"}
+    # 会改动文件系统的工具：最终回答要附一段"工具核对"，防止模型总结与事实相反
+    # （真实使用报告 BUG-3：实际移动 4 个文件，模型总结只说"已移动 1 项"）。
+    _MUTATION_TOOLS = {"create_local_file", "modify_local_file", "delete_local_file",
+                       "move_local_file", "copy_local_file", "rename_local_file",
+                       "batch_rename_local_files", "make_local_dir"}
 
     # 无进展收敛阈值（V3.6.7）：连续这么多轮"没有成功工具结果 + 模型也没给出可交付文字"
     # 就如实收尾。取 2 与既有的"连续 2 轮工具调用失败就放弃"保持同一标准（不新立尺子）：
@@ -3398,6 +3418,47 @@ class Worker:
             if token not in uniq:
                 uniq.append(token)
         return uniq[:limit]
+
+    def _strip_internal_privacy_notes(self, reply: str) -> str:
+        """删掉模型自动追加的“隐私说明/占位符说明”尾巴。
+
+        真实使用报告 BUG-4：回答末尾会冒出 `[PHONE_x_y]`、`落盘时替换为真实数据`
+        这类产品内部概念，普通员工看不懂。只在用户**没有主动问**隐私/脱敏/占位符时清理，
+        且只清理明确以“隐私说明/说明/备注”开头、并且后文确实提到内部概念的块。
+        """
+        if not reply:
+            return reply
+        if any(word in self.user_input for word in ("占位符", "脱敏", "隐私", "落盘")):
+            return reply
+        lines = str(reply).splitlines()
+        for idx, line in enumerate(lines):
+            head = line.strip()
+            if head.startswith(("隐私说明", "隐私保护说明", "说明：", "备注：")):
+                tail = "\n".join(lines[idx:])
+                if any(word in tail for word in ("占位符", "落盘", "[PHONE_", "[NAME_")):
+                    kept = "\n".join(lines[:idx]).rstrip()
+                    return kept or reply
+        return reply
+
+    def _append_write_facts(self, reply: str) -> str:
+        """把本轮写类工具的真实结果附在回答末尾。
+
+        真实使用报告 BUG-3：磁盘上实际移动了 4 个文件，模型总结却说"已移动 1 项"。
+        工具真值校验只能保证工具本身做对了，管不住模型怎么总结；这里把工具原文
+        作为"本次工具核对"附给用户，模型改不掉，也方便审计对照。
+        """
+        facts = getattr(self, "_turn_write_facts", None) or []
+        if not facts:
+            return reply
+        lines = []
+        for name, result in facts[-8:]:
+            first = str(result).strip().splitlines()[0][:160] if str(result).strip() else "（无返回内容）"
+            lines.append(f"· {self._map_tool_display_name(name)}：{first}")
+        block = "—— 本次工具核对（以文件系统实际结果为准）——\n" + "\n".join(lines)
+        text = str(reply or "").rstrip()
+        if block in text:
+            return text
+        return text + "\n\n" + block
 
     def _ensure_grounded(self, reply: str, tool_name: str, tool_result: str) -> str:
         """兜底：强制工具已执行、但模型回答没引用任何工具读到的文件名时，把真实结果附给用户。

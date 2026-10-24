@@ -1007,9 +1007,23 @@ class AgentService:
         return "\n".join(lines)
 
     # ── 自定义模型（OpenAI 兼容：局域网 / 公网算力）──
+    def _custom_models_map(self) -> Dict[str, Any]:
+        """读取 custom_models，并容忍手工改坏/旧格式（不是 dict 时按空处理）。
+
+        真实使用报告 BUG-1 的排查线索之一：用户绕过界面手工改过配置。若
+        `custom_models` 被写成列表，旧代码 `dict(list)` 会直接抛异常，界面只显示
+        "未知原因"并且**再也保存不进去**。这里把坏配置降级为空表，至少让用户能重新保存。
+        """
+        raw = self.settings.get("custom_models")
+        if isinstance(raw, dict):
+            return dict(raw)
+        if raw not in (None, "", [], {}):
+            print(f"[AgentService] custom_models 不是对象（{type(raw).__name__}），已按空配置处理")
+        return {}
+
     def custom_models(self) -> List[Dict[str, Any]]:
         """列出已配置的外部模型（api_key 只说是否已配置，不回传明文）。"""
-        models = self.settings.get("custom_models") or {}
+        models = self._custom_models_map()
         out = []
         for name, info in models.items():
             if not isinstance(info, dict):
@@ -1036,7 +1050,7 @@ class AgentService:
         ② 内核清单不必引入"供应商"这种界面概念（保持 core/app 的边界干净）。
         """
         catalog = model_catalog(self.settings.data)
-        custom = self.settings.get("custom_models") or {}
+        custom = self._custom_models_map()
         for tier in ("local", "lan", "wan"):
             for entry in catalog.get("tiers", {}).get(tier, []) or []:
                 if entry.get("source") != "custom":
@@ -1077,7 +1091,7 @@ class AgentService:
         if not name:
             return ""
         try:
-            entry = (self.settings.get("custom_models") or {}).get(str(name))
+            entry = self._custom_models_map().get(str(name))
             return str((entry or {}).get("api_key") or "")
         except Exception:
             return ""
@@ -1119,7 +1133,7 @@ class AgentService:
         tier = str(tier or "").strip().lower()
         if tier not in ("local", "lan", "wan"):
             tier = infer_tier(base_url)
-        models = dict(self.settings.get("custom_models") or {})
+        models = self._custom_models_map()
         prev = models.get(name)
         # 配置是本地文件，可能被手工改过：坏条目（不是 dict）一律当"没有已存密钥"，别在这里崩
         prev_key = str((prev or {}).get("api_key") or "") if isinstance(prev, dict) else ""
@@ -1173,7 +1187,7 @@ class AgentService:
                 "provider": models[name].get("provider", "")}
 
     def remove_custom_model(self, name: str) -> Dict[str, Any]:
-        models = dict(self.settings.get("custom_models") or {})
+        models = self._custom_models_map()
         if name not in models:
             return {"ok": False, "error": f"未找到配置：{name}"}
         models.pop(name, None)
@@ -1212,7 +1226,7 @@ class AgentService:
         target = str(name or "").strip()
         key = ""
         if target:
-            models = self.settings.get("custom_models") or {}
+            models = self._custom_models_map()
             for entry_name, info in models.items():
                 if not isinstance(info, dict):
                     continue
@@ -1241,8 +1255,8 @@ class AgentService:
         name = str(self.settings.get("model") or "").strip()
         if not name:
             return model_window("", "", 0)
-        custom = self.settings.get("custom_models") or {}
-        info = custom.get(name) if isinstance(custom, dict) else None
+        custom = self._custom_models_map()
+        info = custom.get(name)
         if isinstance(info, dict):
             try:
                 declared = int(info.get("context_window") or 0)

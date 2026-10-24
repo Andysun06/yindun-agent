@@ -356,6 +356,36 @@ def run_name_contact_cooccurrence_test():
     assert not _has(out, "NAME"), f"没有联系方式时仍不应猜人名（声明边界）：{out}"
     print("  ✅ 【共现·边界】无联系方式时不猜人名（与文档声明一致）")
 
+    print("\n【自由句式人名（V3.6.21）】")
+    for sample in (
+            "组织人是刘志强。",
+            "刘志强负责本项目",
+            "会议组织人：刘志强，请准时参加",
+            "负责人刘志强，电话13912345678",
+            "会议由张伟主持，李娜记录",
+            "王建国说这批设备周五到货",
+            "你把报表发给陈晓峰就行",
+            "报销单上签字人是孙玉梅",
+            "联系人是刘志强",
+            "护士站的张丽今天值班",
+            "欧阳娜娜主持了会议",
+            "我们请李明看一下",
+    ):
+        out, _ = engine.anonymize(sample)
+        assert _has(out, "NAME"), f"自由句式人名应命中：{sample} → {out}"
+        print(f"  ✅ 命中：{sample}")
+
+    for label, sample in (
+            ("职务后接动词不误伤人", "请各科室主任安排值班"),
+            ("安全不是人名", "安全负责这项工作"),
+            ("高兴不是人名", "高兴地说"),
+            ("章程不是人名", "公司的章程需要更新"),
+            ("方法不是人名", "找方法"),
+    ):
+        out, _ = engine.anonymize(sample)
+        assert not _has(out, "NAME"), f"{label}：不应误造人名 → {out}"
+        print(f"  ✅ 负例：{label}")
+
 
 if __name__ == "__main__":
     sys.exit(main())

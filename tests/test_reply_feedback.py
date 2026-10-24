@@ -438,7 +438,9 @@ check("纠正之后 create_local_file 真的被调用了",
       any("create_local_file" in str(t) for t in _llm58.seen[1]),
       str([str(getattr(m, 'content', ''))[:30] for m in _llm58.seen[1]])[:160])
 check("最终回答是工具执行后的如实说明（不再是假成功）",
-      _fin58 == "已在桌面创建 aaa.txt（内容：hi）。", repr(str(_fin58)[:100]))
+      str(_fin58).startswith("已在桌面创建 aaa.txt（内容：hi）。")
+      and "本次工具核对" in str(_fin58)
+      and "创建文件" in str(_fin58), repr(str(_fin58)[:160]))
 
 _llm59 = ScriptedLLM([{"content": _FAKE_OK}])                # 纠正也不改口：压根不支持工具调用
 _worker59 = make_worker(_llm59, {"create_local_file": FakeTool("create_local_file", lambda a: "x")},
