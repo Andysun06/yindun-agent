@@ -1,23 +1,30 @@
-Unicode true
+﻿Unicode true
 !include "MUI2.nsh"
 
-; 备选分发方式：NSIS 安装包（主推"免安装单文件 exe"，见 tools/build_portable.py）
-; 路径说明：NSIS 以本脚本所在目录（tools/）为基准，故引用上级目录用 ..\
-; 构建：makensis tools\installer.nsi（需先 pyinstaller tools\yindun_agent.spec 产出 dist/）
+; 主推的日常交付形态：NSIS 安装包（开始菜单/桌面快捷方式、控制面板卸载）
+; 免安装单文件 exe 保留给评委试用/临时机器（见 build_portable.py），不是唯一形态。
+; 路径说明：相对本脚本目录；构建时先 cd tools\packaging，再执行 makensis installer.nsi
+; 构建：makensis tools\packaging\installer.nsi
+; 依赖：dist\隐盾安全智能体_V<版本>_便携版.exe（build_portable.py 产物）+ docs\使用说明.pdf
 
-Name "隐盾安全智能体"
-OutFile "..\隐盾安全智能体_V3.6.20_安装包.exe"
-InstallDir "$LOCALAPPDATA\Yindun\YindunSecurityAgent"
+!define APP_NAME "隐盾安全智能体"
+!define APP_VERSION "3.6.20"
+!define APP_EXE "Yindun.exe"
+!define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\YindunSecurityAgent"
+
+Name "${APP_NAME}"
+OutFile "..\..\dist\隐盾安全智能体_V3.6.20_安装包.exe"
+InstallDir "$LOCALAPPDATA\Programs\Yindun"
 InstallDirRegKey HKCU "Software\YindunSecurityAgent" "InstallDir"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 VIProductVersion "3.6.20.0"
-VIAddVersionKey "ProductName" "隐盾安全智能体"
+VIAddVersionKey "ProductName" "${APP_NAME}"
 VIAddVersionKey "FileVersion" "V3.6.20"
 VIAddVersionKey "LegalCopyright" "Yindun Team"
-
-!define APP_EXE "YindunSecurityAgent.exe"
-!define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\YindunSecurityAgent"
+VIAddVersionKey "FileDescription" "隐盾安全智能体安装包"
+Icon "..\..\assets\icons\yindun-client.ico"
+UninstallIcon "..\..\assets\icons\yindun-client.ico"
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_LICENSE "installer_readme.txt"
@@ -37,20 +44,26 @@ VIAddVersionKey "LegalCopyright" "Yindun Team"
 
 Section "安装隐盾安全智能体" SecMain
   SectionIn RO
+  SetShellVarContext current
   SetOutPath "$INSTDIR"
-  File /r "..\dist\YindunSecurityAgent\*.*"
-  File "..\docs\使用说明.pdf"
+  ; 安装包直接复用已经过归档校验的单文件 exe，保证"装上的"和"便携试用的"是同一份
+  File /oname=${APP_EXE} "..\..\dist\隐盾安全智能体_V3.6.20_便携版.exe"
+  File "..\..\docs\使用说明.pdf"
+  File "installer_readme.txt"
 
-  ; 快捷方式
   CreateShortcut "$DESKTOP\隐盾安全智能体.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
-  CreateShortcut "$SMPROGRAMS\隐盾安全智能体\隐盾安全智能体.lnk" "$INSTDIR\${APP_EXE}"
+  CreateDirectory "$SMPROGRAMS\隐盾安全智能体"
+  CreateShortcut "$SMPROGRAMS\隐盾安全智能体\隐盾安全智能体.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
+  CreateShortcut "$SMPROGRAMS\隐盾安全智能体\使用说明.lnk" "$INSTDIR\使用说明.pdf"
   CreateShortcut "$SMPROGRAMS\隐盾安全智能体\卸载隐盾安全智能体.lnk" "$INSTDIR\Uninstall.exe"
 
-  ; 注册表：控制面板卸载入口
-  WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "隐盾安全智能体 V3.6.20"
-  WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "3.6.20"
+  ; 注册表：控制面板"程序和功能"里的卸载入口（当前用户）
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "${APP_NAME} V${APP_VERSION}"
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "${APP_VERSION}"
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\${APP_EXE}"
   WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "Yindun Team"
   WriteRegStr HKCU "${UNINST_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
+  WriteRegStr HKCU "${UNINST_KEY}" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
   WriteRegStr HKCU "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
   WriteRegDWORD HKCU "${UNINST_KEY}" "NoModify" 1
   WriteRegDWORD HKCU "${UNINST_KEY}" "NoRepair" 1
@@ -60,9 +73,29 @@ Section "安装隐盾安全智能体" SecMain
 SectionEnd
 
 Section "Uninstall"
-  RMDir /r "$INSTDIR"
+  SetShellVarContext current
   Delete "$DESKTOP\隐盾安全智能体.lnk"
   RMDir /r "$SMPROGRAMS\隐盾安全智能体"
+
+  ; 先删程序本体，再单独处理用户数据：卸载不应该默认销毁聊天记录/审计链
+  Delete "$INSTDIR\${APP_EXE}"
+  Delete "$INSTDIR\使用说明.pdf"
+  Delete "$INSTDIR\installer_readme.txt"
+  Delete "$INSTDIR\Uninstall.exe"
   DeleteRegKey HKCU "${UNINST_KEY}"
   DeleteRegKey HKCU "Software\YindunSecurityAgent"
+
+  ; 静默卸载默认保留数据（自动化/升级场景更安全）；交互式卸载明确询问
+  IfSilent keep_data
+  MessageBox MB_YESNO|MB_ICONQUESTION \
+    "是否同时删除本地配置、聊天记录与审计数据？$\r$\n选择“否”将保留这些数据，便于以后重装继续使用。" \
+    IDNO keep_data
+  RMDir /r "$INSTDIR"
+  Goto done
+
+keep_data:
+  ; 目录里还有配置/会话/审计等数据时，RMDir 会失败并保留目录——这是预期行为
+  RMDir "$INSTDIR"
+
+done:
 SectionEnd

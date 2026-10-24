@@ -1,12 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-隐盾安全智能体 · 免安装单文件（onefile）PyInstaller 配置
+隐盾安全智能体 · 免安装单文件（onefile）PyInstaller 配置（评委试用 / 临时机器形态）
 
 目标：产出一个 exe，双击即用；运行时配置/会话/审计/知识库数据写在 exe 同目录
       （冻结态下 yindun.APP_ROOT = exe 所在目录），主密钥仍由 DPAPI 保护在 %APPDATA%。
 
-构建入口：python tools/build_portable.py
-备选（安装包形态）：tools/yindun_agent.spec（onedir）+ tools/installer.nsi
+构建入口：python tools/packaging/build_portable.py
+标准安装包：tools/packaging/installer.nsi 直接复用本产物（装上的与便携试用的是同一份）
 
 注意（环境依赖，不进包）：Ollama 需用户自行安装，并至少准备一个支持工具调用的模型。
 """

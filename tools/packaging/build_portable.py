@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
-"""隐盾 · 免安装单文件 exe 构建入口
+"""隐盾 · 免安装单文件 exe 构建入口（评委试用 / 临时机器形态）
+
+日常使用的标准安装包见 tools/packaging/installer.nsi；安装包复用本脚本产出的
+单文件 exe，保证"装上的"和"便携试用的"是同一份。
 
 用法：
-    python tools/build_portable.py
+    python tools/packaging/build_portable.py
 
 产物：
     dist/YindunPortable.exe → 自动重命名为 dist/隐盾安全智能体_<版本>_便携版.exe
@@ -133,7 +136,8 @@ def main() -> int:
     print("     （知识库功能还需要：ollama pull nomic-embed-text）")
     print("  2) exe 放在可写目录（桌面/便携盘均可）：配置、会话、审计、向量库")
     print("     会写在 exe 同目录下；主密钥由 Windows DPAPI 按当前用户保护。")
-    print("  3) 免安装、免脚本：双击即用；卸载 = 删除 exe 与其同目录生成的数据文件。")
+    print("  3) 这是评委试用/临时机器形态：双击即用、免脚本；日常使用请装 installer.nsi 的标准安装包。")
+    print("     清理 = 删除 exe 与其同目录生成的数据文件。")
     print(f"  4) OCR（图片 / 扫描件 PDF 能否读出文字）：{_ocr_status()}")
     print("     附件支持格式见 使用说明；不支持或读不出的格式，界面会给出可行动的原因。")
     return 0

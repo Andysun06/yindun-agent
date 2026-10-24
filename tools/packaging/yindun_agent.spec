@@ -1,7 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 # 隐盾安全智能体 PyInstaller 打包配置（onedir 便携目录形态，windowed）
 #
-# 主推形态是"免安装单文件 exe"：见 tools/yindun_agent_portable.spec + tools/build_portable.py
+# 日常安装形态：tools/packaging/installer.nsi（复用 onefile 单文件 exe）
+# 评委试用/临时机器：tools/packaging/yindun_agent_portable.spec + build_portable.py
 # 本文件保留为备选（onedir：目录内多文件，双击主 exe，启动更快）：
 #   pyinstaller tools\yindun_agent.spec --noconfirm    （产物在 dist/YindunSecurityAgent/）
 # 注意：tiktoken 已不再是本项目依赖（token 计数为内置字符估算），故不再收集。
