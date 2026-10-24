@@ -1197,6 +1197,11 @@ check("★ 内部隐私说明尾巴被清理",
 _w.user_input = "你们的占位符机制是什么"
 check("用户主动问隐私时不清理", "隐私说明" in _w._strip_internal_privacy_notes(_privacy_tail))
 
+_kb_left = _w._mask_unresolved_kb_tokens("结果 [KB_NAME_0_xtzr] 与普通编号 KB-2024")
+check("★ 还原不了的 KB 占位符不再原样露给用户",
+      "[未能还原的敏感片段]" in _kb_left and "KB_NAME" not in _kb_left
+      and "KB-2024" in _kb_left, _kb_left)
+
 # BUG-1：桥接层异常必须回可读原因，而不是让前端显示“未知原因”
 from yindun.app.webview_app import JsApi  # noqa: E402
 
