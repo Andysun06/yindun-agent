@@ -222,6 +222,20 @@ def main() -> int:
               think_mode_saved and think_mode_saved[-1][1][0]["think_mode"] == "深度思考",
               str(think_mode_saved[-2:]))
 
+        # 连点回归（V3.6.21）：视觉立即跟随、落库合并，不能每点一次都排一队重活
+        _mode_before = len(calls("save_settings"))
+        for _mode in ("快速回答", "深度思考", "快速回答", "深度思考", "快速回答", "深度思考"):
+            page.click(f'#mode-switch .seg__btn[data-mode="{_mode}"]')
+        page.wait_for_timeout(350)
+        _mode_active = page.eval_on_selector(
+            "#mode-switch .seg__btn.is-active", "el => el.dataset.mode")
+        _mode_after = [c for c in calls("save_settings")[_mode_before:]
+                       if c[1] and isinstance(c[1][0], dict) and "think_mode" in c[1][0]]
+        check("★ 快速来回点：最终高亮是最后一次点击",
+              _mode_active == "深度思考", str(_mode_active))
+        check("★ 快速来回点：落库被合并（不是每点一次写一次）",
+              len(_mode_after) <= 3, str(len(_mode_after)))
+
         # ── 4) 插件市场：搜索 + 启停 ──
         print("\n" + "=" * 78)
         print("【4】插件市场（搜索 / 启停）")
