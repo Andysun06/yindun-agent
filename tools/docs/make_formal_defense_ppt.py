@@ -241,45 +241,45 @@ for i, (head, body) in enumerate(leaks):
 
 # 架构分工图（V3.6.21 重绘）：本机可信域 vs 模型侧，圆角卡片 + 真实箭头 + 信任边界
 text(s, 5.95, 1.90, 6.83, 0.30, "架构分工：真值止于本机，模型只做推理", 15, GREEN, True)
-text(s, 6.02, 2.20, 2.00, 0.22, "本机可信域", 9, GREEN_D, True)
+text(s, 6.02, 2.20, 2.00, 0.22, "本机可信域", 9.5, GREEN_D, True)
 
 # 本机域容器：把"框架做的事"框在一起，和模型侧形成明确的信任边界
 rrect(s, 5.95, 2.42, 4.40, 1.78, fill=GREEN_T, line=None, radius=0.05)
 
 # ① 用户数据
 rrect(s, 6.08, 2.62, 1.02, 0.78, fill=WHITE, line=LINE, line_w=0.75, radius=0.10)
-text(s, 6.12, 2.70, 0.94, 0.24, "① 你的数据", 10.5, TEXT, True, HEI, PP_ALIGN.CENTER)
-text(s, 6.12, 2.98, 0.94, 0.22, "姓名 / 文件", 8, MUTED, False, HEI, PP_ALIGN.CENTER)
+text(s, 6.12, 2.70, 0.94, 0.24, "① 你的数据", 11, TEXT, True, HEI, PP_ALIGN.CENTER)
+text(s, 6.12, 2.98, 0.94, 0.22, "姓名 / 文件", 8.5, MUTED, False, HEI, PP_ALIGN.CENTER)
 
 # ② 隐盾内核：绿色实底，作为整张图的重心
 rrect(s, 7.52, 2.55, 1.72, 0.92, fill=GREEN, line=None, radius=0.07)
-text(s, 7.62, 2.64, 1.52, 0.24, "② 隐盾内核", 11, WHITE, True, HEI, PP_ALIGN.CENTER)
-text(s, 7.62, 2.93, 1.52, 0.40, "识别 · 脱敏 · 权限\n审批 · 审计", 8, GREEN_T3, False, HEI,
+text(s, 7.62, 2.64, 1.52, 0.24, "② 隐盾内核", 12, WHITE, True, HEI, PP_ALIGN.CENTER)
+text(s, 7.62, 2.93, 1.52, 0.40, "识别 · 脱敏 · 权限\n审批 · 审计", 8.5, GREEN_T3, False, HEI,
      PP_ALIGN.CENTER, line=1.15)
 
 # ③ 模型：白色底 + 绿描边，标明"只能看见占位符"
 rrect(s, 10.55, 2.55, 2.08, 0.92, fill=WHITE, line=GREEN, line_w=1.0, radius=0.07)
-text(s, 10.65, 2.64, 1.88, 0.24, "③ 云端 / 本地模型", 11, GREEN_D, True, HEI, PP_ALIGN.CENTER)
-text(s, 10.65, 2.93, 1.88, 0.24, "只推理 · 只看见占位符", 8, MUTED, False, HEI, PP_ALIGN.CENTER)
+text(s, 10.65, 2.64, 1.88, 0.24, "③ 云端 / 本地模型", 11.5, GREEN_D, True, HEI, PP_ALIGN.CENTER)
+text(s, 10.65, 2.93, 1.88, 0.24, "只推理 · 只看见占位符", 8.5, MUTED, False, HEI, PP_ALIGN.CENTER)
 
 # ④ 本机还原：放在本机域底部，回程箭头进入这里
 rrect(s, 8.00, 3.62, 2.35, 0.43, fill=WHITE, line=GREEN, line_w=0.9, radius=0.14)
-text(s, 8.08, 3.70, 2.19, 0.24, "④ 本机还原：占位符换回真值", 9.2, GREEN_D, True, HEI,
+text(s, 8.08, 3.70, 2.19, 0.24, "④ 本机还原：占位符换回真值", 9.5, GREEN_D, True, HEI,
      PP_ALIGN.CENTER)
 
 # 主线：数据 → 内核 →（跨边界）模型
 arrow(s, 7.10, 3.01, 7.52, 3.01, GREEN, 1.25)
 arrow(s, 9.24, 3.01, 10.55, 3.01, GREEN, 1.25)
-text(s, 9.34, 2.64, 1.10, 0.26, "只发占位符", 8.5, GREEN, True, HEI, PP_ALIGN.CENTER)
+text(s, 9.34, 2.64, 1.10, 0.26, "只发占位符", 9, GREEN, True, HEI, PP_ALIGN.CENTER)
 
 # 回程：模型 → 本机还原（这条线跨过信任边界，强调"回来的也只是占位符"）
 arrow(s, 11.59, 3.47, 11.59, 3.84, GREEN, 1.1)
 arrow(s, 11.59, 3.84, 10.35, 3.84, GREEN, 1.1)
-text(s, 10.50, 3.50, 1.02, 0.20, "返回仍是占位符", 8, MUTED, False, HEI, PP_ALIGN.CENTER)
+text(s, 10.50, 3.49, 1.02, 0.22, "返回仍是占位符", 8.5, MUTED, False, HEI, PP_ALIGN.CENTER)
 
 # 信任边界：虚线穿过两条跨域箭头，和分区标题一起说明"真值不出本机"
 dline(s, 10.44, 2.48, 10.44, 4.06, GREEN, 1.0)
-text(s, 9.92, 2.20, 1.06, 0.22, "信任边界", 8, GREEN, True, HEI, PP_ALIGN.CENTER)
+text(s, 9.92, 2.20, 1.06, 0.22, "信任边界", 9, GREEN, True, HEI, PP_ALIGN.CENTER)
 
 text(s, 5.95, 4.35, 6.83, 0.26,
      "框架负责：识别 · 脱敏 · 权限 · 审批 · 审计；模型只做推理。", 10, GREEN_D, True)
