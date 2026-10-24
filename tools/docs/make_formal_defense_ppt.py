@@ -13,10 +13,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from PIL import Image
+from lxml import etree
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.dml import MSO_LINE_DASH_STYLE
-from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.shapes import MSO_SHAPE, MSO_CONNECTOR
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.oxml.ns import qn
 from pptx.util import Inches, Pt
@@ -75,6 +76,51 @@ def rect(s, x, y, w, h, fill=GREEN_T, line=None, line_w=0.75):
         shp.line.color.rgb = line; shp.line.width = Pt(line_w)
     shp.shadow.inherit = False
     return shp
+
+
+def rrect(s, x, y, w, h, fill=GREEN_T, line=None, line_w=1.0, radius=0.08):
+    """圆角卡片：架构图用，半径按短边比例微调，保持与既有卡片的克制风格一致。"""
+    shp = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(x), Inches(y), Inches(w), Inches(h))
+    _no_style(shp)
+    try:
+        shp.adjustments[0] = radius
+    except Exception:
+        pass
+    shp.fill.solid(); shp.fill.fore_color.rgb = fill
+    if line is None:
+        shp.line.fill.background()
+    else:
+        shp.line.color.rgb = line; shp.line.width = Pt(line_w)
+    shp.shadow.inherit = False
+    return shp
+
+
+def _connector(s, x1, y1, x2, y2, color=GREEN, width=1.25, dash=None, head=False):
+    conn = s.shapes.add_connector(
+        MSO_CONNECTOR.STRAIGHT, Inches(x1), Inches(y1), Inches(x2), Inches(y2))
+    _no_style(conn)
+    conn.shadow.inherit = False
+    conn.line.color.rgb = color
+    conn.line.width = Pt(width)
+    if dash is not None:
+        conn.line.dash_style = dash
+    if head:
+        ln = conn.line._get_or_add_ln()
+        tail = ln.find(qn("a:tailEnd"))
+        if tail is None:
+            tail = etree.SubElement(ln, qn("a:tailEnd"))
+        tail.set("type", "triangle")
+        tail.set("w", "med")
+        tail.set("len", "med")
+    return conn
+
+
+def arrow(s, x1, y1, x2, y2, color=GREEN, width=1.25, dash=None):
+    return _connector(s, x1, y1, x2, y2, color, width, dash, head=True)
+
+
+def dline(s, x1, y1, x2, y2, color=GREEN, width=1.0):
+    return _connector(s, x1, y1, x2, y2, color, width, MSO_LINE_DASH_STYLE.DASH, head=False)
 
 
 def text(s, x, y, w, h, value, size=16, color=TEXT, bold=False, font=HEI,
@@ -193,24 +239,52 @@ for i, (head, body) in enumerate(leaks):
     text(s, x + 0.16, y + 0.14, 2.13, 0.30, head, 16, GREEN, True)
     text(s, x + 0.16, y + 0.52, 2.15, 0.66, body, 11.5, TEXT, line=1.3)
 
-# 架构分工图：用户原文 → 隐盾内核 → 模型 → 本机还原
-text(s, 5.95, 1.95, 6.85, 0.30, "一张图看懂分工", 16, GREEN, True)
-_boxes = [
-    ("你的数据", "姓名 / 文件\n都在本机", GREEN_T2, TEXT),
-    ("隐盾内核", "脱敏 · 权限\n审批 · 审计", GREEN, WHITE),
-    ("模型", "只做推理\n只看见占位符", GREEN_T2, TEXT),
-    ("本机还原", "占位符换回真值\n再显示给你", GREEN_T2, TEXT),
-]
-for i, (head, body, fill, color) in enumerate(_boxes):
-    x = 6.00 + i * 1.68
-    rect(s, x, 2.35, 1.52, 1.15, fill=fill)
-    text(s, x + 0.10, 2.45, 1.32, 0.26, head, 11.5, color, True)
-    text(s, x + 0.10, 2.75, 1.34, 0.62, body, 9.5, color, line=1.2)
-    if i < 3:
-        text(s, x + 1.52, 2.78, 0.16, 0.24, "→", 13, MUTED)
-text(s, 6.00, 3.62, 6.75, 0.26, "框架负责：识别、脱敏、权限、审批、审计；模型只负责推理。", 10.5, GREEN_D, True)
-text(s, 6.00, 3.96, 6.75, 0.26, "模型只收到占位符；真值不离开本机。", 10.5, MUTED)
-text(s, 6.00, 4.36, 6.75, 0.26, "适用：律所 / 医院 / 制造 / 政府外包", 11.5, TEXT, True)
+# 架构分工图（V3.6.21 重绘）：本机可信域 vs 模型侧，圆角卡片 + 真实箭头 + 信任边界
+text(s, 5.95, 1.90, 6.83, 0.30, "架构分工：真值止于本机，模型只做推理", 15, GREEN, True)
+text(s, 6.02, 2.20, 2.00, 0.22, "本机可信域", 9, GREEN_D, True)
+
+# 本机域容器：把"框架做的事"框在一起，和模型侧形成明确的信任边界
+rrect(s, 5.95, 2.42, 4.40, 1.78, fill=GREEN_T, line=None, radius=0.05)
+
+# ① 用户数据
+rrect(s, 6.08, 2.62, 1.02, 0.78, fill=WHITE, line=LINE, line_w=0.75, radius=0.10)
+text(s, 6.12, 2.70, 0.94, 0.24, "① 你的数据", 10.5, TEXT, True, HEI, PP_ALIGN.CENTER)
+text(s, 6.12, 2.98, 0.94, 0.22, "姓名 / 文件", 8, MUTED, False, HEI, PP_ALIGN.CENTER)
+
+# ② 隐盾内核：绿色实底，作为整张图的重心
+rrect(s, 7.52, 2.55, 1.72, 0.92, fill=GREEN, line=None, radius=0.07)
+text(s, 7.62, 2.64, 1.52, 0.24, "② 隐盾内核", 11, WHITE, True, HEI, PP_ALIGN.CENTER)
+text(s, 7.62, 2.93, 1.52, 0.40, "识别 · 脱敏 · 权限\n审批 · 审计", 8, GREEN_T3, False, HEI,
+     PP_ALIGN.CENTER, line=1.15)
+
+# ③ 模型：白色底 + 绿描边，标明"只能看见占位符"
+rrect(s, 10.55, 2.55, 2.08, 0.92, fill=WHITE, line=GREEN, line_w=1.0, radius=0.07)
+text(s, 10.65, 2.64, 1.88, 0.24, "③ 云端 / 本地模型", 11, GREEN_D, True, HEI, PP_ALIGN.CENTER)
+text(s, 10.65, 2.93, 1.88, 0.24, "只推理 · 只看见占位符", 8, MUTED, False, HEI, PP_ALIGN.CENTER)
+
+# ④ 本机还原：放在本机域底部，回程箭头进入这里
+rrect(s, 8.00, 3.62, 2.35, 0.43, fill=WHITE, line=GREEN, line_w=0.9, radius=0.14)
+text(s, 8.08, 3.70, 2.19, 0.24, "④ 本机还原：占位符换回真值", 9.2, GREEN_D, True, HEI,
+     PP_ALIGN.CENTER)
+
+# 主线：数据 → 内核 →（跨边界）模型
+arrow(s, 7.10, 3.01, 7.52, 3.01, GREEN, 1.25)
+arrow(s, 9.24, 3.01, 10.55, 3.01, GREEN, 1.25)
+text(s, 9.34, 2.64, 1.10, 0.26, "只发占位符", 8.5, GREEN, True, HEI, PP_ALIGN.CENTER)
+
+# 回程：模型 → 本机还原（这条线跨过信任边界，强调"回来的也只是占位符"）
+arrow(s, 11.59, 3.47, 11.59, 3.84, GREEN, 1.1)
+arrow(s, 11.59, 3.84, 10.35, 3.84, GREEN, 1.1)
+text(s, 10.50, 3.50, 1.02, 0.20, "返回仍是占位符", 8, MUTED, False, HEI, PP_ALIGN.CENTER)
+
+# 信任边界：虚线穿过两条跨域箭头，和分区标题一起说明"真值不出本机"
+dline(s, 10.44, 2.48, 10.44, 4.06, GREEN, 1.0)
+text(s, 9.92, 2.20, 1.06, 0.22, "信任边界", 8, GREEN, True, HEI, PP_ALIGN.CENTER)
+
+text(s, 5.95, 4.35, 6.83, 0.26,
+     "框架负责：识别 · 脱敏 · 权限 · 审批 · 审计；模型只做推理。", 10, GREEN_D, True)
+text(s, 5.95, 4.60, 6.83, 0.24,
+     "模型只收到占位符，真值不离开本机。适用：律所 / 医院 / 制造 / 政府外包", 9, MUTED)
 text(s, 0.56, 4.95, 12.22, 0.36, "隐盾 = 面向涉密办公的本地化隐私防护桌面智能体", 16, GREEN, True)
 text(s, 0.56, 5.35, 12.22, 0.26, "数据进模型前脱敏，回答回本机还原。", 11, MUTED)
 rect(s, 0.56, 6.25, 12.22, 0.67, fill=GREEN_T)
