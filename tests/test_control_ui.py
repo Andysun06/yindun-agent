@@ -955,6 +955,30 @@ def run_content_width(browser, url: str) -> None:
               f"valuePx={m['valuePx']} cardW={m['cardW']}")
         check(f"{width}px 宽：内容区与整页都没有横向溢出",
               m["boxOverflow"] <= 1 and m["docOverflow"] <= 1, str(m))
+
+        tb = page.evaluate("""() => {
+          const bar = document.querySelector('.topbar');
+          const title = document.querySelector('.topbar__title');
+          const tools = document.querySelector('.topbar__tools');
+          const btns = [...document.querySelectorAll('.topbar__tools .btn')].map(b => ({
+            text: (b.textContent || '').trim().slice(0, 8),
+            h: Math.round(b.getBoundingClientRect().height),
+            w: Math.round(b.getBoundingClientRect().width)
+          }));
+          const note = document.querySelector('.status__note');
+          return {overflow: bar.scrollWidth - bar.clientWidth,
+                  titleRight: Math.round(title.getBoundingClientRect().right),
+                  toolsLeft: Math.round(tools.getBoundingClientRect().left),
+                  btns, noteDisplay: note ? getComputedStyle(note).display : 'none'};
+        }""")
+        check(f"{width}px 宽：顶栏不横向溢出（全屏下不再把按钮挤成竖排）",
+              tb["overflow"] <= 1, str(tb))
+        check(f"{width}px 宽：标题区与工具区不重叠",
+              tb["titleRight"] <= tb["toolsLeft"] + 1, str(tb))
+        check(f"{width}px 宽：工具按钮不竖排换行（高度 ≤ 40）",
+              all(b["h"] <= 40 for b in tb["btns"]), str(tb["btns"]))
+        check(f"{width}px 宽：状态说明在放不下时收起（1920 下应为 none）",
+              width >= 2200 or tb["noteDisplay"] == "none", str(tb))
         page.close()
 
     for width, height in ((1024, 768), (1000, 800)):
