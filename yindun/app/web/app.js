@@ -3363,6 +3363,36 @@
     }
   }
 
+  /* 顶栏「快速/思考」：视觉立即切换，落库防抖合并。
+     为什么单独一条通道：persist() 会 fillSettings + 主题过渡 + 写配置，适合低频开关；
+     快速来回点模式时，这些重活会排成队，按钮看起来像卡住。 */
+  let _modeSaveTimer = null;
+  let _modeSavePending = "";
+  let _modeSaveBusy = false;
+
+  function persistThinkMode(mode) {
+    state.settings.think_mode = mode;
+    _modeSavePending = mode;
+    if (_modeSaveTimer) clearTimeout(_modeSaveTimer);
+    _modeSaveTimer = setTimeout(flushThinkMode, 120);
+  }
+
+  async function flushThinkMode() {
+    _modeSaveTimer = null;
+    if (_modeSaveBusy) { _modeSaveTimer = setTimeout(flushThinkMode, 80); return; }
+    const mode = _modeSavePending;
+    if (!mode) return;
+    _modeSavePending = "";
+    _modeSaveBusy = true;
+    try {
+      const res = await call("save_settings", { think_mode: mode });
+      if (res === false) toast("模式保存失败，请重试");
+    } finally {
+      _modeSaveBusy = false;
+      if (_modeSavePending) flushThinkMode();
+    }
+  }
+
   /* ── 事件：来自 Python ───────────────────────────── */
   const onEvent = (event, payload) => {
     switch (event) {
@@ -3712,10 +3742,13 @@
     $("btn-deny").onclick = async () => { hideApproval(); await call("approve", false); };
 
     document.querySelectorAll("#mode-switch .seg__btn").forEach((btn) => {
-      btn.onclick = async () => {
+      btn.onclick = () => {
+        // ★ 连点必须"视觉立即跟随、落库合并"（V3.6.21，负责人实测：快速来回点会卡手）。
+        //   旧实现每次点击都 await persist() → 整页 fillSettings + 主题过渡 + 一次
+        //   save_settings；连点会排一队重活，看起来就是按钮点不动。
         document.querySelectorAll("#mode-switch .seg__btn").forEach((b) => b.classList.remove("is-active"));
         btn.classList.add("is-active");
-        await persist({ think_mode: btn.dataset.mode });
+        persistThinkMode(btn.dataset.mode);
       };
     });
 
