@@ -1145,8 +1145,10 @@ def _run_contained(parts, cwd, env, timeout):
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             k32.AssignProcessToJobObject(job, wintypes.HANDLE(int(proc._handle)))
-        except Exception:
-            pass    # 绑定失败不阻断：最多少一层容器
+        except Exception as exc:
+            # 绑定失败不阻断执行，但必须留痕：降级为普通子进程后，
+            # 超时只能杀直接子进程，整棵进程树的容器保证没有了。
+            log.warning("Job Object 绑定失败，已降级为普通子进程执行：%s", exc)
         try:
             out, err = proc.communicate(timeout=timeout)
             return proc.returncode, out or "", err or "", False

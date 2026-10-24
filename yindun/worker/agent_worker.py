@@ -1002,6 +1002,18 @@ class Worker:
         ename = type(exc).__name__
         emsg = str(exc).lower()
 
+        # ★ 代码级异常优先分档（V3.6.21）：TypeError 等是程序缺陷，绝不能因为异常文本里
+        #   凑巧出现 "timeout"（例如测试桩函数名 _fake_timeout）就被报成网络超时，
+        #   那会把排障方向带偏——用户去查 VPN，真正的问题却在代码里。
+        if isinstance(exc, (TypeError, AttributeError, NameError, KeyError,
+                            IndexError, UnboundLocalError)):
+            return (
+                "❌ 内部错误（不是网络问题）\n\n"
+                "程序在处理这次请求时出现了代码级异常，重试通常无效。\n"
+                "请把下面的原文反馈给开发者，并附上当时使用的模型与操作。\n\n"
+                f"{ename}: {exc}"
+            )
+
         if any(kw in emsg for kw in ("connection refused", "积极拒绝", "无法连接",
                                        "winerror 10061", "connectionerror")):
             return (
@@ -1021,7 +1033,10 @@ class Worker:
                 f"原始错误：{ename}"
             )
 
-        if any(kw in emsg for kw in ("timeout", "timed out", "connect timeout")):
+        # 超时按**异常类型**判定，不再拿整段文本搜 "timeout"：
+        # requests/httpx/openai 的超时类都带 Timeout 字样，足以覆盖。
+        if (isinstance(exc, TimeoutError)
+                or "timeout" in ename.lower() or "timed out" in emsg):
             return (
                 "⏱ 请求超时\n\n"
                 "模型服务响应太慢或网络不稳定，请稍后重试。\n"

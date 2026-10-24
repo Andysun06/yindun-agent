@@ -952,7 +952,7 @@ _w_timeout = make_worker(_llm_timeout, {"create_local_file": _write_tool},
 _approvals = []
 
 
-def _fake_timeout(name, args, path, timeout=300.0, display_path=""):
+def _fake_timeout(name, args, path, timeout=300.0, display_path="", tool_id=""):
     _approvals.append((name, path, display_path))
     _w_timeout._approval_outcome = "timeout"
     return False
@@ -986,7 +986,7 @@ _w_reject = make_worker(_llm_reject, {"create_local_file": _reject_tool},
 _reject_approvals = []
 
 
-def _fake_reject(name, args, path, timeout=300.0, display_path=""):
+def _fake_reject(name, args, path, timeout=300.0, display_path="", tool_id=""):
     _reject_approvals.append(name)
     _w_reject._approval_outcome = "rejected"
     return False
