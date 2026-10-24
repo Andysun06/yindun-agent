@@ -221,8 +221,11 @@ def _audit_html_row(entry) -> str:
     etype = _html.escape(str(entry.event_type))
     sev = _html.escape(sev_raw)
     ts = _html.escape(_format_audit_time(entry.timestamp))
-    msg = _html.escape(str(entry.message))
-    details = _html.escape(json.dumps(entry.details, ensure_ascii=False))
+    # ★ 渲染时再掩码一次（V3.6.21）：升级前写入的旧条目只做过当时的掩码规则，
+    #   非 Luhn 形似卡号会以明文留在历史日志里；导出/展示不能把旧账本再泄一次。
+    msg = _html.escape(_mask_text(str(entry.message)))
+    details_obj = _mask_details(entry.details if isinstance(entry.details, dict) else {})
+    details = _html.escape(_mask_text(json.dumps(details_obj, ensure_ascii=False)))
     return f"""<tr>
                     <td>{ts}</td>
                     <td><span class="event-type">{etype}</span></td>

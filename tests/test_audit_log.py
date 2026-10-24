@@ -610,7 +610,19 @@ def test_26_audit_long_digit_masking():
     out = _mask_text("随手编的卡号 6222021234567893444 请核对")
     assert "622202" in out and "3444" in out, out
     assert "123456789" not in out, out
-    print("✅ 测试26通过: 审计预览对超长数字做了部分打码")
+    # 旧条目（修复前写入）在导出时也要被重新掩码，不能把历史明文再泄一次
+    from yindun.core.audit_log import _audit_html_row
+
+    class _OldEntry:
+        timestamp = "2026-10-21T09:27:40.773380"
+        event_type = "llm_output"
+        severity = "info"
+        message = "旧卡号 6222021234567893444"
+        details = {"preview": "旧卡号 6222021234567893444"}
+
+    row = _audit_html_row(_OldEntry())
+    assert "622202******3444" in row and "123456789" not in row, row
+    print("✅ 测试26通过: 审计预览对超长数字做了部分打码（含旧条目导出）")
 
 if __name__ == "__main__":
     print("=" * 60)

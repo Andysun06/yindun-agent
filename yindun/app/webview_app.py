@@ -226,7 +226,7 @@ class JsApi:
           就区分开——顶栏与审计面板据此显示可操作状态，而不是一律红字。
         """
         try:
-            from yindun.core.audit_log import AuditLog
+            from yindun.core.audit_log import AuditLog, _mask_text
             log = AuditLog()
             detail = log.verify_chain_detail()
             health = log.anchor_health()
@@ -278,8 +278,9 @@ class JsApi:
                     "time": str(record.get("timestamp", "")),
                     "type": str(getattr(record.get("event_type"), "value", record.get("event_type", ""))),
                     "severity": str(getattr(record.get("severity"), "value", record.get("severity", ""))),
-                    "message": str(record.get("message", "")),
-                    "preview": str(details.get("preview", ""))[:200],
+                    # 展示前再掩码一次：旧条目可能是在修复前写入的（D-2 复测发现）
+                    "message": _mask_text(str(record.get("message", ""))),
+                    "preview": _mask_text(str(details.get("preview", "")))[:200],
                     "hash": str(record.get("entry_hash", ""))[:16],
                     "prev": str(record.get("previous_hash", ""))[:16],
                 })

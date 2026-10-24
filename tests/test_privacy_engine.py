@@ -370,6 +370,7 @@ def run_name_contact_cooccurrence_test():
             "护士站的张丽今天值班",
             "欧阳娜娜主持了会议",
             "我们请李明看一下",
+            "主任让刘洋把材料送去档案室",
     ):
         out, _ = engine.anonymize(sample)
         assert _has(out, "NAME"), f"自由句式人名应命中：{sample} → {out}"
