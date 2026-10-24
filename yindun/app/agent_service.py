@@ -166,7 +166,8 @@ class AgentService:
         self._kb_error: Optional[str] = None
         # 用户本轮原话（供插件做"是否与请求相符"的判断；不含附件正文）
         self._last_user_request: str = ""
-        # 工作流引擎与实例（引擎单例；实例仅在内存，重启即丢——已在界面注明）
+        # 工作流引擎与实例（引擎单例；实例持久化到 APP_ROOT/workflow_instances.json，
+        # 重启会恢复；EXECUTING 按 PENDING 恢复，WAITING_APPROVAL 原样恢复）
         self._wf_engine = None
         self._wf_instances: Dict[str, str] = {}
         self._wf_running = False
@@ -896,9 +897,17 @@ class AgentService:
         """执行下一个可执行步骤（可能调用 LLM，故放后台线程；进度以 workflow 事件推送）。"""
         try:
             engine = self._workflow()
+            from yindun.core.workflow import StepStatus
+            instance_id = str(instance_id or "").strip()
             step = engine.get_next_executable_step(instance_id)
             if step is None:
                 return {"ok": False, "error": "没有可执行的步骤（可能都在等待审批或已完成）"}
+            # ★ 等待审批的步骤不是"可执行"的：旧实现先返回 ok=true 再在后台线程里撞
+            #   "步骤等待审批，请先审批"，错误只进事件流，界面上就是"点了没反应"
+            #   （真实使用报告 D-9）。这里在**启动线程之前**就如实返回原因。
+            if getattr(step, "status", None) == StepStatus.WAITING_APPROVAL:
+                return {"ok": False, "error": "步骤等待审批，请先审批",
+                        "step": step.name, "step_id": step.step_id}
             step_name, step_id = step.name, step.step_id
             with self._lock:
                 if self._wf_running:
@@ -929,9 +938,29 @@ class AgentService:
     def workflow_approve(self, instance_id: str, step_id: str, approved: bool) -> Dict[str, Any]:
         try:
             engine = self._workflow()
+            instance_id = str(instance_id or "").strip()
+            step_id = str(step_id or "").strip()
+            # 前端/桥接可能传 "false"/"0" 这类字符串；bool("false") 会变成 True（误放行）
+            if isinstance(approved, str):
+                approved = approved.strip().lower() in ("1", "true", "yes", "y", "on")
+            else:
+                approved = bool(approved)
             ok = engine.approve_step(instance_id, step_id, reviewer="user") if approved \
                 else engine.reject_step(instance_id, step_id, reviewer="user")
-            return {"ok": bool(ok), "status": self.workflow_status(instance_id)}
+            if not ok:
+                # ★ 失败必须给原因（D-9）：旧实现只返回 ok=false，界面无从判断是
+                #   实例不存在、step_id 变了，还是状态已经不是 waiting_approval。
+                reason = "工作流实例不存在"
+                inst = engine.get_instance(instance_id)
+                if inst is not None:
+                    step = next((s for s in inst.steps if s.step_id == step_id), None)
+                    if step is None:
+                        reason = "步骤不存在（step_id 可能已随重启/恢复变化，请刷新后重试）"
+                    else:
+                        reason = (f"步骤当前状态为 {getattr(step.status, 'value', step.status)}，"
+                                  "不是 waiting_approval（可能已审批、已执行或被跳过）")
+                return {"ok": False, "error": reason, "status": self.workflow_status(instance_id)}
+            return {"ok": True, "status": self.workflow_status(instance_id)}
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 

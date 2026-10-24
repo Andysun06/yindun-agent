@@ -936,8 +936,9 @@ llm_rej = _CtxLLM("create_local_file", {"filename": RANGE_FILE.name, "content": 
 _w_rej, conf_rej, st_rej, fin_rej = run_range_worker(llm_rej, "ask", approve=False)
 check("★ ask 档驳回越界操作：文件没被创建（人工否决不是装饰）",
       len(conf_rej) == 1 and not RANGE_FILE.exists())
-check("驳回结果如实说明（模型不会据此编造成功）",
-      any("已驳回" in t for t in _tool_outputs(llm_rej)), str(_tool_outputs(llm_rej))[:120])
+check("★ 驳回后宿主给确定性答复（已按你的选择驳回 / 未改动）",
+      any("已按你的选择驳回" in f and "也没有改动" in f for f in fin_rej),
+      str(fin_rej)[:160])
 
 # ③ full 档：越界写盘免确认放行 + 审计 + 结果标注
 RANGE_FILE.unlink(missing_ok=True)

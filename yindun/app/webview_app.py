@@ -810,7 +810,14 @@ class JsApi:
         return self._svc.workflow_execute_next(instance_id)
 
     def workflow_approve(self, instance_id: str, step_id: str, approved: bool):
-        return self._svc.workflow_approve(instance_id, step_id, bool(approved))
+        # ★ 桥接可能把 "false"/"0" 当字符串传来，bool("false") == True 会误放行；
+        #   在进入服务层前统一归一（V3.6.21，真实使用报告 D-9 的相邻风险）。
+        if isinstance(approved, str):
+            approved = approved.strip().lower() in ("1", "true", "yes", "y", "on")
+        else:
+            approved = bool(approved)
+        return self._svc.workflow_approve(str(instance_id or "").strip(),
+                                          str(step_id or "").strip(), approved)
 
     def workflow_export(self, instance_id: str, format: str = "md"):
         return self._svc.workflow_export(instance_id, format)

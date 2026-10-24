@@ -969,17 +969,16 @@ check("★ 超时后工具没有执行", _write_tool.calls == [], str(_write_too
 check("★ 回答如实说明超时并已停止", "超时" in _fin_timeout and "已停止" in _fin_timeout,
       _fin_timeout[:200])
 
-# 明确驳回：同一轮内同一工具不再自动重试（第二轮请求会被告知不要再试）
+# 明确驳回：宿主立即停止整轮并给确定性答复（不再让模型说“我失败了”）
 _llm_reject = ScriptedLLM([
-    {"content": "", "tool_calls": [_tool_call(
-        "create_local_file",
-        {"filename": "reject_probe.txt", "content": "x", "target_directory": str(SANDBOX_ROOT)},
-        "call_r1")]},
-    {"content": "", "tool_calls": [_tool_call(
-        "create_local_file",
-        {"filename": "reject_probe.txt", "content": "x", "target_directory": str(SANDBOX_ROOT)},
-        "call_r2")]},
-    {"content": "好的，这个操作已经停止，不会重试。"},
+    {"content": "", "tool_calls": [
+        _tool_call("create_local_file",
+                   {"filename": "reject_probe.txt", "content": "x",
+                    "target_directory": str(SANDBOX_ROOT)}, "call_r1"),
+        _tool_call("create_local_file",
+                   {"filename": "reject_probe2.txt", "content": "x",
+                    "target_directory": str(SANDBOX_ROOT)}, "call_r2"),
+    ]},
 ])
 _reject_tool = FakeTool("create_local_file", lambda args: "✅ 已创建")
 _w_reject = make_worker(_llm_reject, {"create_local_file": _reject_tool},
@@ -999,8 +998,14 @@ _events_reject, _, _ = run_worker(_w_reject)
 _fin_reject = str(last_of(_events_reject, "finished") or "")
 check("★ 驳回后同轮内不再弹第二次审批", len(_reject_approvals) == 1, str(_reject_approvals))
 check("驳回后工具确实没有执行", _reject_tool.calls == [], str(_reject_tool.calls))
-check("驳回后不再自动重试，并如实收尾（不静默卡住）",
-      "停止重试" in _fin_reject, _fin_reject[:160])
+check("★ 驳回后给确定性答复（已按你的选择驳回 / 未执行 / 未改动）",
+      "已按你的选择驳回" in _fin_reject and "未执行" in _fin_reject
+      and "也没有改动" in _fin_reject, _fin_reject[:200])
+check("★ 驳回后不再进入下一轮模型推理", _llm_reject.calls == 1, f"invoke={_llm_reject.calls}")
+_reject_tool_ids = [m.get("tool_call_id") for m in (_w_reject.result_messages or [])
+                    if m.get("role") == "tool"]
+check("★ 同轮剩余 tool_calls 都有 ToolMessage（协议完整）",
+      {"call_r1", "call_r2"} <= set(_reject_tool_ids), str(_reject_tool_ids))
 
 # 知识库检索的审批/状态目标应显示检索词，而不是项目目录（P1-11 附带问题）
 _dp = _worker_len._display_target_path(
