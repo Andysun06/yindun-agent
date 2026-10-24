@@ -589,6 +589,7 @@ class PrivacyEngine:
     NAME_TRIGGERS = (
         "甲方", "乙方", "丙方", "丁方",
         "姓名", "名字", "叫", "联系人", "对接人", "经办人", "负责人",
+        "组织人", "召集人", "签字人",
         "先生", "女士", "经理", "主管", "总监", "总", "主任", "科长",
         "局长", "处长", "专员", "助理", "代表", "签字", "签署",
         "当事人", "原告", "被告", "证人", "客户", "供应商",
@@ -603,6 +604,85 @@ class PrivacyEngine:
         "审核人", "审批人", "复核人", "提交人", "报送人", "验收人", "接收人", "移交人", "填表人",
         "请查收", "查收",
     )
+
+    # ── 自由句式人名（V3.6.21，真实使用报告 D-4）────────────────
+    # 旧实现只认「触发词 + 姓氏」：`联系人：张伟` 能中，但 `张伟负责` / `会议由张伟主持` /
+    # `发给陈晓峰` 全漏——而后者才是日常聊天里最常见的人名写法。这里补三类**有句法锚点**
+    # 的自由句式（人名前后必须出现角色词、动作词或"发给/由/请"这类介词/动词），仍然只认
+    # 姓氏表，不猜完全没有锚点的裸人名（`张伟、李娜` 这种列举式仍不在覆盖内）。
+    # 误伤控制：候选必须整词命中姓氏表；以姓氏开头的常用词走 NAME_STOP_WORDS 排除。
+    NAME_STOP_WORDS = {
+        # 以姓氏开头的高频普通词（"安排/安全"曾被当成"主任"后面的人名）
+        "安排", "安全", "安装", "安静", "安心", "安慰",
+        "白色", "白天", "白云", "黄色", "黄金", "黄瓜",
+        "时间", "时候", "时代", "时期", "周末", "周期", "周年", "周围",
+        "于是", "方法", "方面", "方式", "方向", "方案", "方便", "房间",
+        "高兴", "高级", "高度", "高校", "高速", "高手", "高原", "高温",
+        "张开", "张望", "张贴", "张罗", "张量", "张力", "张扬",
+        "陈述", "陈列", "陈旧", "陈设", "陈年",
+        "卫生", "卫星", "沈阳", "韩国", "杨树", "杨柳", "杨梅",
+        "朱红", "朱砂", "许多", "许可", "何必", "何况", "何时", "何处",
+        "施工", "施加", "施行", "孔子",
+        "严格", "严重", "严厉", "严肃",
+        "金融", "金属", "金色", "金鱼", "金牌",
+        "陶瓷", "水果", "水平", "水电", "水泥", "水库",
+        "章节", "章程", "云端", "云南", "云彩", "云朵", "苏州",
+        "范围", "范例", "范畴", "马上", "马路", "马车", "马虎", "马匹",
+        "苗条", "凤凰", "花园", "花朵", "花钱", "花费", "花絮",
+        "任务", "任何", "任命", "任性", "柳树", "柳枝", "费用", "费心", "廉价",
+        "雷达", "雷雨", "雷霆", "汤圆", "汤水", "罗马", "罗列", "罗盘",
+        "毕业", "毕竟", "常常", "常规", "常识", "常年",
+        "乐观", "乐趣", "乐器", "皮肤", "皮带", "皮包", "齐全", "齐心",
+        "余额", "余地", "余下", "元旦", "元素", "元首", "卜卦",
+        "顾客", "顾问", "顾及", "平时", "平均", "平安", "平台", "平静", "平稳",
+        "和平", "和谐", "和蔼", "萧条", "徐徐", "胡子", "胡同", "胡乱", "胡须",
+        "林业", "林子", "林场", "宋朝", "曾经", "田野", "田地", "田间",
+        "董事", "叶子", "叶片", "程序", "程度", "丁香", "钟表", "钟头", "钟点",
+        "陆续", "陆地", "陆军", "汪洋", "石头", "石油", "石膏", "石桥",
+        "夏天", "夏季", "夏朝", "熊猫", "江水", "江河", "江南", "江山",
+        "段落", "龙虾", "龙年", "龙头", "黎明", "毛巾", "毛衣", "毛病", "毛发",
+        "万一", "万分", "万岁", "万全", "康复",
+    }
+    _NAME_VERB_AFTER = (
+        "负责", "主持", "记录", "说", "表示", "指出", "认为", "安排",
+        "提交", "审核", "审批", "确认", "参加", "出席", "汇报", "介绍",
+        "联系", "回复", "转发", "带队", "陪同", "接待", "担任", "当选",
+        "签字", "签署", "同意", "拒绝", "通知", "提醒", "要求", "建议",
+        "提出", "发现", "处理", "完成", "跟进", "对接", "开会",
+        "看一下", "就行", "即可", "今天", "明天", "昨天", "上午", "下午", "晚上",
+    )
+    _NAME_ROLE_WORDS = (
+        "联系人", "负责人", "组织人", "召集人", "签字人", "签署人", "经办人",
+        "对接人", "审批人", "审核人", "提交人", "报送人", "验收人", "接收人",
+        "移交人", "填表人", "患者", "病人", "员工", "职工", "客户", "供应商",
+        "主持人", "记录人", "主讲人", "参会人", "与会人", "作者", "收件人",
+        "发件人", "借款人", "贷款人", "持卡人", "开户人", "监护人", "代理人",
+        "担保人", "申请人", "当事人", "原告", "被告", "证人",
+    )
+    _NAME_PREFIX_VERBS = (
+        "由", "让", "请", "找", "问", "通知", "联系", "发给", "交给", "告诉",
+        "安排", "委托", "授权", "指派", "跟随", "陪同", "带着", "派",
+    )
+    _NAME_RELATION_WORDS = (
+        "朋友", "同事", "同学", "老师", "领导", "家属", "亲戚", "邻居",
+        "战友", "室友", "护士站", "科室", "部门", "公司", "单位", "医院",
+        "学校", "团队", "项目组", "办公室", "车间", "班组",
+    )
+    _NAME_HEAD = "[" + "".join(sorted(SURNAMES | {c[0] for c in COMPOUND_SURNAMES})) + "]"
+    _NAME_TAIL = ("(?=[，。；！？、\\s]|$|(?:"
+                  + "|".join(_NAME_VERB_AFTER) + "))")
+    _NAME_AFTER_RE = re.compile(
+        "(" + _NAME_HEAD + "[\\u4e00-\\u9fa5]{1,3})(?=(?:"
+        + "|".join(_NAME_VERB_AFTER) + "))")
+    _NAME_ROLE_IS_RE = re.compile(
+        "(?:" + "|".join(_NAME_ROLE_WORDS) + ")(?:是|为|叫)("
+        + _NAME_HEAD + "[\\u4e00-\\u9fa5]{1,3})" + _NAME_TAIL)
+    _NAME_PREFIX_END_RE = re.compile(
+        "(?:" + "|".join(_NAME_PREFIX_VERBS) + ")("
+        + _NAME_HEAD + "[\\u4e00-\\u9fa5]{1,3})" + _NAME_TAIL)
+    _NAME_REL_END_RE = re.compile(
+        "(?:" + "|".join(_NAME_RELATION_WORDS) + ")的("
+        + _NAME_HEAD + "[\\u4e00-\\u9fa5]{1,3})" + _NAME_TAIL)
 
     # (C2) 人名弱规则开关："姓氏+2字"误伤率高，默认关闭。
     # 仅当显式置 True 时，才在句首/冒号后/顿号后位置启用弱规则。
@@ -945,6 +1025,10 @@ class PrivacyEngine:
                 claimed.append((abs_start, abs_end))
                 spans.append((abs_start, abs_end, cand))
 
+        # 自由句式人名（V3.6.21）：补“张伟负责 / 会议由张伟主持 / 发给陈晓峰 /
+        # 签字人是孙玉梅”这类没有传统触发词、但有句法锚点的写法。
+        self._collect_freeform_name_spans(base, claimed, spans)
+
         # 降序替换（后面的先替换，前面的坐标不受影响）
         result = base
         for abs_start, abs_end, name_candidate in sorted(spans, key=lambda item: -item[0]):
@@ -959,6 +1043,49 @@ class PrivacyEngine:
             result = result[:abs_start] + placeholder + result[abs_end:]
 
         return result
+
+    def _valid_freeform_name(self, candidate: str) -> bool:
+        """自由句式候选的收口：必须是姓氏表开头的人名，且不在常用词黑名单里。"""
+        if not candidate or not (2 <= len(candidate) <= 4):
+            return False
+        if candidate in self.NAME_STOP_WORDS:
+            return False
+        # "安排工作"被切成"安排"时，候选本身就是黑名单；"高兴地"这类前缀命中也要挡
+        if any(len(word) < len(candidate) and candidate.startswith(word)
+               for word in self.NAME_STOP_WORDS):
+            return False
+        if candidate[-1] in self.NAME_STOP_CHARS:
+            return False
+        if len(candidate) >= 4:
+            return candidate[:2] in self.COMPOUND_SURNAMES
+        if len(candidate) >= 3 and candidate[:2] in self.COMPOUND_SURNAMES:
+            return True
+        return candidate[0] in self.SURNAMES
+
+    def _collect_freeform_name_spans(self, base, claimed, spans) -> None:
+        """收集“有句法锚点”的自由句式人名，区间去重后并入 spans。
+
+        只认三类锚点：
+          · 人名 + 动作词：`张伟负责` / `李娜记录` / `王建国说` / `陈晓峰就行`；
+          · 角色 + 是/为/叫 + 人名：`联系人是刘志强` / `签字人是孙玉梅`；
+          · 介词/动词 + 人名（到分句边界）：`发给陈晓峰` / `由刘志强` / `请李明看一下`；
+          · 关系/场所 + 的 + 人名：`护士站的张丽`。
+        没有锚点的裸人名（`张伟、李娜` 站在一起）仍然不猜——这是刻意的边界。
+        """
+        for rx in (self._NAME_AFTER_RE, self._NAME_ROLE_IS_RE,
+                   self._NAME_PREFIX_END_RE, self._NAME_REL_END_RE):
+            for match in rx.finditer(base):
+                candidate = match.group(1)
+                if not self._valid_freeform_name(candidate):
+                    continue
+                start, end = match.start(1), match.end(1)
+                if any(s <= start < e or s < end <= e for s, e in claimed):
+                    continue
+                tail = base[end:end + 6]
+                if any(tail.startswith(word) for word in self._ORG_SUFFIX_WORDS):
+                    continue
+                claimed.append((start, end))
+                spans.append((start, end, candidate))
 
     def _apply_table_cell_names(self, text, mapping, counts, value_to_placeholder, used_nonces):
         """表格 / CSV 里的人名（C10-c）：表头是触发词，人名在**表格体的单元格**里。
@@ -1126,6 +1253,9 @@ class PrivacyEngine:
         #   "张信哲"这类名字中间含标签字的合法人名。
         "电", "话", "手", "机", "邮", "箱", "址", "座", "传", "微",
         "账", "银", "卡", "证", "单", "部", "司", "职", "务", "位", "系",
+        # 自由句式的人名后面常跟副词/助词（"高兴地说"不能把"高兴地"当人名）
+        "就", "还", "又", "才", "已", "将", "会", "能", "可", "要", "想",
+        "等", "以", "于", "得", "地",
     }
 
     def _trim_name(self, candidate: str, base_len: int):
@@ -1139,7 +1269,15 @@ class PrivacyEngine:
             chars.pop()
         if len(chars) <= base_len:
             return None
-        return "".join(chars)
+        result = "".join(chars)
+        # 以姓氏开头的常用词（安排/安全/高兴/方法…）不是人名：这是 V3.6.21 对
+        # "主任安排值班"被误切出"安排"的修复，也防止自由句式把普通词当人名。
+        if result in self.NAME_STOP_WORDS:
+            return None
+        if any(len(word) < len(result) and result.startswith(word)
+               for word in self.NAME_STOP_WORDS):
+            return None
+        return result
 
     # ──────────────────────────────────────────
     # 逆向还原（接口完全保持兼容）

@@ -654,11 +654,18 @@ _index_src = Path(__file__).resolve().parents[1].joinpath(
     "yindun", "app", "web", "index.html").read_text(encoding="utf-8")
 check("窗口不再用全局 easy_drag（它连输入框里的拖动都会拖走整个窗口）",
       '"easy_drag": False' in _webview_src and '"easy_drag": True' not in _webview_src)
-check("整条顶栏与闪发浮条被标记为拖动区域",
-      'class="band topbar pywebview-drag-region"' in _index_src
-      and 'class="minibar pywebview-drag-region"' in _index_src)
-check("设置页顶部栏也是拖动区域（在设置里也能移动窗口）",
-      'class="setmain__head pywebview-drag-region"' in _index_src)
+check("顶栏按钮区不是拖动区域（拖动只留在空白 spacer，避免按钮点击被吞）",
+      'class="band topbar"' in _index_src
+      and 'class="band topbar pywebview-drag-region"' not in _index_src
+      and 'class="topbar__spacer pywebview-drag-region"' in _index_src)
+check("闪发浮条按钮区不是拖动区域（拖动只留在状态文字）",
+      'class="minibar"' in _index_src
+      and 'class="minibar pywebview-drag-region"' not in _index_src
+      and 'class="minibar__status pywebview-drag-region"' in _index_src)
+check("设置页只让标题块拖动，操作按钮不参与拖动",
+      'class="setmain__head"' in _index_src
+      and 'class="setmain__head pywebview-drag-region"' not in _index_src
+      and '<div class="pywebview-drag-region">' in _index_src)
 check("输入区没有被标成拖动区域（在输入框里拖动就是选文字）",
       'composer pywebview-drag-region' not in _index_src
       and 'id="input" class="pywebview-drag-region"' not in _index_src)
@@ -1173,6 +1180,44 @@ check("★ TypeError 报「内部错误」而非网络超时",
       "内部错误" in _internal and "请求超时" not in _internal, _internal[:80])
 _timeout = Worker._translate_error(TimeoutError("timed out"))
 check("真正的超时仍报「请求超时」", "请求超时" in _timeout, _timeout[:80])
+
+# BUG-3：模型总结与工具事实相反时，最终回答附"工具核对"，以文件系统结果为准
+_w._turn_write_facts = [("move_local_file", "✅ 已移动 5 个文件到「会议纪要」")]
+_w.user_input = "整理会议纪要"
+_fact_reply = _w._append_write_facts("已移动 1 项。")
+check("★ 写操作附工具核对（5 个文件的事实压过模型的“1 项”）",
+      "本次工具核对" in _fact_reply and "5 个文件" in _fact_reply, _fact_reply)
+
+# BUG-4：用户没问隐私时，清掉模型自带的“隐私说明/占位符”尾巴
+_privacy_tail = "会议纪要已整理好。\n\n隐私说明：系统会把 [PHONE_0_x] 在落盘时替换为真实数据。"
+check("★ 内部隐私说明尾巴被清理",
+      _w._strip_internal_privacy_notes(_privacy_tail) == "会议纪要已整理好。",
+      _w._strip_internal_privacy_notes(_privacy_tail))
+_w.user_input = "你们的占位符机制是什么"
+check("用户主动问隐私时不清理", "隐私说明" in _w._strip_internal_privacy_notes(_privacy_tail))
+
+# BUG-1：桥接层异常必须回可读原因，而不是让前端显示“未知原因”
+from yindun.app.webview_app import JsApi  # noqa: E402
+
+class _BoomService:
+    def add_custom_model(self, *args, **kwargs):
+        raise RuntimeError("模拟保存异常")
+
+_api = JsApi(_BoomService(), {})
+_bridge = _api.add_custom_model("n", "m", "https://example.invalid", "k")
+check("★ 模型保存异常回传可读原因（不再是 None / 未知原因）",
+      isinstance(_bridge, dict) and _bridge.get("ok") is False
+      and "RuntimeError" in str(_bridge.get("error")), str(_bridge))
+
+# BUG-1 的另一个可能根因：用户手工改坏 custom_models（列表）后永远保存不进去
+_bad = AgentService(settings=SettingsStore(path=TMP / "bad_models.json"),
+                    sessions=SessionStore(path=TMP / "bad_sessions.json"),
+                    plugin_data_root=TMP / "bad_pd")
+_bad.initialize()
+_bad.settings.set("custom_models", ["broken"])
+_r = _bad.add_custom_model("n", "m", "https://example.invalid/v1", "k")
+check("★ custom_models 被改坏时仍能保存（坏配置降级为空表）",
+      bool(_r.get("ok")) and isinstance(_bad.settings.get("custom_models"), dict), str(_r))
 
 print(chr(10) + "=" * 78)
 if failures:

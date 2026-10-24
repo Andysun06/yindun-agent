@@ -807,6 +807,16 @@ def make_local_dir(path: str, target_directory: str = "当前沙箱目录") -> s
     raw = str(path or "").strip()
     if not raw:
         return "❌ 新建目录失败：没有给出目录名（path 为空）。"
+    # ★ 弱模型常见误操作（真实使用报告 BUG-6）：把"复制 a.txt"理解成"新建目录 a.txt"。
+    #   目录名带常见文件扩展名时直接拒绝，让模型回到正确工具（复制/新建文件），
+    #   而不是真的在磁盘上造一个 `会议纪要.txt\` 目录。
+    _leaf = os.path.basename(raw.rstrip("\\/"))
+    _ext = os.path.splitext(_leaf)[1].lower()
+    if _ext in (".txt", ".md", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+                ".pdf", ".csv", ".json", ".log", ".py", ".html", ".htm",
+                ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".zip", ".rar", ".7z"):
+        return (f"❌ 新建目录失败：`{_leaf}` 带文件扩展名（{_ext}），看起来是文件而不是目录。"
+                "如果要复制/新建文件，请使用复制或新建文件工具；目录名请不要带扩展名。")
     if _has_separator(raw) and not os.path.isabs(raw) and ".." in raw.split(os.sep):
         return "❌ 新建目录失败：相对路径里不允许带 '..'，请给名称或完整绝对路径。"
     candidate = os.path.abspath(raw) if os.path.isabs(raw) else os.path.join(base_dir, raw)

@@ -250,6 +250,8 @@ def test_10_html_report():
     assert "<!DOCTYPE html>" in report_html
     assert "<table>" in report_html
     assert "隐盾安全审计报告" in report_html
+    assert 'id="audit-q"' in report_html and 'id="audit-type"' in report_html
+    assert "Content-Security-Policy" in report_html
     # 保存到文件
     filepath = audit.save_report("html", "test_report.html")
     assert os.path.exists(filepath), "HTML 报告文件应存在"
@@ -582,6 +584,34 @@ def test_24_llm_output_empty_marker():
     assert "empty_output" not in normal.details, normal.details
     print("✅ 测试24通过: 兜底输出记 content_length=0 + empty_output=True；正常输出不受影响")
 
+
+def test_25_html_escaping_and_time():
+    """测试25：HTML 导出必须转义用户可控字段（防存储型 XSS），时间去掉 T/微秒。"""
+    from yindun.core.audit_log import _audit_html_row
+
+    class _Entry:
+        timestamp = "2026-10-21T09:27:40.773380"
+        event_type = "llm_output"
+        severity = "info"
+        message = '<img src=x onerror=alert(1)>'
+        details = {"x": "<script>alert(2)</script>"}
+
+    row = _audit_html_row(_Entry())
+    assert "<img" not in row and "&lt;img" in row, row
+    assert "<script>" not in row and "&lt;script&gt;" in row, row
+    assert "2026-10-21 09:27:40" in row and "773380" not in row, row
+    print("✅ 测试25通过: HTML 导出已转义 + 时间格式化为可读形式")
+
+
+def test_26_audit_long_digit_masking():
+    """测试26：审计预览对 15 位以上连续数字做部分打码（非 Luhn 的形似卡号也不明文落盘）。"""
+    from yindun.core.audit_log import _mask_text
+
+    out = _mask_text("随手编的卡号 6222021234567893444 请核对")
+    assert "622202" in out and "3444" in out, out
+    assert "123456789" not in out, out
+    print("✅ 测试26通过: 审计预览对超长数字做了部分打码")
+
 if __name__ == "__main__":
     print("=" * 60)
     print("隐盾全链路审计黑匣子 - 功能验证测试")
@@ -614,6 +644,8 @@ if __name__ == "__main__":
         test_22_anchor_write_falls_back_and_reports_it,
         test_23_verify_warning_dedup,
         test_24_llm_output_empty_marker,
+        test_25_html_escaping_and_time,
+        test_26_audit_long_digit_masking,
     ]
     passed = 0
     failed = 0

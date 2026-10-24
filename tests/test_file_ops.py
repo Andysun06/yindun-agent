@@ -223,6 +223,9 @@ res = call(FT.make_local_dir, path=str(WORK / "多层" / "子层"))
 check("绝对路径可一次建多级", (WORK / "多层" / "子层").is_dir(), res)
 res = call(FT.make_local_dir, path="新建目录")
 check("已存在时如实说明（不报假成功）", "已存在" in res, res)
+res = call(FT.make_local_dir, path="会议纪要1022.txt")
+check("目录名带文件扩展名时拒绝（弱模型把复制误当建目录）",
+      "带文件扩展名" in res and not (WORK / "会议纪要1022.txt").exists(), res)
 
 print("\n" + "=" * 78)
 print("【C】越界与档位：范围外的移动按档位判定，两端都要判")

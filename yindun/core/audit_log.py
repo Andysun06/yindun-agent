@@ -7,6 +7,7 @@ from yindun import APP_ROOT
 import json
 import hmac
 import hashlib
+import html as _html
 import os
 import re
 import secrets
@@ -203,6 +204,34 @@ class AuditEntry:
         return entry
 
 
+def _format_audit_time(value: Any) -> str:
+    """把审计时间从机器格式（ISO T + 微秒）转成员工能读的 `YYYY-MM-DD HH:MM:SS`。"""
+    text = str(value or "").strip().replace("T", " ")
+    if "." in text:
+        text = text.split(".", 1)[0]
+    return text
+
+
+def _audit_html_row(entry) -> str:
+    """渲染一行审计 HTML：所有字段先转义（防导出报告被用户输入注入脚本）。"""
+    sev_raw = str(entry.severity)
+    severity_class = ("severity-" + sev_raw
+                      if sev_raw in ("info", "warning", "critical", "security")
+                      else "severity-info")
+    etype = _html.escape(str(entry.event_type))
+    sev = _html.escape(sev_raw)
+    ts = _html.escape(_format_audit_time(entry.timestamp))
+    msg = _html.escape(str(entry.message))
+    details = _html.escape(json.dumps(entry.details, ensure_ascii=False))
+    return f"""<tr>
+                    <td>{ts}</td>
+                    <td><span class="event-type">{etype}</span></td>
+                    <td><span class="severity {severity_class}">{sev}</span></td>
+                    <td>{msg}</td>
+                    <td class="details" title="{details}">{details}</td>
+                </tr>"""
+
+
 def _mask_text(text: str) -> str:
     """对任意文本中的敏感实体做掩码（审计落盘前统一调用）。
 
@@ -214,6 +243,10 @@ def _mask_text(text: str) -> str:
     try:
         from yindun.core.privacy_engine import PrivacyEngine
         masked, _ = PrivacyEngine().anonymize(text)
+        # ★ 审计展示层的额外保险（V3.6.21）：15 位以上的连续数字即便没通过 Luhn，
+        #   也可能是卡号/证件号；审计不该成为"二次泄露源"。保留前 6 后 4，中间打码。
+        masked = re.sub(r"(?<!\d)(\d{6})\d{6,}(\d{4})(?!\d)",
+                        lambda m: m.group(1) + "******" + m.group(2), masked)
         return masked
     except Exception:
         return text
@@ -987,11 +1020,19 @@ class AuditLog:
             return json.dumps(report, ensure_ascii=False, indent=2)
         elif format == "html":
             stats = self.get_stats()
+            type_options = "".join(
+                f'<option value="{_html.escape(t, quote=True)}">{_html.escape(t)}</option>'
+                for t in sorted({str(e.event_type) for e in entries}))
+            sev_options = "".join(
+                f'<option value="{_html.escape(v, quote=True)}">{_html.escape(v)}</option>'
+                for v in sorted({str(e.severity) for e in entries}))
             html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:">
     <title>隐盾审计报告</title>
     <style>
         body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; background: #f8fafc; }}
@@ -1016,6 +1057,10 @@ class AuditLog:
         .severity-security {{ background: #e0e7ff; color: #6366f1; }}
         .event-type {{ padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; background: #f1f5f9; color: #475569; }}
         .details {{ max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: 12px; }}
+        .filter-bar {{ display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 16px; padding: 12px 16px; background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }}
+        .filter-bar input, .filter-bar select {{ padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; color: #1e293b; background: #fff; }}
+        .filter-bar input {{ min-width: 260px; flex: 1; }}
+        .filter-bar .count {{ color: #64748b; font-size: 12px; margin-left: auto; }}
     </style>
 </head>
 <body>
@@ -1029,6 +1074,12 @@ class AuditLog:
         <div class="stat-card"><div class="label">工具调用</div><div class="value">{stats['by_type'].get('tool_call', 0)}</div></div>
         <div class="stat-card"><div class="label">隐私事件</div><div class="value">{stats['by_type'].get('privacy_sensitive', 0)}</div></div>
     </div>
+    <div class="filter-bar">
+        <input id="audit-q" type="search" placeholder="搜索消息 / 详情（例如：删除、文件名）">
+        <select id="audit-type"><option value="">全部事件类型</option>{type_options}</select>
+        <select id="audit-sev"><option value="">全部严重程度</option>{sev_options}</select>
+        <span class="count" id="audit-count"></span>
+    </div>
     <div class="table-container">
         <table>
             <thead>
@@ -1037,15 +1088,38 @@ class AuditLog:
             <tbody>
 """
             for entry in entries:
-                severity_class = f"severity-{entry.severity}"
-                html += f"""<tr>
-                    <td>{entry.timestamp}</td>
-                    <td><span class="event-type">{entry.event_type}</span></td>
-                    <td><span class="severity {severity_class}">{entry.severity}</span></td>
-                    <td>{entry.message}</td>
-                    <td class="details">{json.dumps(entry.details, ensure_ascii=False)}</td>
-                </tr>"""
-            html += """</tbody></table></div></body></html>"""
+                html += _audit_html_row(entry)
+            html += """</tbody></table></div>
+<script>
+(function () {
+  const rows = Array.from(document.querySelectorAll('tbody tr'));
+  const q = document.getElementById('audit-q');
+  const fType = document.getElementById('audit-type');
+  const fSev = document.getElementById('audit-sev');
+  const count = document.getElementById('audit-count');
+  function apply() {
+    const needle = (q.value || '').trim().toLowerCase();
+    let shown = 0;
+    rows.forEach(function (row) {
+      const text = row.textContent.toLowerCase();
+      const type = row.children[1].textContent;
+      const sev = row.children[2].textContent;
+      const ok = (!needle || text.indexOf(needle) >= 0)
+        && (!fType.value || type === fType.value)
+        && (!fSev.value || sev === fSev.value);
+      row.style.display = ok ? '' : 'none';
+      if (ok) shown++;
+    });
+    count.textContent = '显示 ' + shown + ' / ' + rows.length + ' 条';
+  }
+  [q, fType, fSev].forEach(function (el) {
+    el.addEventListener('input', apply);
+    el.addEventListener('change', apply);
+  });
+  apply();
+})();
+</script>
+</body></html>"""
             return html
         return ""
 

@@ -31,6 +31,9 @@ from webview.window import FixPoint   # 边缘改尺寸的单次原生 resize �
 from yindun import APP_ROOT, __display_version__
 from yindun.app import window_layout
 from yindun.app.agent_service import AgentService
+from yindun.utils.logger import get_logger
+
+log = get_logger("webview")
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 INDEX_HTML = WEB_DIR / "index.html"
@@ -733,9 +736,18 @@ class JsApi:
                          tier: str = "", provider: str = "", api_format: str = "",
                          tags=None):
         """新增/覆盖外部模型。provider / api_format / tags 是 V3.6.8 起的可选供应商元数据
-        （老前端只传五个位置参数也照常工作）。"""
-        return self._svc.add_custom_model(name, model_id, base_url, api_key, tier,
-                                          provider, api_format, tags)
+        （老前端只传五个位置参数也照常工作）。
+
+        ★ V3.6.21：桥接层不再让异常静默穿透。pywebview 对未捕获异常只返回 None，
+          前端于是只能显示"保存失败：未知原因"；这里把异常原文与堆栈写进
+          `logs/yindun.log`，并把可读原因回给界面。
+        """
+        try:
+            return self._svc.add_custom_model(name, model_id, base_url, api_key, tier,
+                                              provider, api_format, tags)
+        except Exception as exc:
+            log.exception("add_custom_model 保存失败：%s", exc)
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     def remove_custom_model(self, name: str):
         return self._svc.remove_custom_model(name)
