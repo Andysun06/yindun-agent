@@ -12,10 +12,10 @@
 | [使用说明.md](使用说明.md) · [.pdf](使用说明.pdf) · [.html](使用说明.html) | 安装（标准安装包 / 单文件试用）、算力接入、功能演示、控制面速览 |
 | [插件开发.md](插件开发.md) | 插件钩子契约、安全边界与最小示例 |
 | [作品简介（隐盾安全智能体）.html](作品简介（隐盾安全智能体）.html) | 一页版作品简介（27 类实体 / Web 界面） |
-| [dev/项目介绍视频脚本.md](dev/项目介绍视频脚本.md) · [.pdf](dev/项目介绍视频脚本.pdf) | 4:55 产品介绍视频脚本（HyperFrames / HTML+JS+CSS，风格与汇报 PPT 一致）；8 段 1080P 原片在 [`assets/素材/介绍视频原片/`](../assets/素材/介绍视频原片/README.md)（MP4 不入库） |
+| [dev/项目介绍视频脚本.md](dev/项目介绍视频脚本.md) · [.pdf](dev/项目介绍视频脚本.pdf) | 4:55 产品介绍视频脚本（HyperFrames / HTML+JS+CSS，风格与汇报 PPT 一致）；8 段 1080P 原片在 [`assets/视频素材/`](../assets/视频素材/README.md)（MP4 不入库） |
 | [samples/](samples/) | 样例产物（审计报告样例等） |
 | [screenshots/](screenshots/) | 21 页汇报 PPT 与文档的图源 |
-| [formal_assets/](formal_assets/) | 8 段正式 GIF（01–08）、控制端四宫格裁图；原始 1080P MP4 在 `assets/素材/介绍视频原片/`（不入库） |
+| [formal_assets/](formal_assets/) | 8 段正式 GIF（01–08）、控制端四宫格裁图；原始 1080P MP4 在 `assets/视频素材/MP4原片/`（不入库） |
 
 ## 内部开发笔记（`dev/`）
 
