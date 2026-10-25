@@ -33,7 +33,7 @@
 | 🛠 **标准安装包**（推荐日常使用：开始菜单/桌面快捷方式、控制面板卸载，卸载默认保留本地数据） | [Release](https://github.com/Andysun06/yindun-agent/releases) → `Yindun-Setup-v3.6.20.exe`（本地产物 `dist/隐盾安全智能体_V3.6.20_安装包.exe`；构建：装好 NSIS 后在仓库根执行 `makensis tools/packaging/installer.nsi`） |
 | 📦 **免安装单文件 exe**（评委试用 / 临时机器：双击即用，数据写在 exe 同目录） | [Release](https://github.com/Andysun06/yindun-agent/releases) → `Yindun-Portable-v3.6.20.exe`（GitHub 资产名不支持中文，故用英文名；本地构建产物名为 `隐盾安全智能体_V3.6.20_便携版.exe`，`python tools/packaging/build_portable.py`；**每次修复批次都会重建并同步到该 Release**） |
 | 🏢 **企业控制端 exe**（集中管理服务 + 控制台，零依赖约 25MB，**无命令行黑窗**） | [Release](https://github.com/Andysun06/yindun-agent/releases) → `Yindun-Control-v3.6.20.exe`；本地构建：`python tools/packaging/build_control.py` → `dist/隐盾控制端_V3.6.20_便携版.exe`（双击直接开控制台、自动登录、无黑命令行；启动信息在 `logs/yindun.log`，启动失败弹系统对话框说明原因；重复双击会提示「已经在运行」而不是抢端口。也可源码跑 `python -m yindun.control`） |
-| 🎬 **项目演示视频** | 旧版 1080p 3:28：[Release v3.3.0](https://github.com/Andysun06/yindun-agent/releases/tag/v3.3.0) → `Yindun-Demo-v3.3.0.mp4`；**新版 4:55 产品介绍视频**已有脚本与 8 段 1080P 原始 MP4（`assets/视频素材/MP4原片/`，不入库），见 [docs/dev/项目介绍视频脚本.md](docs/dev/项目介绍视频脚本.md)，尚未产出成片 |
+| 🎬 **项目演示视频** | 旧版 1080p 3:28：[Release v3.3.0](https://github.com/Andysun06/yindun-agent/releases/tag/v3.3.0) → `Yindun-Demo-v3.3.0.mp4`；**新版 4:55 产品介绍视频**已有脚本与 8 段 1080P 原始 MP4（`assets/视频素材/MP4原片/`，**随仓库同步**，总计约 72MB），见 [docs/dev/项目介绍视频脚本.md](docs/dev/项目介绍视频脚本.md)，尚未产出成片 |
 | 📄 **技术报告**（含隐私算法形式化 / 威胁模型 / 攻击实验 / 企业部署形态 · V3.6.20） | [docs/隐盾安全智能体_技术报告.pdf](docs/隐盾安全智能体_技术报告.pdf) |
 | 📽 **汇报 PPT**（21 页 · V3.6.20） | [docs/隐盾安全智能体_项目汇报.pptx](docs/隐盾安全智能体_项目汇报.pptx) |
 | 🎤 **正式答辩 PPT**（11 页 · 沿用原稿版式 · 真实界面 GIF） | [隐盾安全智能体汇报.pptx](隐盾安全智能体汇报.pptx)（逐页讲稿：[正式答辩_5分钟_讲稿.md](docs/dev/正式答辩_5分钟_讲稿.md)；演练版：[正式答辩_演讲稿_演练版.md](docs/dev/正式答辩_演讲稿_演练版.md) · [PDF](docs/dev/正式答辩_演讲稿_演练版.pdf)；原稿备份 `隐盾安全智能体汇报_backup.pptx`） |
@@ -357,7 +357,7 @@ yindun-agent/
 ├── assets/                     # 🎬 演示与录制素材
 │   ├── 介绍视频.mp4             #   旧版 3:28 演示片（新版脚本见 docs/dev/项目介绍视频脚本.md）
 │   ├── 素材/                    #   宣传/视频用的截图源素材
-│   ├── 视频素材/                #   MP4原片/（8 段 1080P，不入库）+ 图片素材/（Logo/界面/控制端/证据）
+│   ├── 视频素材/                #   MP4原片/（8 段 1080P，随仓库同步）+ 图片素材/（Logo/界面/控制端/证据）
 │   ├── 知识库演示文档/           #   知识库演示用示例文档
 │   └── demo_contract.txt
 │
