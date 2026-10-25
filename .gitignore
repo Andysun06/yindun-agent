@@ -53,6 +53,10 @@ dist/
 *.mp4
 product-video/
 
+# 组内视频制作协作：8 段 1080P 原片随仓库同步（单文件均 < 100MB，总计约 72MB）
+# 例外：assets/介绍视频.mp4（171MB）超过 GitHub 单文件 100MB 限制，仍走旧 Release，不入库
+!assets/视频素材/MP4原片/*.mp4
+
 # ── 备份与临时文件 ──
 *.bak
 ~$*

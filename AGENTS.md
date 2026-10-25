@@ -36,6 +36,7 @@
   5. 不允许静默失效：钩子函数缺失要报错、自检要能发现、读不到配置要告警。
   回归门禁：`tests/test_plugins.py` + `tests/test_plugin_capabilities.py`；契约与示例见 `docs/插件开发.md`。
 - **不要把运行时状态提交进库**：`chat_sessions.json`、`global_config.json`、`config/`、`audit_logs/`、`workflow_reports/`、`data/`、`plugins_data/`、`*.mp4`、`*.exe` 均已忽略，勿用 `-f` 强加。
+  **唯一例外**：`assets/视频素材/MP4原片/*.mp4` 是组内视频制作协作素材，按负责人要求随仓库同步（`.gitignore` 已加白名单；8 段共约 72MB，单文件均 < 100MB）。`assets/介绍视频.mp4`（171MB）超过 GitHub 单文件 100MB 限制，仍不入库。
 
 ## 本仓库的环境陷阱（原 Mimosa 安全门禁 · 已按负责人要求关闭）
 
