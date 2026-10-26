@@ -114,6 +114,17 @@ CREATE TABLE IF NOT EXISTS pair_codes (
   used_at     TEXT DEFAULT '',
   endpoint_id TEXT DEFAULT ''
 );
+-- V3.6.21：命名角色令牌（RBAC 最小集）。
+--   role = admin（全部，含令牌管理）/ operator（端点与策略，不含令牌管理）/ viewer（只读）
+--   明文只在下发时返回一次，库内只存 sha256；吊销用 revoked 标记（保留审计线索）。
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  label       TEXT NOT NULL DEFAULT '',
+  role        TEXT NOT NULL,
+  token_hash  TEXT NOT NULL UNIQUE,
+  created_at  TEXT NOT NULL,
+  revoked     INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -789,6 +800,55 @@ class ControlStore:
         except Exception:
             pass
         return False
+
+    # ── 命名角色令牌（V3.6.21，RBAC 最小集）───────────────────
+    # 角色语义：
+    #   admin    全部操作（含令牌管理、备份、自检）
+    #   operator 端点登记 / 策略下发 / 配对码（不含令牌管理与备份）
+    #   viewer   只读（态势 / 台账 / 资产 / 统计）
+    # 管理令牌（admin_token.txt）仍是引导凭据，永不落库明文；命名令牌是它的可控替身。
+    ROLES = ("admin", "operator", "viewer")
+
+    def create_token(self, label: str, role: str) -> Tuple[int, str]:
+        role = str(role or "").strip().lower()
+        if role not in self.ROLES:
+            raise ValueError(f"未知角色：{role}（可选 {'/'.join(self.ROLES)}）")
+        token = secrets.token_urlsafe(24)
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO api_tokens(label, role, token_hash, created_at) VALUES(?,?,?,?)",
+                (str(label or "")[:64], role, _sha256(token), _now()))
+            self._conn.commit()
+            return int(cur.lastrowid), token
+
+    def list_tokens(self) -> list:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, label, role, created_at, revoked FROM api_tokens ORDER BY id").fetchall()
+        return [{"id": r[0], "label": r[1], "role": r[2], "created_at": r[3],
+                 "revoked": bool(r[4])} for r in rows]
+
+    def revoke_token(self, token_id: int) -> bool:
+        with self._lock:
+            cur = self._conn.execute("UPDATE api_tokens SET revoked=1 WHERE id=?", (int(token_id),))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def role_of(self, token: str) -> str:
+        """令牌 → 角色（'' 表示无效）。命名令牌优先，其次回退到管理/只读引导令牌。"""
+        if not token:
+            return ""
+        hashed = _sha256(token)
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT role FROM api_tokens WHERE token_hash=? AND revoked=0", (hashed,)).fetchone()
+        if row:
+            return str(row[0])
+        if self.verify_admin(token):
+            return "admin"
+        if self.verify_viewer(token):
+            return "viewer"
+        return ""
 
     def close(self) -> None:
         conn = getattr(self._local, "conn", None)

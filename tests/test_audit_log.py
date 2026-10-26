@@ -604,12 +604,17 @@ def test_25_html_escaping_and_time():
 
 
 def test_26_audit_long_digit_masking():
-    """测试26：审计预览对 15 位以上连续数字做部分打码（非 Luhn 的形似卡号也不明文落盘）。"""
+    """测试26：审计预览对超长数字做掩码（非 Luhn 的形似卡号也不明文落盘）。
+
+    V3.6.21：识别规则补齐后，"卡号"上下文里的数字会先被引擎认成
+    BANKCARD_LOOKALIKE 并整段替换成占位符——这比"前6后4"更强，两种形态都算通过；
+    断言的核心是**完整数字不得出现**。
+    """
     from yindun.core.audit_log import _mask_text
 
     out = _mask_text("随手编的卡号 6222021234567893444 请核对")
-    assert "622202" in out and "3444" in out, out
-    assert "123456789" not in out, out
+    assert "6222021234567893444" not in out, out
+    assert "BANKCARD_LOOKALIKE" in out or ("622202" in out and "3444" in out), out
     # 旧条目（修复前写入）在导出时也要被重新掩码，不能把历史明文再泄一次
     from yindun.core.audit_log import _audit_html_row
 
@@ -621,8 +626,9 @@ def test_26_audit_long_digit_masking():
         details = {"preview": "旧卡号 6222021234567893444"}
 
     row = _audit_html_row(_OldEntry())
-    assert "622202******3444" in row and "123456789" not in row, row
-    print("✅ 测试26通过: 审计预览对超长数字做了部分打码（含旧条目导出）")
+    assert "6222021234567893444" not in row, row
+    assert "BANKCARD_LOOKALIKE" in row or "622202******3444" in row, row
+    print("✅ 测试26通过: 审计预览对超长数字做了掩码（占位符或前6后4，含旧条目导出）")
 
 if __name__ == "__main__":
     print("=" * 60)

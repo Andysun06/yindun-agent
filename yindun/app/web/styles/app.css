@@ -1263,3 +1263,32 @@ html[data-theme="dark"] .tool-fail { background: rgba(196, 54, 47, .12); }
 @media (max-width: 900px) {
   .chat, .composer { padding-left: var(--sp-4); padding-right: var(--sp-4); }
 }
+
+/* ── 工作流面板（V3.6.21 恢复入口）────────────────────────────────
+   线性流程：模板卡片 → 启动 → 步骤状态 → 人工审批 → 导出。
+   刻意不做分支/回退控件：引擎本身不支持，界面不承诺引擎没有的能力。 */
+.wf-head__title { font-size: var(--fs-md); font-weight: 600; color: var(--text-1); }
+.wf-head__note { margin-top: var(--sp-2); font-size: var(--fs-meta); color: var(--text-3); line-height: 1.5; }
+.wf-templates { display: flex; flex-direction: column; gap: var(--sp-3); }
+.wf-card { border: 1px solid var(--border-1); border-radius: var(--r-ctrl); padding: var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-2); }
+.wf-card__name { font-size: var(--fs-sm); font-weight: 600; color: var(--text-1); }
+.wf-card__desc { font-size: var(--fs-meta); color: var(--text-2); line-height: 1.5; }
+.wf-card__foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.wf-card__meta { font-size: var(--fs-meta); color: var(--text-3); }
+.wf-instance { border: 1px solid var(--border-1); border-radius: var(--r-ctrl); padding: var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-3); }
+.wf-instance__head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.wf-instance__name { font-size: var(--fs-sm); font-weight: 600; }
+.wf-instance__progress { font-size: var(--fs-meta); color: var(--text-3); font-family: var(--font-mono); }
+.wf-steps { display: flex; flex-direction: column; gap: var(--sp-2); }
+.wf-step { display: flex; align-items: center; gap: var(--sp-3); font-size: var(--fs-meta); }
+.wf-step__name { flex: 1; color: var(--text-2); }
+.wf-step__status { padding: 2px var(--sp-2); border-radius: var(--r-chip); background: var(--bg-subtle); color: var(--text-3); font-size: 11px; }
+.wf-step__status--done { color: var(--accent-700); background: var(--accent-50); }
+.wf-step__status--waiting { color: var(--warn-500, #b45309); }
+.wf-step__status--failed { color: var(--danger-500); }
+html[data-theme="dark"] .wf-step__status--done { color: var(--accent-300); background: transparent; }
+.wf-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.wf-actions:empty { display: none; }
+
+/* [hidden] 必须真的隐藏：.wf-instance 的 display:flex 会覆盖浏览器默认的 [hidden]{display:none} */
+.wf-instance[hidden] { display: none; }

@@ -8,19 +8,19 @@
 ; 依赖：dist\隐盾安全智能体_V<版本>_便携版.exe（build_portable.py 产物）+ docs\使用说明.pdf
 
 !define APP_NAME "隐盾安全智能体"
-!define APP_VERSION "3.6.20"
+!define APP_VERSION "3.6.21"
 !define APP_EXE "Yindun.exe"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\YindunSecurityAgent"
 
 Name "${APP_NAME}"
-OutFile "..\..\dist\隐盾安全智能体_V3.6.20_安装包.exe"
+OutFile "..\..\dist\隐盾安全智能体_V3.6.21_安装包.exe"
 InstallDir "$LOCALAPPDATA\Programs\Yindun"
 InstallDirRegKey HKCU "Software\YindunSecurityAgent" "InstallDir"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
-VIProductVersion "3.6.20.0"
+VIProductVersion "3.6.21.0"
 VIAddVersionKey "ProductName" "${APP_NAME}"
-VIAddVersionKey "FileVersion" "V3.6.20"
+VIAddVersionKey "FileVersion" "V3.6.21"
 VIAddVersionKey "LegalCopyright" "Yindun Team"
 VIAddVersionKey "FileDescription" "隐盾安全智能体安装包"
 Icon "..\..\assets\icons\yindun-client.ico"
@@ -47,7 +47,7 @@ Section "安装隐盾安全智能体" SecMain
   SetShellVarContext current
   SetOutPath "$INSTDIR"
   ; 安装包直接复用已经过归档校验的单文件 exe，保证"装上的"和"便携试用的"是同一份
-  File /oname=${APP_EXE} "..\..\dist\隐盾安全智能体_V3.6.20_便携版.exe"
+  File /oname=${APP_EXE} "..\..\dist\隐盾安全智能体_V3.6.21_便携版.exe"
   File "..\..\docs\使用说明.pdf"
   File "installer_readme.txt"
 

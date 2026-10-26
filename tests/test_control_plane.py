@@ -915,8 +915,10 @@ check("补充不会超过突发上限（长时间静默后不能无限攒额度�
 server_src = (_ROOT / "yindun" / "control" / "server.py").read_text(encoding="utf-8")
 check("HTTP 层已接到限流器上（超限回 429 + Retry-After）",
       "limiter.allow(ip)" in server_src and "429" in server_src and "Retry-After" in server_src)
-check("限流默认关闭（--rate-limit 未给时不改变既有行为）",
-      "rate_limit_per_min: int = 0" in server_src and '"--rate-limit", type=int, default=0' in server_src)
+check("限流默认开启（V3.6.21：600/分钟，可用 --no-rate-limit 关闭）",
+      '"--rate-limit", type=int, default=600' in server_src
+      and '"--no-rate-limit"' in server_src
+      and 'const=0' in server_src)
 
 # ── H5 端点失联告警：地址只来自配置 + 去重 + 不跟随重定向 ──
 check("Webhook 地址白名单：只允许 http/https 且不带凭据",
@@ -1147,6 +1149,98 @@ check("哈希与文件不一致时，文件里的 viewer 令牌仍有效",
 check("ensure_viewer_token 以文件为准重建哈希",
       lan_store.ensure_viewer_token() == _new_viewer)
 lan_store.close()
+
+# ── H6 三角色 RBAC（V3.6.21）与一键 TLS ──
+print("\n" + "=" * 78)
+print("【H6】命名角色令牌（admin/operator/viewer）与自签 TLS")
+print("=" * 78)
+_rb_dir = Path(tempfile.mkdtemp())
+_rb_store = ControlStore(_rb_dir / "rbac.db")
+_rb_admin = _rb_store.ensure_admin_token()
+_rb_vid, _rb_vtok = _rb_store.create_token("巡检机器人", "viewer")
+_rb_oid, _rb_otok = _rb_store.create_token("值班运维", "operator")
+_rb_aid, _rb_atok = _rb_store.create_token("管理员甲", "admin")
+check("角色映射正确（viewer/operator/admin/引导令牌）",
+      _rb_store.role_of(_rb_vtok) == "viewer"
+      and _rb_store.role_of(_rb_otok) == "operator"
+      and _rb_store.role_of(_rb_atok) == "admin"
+      and _rb_store.role_of(_rb_admin) == "admin", "")
+check("无效令牌角色为空", _rb_store.role_of("not-a-token") == "", "")
+_rb_app = ControlServer(_rb_store)
+
+
+def _hdr(tok):
+    return {"authorization": "Bearer " + tok}
+
+
+def _code(fn):
+    try:
+        fn()
+        return 200
+    except ApiError as exc:
+        return exc.status
+
+
+check("viewer 不能写（端点登记/策略/配对码均 401）",
+      _code(lambda: _rb_app.require_write(_hdr(_rb_vtok))) == 401, "")
+check("operator 可以写（登记端点/下发策略）",
+      _code(lambda: _rb_app.require_write(_hdr(_rb_otok))) == 200, "")
+check("operator 不能管理令牌（require_admin 拒绝）",
+      _code(lambda: _rb_app.require_admin(_hdr(_rb_otok))) == 401, "")
+check("operator 与 viewer 都能读（命名令牌不只写不通读）",
+      _code(lambda: _rb_app.require_read(_hdr(_rb_otok))) == 200
+      and _code(lambda: _rb_app.require_read(_hdr(_rb_vtok))) == 200, "")
+check("无效令牌读也被拒（401）",
+      _code(lambda: _rb_app.require_read(_hdr("bogus"))) == 401, "")
+check("admin 命名令牌可管理令牌",
+      _code(lambda: _rb_app.require_admin(_hdr(_rb_atok))) == 200, "")
+check("吊销后立即失效（role 变空、写操作 401）",
+      _rb_store.revoke_token(_rb_vid) and _rb_store.role_of(_rb_vtok) == ""
+      and _code(lambda: _rb_app.require_write(_hdr(_rb_vtok))) == 401, "")
+try:
+    _rb_store.create_token("x", "root")
+    check("非法角色被拒（不静默降级）", False, "未抛 ValueError")
+except ValueError:
+    check("非法角色被拒（不静默降级）", True, "")
+# 路由层：POST /api/v1/tokens 只认 admin，明文只返回一次
+_rb_code, _rb_body = _rb_app.route("POST", "/api/v1/tokens", {}, _hdr(_rb_atok),
+                                   json.dumps({"label": "只读B", "role": "viewer"}).encode())
+check("admin 可创建命名令牌并一次性返回明文",
+      _rb_code == 200 and bool(_rb_body.get("token")) and _rb_body.get("role") == "viewer",
+      str(_rb_body)[:120])
+_rb_code2, _rb_body2 = 200, {}
+try:
+    _rb_code2, _rb_body2 = _rb_app.route("POST", "/api/v1/tokens", {}, _hdr(_rb_otok),
+                                         json.dumps({"label": "x", "role": "viewer"}).encode())
+except ApiError as _exc:
+    _rb_code2, _rb_body2 = _exc.status, {"error": str(_exc)}
+check("operator 创建令牌被拒（401）", _rb_code2 == 401, str(_rb_body2)[:80])
+_rb_store.close()
+
+# 一键自签 TLS：证书生成 + SAN 覆盖 + 能被 ssl 加载
+from yindun.control.server import ensure_self_signed_cert  # noqa: E402
+_tls_dir = Path(tempfile.mkdtemp())
+_cert, _key = ensure_self_signed_cert(_tls_dir, host="192.168.1.50")
+check("自签证书与私钥落盘", Path(_cert).exists() and Path(_key).exists(), "")
+try:
+    import ssl as _ssl
+    _ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER)
+    _ctx.load_cert_chain(certfile=_cert, keyfile=_key)
+    _tls_ok = True
+except Exception as exc:
+    _tls_ok = False
+check("证书可被 ssl 上下文加载（TLS ≥1.2）", _tls_ok, "")
+try:
+    from cryptography import x509 as _x509
+    _c = _x509.load_pem_x509_certificate(Path(_cert).read_bytes())
+    _san = _c.extensions.get_extension_for_class(_x509.SubjectAlternativeName).value
+    _names = [str(v.value) for v in _san]
+    check("SAN 覆盖 localhost / 127.0.0.1 / 监听地址",
+          "localhost" in _names and "127.0.0.1" in _names and "192.168.1.50" in _names, str(_names))
+except Exception as exc:
+    check("SAN 覆盖 localhost / 127.0.0.1 / 监听地址", False, f"{type(exc).__name__}: {exc}")
+check("再次调用复用已有证书（不重复生成）",
+      ensure_self_signed_cert(_tls_dir)[0] == _cert, "")
 
 # 收尾
 store.close()
