@@ -1014,11 +1014,21 @@ class AuditLog:
     def export_report(self, format: str = "json", filters: dict = None) -> str:
         entries = self.get_entries(filters)
         if format == "json":
+            # ★ V3.6.21：导出同样过展示层掩码（与 HTML/面板同一口径）。
+            #   背景：识别规则收紧后，**规则收紧前写入的历史条目**可能含新规则才覆盖的值
+            #   （如非 Luhn 卡面数字）。审计链是 HMAC 不可改写的，历史条目无法回溯擦除，
+            #   但"导出文件"是新生成的交付物——它不能再把明文带出去（审计不能成为二次泄露源）。
+            masked_entries = []
+            for e in entries:
+                item = e.to_dict()
+                item["message"] = _mask_text(item.get("message") or "")
+                item["details"] = _mask_details(item.get("details") or {})
+                masked_entries.append(item)
             report = {
                 "generated_at": datetime.now().isoformat(),
                 "chain_valid": self.verify_chain(),
                 "stats": self.get_stats(),
-                "entries": [e.to_dict() for e in entries]
+                "entries": masked_entries
             }
             return json.dumps(report, ensure_ascii=False, indent=2)
         elif format == "html":

@@ -17,9 +17,11 @@
 
 ★ 口径定义
   · 在册形态（in_scope）：实体类型与写法均在引擎支持范围内 → 计入召回；
-  · 未覆盖形态（declared_gap）：已知不支持或有意不拦的写法（顿号列举第 2 个起
-    的人名、固话、(at) 混淆邮箱、非 Luhn 数字串、无触发词人名）——**单独统计
+  · 未覆盖形态（declared_gap）：已知不支持或有意不拦的写法——**单独统计
     并公开**，不计入在册召回，避免用"口径"掩盖，也避免用"未覆盖"拖低指标。
+  · V3.6.21：固话 / (at) 混淆邮箱 / 非 Luhn 卡面数字 / 无触发词人名 四类已补齐，
+    原 declared_gap 用例全部转为 in_scope；本文件保留模板与统计口径不变，
+    便于与历史数值对比（下次换新种子时应作为新基线记录）。
 
 用法：
   python tests/privacy_holdout_eval.py                 # 默认＝已发布口径（种子 20261017，60 篇）
@@ -472,7 +474,10 @@ def tpl_idlist(rng, n):
 
 
 def tpl_gaps(rng, n):
-    """已知未覆盖形态：固话 / (at) 混淆邮箱 / 非 Luhn 卡号 / 无触发词人名。"""
+    """V3.6.21 起全部补齐：固话 / (at) 混淆邮箱 / 非 Luhn 卡号 / 无触发词人名。
+
+    模板名保留（历史数值可比），但四项已从 declared_gap 转为 in_scope。
+    """
     landline = f"010-{_rand_digits(rng, 8, first_nonzero=True)}"
     obf = f"{rng.choice(['zhang.wei', 'li.na', 'wang.lei'])} (at) {rng.choice(_DOMAINS)}"
     cardlike = _non_luhn_digits(rng, 16)                     # 形似卡号但 Luhn 不过
@@ -481,10 +486,39 @@ def tpl_gaps(rng, n):
             f"值班室固话 {landline}，外部联系邮箱 {obf}。\n"
             f"系统记录的卡面数字 {cardlike}（非 Luhn）。\n"
             f"本轮工作由{bare}、{gen_name(rng)}共同完成。\n")
-    items = [_item(landline, "LANDLINE", scope="declared_gap"),
-             _item(obf, "EMAIL_OBFUSCATED", scope="declared_gap"),
-             _item(cardlike, "BANKCARD_LOOKALIKE", scope="declared_gap"),
-             _item(bare, "NAME_BARE", scope="declared_gap")]
+    items = [_item(landline, "LANDLINE"),
+             _item(obf, "EMAIL_OBFUSCATED"),
+             _item(cardlike, "BANKCARD_LOOKALIKE"),
+             _item(bare, "NAME_BARE")]
+    return text, items
+
+
+def tpl_unreadable(rng, n):
+    """**不可合理识别**的对抗形态（V3.6.21 起单列，声明为未覆盖）。
+
+    为什么声明而不是追：
+      · 号码里混入 . _ ` 等杂字符（"13.70_000`11"）—— 任何"宽松到能认出来"的规则都会
+        把版本号、金额、编号一起吞掉，属于用误伤换召回，与"宁漏不误伤"的既定取舍冲突；
+      · 无分隔符固话（"01012345678"）—— 与普通长数字同形，无法与订单号/流水号区分；
+      · 字符间空格的姓名（"张 伟"）—— 中文排版里的空格与"分隔符"无法区分；
+      · 双 @ 邮箱（"zhang.wei@@example.com"）—— 形状已非法，认它等于替用户修数据；
+      · 卡号中间夹字母（"6222 0202 0011 2343 44x5"）—— 同上。
+    这五类出现在真实脏数据里，但**不应**用规则硬认；公开列在这里，避免把"未覆盖"
+    包装成"零遗漏"。
+    """
+    phone_messy = "13.70_000`11"
+    landline_bare = "01012345678"
+    name_spaced = "张 伟"
+    mail_double = "zhang.wei@@example.com"
+    card_typo = "6222 0202 0011 2343 44x5"
+    text = (f"异常登记（第 {n} 条）\n"
+            f"手写号码 {phone_messy}，值班电话 {landline_bare}。\n"
+            f"签名：{name_spaced}，邮箱 {mail_double}，卡面 {card_typo}。\n")
+    items = [_item(phone_messy, "PHONE_MESSY", scope="declared_gap"),
+             _item(landline_bare, "LANDLINE_BARE", scope="declared_gap"),
+             _item(name_spaced, "NAME_SPACED", scope="declared_gap"),
+             _item(mail_double, "EMAIL_MALFORMED", scope="declared_gap"),
+             _item(card_typo, "BANKCARD_TYPO", scope="declared_gap")]
     return text, items
 
 
@@ -558,7 +592,7 @@ def tpl_sep_variants(rng, n):
 
 TEMPLATES = [tpl_contract, tpl_payroll, tpl_ops, tpl_medical, tpl_csv, tpl_json,
              tpl_weekly, tpl_mail, tpl_idlist, tpl_gaps, tpl_onboarding, tpl_cloudcred,
-             tpl_name_variants, tpl_money_cn, tpl_sep_variants]
+             tpl_name_variants, tpl_money_cn, tpl_sep_variants, tpl_unreadable]
 
 
 def build_corpus(seed: int, docs: int):

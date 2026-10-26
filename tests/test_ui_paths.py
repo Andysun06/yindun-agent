@@ -25,7 +25,7 @@
       （data-use 不被同元素的 data-t 覆盖）/ 左列事件走容器委托，重绘后仍有效
   7e. 可读写范围（sandbox_dir）：设置项显示 / 选择目录 / 清除回默认 / 态势条同一来源 /
       四档矩阵写明"越界按档位判定并写审计"
-  8. 工作流**界面入口已移除**：DOM 里没有按钮/面板/页签，源码里没有 `workflow_*` / `wf-*` 残留
+  8. 工作流面板（V3.6.21 恢复入口）：页签 / 模板 / 启动 / 执行下一步 / 待审批 / 通过 / 导出
   9. 闪发模式：输入与主输入同步、Enter 发送、Shift+Enter 换行（不发送）
  10. 明暗切换 / 右栏折叠 → 窗口按钮归位（topbar ↔ panel ↔ head 三态）
  11. 附件「＋」：真的触发 pick_files 并有可读反馈；桥缺失时提示「桥接未就绪」
@@ -650,30 +650,52 @@ def main() -> int:
         check("清除后也有如实提示（不是静默）",
               "默认" in page.eval_on_selector_all("#toast-root .toast", "els => els.map(e => e.textContent).join(' | ')"), "")
 
-        # ── 8) 工作流界面入口已移除（引擎保留）──
+        # ── 8) 工作流面板（V3.6.21 恢复入口：模板 → 启动 → 审批 → 导出）──
         print("\n" + "=" * 78)
-        print("【8】工作流界面层已移除（DOM + 源码双断言，防止悄悄复活）")
+        print("【8】工作流面板（恢复入口后：页签 / 模板 / 启动 / 待审批 / 通过）")
         print("=" * 78)
         page.click("#set-back")
         page.wait_for_timeout(250)
-        check("DOM 里不存在工作流的按钮 / 面板 / 页签 / 模板容器",
-              page.query_selector("#btn-workflow") is None
-              and page.query_selector("#pane-workflow") is None
-              and page.query_selector('.ptab[data-pane="workflow"]') is None
-              and page.query_selector("#wf-templates") is None, "")
-        # 源码级断言（grep 语义）：界面文件里不许再出现工作流面板与桥调用的残留。
-        # 为什么是这几个词而不是裸 "workflow"：插件的 workflow_template 钩子是**内核保留能力**
-        # （引擎没删），会被裸词误伤；这里只钉"界面面板 + 桥方法"。
+        check("右栏存在「工作流」页签",
+              page.query_selector('.ptab[data-pane="workflow"]') is not None, "")
+        page.click('.ptab[data-pane="workflow"]')
+        page.wait_for_timeout(400)
+        check("工作流面板可见", page.is_visible("#pane-workflow"), "")
+        tpl_cards = page.query_selector_all("#wf-templates .wf-card")
+        check("模板列表渲染出内置模板（≥3）", len(tpl_cards) >= 3, f"cards={len(tpl_cards)}")
+        check("模板卡片带「启动」按钮",
+              page.query_selector("#wf-templates [data-wf-start]") is not None, "")
+        page.fill("#wf-path", r"D:\公司资料\合同")
+        page.click("#wf-templates [data-wf-start]")
+        page.wait_for_timeout(500)
+        check("启动后出现实例区与步骤列表",
+              page.is_visible("#wf-instance")
+              and len(page.query_selector_all("#wf-instance .wf-step")) == 3, "")
+        page.click("#wf-instance [data-wf-next]")
+        page.wait_for_timeout(500)
+        page.click("#wf-instance [data-wf-next]")
+        page.wait_for_timeout(600)
+        check("「执行下一步」推进到待审批步骤",
+              page.query_selector("#wf-instance [data-wf-approve]") is not None,
+              page.inner_text("#wf-instance"))
+        page.click("#wf-instance [data-wf-approve]")
+        page.wait_for_timeout(600)
+        text_after = page.inner_text("#wf-instance")
+        check("审批通过后该步骤变为已完成", "已完成" in text_after, text_after[:160])
+        check("实例区提供「导出执行记录」", page.query_selector("#wf-instance [data-wf-export]") is not None, "")
+        # 源码级断言：面板与桥调用必须真实存在（防止"入口又没了但测试还绿"）
         sources = {name: (WEB_DIR / name).read_text(encoding="utf-8")
                    for name in ("index.html", "app.js", "dev-mock.js")}
-        banned = ("wf-templates", "btn-workflow", "btn-wf-", "wf-format", "wf-run",
-                  "pane-workflow", "workflow_templates", "workflow_start", "workflow_status",
-                  "workflow_execute", "workflow_approve", "workflow_export")
-        leftovers = {n: [t for t in banned if t in s] for n, s in sources.items()}
-        check("index.html / app.js / dev-mock.js 里没有任何工作流界面残留引用",
-              not any(leftovers.values()), str(leftovers))
-        check("app.js 里写明「界面入口已移除、引擎保留」（以后不会被当成漏删又接回来）",
-              "引擎保留" in sources["app.js"], "")
+        expected = {
+            "index.html": ("pane-workflow", "wf-templates"),
+            "app.js": ("wf-templates", "workflow_templates",
+                       "workflow_start", "workflow_status", "workflow_approve", "workflow_export"),
+            "dev-mock.js": ("workflow_templates", "workflow_start", "workflow_status",
+                            "workflow_approve", "workflow_export"),
+        }
+        missing = {n: [t for t in want if t not in sources[n]] for n, want in expected.items()}
+        check("界面源码保留工作流面板与全部桥调用（入口不能被悄悄删掉）",
+              not any(missing.values()), str(missing))
 
         # ── 9) 闪发模式输入同步 ──
         print("\n" + "=" * 78)
@@ -2645,7 +2667,7 @@ def main() -> int:
         return 1
     print("✅ 界面关键路径全部通过（权限 / 胶囊 / 思考紧凑形态 / 插件 / 模型接入重做 / 模型选择器两级 / "
           "上下文浮层 / 窗口四按钮 / 可读写范围 / 模型可用性诚实化 / 闪发 / 主题与布局 / 附件＋ / "
-          "Markdown 表格 / 等待态与空回复兜底 / 工作流界面已移除 / 暗色滚动条）")
+          "Markdown 表格 / 等待态与空回复兜底 / 工作流面板 / 暗色滚动条）")
     return 0
 
 

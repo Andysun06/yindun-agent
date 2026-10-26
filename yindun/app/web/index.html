@@ -458,6 +458,7 @@
       <div class="panel__inner">
         <div class="panel__tabs">
           <button class="ptab" data-pane="audit">审计</button>
+          <button class="ptab" data-pane="workflow">工作流</button>
           <span class="panel__spacer"></span>
           <span class="panel__actions" id="panel-actions"></span>
           <button class="btn btn--ghost" id="btn-panel-collapse" title="收起面板">
@@ -493,6 +494,20 @@
       </div>
 
       <div class="audit-list" id="audit-list"></div>
+          </section>
+
+          <!-- ── 工作流面板（V3.6.21 恢复入口）：线性流程 + 步骤级人工审批 ── -->
+          <section class="pane" id="pane-workflow">
+            <div class="wf-head">
+              <div class="wf-head__title">协同工作流</div>
+              <div class="wf-head__note">线性流程（无分支 / 回退 / 单步重跑）；写盘、删除、执行与导出步骤由内核强制人工审批。</div>
+            </div>
+            <div class="field">
+              <label class="field__label" for="wf-path">数据目录（留空＝当前可读写范围）</label>
+              <input type="text" id="wf-path" placeholder="例如 D:\\公司资料\\合同">
+            </div>
+            <div class="wf-templates" id="wf-templates"></div>
+            <div class="wf-instance" id="wf-instance" hidden></div>
           </section>
 
         </div>

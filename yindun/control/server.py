@@ -5,13 +5,15 @@
     python -m yindun.control.server --port 8787          # 默认只监听 127.0.0.1
     python -m yindun.control.server --host 0.0.0.0 ...   # 显式对外（务必自行加 TLS 反代）
 
-安全姿态（演示级原型，如实标注）：
+安全姿态（V3.6.21 起：可试点的最小集，仍如实标注边界）：
 - **默认只听回环**：`--host` 对外需要显式指定，且启动时打印风险提示。
-- **令牌鉴权**：管理端与端点各用令牌，服务端只存哈希、比较用 `secrets.compare_digest`。
+- **令牌鉴权 + 三角色 RBAC**：admin（全部）/ operator（端点与策略）/ viewer（只读），
+  命名令牌只存哈希、明文只下发一次；管理令牌仍是引导凭据。服务端比较用 `secrets.compare_digest`。
 - **请求体上限** 2 MB、超限 413；JSON 解析失败 400；不做静默截断。
 - **静态资源**只从控制台目录取，扩展名白名单 + `realpath/commonpath` 防目录穿越。
-- 速率限制与 TLS 已实现但**默认关闭**（`--rate-limit`、`--tls-cert/--tls-key`）；
-  仍不做多租户 RBAC——对外服务前必须补齐账号/RBAC、证书轮换与来源限制（文档里写明，不含糊）。
+- **速率限制默认开启**（600 次/分钟/IP，`--no-rate-limit` 可关）；
+  **TLS 可一键自签**（`--tls-auto`，证书落数据目录，SAN 含 localhost/127.0.0.1/本机 IP）。
+- 仍未做多租户隔离与证书轮换——多组织共用一套控制面之前必须补齐（文档里写明，不含糊）。
 """
 from __future__ import annotations
 
@@ -115,19 +117,32 @@ class ControlServer:
         return ""
 
     def require_admin(self, headers: Dict[str, str]) -> None:
-        if not self.store.verify_admin(self._bearer(headers.get("authorization", ""))):
+        # V3.6.21：引导管理令牌与命名 admin 令牌等价（命名令牌可吊销、可区分到人）
+        if self.store.role_of(self._bearer(headers.get("authorization", ""))) != "admin":
             raise ApiError(401, "管理令牌无效")
 
+    def require_write(self, headers: Dict[str, str], allow=("admin", "operator")) -> str:
+        """**写**操作鉴权（V3.6.21 RBAC）：admin / operator 可写；viewer 只能读。
+
+        operator 是"值班运维"角色：能登记端点、下发策略、生成配对码，
+        但**不能**管理令牌、备份或自检（那些仍只认 admin）。控制面被攻破时，
+        攻击者拿到的写权限也被限制在"把端点管得更严"的范围内（策略只能收紧）。
+        """
+        role = self.store.role_of(self._bearer(headers.get("authorization", "")))
+        if role in allow:
+            return role
+        raise ApiError(401, f"需要 {'/'.join(allow)} 角色令牌（当前：{role or '无效令牌'}）")
+
     def require_read(self, headers: Dict[str, str]) -> None:
-        """**读**操作鉴权：管理令牌或只读令牌都行（V3.6.2，C-14 多角色）。
+        """**读**操作鉴权：任何有效角色都可读（V3.6.21：admin/operator/viewer 命名令牌 + 引导令牌）。
 
         为什么要有只读令牌：巡检 / 看板 / 对接监控系统只需要读；给它们管理令牌等于把
-        "下发策略、登记端点"的权限一起给出去。**写操作一律仍只认管理令牌。**
+        "下发策略、登记端点"的权限一起给出去。写操作走 `require_write`（admin/operator）。
         """
-        token = self._bearer(headers.get("authorization", ""))
-        if self.store.verify_admin(token) or self.store.verify_viewer(token):
+        role = self.store.role_of(self._bearer(headers.get("authorization", "")))
+        if role:
             return
-        raise ApiError(401, "令牌无效（读操作可用管理令牌或只读令牌）")
+        raise ApiError(401, "令牌无效（读操作可用管理/operator/只读令牌）")
 
     def require_endpoint(self, headers: Dict[str, str], endpoint_id: str) -> None:
         if not self.store.verify_endpoint(endpoint_id, self._bearer(headers.get("authorization", ""))):
@@ -164,7 +179,8 @@ class ControlServer:
             # 只读令牌可登录控制台（只读），策略/配对码/备份等写操作仍只认管理令牌。
             self.require_read(headers)
             token = self._bearer(headers.get("authorization", ""))
-            return 200, {"role": "admin" if self.store.verify_admin(token) else "viewer"}
+            role = self.store.role_of(token) or "viewer"
+            return 200, {"role": role}
         if method == "GET" and path == "/api/v1/endpoints":
             self.require_read(headers)
             self._check_silent_endpoints()
@@ -195,6 +211,32 @@ class ControlServer:
             return 200, {"ok": True, "token": token,
                          "note": "只读令牌：可看态势/台账/资产/统计，不能下发策略或登记端点；"
                                  "同一份明文也在 <数据目录>/viewer_token.txt"}
+        # ── 命名角色令牌管理（V3.6.21 RBAC，仅 admin）──
+        if method == "GET" and path == "/api/v1/tokens":
+            self.require_admin(headers)
+            return 200, {"tokens": self.store.list_tokens(),
+                         "roles": {"admin": "全部操作（含令牌管理）",
+                                   "operator": "端点登记 / 策略下发 / 配对码（不含令牌管理）",
+                                   "viewer": "只读（态势 / 台账 / 资产 / 统计）"}}
+        if method == "POST" and path == "/api/v1/tokens":
+            self.require_admin(headers)
+            payload = _json_body(body) if body else {}
+            role = str(payload.get("role") or "viewer")
+            try:
+                token_id, token = self.store.create_token(str(payload.get("label") or ""), role)
+            except ValueError as exc:
+                return 400, {"error": str(exc)}
+            return 200, {"ok": True, "id": token_id, "role": role, "token": token,
+                         "note": "明文只显示这一次；库内只存哈希。请立即保存到密码管理器。"}
+        if method == "DELETE" and path.startswith("/api/v1/tokens/"):
+            self.require_admin(headers)
+            try:
+                token_id = int(path.rsplit("/", 1)[-1])
+            except ValueError:
+                return 400, {"error": "令牌 id 必须是整数"}
+            ok = self.store.revoke_token(token_id)
+            return (200 if ok else 404), ({"ok": True, "id": token_id}
+                                          if ok else {"error": "令牌不存在"})
         if method == "POST" and path == "/api/v1/backup":
             self.require_admin(headers)
             payload = _json_body(body) if body else {}
@@ -242,7 +284,7 @@ class ControlServer:
             if not ok:
                 raise ApiError(403, f"配对码不可用：{reason}")
         else:
-            self.require_admin(headers)          # 无配对码时必须持管理令牌
+            self.require_write(headers)           # 无配对码时须持 admin/operator 令牌
         token, policy_key = self.store.enroll(name, endpoint_id)
         return 200, {"endpoint_id": endpoint_id, "token": token, "policy_key": policy_key,
                      "note": "令牌与策略签名密钥只在此处下发一次，请写入端点配置"}
@@ -252,7 +294,7 @@ class ControlServer:
 
         传 `code` 即自定义码（口头/手写转述用），校验与占用检查在 store 层。
         """
-        self.require_admin(headers)
+        self.require_write(headers)
         data = _json_body(body) if body else {}
         result = self.store.create_pair_code(
             ttl_minutes=int(data.get("ttl_minutes") or 30),
@@ -279,9 +321,9 @@ class ControlServer:
     def h_listen(self, headers: Dict[str, str], body: bytes) -> Tuple[int, Any]:
         """切换监听地址（仅本机 ↔ 允许局域网）。
 
-        这是**管理动作**（改的是谁能访问控制面），所以只要管理令牌、不要只读令牌。
+        这是**管理动作**（改的是谁能访问控制面），admin/operator 均可，viewer 不行。
         """
-        self.require_admin(headers)
+        self.require_write(headers)
         data = _json_body(body) if body else {}
         result = rebind_listen(str(data.get("host") or ""))
         if not result.get("ok"):
@@ -761,6 +803,64 @@ def rebind_listen(host: str) -> Dict[str, Any]:
     return {"ok": True, "changed": True, **lan_access_info()}
 
 
+def ensure_self_signed_cert(data_dir: Path, host: str = "") -> Tuple[str, str]:
+    """生成（或复用）自签证书，返回 (cert_path, key_path)。
+
+    V3.6.21：让"对外监听必须上 TLS"从一句劝告变成一条命令（`--tls-auto`）。
+    SAN 覆盖 localhost / 127.0.0.1 / ::1 与当前监听地址；证书有效期 825 天。
+    依赖 cryptography（已在依赖树里，由 chromadb 引入）；缺失时抛出明确错误，
+    绝不静默降级成明文 HTTP。
+    """
+    cert_path = Path(data_dir) / "control_tls_cert.pem"
+    key_path = Path(data_dir) / "control_tls_key.pem"
+    if cert_path.exists() and key_path.exists():
+        return str(cert_path), str(key_path)
+    try:
+        from datetime import datetime, timedelta, timezone
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+    except Exception as exc:      # pragma: no cover - 依赖缺失时的明确报错
+        raise RuntimeError(
+            "自动 TLS 需要 cryptography（pip install cryptography）；"
+            f"或改用 --tls-cert/--tls-key 提供证书。原因：{exc}")
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, "Yindun Control (self-signed)"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Yindun"),
+    ])
+    san = [x509.DNSName("localhost"), x509.IPAddress(__import__("ipaddress").ip_address("127.0.0.1")),
+           x509.IPAddress(__import__("ipaddress").ip_address("::1"))]
+    if host and host not in ("0.0.0.0", "::", "localhost"):
+        try:
+            san.append(x509.IPAddress(__import__("ipaddress").ip_address(host)))
+        except ValueError:
+            san.append(x509.DNSName(host))
+    now = datetime.now(timezone.utc)
+    cert = (x509.CertificateBuilder()
+            .subject_name(subject).issuer_name(issuer)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(minutes=5))
+            .not_valid_after(now + timedelta(days=825))
+            .add_extension(x509.SubjectAlternativeName(san), critical=False)
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .sign(key, hashes.SHA256()))
+    Path(data_dir).mkdir(parents=True, exist_ok=True)
+    key_path.write_bytes(key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption()))
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    try:                        # 私钥只给当前用户读（Windows 上 chmod 语义有限，尽力而为）
+        key_path.chmod(0o600)
+    except Exception:
+        pass
+    return str(cert_path), str(key_path)
+
+
 def serve(host: str = "127.0.0.1", port: int = 8787, store: Optional[ControlStore] = None,
           verbose: bool = True, rate_limit_per_min: int = 0,
           tls_cert: str = "", tls_key: str = "") -> ThreadingHTTPServer:
@@ -821,11 +921,15 @@ def _run(argv: Optional[list] = None) -> int:
     parser.add_argument("--log-dir", default="", help="日志落点（默认 <APP_ROOT>/logs）")
     parser.add_argument("--log-capture-prints", action="store_true",
                         help="把散装 print 也收进日志（默认不采：避免默认多一条明文落盘面）")
-    # ── 生产化开关（V3.6.2，C-14）：默认值都保持"演示友好"，一旦对外监听就显式打开 ──
-    parser.add_argument("--rate-limit", type=int, default=0,
-                        help="每客户端 IP 每分钟请求上限（0=关闭；对外监听建议 600 左右）")
+    # ── 生产化开关（V3.6.21）：限速默认开启；TLS 支持一键自签 ──
+    parser.add_argument("--rate-limit", type=int, default=600,
+                        help="每客户端 IP 每分钟请求上限（默认 600；0=关闭）")
+    parser.add_argument("--no-rate-limit", dest="rate_limit", action="store_const", const=0,
+                        help="等价于 --rate-limit 0：关闭限速（仅限完全可信的本机调试）")
     parser.add_argument("--tls-cert", default="", help="TLS 证书路径（与 --tls-key 同时给才生效）")
     parser.add_argument("--tls-key", default="", help="TLS 私钥路径")
+    parser.add_argument("--tls-auto", action="store_true",
+                        help="自动生成自签证书并启用 TLS（证书落在数据目录，含 localhost 与本机 IP）")
     parser.add_argument("--backup-dir", default="", help="启动时备份数据库到该目录（顺带清理旧备份）")
     parser.add_argument("--backup-keep", type=int, default=5, help="保留最近几份备份（默认 5）")
     parser.add_argument("--alert-webhook", default="",
@@ -887,6 +991,15 @@ def _run(argv: Optional[list] = None) -> int:
                        "请在任务管理器里结束旧的「隐盾控制端…便携版.exe」进程后重新双击。\n\n"
                        "（这样做是为了避免两个实例抢同一个端口，让你看到旧版本的界面）")
         return 3
+    # V3.6.21：`--tls-auto` 一键自签（对外监听场景的最低要求，不再是"建议"）
+    if args.tls_auto and not (args.tls_cert and args.tls_key):
+        try:
+            args.tls_cert, args.tls_key = ensure_self_signed_cert(store.dir, args.host)
+            log.info("已启用自动 TLS（自签证书）：%s", args.tls_cert)
+        except Exception as exc:
+            desktop.notify("TLS 启用失败", f"--tls-auto 生成证书失败：{exc}\n\n"
+                                          "请改用 --tls-cert/--tls-key 提供证书。")
+            return 4
     httpd = serve(args.host, args.port, store, verbose=not args.quiet,
                   rate_limit_per_min=max(0, int(args.rate_limit)),
                   tls_cert=args.tls_cert, tls_key=args.tls_key)

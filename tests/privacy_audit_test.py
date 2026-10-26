@@ -14,6 +14,7 @@ sys.stdout.reconfigure(encoding='utf-8')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 仓库根目录
 
 from yindun.core.privacy_engine import PrivacyEngine
+from yindun.core.audit_log import AuditLog
 
 engine = PrivacyEngine()
 
@@ -48,6 +49,15 @@ CASES = [
     # 邮箱
     ("邮箱", "标准", "邮箱 zhang.wei@example.com", "zhang.wei@example.com"),
     ("邮箱", "中文域名", "邮箱 li_si@公司.cn", "li_si@公司.cn"),
+    ("邮箱", "混淆(at)", "邮箱 zhang.wei (at) example.com", "zhang.wei (at) example.com"),
+
+    # 固定电话（V3.6.21 留出集缺口补齐：固话此前属已声明未覆盖）
+    ("固话", "区号-号码", "值班室固话 010-12345678", "010-12345678"),
+    ("固话", "括号区号", "门诊电话 (0755)12345678", "(0755)12345678"),
+    ("固话", "带分机", "总机 0571-88886666 转 203", "0571-88886666"),
+
+    # 卡面数字（非 Luhn，但上下文明确是卡）
+    ("银行卡", "非Luhn卡面数字", "系统记录的卡面数字 6222020200112343445（非 Luhn）", "6222020200112343445"),
 
     # 网络标识
     ("网络", "IPv4", "服务器 192.168.1.100 已宕机", "192.168.1.100"),
@@ -115,7 +125,6 @@ NEGATIVE_CASES = [
     "时间 14:30:25",
     "百分比 99.9%",
     "完成度 85%",
-    "座机号 010-12345678",
     "分机 8021",
     "代码片段 for i in range(10): print(i)",
     "普通路径 D:\\project\\src\\main.py",
@@ -271,7 +280,32 @@ for fp in SCAN_FILES:
                     return [_strip_hash(i) for i in o]
                 return o
 
-            content = json.dumps(_strip_hash(_obj), ensure_ascii=False)
+            # ★ V3.6.21：识别规则收紧（固话/混淆邮箱/卡面数字）后，**规则收紧前写入**的
+            #   历史条目里可能含有新规则才覆盖的值。审计链是 HMAC 不可改写的，历史条目
+            #   无法回溯擦除；导出文件自 V3.6.21 起也走展示层掩码。这里只对"收紧之后"
+            #   写入的条目做明文扫描，同时用文件末尾的【新写入探针】保证当前版本写入的
+            #   审计不含明文——避免用"历史豁免"掩盖新泄露。
+            MASKING_RULES_SINCE = "2026-10-24T18:00:00"
+
+            def _drop_old_entries(o):
+                if isinstance(o, dict):
+                    out = {}
+                    for k, v in o.items():
+                        if k == "entries" and isinstance(v, list):
+                            out[k] = [e for e in v
+                                      if not isinstance(e, dict)
+                                      or str(e.get("timestamp", "")) >= MASKING_RULES_SINCE]
+                        else:
+                            out[k] = _drop_old_entries(v)
+                    return out
+                if isinstance(o, list):
+                    # audit_chain.json 是条目数组
+                    if o and all(isinstance(i, dict) and "timestamp" in i for i in o):
+                        return [e for e in o if str(e.get("timestamp", "")) >= MASKING_RULES_SINCE]
+                    return [_drop_old_entries(i) for i in o]
+                return o
+
+            content = json.dumps(_drop_old_entries(_strip_hash(_obj)), ensure_ascii=False)
         except Exception:
             pass
 
@@ -296,7 +330,7 @@ for fp in SCAN_FILES:
             if not val or len(val) <= 3:
                 continue
             # 哈希链误报守卫：数字类实体若嵌在 ≥32 位 hex token 内则跳过
-            if key in ("BANKCARD", "IDCARD", "IDCARD15", "PHONE", "CREDIT_CODE") \
+            if key in ("BANKCARD", "BANKCARD_LOOKALIKE", "IDCARD", "IDCARD15", "PHONE", "LANDLINE", "CREDIT_CODE") \
                     and _is_hash_embedded(content, m.start(), m.end()):
                 continue
             # 0x 前缀的十六进制串（Windows 句柄 / 对象地址 / 指针）不是统一社会信用代码：
@@ -321,6 +355,19 @@ for fp in SCAN_FILES:
                 continue
             if key == "BANKCARD" and not PrivacyEngine._luhn_valid(val):
                 continue
+            # 新三类（V3.6.21）与引擎同口径精验，避免整文件扫描把普通长数字扫成泄露
+            if key == "LANDLINE" and not PrivacyEngine._is_valid_landline(val):
+                continue
+            if key == "EMAIL_OBFUSCATED" and not PrivacyEngine._is_valid_obfuscated_email(val):
+                continue
+            if key == "BANKCARD_LOOKALIKE":
+                _digits = PrivacyEngine._normalize_digits(val)
+                if not (16 <= len(_digits) <= 19):
+                    continue
+                if not PrivacyEngine._luhn_valid(_digits):
+                    _pre = content[max(0, m.start() - 24):m.start()]
+                    if not any(w in _pre for w in PrivacyEngine._CARD_CONTEXT_WORDS):
+                        continue
             if key == "IP":
                 # ★3.2 回环地址白名单：排除 127.0.0.0/8、0.0.0.0（消除误报，不改引擎规则）
                 lead = val.split(".")[0]
@@ -418,6 +465,38 @@ for _name, _text in _ROUNDTRIP_CASES:
             print(f"  ❌ {_name}：脱敏文本出现截断占位符残片：{_masked!r}")
             break
 print(f"  往返逐字一致：{'✅ 全部通过' if placeholder_fail == 0 else f'❌ {placeholder_fail} 例失败'}")
+
+# ── 新写入探针（V3.6.21）：历史条目豁免不能掩盖"当前版本仍在明文落盘" ──
+# 写一条含固话 / 混淆邮箱 / 非 Luhn 卡面数字的审计，然后从磁盘读回，
+# 断言落盘条目里这三类值都已被掩码（当前规则的写入路径必须是干净的）。
+print("\n" + "=" * 78)
+print("【新写入审计探针】（当前版本写入必须已掩码，防历史豁免掩盖新泄露）")
+print("=" * 78)
+_probe_values = {
+    "固话": "010-12345678",
+    "混淆邮箱": "zhang.wei (at) example.com",
+    "卡面数字": "6222020200112233445",
+}
+_probe_line = "探针：固话 010-12345678，邮箱 zhang.wei (at) example.com，卡面数字 6222020200112233445"
+_probe_log = AuditLog()
+_probe_log.log_llm_output(_probe_line, preview=_probe_line)
+_probe_ok = True
+_probe_chain = os.path.join(BASE, "audit_logs", "audit_chain.json")
+if os.path.exists(_probe_chain):
+    try:
+        with open(_probe_chain, "r", encoding="utf-8") as f:
+            _raw = f.read()
+        # 只检查探针所在的那条（探针文本是唯一的），避免历史条目干扰
+        _idx = _raw.rfind("探针：")
+        _tail = _raw[_idx:_idx + 800] if _idx >= 0 else ""
+        for _label, _val in _probe_values.items():
+            if _val in _tail:
+                _probe_ok = False
+                print(f"  ❌ 探针落盘仍是明文：{_label} {_val}")
+        if _probe_ok:
+            print("  ✅ 探针落盘已掩码（固话/混淆邮箱/卡面数字均无明文）")
+    except Exception as _exc:
+        print(f"  ⚠️ 探针读取失败：{_exc}")
 
 print("\n" + "=" * 78)
 print("审计结束")

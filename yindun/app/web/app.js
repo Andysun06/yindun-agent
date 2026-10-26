@@ -2462,7 +2462,131 @@
       renderProv(await call("model_catalog"));
     },
     audit: async () => { renderAudit(await call("audit_snapshot", 300)); },
+    workflow: async () => { await renderWorkflowTemplates(); wfPoll(true); },
   };
+
+  /* ── 工作流面板（V3.6.21 恢复入口）─────────────────────────────
+     只暴露引擎真实有的能力：模板列表 / 启动 / 下一步 / 步骤审批 / 导出。
+     不提供分支、回退、单步重跑——引擎不支持，界面不画这种按钮。 */
+  const wfState = { instanceId: null, status: null, timer: null };
+
+  function wfStatusLabel(s) {
+    return ({
+      pending: "待执行", running: "执行中", completed: "已完成",
+      waiting_approval: "待审批", approved: "已批准", rejected: "已驳回",
+      failed: "失败", skipped: "跳过",
+    })[s] || String(s || "—");
+  }
+
+  function wfStatusClass(s) {
+    if (s === "completed") return "wf-step__status--done";
+    if (s === "waiting_approval") return "wf-step__status--waiting";
+    if (s === "failed" || s === "rejected") return "wf-step__status--failed";
+    return "";
+  }
+
+  async function renderWorkflowTemplates() {
+    const box = $("wf-templates");
+    if (!box) return;
+    const list = await call("workflow_templates");
+    const tpls = Array.isArray(list) ? list : [];
+    box.innerHTML = tpls.length
+      ? tpls.map((t) => `
+        <div class="wf-card">
+          <div class="wf-card__name">${esc(t.name || t.id)}</div>
+          <div class="wf-card__desc">${esc(t.description || "")}</div>
+          <div class="wf-card__foot">
+            <span class="wf-card__meta">${Number(t.steps) || 0} 步 · ${t.source === "plugin" ? "插件提供" : "内核内置"}</span>
+            <button class="btn btn--primary" data-wf-start="${esc(t.id)}" type="button">启动</button>
+          </div>
+        </div>`).join("")
+      : `<div class="wf-card__desc">没有可用的工作流模板（内核模板缺失或插件未启用）。</div>`;
+  }
+
+  function wfRender() {
+    const box = $("wf-instance");
+    if (!box) return;
+    const st = wfState.status;
+    if (!st || !wfState.instanceId) { box.hidden = true; box.innerHTML = ""; return; }
+    const steps = st.steps || [];
+    const done = steps.filter((s) => s.status === "completed" || s.status === "skipped").length;
+    const waiting = steps.find((s) => s.status === "waiting_approval");
+    const pending = steps.find((s) => s.status === "pending" || s.status === "approved");
+    const finished = !!st.is_complete;
+    const failed = !!st.has_failed;
+    box.hidden = false;
+    box.innerHTML = `
+      <div class="wf-instance__head">
+        <span class="wf-instance__name">${esc(st.template_name || "工作流实例")}</span>
+        <span class="wf-instance__progress">${done}/${steps.length}${finished ? " · 已完成" : failed ? " · 失败" : ""}</span>
+      </div>
+      <div class="wf-steps">
+        ${steps.map((s) => `<div class="wf-step">
+          <span class="wf-step__name">${esc(s.name)}</span>
+          <span class="wf-step__status ${wfStatusClass(s.status)}">${wfStatusLabel(s.status)}</span>
+        </div>`).join("")}
+      </div>
+      <div class="wf-actions">
+        ${waiting ? `<button class="btn btn--primary" data-wf-approve="1" type="button">通过：${esc(waiting.name)}</button>
+                     <button class="btn btn--danger" data-wf-reject="1" type="button">驳回</button>` : ""}
+        ${!waiting && pending && !finished ? `<button class="btn" data-wf-next="1" type="button">执行下一步：${esc(pending.name)}</button>` : ""}
+        ${done > 0 ? `<button class="btn" data-wf-export="1" type="button">导出执行记录</button>` : ""}
+      </div>`;
+  }
+
+  async function wfRefresh() {
+    if (!wfState.instanceId) return;
+    const st = await call("workflow_status", wfState.instanceId);
+    if (st && !st.error) { wfState.status = st; wfRender(); }
+  }
+
+  function wfPoll(immediate) {
+    if (wfState.timer) { clearInterval(wfState.timer); wfState.timer = null; }
+    if (immediate) wfRefresh();
+    // 面板打开期间每 2 秒刷新一次；实例完成后停表，避免空转
+    wfState.timer = setInterval(() => {
+      if (!wfState.instanceId) return;
+      if (state.pane !== "workflow") { clearInterval(wfState.timer); wfState.timer = null; return; }
+      if (wfState.status && (wfState.status.is_complete || wfState.status.has_failed)) return;
+      wfRefresh();
+    }, 2000);
+  }
+
+  async function wfStart(templateId) {
+    const path = ($("wf-path") && $("wf-path").value.trim()) || "";
+    const res = await call("workflow_start", templateId, path);
+    if (!res || res.ok === false || !res.instance_id) {
+      toast("启动失败：" + ((res && res.error) || "未知原因"));
+      return;
+    }
+    wfState.instanceId = res.instance_id;
+    wfState.status = res.status || null;
+    wfRender();
+    wfPoll(false);
+    wfRefresh();
+  }
+
+  async function wfNext() {
+    if (!wfState.instanceId) return;
+    const res = await call("workflow_execute", wfState.instanceId);
+    if (res && res.ok === false) toast("无法继续：" + (res.error || "未知原因"));
+    wfRefresh();
+  }
+
+  async function wfApprove(approved) {
+    if (!wfState.instanceId || !wfState.status) return;
+    const waiting = (wfState.status.steps || []).find((s) => s.status === "waiting_approval");
+    if (!waiting) return;
+    const res = await call("workflow_approve", wfState.instanceId, waiting.step_id, !!approved);
+    if (res && res.ok === false) toast("审批失败：" + (res.error || "未知原因"));
+    wfRefresh();
+  }
+
+  async function wfExport() {
+    if (!wfState.instanceId) return;
+    const res = await call("workflow_export", wfState.instanceId, "md");
+    toast(res && res.ok ? `已导出：${res.path}` : `导出失败：${(res && res.error) || "未知原因"}`);
+  }
 
   /* ── 三栏宽度（可拖拽调整 + 折叠，状态持久化）─────────
      单一出口原则：**宽度只由 JS 写进 .app 的 inline grid-template-columns**，
@@ -3745,6 +3869,20 @@
     document.querySelectorAll(".ptab").forEach((tab) => {
       tab.onclick = () => openPane(tab.dataset.pane);
     });
+    // 工作流面板：事件委托（面板内容每次重绘，逐按钮绑定会丢）
+    const wfRoot = $("panel");
+    if (wfRoot) {
+      wfRoot.addEventListener("click", (ev) => {
+        const t = ev.target.closest(
+          "[data-wf-start],[data-wf-next],[data-wf-approve],[data-wf-reject],[data-wf-export]");
+        if (!t) return;
+        if (t.dataset.wfStart) wfStart(t.dataset.wfStart);
+        else if (t.dataset.wfNext) wfNext();
+        else if (t.dataset.wfApprove) wfApprove(true);
+        else if (t.dataset.wfReject) wfApprove(false);
+        else if (t.dataset.wfExport) wfExport();
+      });
+    }
     $("btn-theme").onclick = toggleTheme;
     $("btn-allow").onclick = async () => { hideApproval(); await call("approve", true); };
     $("btn-deny").onclick = async () => { hideApproval(); await call("approve", false); };

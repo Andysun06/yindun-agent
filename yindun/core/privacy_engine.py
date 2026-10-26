@@ -134,6 +134,9 @@ class PrivacyEngine:
         "JWT":         "绝密",   # JWT token
         "APIKEY":   "机密",   # API密钥
         "PHONE":    "机密",   # 手机号
+        "LANDLINE": "机密",   # 固定电话（区号+号码，含分机）
+        "EMAIL_OBFUSCATED": "内部",   # (at)/(dot) 混淆写法邮箱
+        "BANKCARD_LOOKALIKE": "绝密",   # 卡面数字（Luhn 不通过但上下文明确是卡）
         "MEDICAL_RECORD":    "机密",   # 病历号
         "MEDICAL_INSURANCE": "机密",   # 医保卡号
         "BEARER":       "机密",   # Bearer token（API 凭证）
@@ -168,9 +171,9 @@ class PrivacyEngine:
     # 业务分组（按数据所属业务域归类，与风险分级是正交维度）
     # - 分级回答"多敏感"，分组回答"属于哪类业务数据"
     ENTITY_GROUPS = {
-        "PII":   ["PHONE", "EMAIL", "IDCARD", "IDCARD15", "PASSPORT", "PLATE", "IPV6", "MAC", "NAME", "ADDRESS", "WECHAT", "IP"],  # WECHAT 改归 PII（个人社交账号）；IP 属个人/设备网络标识
+        "PII":   ["PHONE", "LANDLINE", "EMAIL", "EMAIL_OBFUSCATED", "IDCARD", "IDCARD15", "PASSPORT", "PLATE", "IPV6", "MAC", "NAME", "ADDRESS", "WECHAT", "IP"],  # WECHAT 改归 PII（个人社交账号）；IP 属个人/设备网络标识
         "PHI":   ["MEDICAL_RECORD", "MEDICAL_INSURANCE"],
-        "财务":  ["BANKCARD", "CREDIT_CODE", "MONEY"],
+        "财务":  ["BANKCARD", "BANKCARD_LOOKALIKE", "CREDIT_CODE", "MONEY"],
         "密钥":  ["APIKEY", "PRIVATE_KEY", "JWT", "CLOUD_KEY", "PASSWORD", "CONN_STRING"],   # 高危密钥凭证
         "Token": ["BEARER", "ACCESS_TOKEN"],
         "路径":  ["FILE_PATH", "SENSITIVE_PATH"],
@@ -222,6 +225,13 @@ class PrivacyEngine:
                  r"|(?<![\d.])((?:1|１)[3-9３-９][\d０-９]\.\d{4}\.\d{4})(?![\d.])",
         # (A5) EMAIL 支持中文/国际化域名（如 li_si@公司.cn）
         "EMAIL": r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]*[a-zA-Z\u4e00-\u9fa5]{2,}",
+        # (留出集 3 类缺口修复) 混淆写法邮箱：name (at) domain / name[at]domain / name at domain。
+        #   命中后由 _validate_entity 复核"本地部分 + 域名含点 + TLD 合法"，避免把
+        #   "meet at example.com" 这类英文句子误判（本地部分须含 ._%+- 或数字）。
+        "EMAIL_OBFUSCATED": r"(?<![A-Za-z0-9._%+-])([A-Za-z0-9._%+-]{2,})(?:\s*[\(\[]\s*(?:at|AT|At)\s*[\)\]]|\s+at\s+)\s*([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,24})(?![A-Za-z0-9])",
+        # (留出集 3 类缺口修复) 固定电话：区号+号码（010-12345678 / (0571)88888888 / 0755 12345678），
+        #   可带分机（-1234 / 转1234）。必须带分隔符，避免把 0 开头的普通长数字串整条吞掉。
+        "LANDLINE": r"(?<![\d])(?:\(0\d{2,3}\)[-\s]?|0\d{2,3}[-\s－—])\d{7,8}(?:[-转]\d{1,5})?(?![\d])",
 
         # === 新增 6 类（正则） ===
         # 银行卡号：16-19 位连续数字，且以常见银行前缀开头
@@ -243,6 +253,10 @@ class PrivacyEngine:
         #      再过不了 Luhn 而被整条丢弃；更坏的情况是被后续 PHONE 规则吃掉尾段，
         #      造成"部分掩码 + 前段明文残留"。具体前缀分支排在通用分支之前，避免遮蔽。
         #   全部命中仍须通过 Luhn 精验，误报面不变。
+        # (留出集缺口修复) 卡面数字：16-19 位连续数字，Luhn 通过（真卡）或**上下文明确是卡**
+        #   （卡号/卡面/银行卡…）时脱敏——覆盖"非 Luhn 的卡面数字"，同时靠上下文闸门
+        #   避免把订单号/流水号这类普通长数字误伤。命中区间整段替换。
+        "BANKCARD_LOOKALIKE": r"(?<![\d])\d{16,19}(?![\d])",
 
         # === 新增证件/组织（A 组补充 + B 组新增） ===
         # (B1) 15 位一代身份证（含日期段校验，非裸 \d{15}）；命中后由
@@ -448,6 +462,37 @@ class PrivacyEngine:
         return len(digits) == 11 and digits[0] == "1" and digits[1] in "3456789"
 
     @staticmethod
+    def _is_valid_landline(raw: str) -> bool:
+        """LANDLINE 精验：区号 0[1-9]x(2~3 位) + 号码 7~8 位，合计 10~12 位（不含分机）。
+
+        分机（-1234/转1234）不参与位数判断；号码不能全同（挡 0-11111111 这类占位）。
+        """
+        text = raw.strip()
+        m = re.match(r"^\(?(0\d{2,3})\)?[-\s－—]?(\d{7,8})(?:[-转]\d{1,5})?$", text)
+        if not m:
+            return False
+        number = m.group(2)
+        return len(set(number)) > 1
+
+    @staticmethod
+    def _is_valid_obfuscated_email(raw: str) -> bool:
+        """EMAIL_OBFUSCATED 精验：本地部分不能是纯英文单词（挡 "meet at example.com"）。
+
+        本地部分须含 . _ % + - 或数字——混淆邮箱的真实写法几乎都带这些字符；
+        域名须含点且 TLD 为 2~24 位字母。
+        """
+        text = raw.strip()
+        m = re.match(
+            r"^([A-Za-z0-9._%+-]{2,})(?:\s*[\(\[]\s*(?:at|AT|At)\s*[\)\]]|\s+at\s+)"
+            r"\s*([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,24})$", text)
+        if not m:
+            return False
+        local = m.group(1)
+        if not re.search(r"[._%+\-0-9]", local):
+            return False
+        return True
+
+    @staticmethod
     def _luhn_valid(number: str) -> bool:
         """Luhn 校验（ISO/IEC 7812）：银行卡号最后一位为校验位，用于过滤随机数字串。"""
         digits = PrivacyEngine._normalize_digits(number)
@@ -495,6 +540,23 @@ class PrivacyEngine:
         """
         if key == "PHONE":
             return PrivacyEngine._is_valid_phone(match)
+        if key == "LANDLINE":
+            return PrivacyEngine._is_valid_landline(match)
+        if key == "EMAIL_OBFUSCATED":
+            return PrivacyEngine._is_valid_obfuscated_email(match)
+        if key == "BANKCARD_LOOKALIKE":
+            # 16-19 位连续数字：Luhn 通过即真卡；不通过则须"上下文明确是卡"才认领，
+            # 避免把订单号/流水号/快递单号这类普通长数字串误伤。
+            digits = PrivacyEngine._normalize_digits(match)
+            if not (16 <= len(digits) <= 19):
+                return False
+            if PrivacyEngine._luhn_valid(digits):
+                return True
+            if context and pos >= 0:
+                pre = context[max(0, pos - 24):pos]
+                if any(w in pre for w in PrivacyEngine._CARD_CONTEXT_WORDS):
+                    return True
+            return False
         if key == "BANKCARD":
             return PrivacyEngine._luhn_valid(PrivacyEngine._normalize_digits(match))
         if key == "IDCARD":
@@ -522,6 +584,11 @@ class PrivacyEngine:
                 return False
             return True
         return True
+
+    # 卡面数字的上下文闸门：出现任一即认为"这就是卡"，即便 Luhn 不通过也脱敏
+    _CARD_CONTEXT_WORDS = (
+        "卡号", "卡面", "银行卡", "信用卡", "借记卡", "储蓄卡", "银联", "卡片", "卡上",
+    )
 
     # 强地址标记：出现任一即认为"即便在路径里也可能是真地址"，照常脱敏（宁可过度脱敏）
     _ADDRESS_STRONG_MARKERS = (
@@ -837,9 +904,9 @@ class PrivacyEngine:
         #     因为带字段名前缀（如 password=），不会与纯数字实体冲突
         #   - FILE_PATH/SENSITIVE_PATH/PLATE/PASSPORT/MAC 放最末尾，避免交叉覆盖
         regex_order = [
-            "IDCARD", "IDCARD15", "BANKCARD", "CREDIT_CODE",
+            "IDCARD", "IDCARD15", "BANKCARD", "BANKCARD_LOOKALIKE", "CREDIT_CODE",
             "MEDICAL_RECORD", "MEDICAL_INSURANCE",  # PHI 组
-            "PHONE", "EMAIL",
+            "PHONE", "LANDLINE", "EMAIL", "EMAIL_OBFUSCATED",
             "IPV6", "IP", "MONEY", "WECHAT", "ADDRESS",  # IPV6 必须在 IP 之前
             "PASSWORD", "CONN_STRING", "CLOUD_KEY", "APIKEY", "JWT", "PRIVATE_KEY",  # 密钥组
             "BEARER", "ACCESS_TOKEN",          # Token 组

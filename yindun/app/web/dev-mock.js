@@ -272,6 +272,20 @@
   // 窗口状态沙盘（V3.6.8 四按钮）：window_action 真的改它、window_state 读它，
   // 这样"点最大化 → 图标切到还原态 / 点置顶 → is-active 与状态一致"在预览里就能验。
   const mockWindow = { maximized: false, topmost: true, mini: false };
+  // 工作流沙盘（V3.6.21）：与真实服务层同形的状态快照
+  let mockWorkflow = null;
+  const wfMockStatus = () => {
+    if (!mockWorkflow) return { error: "实例不存在" };
+    const steps = mockWorkflow.steps;
+    return {
+      instance_id: mockWorkflow.instance_id,
+      template_name: mockWorkflow.template_name,
+      is_complete: steps.every((s) => s.status === "completed" || s.status === "skipped"),
+      has_failed: steps.some((s) => s.status === "failed" || s.status === "rejected"),
+      current_step: steps.find((s) => s.status === "pending" || s.status === "waiting_approval") || null,
+      steps,
+    };
+  };
   const hostOf = (url) => {
     try { return new URL(url, "http://x").host || "未命名供应商"; } catch (e) { return "未命名供应商"; }
   };
@@ -491,6 +505,44 @@
       if (patch && patch.model) mockWindow.currentModel = patch.model;   // 预览里切模型能反映到清单
       return Promise.resolve(true);
     },
+    // 工作流（V3.6.21 恢复界面入口）：预览里用有状态假实例跑通
+    // 启动 → 执行下一步 → 待审批 → 通过 → 导出 的完整交互。
+    workflow_templates: () => Promise.resolve([
+      { id: "wf_weekly_report", name: "周报生成工作流", description: "汇总本周工作内容、生成周报草稿、等待审核后导出", source: "builtin", steps: 3 },
+      { id: "wf_contract_review", name: "合同审查工作流", description: "自动解析合同、提取关键条款、生成审查意见、导出报告", source: "builtin", steps: 3 },
+      { id: "wf_data_pipeline", name: "数据处理流水线", description: "读取数据文件 → 清洗 → 统计 → 生成图表 → 导出报告", source: "builtin", steps: 3 },
+    ]),
+    workflow_start: (id, path) => {
+      mockWorkflow = {
+        instance_id: "wf_mock_" + Date.now().toString(36),
+        template_name: (id || "").indexOf("contract") >= 0 ? "合同审查工作流"
+          : (id || "").indexOf("data") >= 0 ? "数据处理流水线" : "周报生成工作流",
+        data_path: path || "（当前可读写范围）",
+        steps: [
+          { step_id: "s1", name: "收集素材", status: "pending" },
+          { step_id: "s2", name: "生成草稿", status: "pending" },
+          { step_id: "s3", name: "导出结果", status: "pending" },
+        ],
+      };
+      return Promise.resolve({ ok: true, instance_id: mockWorkflow.instance_id, status: wfMockStatus() });
+    },
+    workflow_status: () => Promise.resolve(wfMockStatus()),
+    workflow_execute: () => {
+      if (!mockWorkflow) return Promise.resolve({ ok: false, error: "没有运行中的实例" });
+      const step = mockWorkflow.steps.find((s) => s.status === "pending");
+      if (!step) return Promise.resolve({ ok: false, error: "没有可执行的步骤（可能都在等待审批或已完成）" });
+      // 第 2 步模拟"内核强制人工审批"
+      step.status = step.step_id === "s2" ? "waiting_approval" : "completed";
+      return Promise.resolve({ ok: true, step: step.name });
+    },
+    workflow_approve: (iid, stepId, approved) => {
+      if (!mockWorkflow) return Promise.resolve({ ok: false, error: "没有运行中的实例" });
+      const step = mockWorkflow.steps.find((s) => s.step_id === stepId);
+      if (!step) return Promise.resolve({ ok: false, error: "步骤不存在" });
+      step.status = approved ? "completed" : "rejected";
+      return Promise.resolve({ ok: true, status: wfMockStatus() });
+    },
+    workflow_export: () => Promise.resolve({ ok: true, path: "workflow_reports/预览_执行记录.md" }),
     // 窗口四按钮（V3.6.8）：window_action 真的改沙盘状态，window_state 读它——
     // 预览里点最大化/置顶，图标与 is-active 的变化与真实后端同源（不再本地翻转记账）。
     window_action: (action) => {
