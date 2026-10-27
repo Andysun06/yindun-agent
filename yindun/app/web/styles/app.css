@@ -1296,3 +1296,17 @@ html[data-theme="dark"] .wf-step__status--done { color: var(--accent-300); backg
 .wf-instance[hidden] { display: none; }
 /* 拖动区里的输入控件仍要能选中文字 */
 .topbar input, .topbar textarea, .minibar input, .minibar textarea { -webkit-user-select: text; user-select: text; }
+
+
+/* 启动遮罩（V3.6.21）：盖住 WebView2 初始化与主题切换的瞬间 */
+#boot-splash {
+  position: fixed; inset: 0; z-index: 9999; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px;
+  background: #0e1512; color: #d6ebe0;
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  transition: opacity .22s ease;
+}
+#boot-splash.is-hide { opacity: 0; pointer-events: none; }
+#boot-splash .boot-splash__mark img { width: 56px; height: 56px; display: block; }
+#boot-splash .boot-splash__name { font-size: 15px; letter-spacing: 1px; font-weight: 600; }
+#boot-splash .boot-splash__hint { font-size: 12px; color: #7f9c8c; }

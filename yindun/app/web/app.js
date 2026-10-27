@@ -3476,7 +3476,10 @@
   function applyTheme(dark, animate = true) {
     const html = document.documentElement;
     const next = dark ? "dark" : "light";
-    const run = () => { html.dataset.theme = next; };
+    const run = () => {
+      html.dataset.theme = next;
+      try { localStorage.setItem("yd_theme", next); } catch (e) {}
+    };
     const reduce = !!(window.matchMedia
       && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
     if (!animate || !_themeApplied || reduce || typeof document.startViewTransition !== "function") {
@@ -3713,6 +3716,12 @@
     });
     if (state.currentId) await openSession(state.currentId); else renderMessages();
     onEvent("llm_status", state.llm);
+    // 首屏已就绪：淡出启动遮罩（避免 WebView2 初始化期间的白屏/主题闪一下）
+    const splash = document.getElementById("boot-splash");
+    if (splash) {
+      splash.classList.add("is-hide");
+      setTimeout(() => splash.remove(), 260);
+    }
     if (!(state.llm && state.llm.ready)) {   // 还没就绪：先说明在准备，别让用户对着空界面猜
       const boot0 = $("bootline");
       if (boot0) { boot0.hidden = false; boot0.textContent = "正在准备算力与模型…（首次启动较慢）"; }

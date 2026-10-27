@@ -15,8 +15,8 @@
   --gray-150:#E9EBEE; --gray-200:#E1E4E8; --gray-300:#CFD4DA; --gray-400:#A9B0B8;
   --gray-500:#7C848C; --gray-600:#5A626B; --gray-700:#3F464E; --gray-800:#2A2F35;
   --gray-900:#1A1E22;
-  --accent-50:#EDF7F1; --accent-300:#86CBA8; --accent-500:#16A163;
-  --accent-600:#0E7A4A; --accent-700:#0A5C38;
+  --accent-50:#EFF6FF; --accent-300:#93C5FD; --accent-500:#3B82F6;
+  --accent-600:#2563EB; --accent-700:#1D4ED8;
   --danger-500:#C4362F; --danger-50:#FDF1F0;
   --warn-500:#A9761B; --warn-50:#FDF7EA;
 
@@ -43,7 +43,7 @@ html[data-theme="dark"] {
   --bg-hover:#1E232A; --bg-active:#262C34; --bg-input:#161A1F;
   --text-1:#E7EAED; --text-2:#9AA3AC; --text-3:#6B747D;
   --border-1:#22272D; --border-2:#2C333A;
-  --accent-50:#12241B; --accent-600:#3FB87C; --accent-700:#6FD3A1;
+  --accent-50:#12203A; --accent-600:#60A5FA; --accent-700:#93C5FD;
   --danger-50:#2A1A19; --warn-50:#2A2113;
   --shadow-pop:0 14px 40px rgba(0,0,0,.5);
 }
@@ -600,3 +600,17 @@ html[data-theme="dark"] .toast { background:var(--gray-100); color:var(--gray-90
   .metric { padding:var(--sp-6) var(--sp-7); }
   .metric__value { font-size:34px; }
 }
+
+
+/* 启动遮罩（V3.6.21）：WebView2 初始化与鉴权探测期间不露白屏 */
+#boot-splash {
+  position: fixed; inset: 0; z-index: 9999; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px;
+  background: #0b1220; color: #dbeafe;
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  transition: opacity .22s ease;
+}
+#boot-splash.is-hide { opacity: 0; pointer-events: none; }
+#boot-splash .boot-splash__mark img { width: 56px; height: 56px; display: block; }
+#boot-splash .boot-splash__name { font-size: 15px; letter-spacing: 1px; font-weight: 600; }
+#boot-splash .boot-splash__hint { font-size: 12px; color: #7f9cc4; }

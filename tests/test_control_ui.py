@@ -787,7 +787,7 @@ def run_pages(browser, url: str) -> None:
                knob: getComputedStyle(t, '::after').transform };
     }""")
     check("点一下真的切换：勾选态改变 + 轨道变强调色 + 滑块位移",
-          sw2["checked"] != sw["before"] and sw2["bg"] == "rgb(22, 161, 99)"
+          sw2["checked"] != sw["before"] and sw2["bg"] == "rgb(59, 130, 246)"
           and "14" in sw2["knob"], str(sw2))
 
     # ── B4 自制滚动条 ──

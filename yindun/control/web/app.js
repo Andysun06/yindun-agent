@@ -212,6 +212,7 @@ async function api(path, options = {}) {
 function showAuth(message = "") {
   $("shell").hidden = true;
   $("auth").hidden = false;
+  hideSplash();
   const err = $("auth-err");
   err.hidden = !message;
   err.textContent = message;
@@ -246,8 +247,15 @@ async function boot() {
   try { const who = await api("/api/v1/whoami"); state.role = (who && who.role) || "admin"; start(); }
   catch (e) { showAuth(e.unauthorized ? "令牌无效或已过期，请重新输入" : `无法连接控制面：${e.message}`); }
 }
+function hideSplash() {
+  const el = document.getElementById("boot-splash");
+  if (!el) return;
+  el.classList.add("is-hide");
+  setTimeout(() => el.remove(), 260);
+}
 function start() {
   $("auth").hidden = true; $("shell").hidden = false;
+  hideSplash();
   // 报告 P1-03：只读令牌也能登录，但隐藏策略下发入口并标明角色。
   const viewer = state.role === "viewer";
   document.body.classList.toggle("is-viewer", viewer);
