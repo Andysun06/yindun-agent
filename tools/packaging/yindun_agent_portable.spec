@@ -41,7 +41,6 @@ for pkg in [
     "openpyxl",
     "xlrd",       # 旧版 .xls（OLE/BIFF）只能靠 xlrd；缺了它"支持 xls"就是源码级空话
     "PIL",
-    "huggingface_hub",
 ]:
     try:
         d, b, h = collect_all(pkg)
