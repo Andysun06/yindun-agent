@@ -226,7 +226,7 @@ class AgentService:
 
     DEMO_MODEL_NAME = "隐盾自建中转站（供评委试用）"
     DEMO_MODEL_OLD_NAME = "演示模型 · deepseek-v4.1-flash"   # 旧名（V3.6.21 早批），启动时迁移
-    DEMO_MODEL_BASE = "https://yindun-relay.944898918.workers.dev/api/ai"
+    DEMO_MODEL_BASE = "https://yindun-relay.pages.dev/api/ai"
     DEMO_MODEL_ID = "deepseek-v4.1-flash"
     # 中转站门禁（V3.6.21）：中转站只接受带这两个头、且 UA 为 Yindun/ 的客户端。
     # 这是"门禁令牌"不是模型 Key——随客户端分发、可被逆向提取，泄露的后果只是
@@ -253,7 +253,7 @@ class AgentService:
                 "base_url": str(self.settings.get("demo_model_base") or self.DEMO_MODEL_BASE),
                 "api_key": "",                 # 中转站免 Key（Key 只在服务端环境变量）
                 "tier": "wan",
-                "provider": "隐盾自建中转站",
+                "provider": "隐盾",
                 "api_format": "chat_completions",
                 "tags": ["评委试用", "免Key"],
                 "context_window": 0,

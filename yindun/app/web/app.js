@@ -1380,7 +1380,7 @@
             value="${esc(isNew ? "" : (first.base_url || ""))}"
             placeholder="${sel.tier === "lan" ? "http://10.0.0.8:8000/v1" : "https://…/v1"}"></div></div>
         <div class="setrow"><div class="setrow__text"><b>API 格式</b>
-            <span>仅 OpenAI 兼容 Chat Completions 可用，其它格式暂不支持</span></div>
+            <span>四种格式均可用：Chat Completions / Ollama 原生 / Anthropic / Responses</span></div>
           <div class="setrow__ctrl"><select id="p-format">${formatOptions(first.api_format || "chat_completions")}</select></div></div>
         <div class="setrow"><div class="setrow__text"><b>API Key</b><span>${keyHint}</span></div>
           <div class="setrow__ctrl">
@@ -1574,8 +1574,8 @@
       if (el.dataset.addrelay) {
         (async () => {
           const res = await call("add_custom_model", "隐盾自建中转站（手动添加）", "deepseek-v4.1-flash",
-                                 "https://yindun-relay.944898918.workers.dev/api/ai", "",
-                                 "wan", "隐盾自建中转站", "chat_completions");
+                                 "https://yindun-relay.pages.dev/api/ai", "",
+                                 "wan", "隐盾", "chat_completions");
           if (!res || res.ok === false) {
             toast("添加中转站失败：" + ((res && res.error) || "未知原因"));
             return;

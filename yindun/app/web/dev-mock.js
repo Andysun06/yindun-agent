@@ -355,8 +355,8 @@
             base_url: "https://open.bigmodel.cn/api/paas/v4", kind: "openai", has_key: true, key_invalid: false,
             provider: "open.bigmodel.cn", api_format: "chat_completions", tags: ["低成本"], note: "" },
           { name: "隐盾自建中转站（供评委试用）", model_id: "deepseek-v4.1-flash", tier: "wan",
-            source: "custom", base_url: "https://yindun-relay.944898918.workers.dev/api/ai", kind: "openai",
-            has_key: false, key_invalid: false, provider: "隐盾自建中转站",
+            source: "custom", base_url: "https://yindun-relay.pages.dev/api/ai", kind: "openai",
+            has_key: false, key_invalid: false, provider: "隐盾",
             api_format: "chat_completions", tags: ["演示", "免Key"], note: "" },
         ],
       };
