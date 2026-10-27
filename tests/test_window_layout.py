@@ -666,6 +666,7 @@ def _reset_max_state():
     api._saved_geometry = None
     api._maximized_by_us = False
     api._pre_maximize_geometry = None
+    api._pre_maximize_bounds = None
 
 
 class _BrokenMaxWindow(_MaxFakeWindow):
@@ -760,6 +761,49 @@ _ab = api.window_action("toggle_maximize")
 check("restore 与几何兜底都失败 → 返回 False（不假装已还原）", _ab is False, str(_ab))
 check("兜底失败后仍记账为「已最大化」（下次点击继续尝试还原）",
       api._maximized_by_us is True, str(api._maximized_by_us))
+
+# ── 11b) V3.6.21 手动按工作区最大化：写回 Bounds 才算还原 ──
+class _BoundsForm:
+    def __init__(self):
+        self.Bounds = "maximized"
+
+    def Invoke(self, callback):
+        callback()
+
+
+class _UidMaxWindow(_MaxFakeWindow):
+    def __init__(self, uid):
+        super().__init__()
+        self.uid = uid
+
+
+_reset_max_state()
+bounds_form = _BoundsForm()
+_wf.BrowserView.instances = {"uid-bounds": bounds_form}
+try:
+    api._pre_maximize_geometry = (100, 200, 1180, 780)
+    api._pre_maximize_bounds = (100, 200, 1180, 780)
+    api._maximized_by_us = True
+    _b_ok = api._restore_from_maximize(_UidMaxWindow("uid-bounds"))
+finally:
+    _wf.BrowserView.instances = {}
+check("手动最大化后还原：把最大化前的 Bounds 写回窗体",
+      _b_ok is True and bounds_form.Bounds == (100, 200, 1180, 780),
+      f"{_b_ok} / {bounds_form.Bounds}")
+check("写回成功后才清空记账（不会留下脏状态）",
+      api._maximized_by_us is False and api._pre_maximize_bounds is None,
+      f"by_us={api._maximized_by_us} bounds={api._pre_maximize_bounds}")
+
+_reset_max_state()
+miss_win = _UidMaxWindow("uid-missing")
+_wf.BrowserView.instances = {}
+api._pre_maximize_geometry = (100, 200, 1180, 780)
+api._pre_maximize_bounds = (100, 200, 1180, 780)
+api._maximized_by_us = True
+_miss_ok = api._restore_from_maximize(miss_win)
+check("★ 找不到窗体时退回原生 restore，成功后同样清空 Bounds 记账",
+      _miss_ok is True and miss_win.restore_calls == 1 and api._pre_maximize_bounds is None,
+      f"{_miss_ok} restore={miss_win.restore_calls} bounds={api._pre_maximize_bounds}")
 
 check("源码里不再调用 toggle_fullscreen 降级",
       ".toggle_fullscreen(" not in webview_src)

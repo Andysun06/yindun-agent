@@ -135,7 +135,7 @@ class PrivacyEngine:
         "APIKEY":   "机密",   # API密钥
         "PHONE":    "机密",   # 手机号
         "LANDLINE": "机密",   # 固定电话（区号+号码，含分机）
-        "EMAIL_OBFUSCATED": "内部",   # (at)/(dot) 混淆写法邮箱
+        "EMAIL_OBFUSCATED": "内部",   # (at)/[at]/ at  混淆写法邮箱
         "BANKCARD_LOOKALIKE": "绝密",   # 卡面数字（Luhn 不通过但上下文明确是卡）
         "MEDICAL_RECORD":    "机密",   # 病历号
         "MEDICAL_INSURANCE": "机密",   # 医保卡号

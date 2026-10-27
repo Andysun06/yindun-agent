@@ -666,6 +666,7 @@ class JsApi:
             self._last_window_error = "unsupported"
             return False
         self._pre_maximize_geometry = geometry
+        self._pre_maximize_bounds = None
         self._maximized_by_us = True
         return True
 
@@ -675,14 +676,19 @@ class JsApi:
         # ★ V3.6.21：手动最大化（按工作区）的还原 = 写回物理 Bounds
         if self._pre_maximize_bounds is not None:
             bounds = self._pre_maximize_bounds
+            done: Dict[str, bool] = {"ok": False}
 
             def _apply_restore() -> None:
-                from webview.platforms import winforms as _wf
-                form = _wf.BrowserView.instances.get(getattr(window, "uid", None))
-                if form is not None:
-                    form.Bounds = bounds
+                try:
+                    from webview.platforms import winforms as _wf
+                    form = _wf.BrowserView.instances.get(getattr(window, "uid", None))
+                    if form is not None:
+                        form.Bounds = bounds
+                        done["ok"] = True
+                except Exception as exc:
+                    print(f"[WebView] 手动还原失败：{exc}")
 
-            if self._ui_thread_dispatch(window, _apply_restore):
+            if self._ui_thread_dispatch(window, _apply_restore) and done["ok"]:
                 self._maximized_by_us = False
                 self._pre_maximize_geometry = None
                 self._pre_maximize_bounds = None
@@ -703,6 +709,7 @@ class JsApi:
                 return False
         self._maximized_by_us = False
         self._pre_maximize_geometry = None
+        self._pre_maximize_bounds = None
         return True
 
     def _invoke_window_method(self, window, name: str) -> None:

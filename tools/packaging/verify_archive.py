@@ -44,6 +44,8 @@ CLIENT_SYMBOLS: Dict[str, Sequence[str]] = {
                              "_h_generate_chart", "_h_human_review", "_default_executor",
                              "has_execution_handler", "wf_data_pipeline", "workflow_outputs"],
     "yindun.core.privacy_engine": ["restore_kb_placeholders"],
+    # 无边框窗口按工作区最大化（V3.6.21 热修）：两个字段缺了，包里就是"盖住任务栏"的旧逻辑
+    "yindun.app.webview_app": ["_pre_maximize_bounds", "_apply_manual"],
     "yindun.core.permission": ["permission_mode", "base_decision", "stricter",
                               # 默认可读写范围（V3.6.8）＝程序目录 + 桌面/文档/下载：
                               # 这两个符号缺任何一个，说明包里还是"只有程序目录"的旧范围
@@ -63,7 +65,10 @@ CLIENT_SYMBOLS: Dict[str, Sequence[str]] = {
                                    "_looks_like_kb_question", "_hit_length_limit",
                                    "_guard_length_limit",
                                    # 明确删除指令在任何 LLM 之前由宿主执行（V3.6.21 热修）
-                                   "_forced_delete_target", "_run_forced_delete"],
+                                   "_forced_delete_target", "_run_forced_delete",
+                                   # 工具消息链净化（V3.6.21 热修）：缺了就会在历史裁剪后
+                                   # 把孤立 ToolMessage 发给模型，触发 400
+                                   "_sanitize_tool_chain"],
     # 请求用途红线（V3.6.13）：这个模块缺了，包里的智能体就会把"卖个人信息"当普通请求规划
     "yindun.core.usage_policy": ["assess_request", "_has_pii", "_has_profit", "_has_exfil"],
     "yindun.utils.logger": ["setup_logging"],

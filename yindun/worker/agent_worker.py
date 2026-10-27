@@ -1560,6 +1560,7 @@ class Worker:
                     # ★ 若模型这一轮已经给出实质回答（够长 + 有结构），**不跑**这一次
                     #   全量生成：省一次完整推理，也避免把已正确的答案改写坏。
                     self.status.emit("[总结] 工具执行完毕，正在生成最终总结...")
+                    messages[:] = self._sanitize_tool_chain(messages)
                     summary_prompt = "\n\n请基于以上工具执行结果，给用户提供一个详细的总结报告。"
                     messages.append(HumanMessage(content=summary_prompt,
                                                 additional_kwargs={"internal": True}))
@@ -2005,6 +2006,7 @@ class Worker:
 
         # 达到最大轮次，让模型总结
         self.status.emit("[总结] 已达最大推理轮次，正在生成最终回答...")
+        messages[:] = self._sanitize_tool_chain(messages)
         final_msg = self._invoke_llm_with_cancel_check(messages)
         messages.append(final_msg)
         content = getattr(final_msg, "content", "")
@@ -3425,7 +3427,7 @@ class Worker:
         把半张表格当完整回答。
         """
         sys_prompt = self._direct_system_prompt()
-        history = list(memory.get_context_messages(self.llm))
+        history = self._sanitize_tool_chain(list(memory.get_context_messages(self.llm)))
         self.status.emit("[继续] 回答达到单次生成长度上限，正在接着写…")
         self._trace("thinking", "回答续写", "直答达到单次生成上限，自动续写一次", "ok")
         try:
