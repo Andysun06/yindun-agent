@@ -35,7 +35,7 @@ from pathlib import Path
 sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 仓库根目录
 
-from langchain_core.messages import AIMessage  # noqa: E402
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage  # noqa: E402
 
 from yindun.app.agent_service import AgentService  # noqa: E402
 from yindun.app.session_store import SessionStore  # noqa: E402
@@ -1015,6 +1015,22 @@ _dp2 = _worker_len._display_target_path("create_local_file", {}, r"D:\x\a.txt")
 check("写类工具仍显示真实路径", _dp2 == r"D:\x\a.txt", _dp2)
 _dp3 = _worker_len._display_target_path(
     "create_local_file", {"filename": "周报.txt"}, str(SANDBOX_ROOT))
+# ── V3.6.21：工具消息链净化（孤儿 tool / 缺失结果不再让上游 400）──
+from yindun.worker.agent_worker import Worker as _W  # noqa: E402
+_chain = _W._sanitize_tool_chain([
+    HumanMessage(content="hi"),
+    ToolMessage(content="孤儿工具结果", tool_call_id="nope"),
+])
+check("孤儿工具结果被转成普通上下文（不再触发 role=tool 400）",
+      all(not isinstance(m, ToolMessage) for m in _chain) and "孤儿工具结果" in str(_chain[-1].content),
+      str([type(m).__name__ for m in _chain]))
+_chain2 = _W._sanitize_tool_chain([
+    AIMessage(content="", tool_calls=[{"name": "list_local_files", "args": {}, "id": "c1"}]),
+    HumanMessage(content="下一句"),
+])
+check("缺失的工具结果被补占位（序列完整）",
+      any(isinstance(m, ToolMessage) and getattr(m, "tool_call_id", "") == "c1" for m in _chain2),
+      str([(type(m).__name__, getattr(m, "tool_call_id", None)) for m in _chain2]))
 check("★ 写类工具审批目标拼上文件名（完整路径，防盲签）",
       str(_dp3).endswith("周报.txt") and str(_dp3) != str(SANDBOX_ROOT), _dp3)
 

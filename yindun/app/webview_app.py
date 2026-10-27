@@ -69,6 +69,9 @@ class JsApi:
         self._maximized_by_us: bool = False
         # 最大化前的几何：restore() 失败时按它做一次 move/resize 兜底
         self._pre_maximize_geometry: Optional[Tuple[int, int, int, int]] = None
+        # ★ V3.6.21：无边框窗体下 MaximizedBounds 不生效（实测最大化仍盖任务栏），
+        #   改为“按屏幕工作区手动最大化”：记下最大化前的物理 Bounds，还原时写回。
+        self._pre_maximize_bounds: Optional[Any] = None
         # 最近一次窗口动作的失败原因（P1-10）："" / "mini" / "unsupported" / "restore_failed"。
         # `window_action` 仍只返回 bool（不改现有契约）；前端在失败后再读这里拿可操作提示。
         self._last_window_error: str = ""
@@ -491,6 +494,7 @@ class JsApi:
         else:
             self._maximized_by_us = False
             self._pre_maximize_geometry = None
+            self._pre_maximize_bounds = None
 
     def _set_maximized_bounds(self, window) -> bool:
         """最大化前尽力把原生窗体的 MaximizedBounds 设为当前屏幕工作区（P1-07）。
@@ -618,8 +622,7 @@ class JsApi:
         # 还原判定与 window_state() 使用同一套策略：原生状态优先、记账兜底。
         # （原生 WinForms WindowState 取不到时，pywebview 的 `maximized=True` 也可作为证据）
         native_maximized = self._read_native_maximized(window)
-        restoring = (bool(native_maximized) if native_maximized is not None
-                     else bool(self._maximized_by_us))
+        restoring = bool(native_maximized) or bool(self._maximized_by_us)
         if restoring:
             if self._restore_from_maximize(window):
                 return True
@@ -627,7 +630,30 @@ class JsApi:
             return False
 
         geometry = self._current_geometry(window)
-        # P1-07：先设 MaximizedBounds（排除任务栏）；失败也继续原生最大化
+        # ★ V3.6.21：无边框窗体（FormBorderStyle.None）下 WinForms 的 MaximizedBounds
+        #   不生效，原生最大化会算成整屏、盖住任务栏。这里改为**手动按屏幕工作区**设置
+        #   Bounds（工作区已排除任务栏），还原时写回最大化前的物理 Bounds。
+        manual: Dict[str, Any] = {"ok": False, "bounds": None}
+
+        def _apply_manual() -> None:
+            try:
+                from webview.platforms import winforms as _wf
+                form = _wf.BrowserView.instances.get(getattr(window, "uid", None))
+                if form is None:
+                    return
+                manual["bounds"] = form.Bounds
+                form.WindowState = _wf.WinForms.FormWindowState.Normal
+                form.Bounds = _wf.WinForms.Screen.FromControl(form).WorkingArea
+                manual["ok"] = True
+            except Exception as exc:
+                print(f"[WebView] 手动最大化失败（退回原生最大化）：{exc}")
+
+        if self._ui_thread_dispatch(window, _apply_manual) and manual["ok"]:
+            self._pre_maximize_geometry = geometry
+            self._pre_maximize_bounds = manual["bounds"]
+            self._maximized_by_us = True
+            return True
+        # 兜底：原生最大化（可能盖任务栏，但至少按钮可用）
         try:
             self._set_maximized_bounds(window)
         except Exception as exc:
@@ -646,6 +672,21 @@ class JsApi:
     def _restore_from_maximize(self, window) -> bool:
         """还原最大化；restore() 不可用时按最大化前几何兜底一次（仍失败如实返回 False）。"""
         geometry = self._pre_maximize_geometry
+        # ★ V3.6.21：手动最大化（按工作区）的还原 = 写回物理 Bounds
+        if self._pre_maximize_bounds is not None:
+            bounds = self._pre_maximize_bounds
+
+            def _apply_restore() -> None:
+                from webview.platforms import winforms as _wf
+                form = _wf.BrowserView.instances.get(getattr(window, "uid", None))
+                if form is not None:
+                    form.Bounds = bounds
+
+            if self._ui_thread_dispatch(window, _apply_restore):
+                self._maximized_by_us = False
+                self._pre_maximize_geometry = None
+                self._pre_maximize_bounds = None
+                return True
         try:
             self._invoke_window_method(window, "restore")
         except Exception as exc:
@@ -692,8 +733,7 @@ class JsApi:
         #   原生状态取不到（非 Windows / 测试桩）时才用 `_maximized_by_us`。
         native_maximized = self._read_native_maximized(window)
         return {
-            "maximized": (bool(native_maximized) if native_maximized is not None
-                          else bool(getattr(self, "_maximized_by_us", False))),
+            "maximized": bool(native_maximized) or bool(getattr(self, "_maximized_by_us", False)),
             "topmost": (bool(getattr(window, "on_top", False)) if window is not None
                         else bool(self._svc.settings.get("topmost", False))),
             "mini": self._saved_geometry is not None,

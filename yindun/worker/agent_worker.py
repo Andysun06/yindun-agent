@@ -1369,6 +1369,8 @@ class Worker:
             self.status.emit(f"[思考 {round_count}/{max_rounds}] 模型判断中...")
 
             # 让模型决定：回答或调用工具
+            # ★ V3.6.21：调用前净化工具消息序列（孤儿 tool / 缺失结果会让上游直接 400）
+            messages[:] = self._sanitize_tool_chain(messages)
             ai_msg = self._invoke_llm_streaming(messages)
             messages.append(ai_msg)
             # ★ 审计：记录本轮 LLM 输入(脱敏态)与输出
@@ -3465,6 +3467,46 @@ class Worker:
         self._reply_hit_length = True
         return self._guard_length_limit(merged or third)
 
+    @staticmethod
+    def _sanitize_tool_chain(messages):
+        """保证发给模型的工具消息序列合法（V3.6.21）。
+
+        OpenAI 兼容端点要求：role=tool 的消息必须回应**前一条带 tool_calls 的 assistant**，
+        且 tool_call_id 要能对上。实际链路里可能因为"直答快路径丢弃工具调用 / 历史裁剪 /
+        跨轮恢复"留下孤儿工具结果，上游直接回 400：
+          `Messages with role 'tool' must be a response to a preceding message with 'tool_calls'`
+        （负责人实测）。这里做一次兜底：
+          · 孤儿工具结果 → 转成普通 HumanMessage 文本（保留信息，不再触发协议错误）；
+          · assistant 声明了 tool_calls 却没有对应结果 → 补一条"结果缺失"占位，
+            避免下一轮被判成不完整工具序列。
+        只改消息形态，不改工具执行与安全判定。
+        """
+        out = []
+        pending = set()
+        for m in messages:
+            if isinstance(m, AIMessage):
+                pending = {str(c.get("id") or "") for c in (getattr(m, "tool_calls", None) or [])}
+                out.append(m)
+                continue
+            if isinstance(m, ToolMessage):
+                tcid = str(getattr(m, "tool_call_id", "") or "")
+                if tcid and tcid in pending:
+                    out.append(m)
+                    pending.discard(tcid)
+                else:
+                    out.append(HumanMessage(
+                        content="（历史工具结果，未关联到本轮工具调用）" + chr(10)
+                                + str(getattr(m, "content", ""))))
+                continue
+            if pending and isinstance(m, (HumanMessage, SystemMessage)):
+                for pid in sorted(pending):
+                    out.append(ToolMessage(content="（该工具结果缺失，已跳过）", tool_call_id=pid))
+                pending = set()
+            out.append(m)
+        for pid in sorted(pending):
+            out.append(ToolMessage(content="（该工具结果缺失，已跳过）", tool_call_id=pid))
+        return out
+
     def _direct_answer_message(self, ai_input: str, memory):
         """直接回答（不调用工具）的**原始模型消息**。
 
@@ -3477,6 +3519,7 @@ class Worker:
         messages = [SystemMessage(content=self._direct_system_prompt())]
         messages.extend(memory.get_context_messages(self.llm))
         messages.append(HumanMessage(content=ai_input))
+        messages = self._sanitize_tool_chain(messages)
         return self._invoke_llm_with_cancel_check(messages)
 
     # ──────────────────────────────────────────
