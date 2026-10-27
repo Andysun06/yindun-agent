@@ -598,9 +598,11 @@ def build_llm(settings: Dict[str, Any], tools: List[Any],
     try:
         if model_name in custom_models:
             info = custom_models[model_name] or {}
-            from langchain_openai import ChatOpenAI
-            # 报告 P1-02 / P0 候选-01：自定义分支也要接输出预算，否则长文由服务端
-            # 默认上限决定，出现"中途停住且没有继续提示"。
+            # ★ V3.6.21：按接口格式分流（此前只认 chat_completions，其余静默回落）。
+            #   允许值必须与 agent_service.API_FORMATS 一致；未知值仍回落 Chat Completions。
+            _fmt = str(info.get("api_format") or "chat_completions").strip().lower()
+            if _fmt not in ("chat_completions", "ollama_native", "anthropic", "responses"):
+                _fmt = "chat_completions"
             try:
                 _declared = int(info.get("context_window") or 0)
             except Exception:
@@ -608,21 +610,81 @@ def build_llm(settings: Dict[str, Any], tools: List[Any],
             _window = model_window(str(info.get("model_id") or model_name),
                                    str(info.get("tier") or ""), _declared)
             _max_out = output_budget(_window, reasoning is None)
-            base_model = ChatOpenAI(
-                model=info.get("model_id", model_name),
-                # ★ 建客户端前再归一化一次（V3.6.4）：老配置里可能存着完整端点，
-                #   这里兜底修好，用户不必删了重建。
-                openai_api_base=normalize_base_url(info.get("base_url", "")),
-                openai_api_key=info.get("api_key", ""),
-                max_tokens=_max_out,
-                # ★ 必须显式给超时（V3.6.7）：不给就会落到 openai SDK 默认的 600 秒 × 重试，
-                #   端点挂死时用户要干等十几分钟，界面看起来就是「发出去了没反应」
-                #   （负责人实测的那次"等了好久没回复"里，这条是最坏情况的放大器）。
-                #   90 秒对一次完整生成偏宽（慢的公网模型不至于被误杀）；重试只留 1 次，
-                #   免得多轮重试把等待叠成几倍。
-                timeout=90,
-                max_retries=1,
-            )
+            if _fmt == "ollama_native":
+                # 远程/局域网 Ollama 的原生接口（/api/chat）：ChatOllama 自己拼路径，
+                # 这里只把用户可能粘贴的 /api 或 /api/chat 后缀去掉。
+                from langchain_ollama import ChatOllama
+                _base = normalize_base_url(info.get("base_url", "")) or ollama_host
+                for _suf in ("/api/chat", "/api"):
+                    if _base.lower().endswith(_suf):
+                        _base = _base[: -len(_suf)].rstrip("/")
+                _extra: Dict[str, Any] = {}
+                if reasoning is not None:
+                    _extra["reasoning"] = reasoning
+                _ctx = max(2048, min(int(_window), OLLAMA_CTX_CAP))
+                base_model = ChatOllama(
+                    model=str(info.get("model_id") or model_name),
+                    base_url=_base or DEFAULT_OLLAMA_HOST,
+                    timeout=60,
+                    num_ctx=_ctx,
+                    num_predict=_max_out,
+                    temperature=0.7,
+                    top_p=0.9,
+                    keep_alive=300,
+                    **_extra,
+                )
+            elif _fmt == "anthropic":
+                from yindun.app.chat_adapters import AnthropicChatModel
+                base_model = AnthropicChatModel(
+                    base_url=info.get("base_url", ""),
+                    api_key=info.get("api_key", ""),
+                    model=str(info.get("model_id") or model_name),
+                    max_tokens=_max_out,
+                    timeout=90,
+                )
+            elif _fmt == "responses":
+                from yindun.app.chat_adapters import ResponsesChatModel
+                base_model = ResponsesChatModel(
+                    base_url=info.get("base_url", ""),
+                    api_key=info.get("api_key", ""),
+                    model=str(info.get("model_id") or model_name),
+                    max_tokens=_max_out,
+                    timeout=90,
+                )
+            else:
+                from langchain_openai import ChatOpenAI
+                # ★ V3.6.21：演示中转站只接受隐盾客户端（门禁头 + UA）。
+                #   仅对 demo_relay 标记或演示中转域名生效，不影响用户自己的公网模型。
+                _base_norm = normalize_base_url(info.get("base_url", ""))
+                _demo_relay = bool(info.get("demo_relay")) or (
+                    "yindun-relay" in _base_norm
+                    and (".workers.dev" in _base_norm or ".pages.dev" in _base_norm))
+                _default_headers = None
+                if _demo_relay:
+                    from yindun import __display_version__
+                    _default_headers = {
+                        "X-Yindun-Client": "yindun-desktop",
+                        "X-Yindun-Token": "yd_demo_7f3a9c1e5b2d4f6081a3c5e7d9b0f2a4",
+                        "User-Agent": f"Yindun/{__display_version__.lstrip('Vv')}",
+                    }
+                base_model = ChatOpenAI(
+                    model=info.get("model_id", model_name),
+                    # ★ 建客户端前再归一化一次（V3.6.4）：老配置里可能存着完整端点，
+                    #   这里兜底修好，用户不必删了重建。
+                    openai_api_base=_base_norm,
+                    default_headers=_default_headers,
+                    # ★ V3.6.21：免 Key 中转站（如隐盾自建中转站）也要能用——OpenAI SDK
+                    #   要求非空字符串，空 key 时给一个占位符；真需要鉴权的服务会照常回 401。
+                    openai_api_key=info.get("api_key", "") or "not-needed",
+                    max_tokens=_max_out,
+                    # ★ 必须显式给超时（V3.6.7）：不给就会落到 openai SDK 默认的 600 秒 × 重试，
+                    #   端点挂死时用户要干等十几分钟，界面看起来就是「发出去了没反应」
+                    #   （负责人实测的那次"等了好久没回复"里，这条是最坏情况的放大器）。
+                    #   90 秒对一次完整生成偏宽（慢的公网模型不至于被误杀）；重试只留 1 次，
+                    #   免得多轮重试把等待叠成几倍。
+                    timeout=90,
+                    max_retries=1,
+                )
         else:
             from langchain_ollama import ChatOllama
             extra: Dict[str, Any] = {}

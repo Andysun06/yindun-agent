@@ -1508,8 +1508,13 @@ class Worker:
                     #   已经正确的答案改写坏（小模型在深化轮会丢细节）。每轮最多强制一次。
                     _substantive_now = self._looks_substantive(
                         content if isinstance(content, str) else "")
-                    if _substantive_now or getattr(self, "_deepen_used", False):
-                        self.status.emit("[完成] 已得到实质回答，跳过深化轮")
+                    # ★ V3.6.21（负责人实测）：高思考档的最低轮数会把**第一轮就答对的短答案**
+                    #   也强行拖进深化轮，小模型一深化就跑题。判定改成"答案已完整"优先于
+                    #   "轮数不够"——完整回答（有句末标点/成句/有结构）直接收尾。
+                    _complete_now = self._looks_complete_answer(
+                        content if isinstance(content, str) else "")
+                    if _substantive_now or _complete_now or getattr(self, "_deepen_used", False):
+                        self.status.emit("[完成] 已得到完整回答，跳过深化轮")
                     else:
                         # 未达到最低思考轮数，强制继续深入分析
                         self._deepen_used = True
@@ -1542,8 +1547,12 @@ class Worker:
                 if (has_executed_tool
                         and not getattr(self, "_limit_prefix_merged", False)
                         and not self._looks_substantive(
+                            content if isinstance(content, str) else "")
+                        and not self._looks_complete_answer(
                             content if isinstance(content, str) else "")):
                     # 达到最低轮数且答案还很薄，追加总结轮次。
+                    # ★ V3.6.21：完整回答（哪怕很短，如"周六上午照常开诊。"）也不再跑总结轮——
+                    #   总结轮会把已正确的短答案整段改写，小模型改写后常丢细节/跑题。
                     # ★ 已拼接"长度上限前缀"的轮次不再跑总结：前缀就是用户已经看过的
                     #   正文，再生成一次会把整段顶掉（P0-04 的第二个丢内容入口）。
                     # ★ 若模型这一轮已经给出实质回答（够长 + 有结构），**不跑**这一次
@@ -2649,6 +2658,35 @@ class Worker:
     # 句末标点／收尾标记：有它说明这句"说完了"，没有则很可能是被截断的开头
     _SENTENCE_END = ("。", "！", "？", "…", ".", "!", "?", "；", ";", "：", ":", "）", "]", ")", "```")
 
+    @staticmethod
+    def _looks_complete_answer(text: str) -> bool:
+        """这一轮是否已经给出**完整的最终回答**（用于压住"最低思考轮数"的强制深化）。
+
+        V3.6.21 负责人实测：高思考档（最低轮数最多 8 轮）下，模型第一轮就答对的问题
+        仍会被"未达最低思考轮数，强制继续分析"拖进深化轮，小模型一深化就丢细节甚至跑题。
+        判据（宁可偏向"是"——深化轮改写坏答案的代价更大）：
+          · 非空，且不是"我这就去查/正在处理"这类过渡语；
+          · 满足任一：以句末标点收尾 / 至少两句话 / 长度 ≥ 60 / 带列表或冒号结构。
+        注意：这里只影响"要不要继续深化"，不改变工具执行与安全判定。
+        """
+        body = (text or "").strip()
+        if not body:
+            return False
+        promise = ("我这就", "马上", "正在", "稍等", "请稍候", "接下来我", "我先去", "让我先")
+        if len(body) < 40 and any(k in body for k in promise):
+            return False
+        # 纯应答（"好的。""收到。"）不是答案：它只是"我听到了"，必须继续深化/总结
+        _ack = ("好的", "好", "收到", "明白", "知道了", "可以", "没问题", "嗯", "行")
+        if body.rstrip("。！？!?…~ ") in _ack:
+            return False
+        if body.endswith(Worker._SENTENCE_END):
+            return True
+        if len(body) >= 60:
+            return True
+        structured = (chr(10) in body) or any(
+            k in body for k in ("：", "、", "- ", "1.", "•", "|", "；"))
+        return structured and len(body) >= 20
+
     @classmethod
     def _looks_truncated_answer(cls, text: str, user_input: str = "") -> bool:
         """回答是不是**刚起了个头就断了**（组员评审 BUG-0003：只吐「我需要」「您好」「为了」却标已完成）。
@@ -2662,6 +2700,11 @@ class Worker:
         """
         body = str(text or "").strip()
         if not body or len(body) >= 15:
+            return False
+        # 用户明确要求"只回答两个字/一句话/简短"时，短答案就是正确答案，不判截断
+        _short_ask = ("只回答两个字", "只回两个字", "只回答", "一句话", "简短", "简要",
+                      "不要超过", "字数不超过")
+        if any(k in str(user_input or "") for k in _short_ask):
             return False
         if body.endswith(cls._SENTENCE_END):
             return False

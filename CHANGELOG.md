@@ -1,8 +1,6 @@
 # 变更日志
 
-本项目的变更日志**只有一份**，位于 [docs/dev/开发记忆.md §12 更新日志](docs/dev/开发记忆.md)——那是全仓库的
-单一事实来源（Single Source of Truth）。此处不复制内容，避免两份 changelog 相互漂移。
+本仓库的**公开变更摘要**见 [README.md](README.md) 的「最近版本」一节与
+[Releases](https://github.com/Andysun06/yindun-agent/releases) 页面。
 
-- 人类协作者：看 [docs/dev/开发记忆.md](docs/dev/开发记忆.md)（架构决策、安全不变量、路线图、更新日志）
-- 对外门面：看 [README.md](README.md)（含版本历史表）
-- 格式化历史：`git log --oneline`
+逐条修复记录、架构决策与内部过程稿不随公开仓库发布，避免把内部工作笔记混进交付物。

@@ -374,8 +374,9 @@ def main() -> int:
             tier: b.dataset.t, prov: b.dataset.prov, builtin: b.dataset.builtin,
             active: b.classList.contains('is-active') }))""")
         check("左列按**供应商**聚合（本机 Ollama / 内网地址 / 云端域名，而不是一串模型名）",
-              [(p["tier"], p["prov"]) for p in providers] ==
-              [("local", "本机 Ollama"), ("lan", "10.0.0.8:8000"), ("wan", "open.bigmodel.cn")],
+              [(p["tier"], p["prov"]) for p in providers][:3] ==
+              [("local", "本机 Ollama"), ("lan", "10.0.0.8:8000"), ("wan", "open.bigmodel.cn")]
+              and ("wan", "隐盾") in [(p["tier"], p["prov"]) for p in providers],
               str(providers))
         check("本机档仍列出 Ollama 已安装模型（摊开的子项可一键切换）",
               page.eval_on_selector_all("#prov-list .prov__sub", "els => els.map(e => e.dataset.use)") ==
@@ -406,9 +407,11 @@ def main() -> int:
         check("同一时刻只有一个背景高亮（切到局域网后仍是 1 个）",
               page.eval_on_selector_all("#prov-list .prov__item.is-active", "els => els.length") == 1, "")
         fmt = page.eval_on_selector_all("#p-format option", "els => els.map(e => [e.value, e.disabled, e.textContent])")
-        check("API 格式下拉：只有 OpenAI 兼容 Chat Completions 可用，其它置灰并注明「暂不支持」",
+        check("API 格式下拉：四种格式全部可用（V3.6.21 起不再有置灰项）",
               fmt[0][0] == "chat_completions" and fmt[0][1] is False
-              and all(f[1] is True and "暂不支持" in f[2] for f in fmt[1:]), str(fmt))
+              and all(f[1] is False and "暂不支持" not in f[2] for f in fmt[1:])
+              and {f[0] for f in fmt} >= {"chat_completions", "anthropic", "responses", "ollama_native"},
+              str(fmt))
         row = page.evaluate("""() => {
             const r = document.querySelector('#p-models .mrow'); if (!r) return null;
             return { name: r.dataset.mname,
@@ -599,6 +602,33 @@ def main() -> int:
               and add_calls[-1][1][5] == "回归-云端供应商", str(add_calls[-1][1]))
         check("该供应商下现在有两个模型（列表真的多了）",
               page.eval_on_selector_all("#p-models .mrow", "els => els.length") == 2, "")
+
+        # ── 7d-2) 四种接口格式全部可用 + 公共中转一键添加（V3.6.21）──
+        print("\n" + "=" * 78)
+        print("【7d-2】接口格式四项可用 + 「添加公共中转（免 Key）」")
+        print("=" * 78)
+        fmt_disabled = page.eval_on_selector_all(
+            "#p-format option", "els => els.filter(e => e.disabled).map(e => e.value)")
+        check("四种接口格式都可用（没有置灰的选项）", fmt_disabled == [], str(fmt_disabled))
+        fmt_values = page.eval_on_selector_all("#p-format option", "els => els.map(e => e.value)")
+        check("格式清单包含 anthropic / responses / ollama_native",
+              {"chat_completions", "anthropic", "responses", "ollama_native"} <= set(fmt_values),
+              str(fmt_values))
+        relay_btn = page.query_selector('[data-addrelay="1"]')
+        check("公网档有「＋ 添加公共中转（免 Key）」入口", relay_btn is not None, "")
+        if relay_btn is not None:
+            page.click('[data-addrelay="1"]')
+            page.wait_for_timeout(900)
+            relay_calls = [c for c in calls("add_custom_model")
+                           if c[1] and "自建中转站" in str(c[1][0])]
+            check("点一下即写入中转配置（免 Key + OpenAI 兼容）",
+                  bool(relay_calls)
+                  and relay_calls[-1][1][2] == "https://yindun-relay.pages.dev/api/ai"
+                  and relay_calls[-1][1][3] == ""
+                  and relay_calls[-1][1][6] == "chat_completions",
+                  str(relay_calls[-1][1]) if relay_calls else "no call")
+            check("中转站出现在公网档列表里",
+                  "隐盾" in page.inner_text("#prov-list"), page.inner_text("#prov-list")[:200])
 
         # ── 7e) 可读写范围（沙箱目录）：显示 / 选择 / 清除 / 态势条同步 ──
         print("\n" + "=" * 78)
@@ -793,6 +823,38 @@ def main() -> int:
         page.wait_for_timeout(250)
         check("再点一次可展开", not page.evaluate(
             "() => document.querySelector('.app').classList.contains('is-right-collapsed')"))
+
+        # ── 10b) 窗口拖动区（V3.6.21：整条顶栏可拖，按钮不触发拖动）──
+        print("\n" + "=" * 78)
+        print("【10b】顶栏/浮条拖动区（整条可拖 + 交互控件不触发）")
+        print("=" * 78)
+        drag_info = page.evaluate("""() => {
+            const top = document.querySelector('.topbar');
+            const mini = document.querySelector('.minibar');
+            return { top: top && top.classList.contains('pywebview-drag-region'),
+                     mini: mini && mini.classList.contains('pywebview-drag-region') };
+        }""")
+        check("顶栏整条是拖动区（不再只有中间的 spacer）", bool(drag_info.get("top")), str(drag_info))
+        check("闪发浮条整条是拖动区", bool(drag_info.get("mini")), str(drag_info))
+        # 冒泡验证：按钮上的 mousedown 不能到达 body（pywebview 的拖动监听挂在 body），
+        # 顶栏空白处的 mousedown 必须到达 body（否则拖不动窗口）。
+        bubble = page.evaluate("""() => {
+            const seen = { body: 0 };
+            const onBody = () => { seen.body += 1; };
+            document.body.addEventListener('mousedown', onBody);
+            const fire = (el) => el.dispatchEvent(
+                new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+            fire(document.querySelector('#btn-sidebar'));      // 顶栏按钮
+            const afterBtn = seen.body;
+            fire(document.querySelector('.topbar__title'));    // 顶栏空白/标题
+            const afterTitle = seen.body;
+            document.body.removeEventListener('mousedown', onBody);
+            return { afterBtn, afterTitle };
+        }""")
+        check("顶栏按钮的 mousedown 被拦下（不会把点击当成拖窗口）",
+              bubble["afterBtn"] == 0, str(bubble))
+        check("顶栏空白处的 mousedown 能到达 body（窗口可以拖）",
+              bubble["afterTitle"] >= 1, str(bubble))
 
         # ── 11) 附件「＋」：真的触发 pick_files，且有可读反馈 ──
         print("\n" + "=" * 78)
@@ -2657,6 +2719,40 @@ def main() -> int:
     check("context_usage 的每一项都带真实 token 与占比（没有占位/编造）",
           all(isinstance(p.get("tokens"), int) and isinstance(p.get("percent"), (int, float))
               and p.get("label") for p in usage["parts"]), str(usage["parts"]))
+
+    # ── 18) 演示版本提示（打包版首启 toast）──
+    print("\n" + "=" * 78)
+    print("【18】演示版本提示：内置自制中转站（首启 toast）")
+    print("=" * 78)
+    import functools
+    import http.server
+    _demo_handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(WEB_DIR))
+    _demo_srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _demo_handler)
+    threading.Thread(target=_demo_srv.serve_forever, daemon=True).start()
+    _demo_url = f"http://127.0.0.1:{_demo_srv.server_address[1]}/index.html#mock"
+    with sync_playwright() as _pw_demo:
+        _browser_demo = _pw_demo.chromium.launch()
+        page_demo = _browser_demo.new_page(viewport={"width": 1280, "height": 800})
+        try:
+            page_demo.goto(_demo_url, wait_until="domcontentloaded")
+            page_demo.wait_for_timeout(800)
+            demo_toast = page_demo.eval_on_selector_all(
+                "#toast-root .toast", "els => els.map(e => e.textContent).join(' | ')")
+            check("首启弹出「演示版本 / 内置自制中转站」提示",
+                  "演示版本" in demo_toast and "中转站" in demo_toast, repr(demo_toast[:160]))
+            check("提示里写明无需本地 Ollama / 有额度限制",
+                  "无需本地 Ollama" in demo_toast and "额度" in demo_toast, repr(demo_toast[:160]))
+            demo_calls = page_demo.evaluate(
+                "() => (window.__YINDUN_MOCK__ && window.__YINDUN_MOCK__.calls) || []")
+            check("看过之后调用 mark_demo_notice_seen（不会每次启动都弹）",
+                  any(c[0] == "mark_demo_notice_seen" for c in demo_calls), str(demo_calls)[:200])
+            demo_catalog = page_demo.evaluate("() => window.__YINDUN_MOCK__.api.model_catalog()")
+            wan_names = [m.get("name") for m in ((demo_catalog or {}).get("tiers") or {}).get("wan", [])]
+            check("内置演示模型出现在公网档（评委可直接选）",
+                  any("自建中转站" in str(n) for n in wan_names), str(wan_names))
+        finally:
+            _browser_demo.close()
+    _demo_srv.shutdown()
 
     elapsed = time.time() - started
     print("\n" + "=" * 78)

@@ -86,7 +86,11 @@ def _time_stamp() -> str:
 # 存储仍是 `custom_models[条目名] = {model_id, base_url, api_key, tier, ...}`——一条模型
 # 一行；`provider` 只是**可选**的分组显示名，老配置没有它，所以必须能按 base_url 兜底
 # 归组（同一台机器 / 同一个云服务的多条模型要落到同一组，否则左栏会散成一堆单模型分组）。
-API_FORMATS = ("chat_completions",)      # 目前**只有** OpenAI 兼容 Chat Completions 真能用
+API_FORMATS = ("chat_completions", "ollama_native", "anthropic", "responses")
+# V3.6.21：四种接口格式都真能用了——
+#   chat_completions（OpenAI 兼容，含免 Key 中转）/ ollama_native（Ollama 原生）/
+#   anthropic（Messages API）/ responses（OpenAI Responses API）。
+# 后两者由 app/chat_adapters.py 适配（零新增依赖），未知值仍回落 chat_completions。
 API_FORMAT_LABEL = {"chat_completions": "OpenAI 兼容 Chat Completions"}
 
 
@@ -184,6 +188,10 @@ class AgentService:
         self._plugin_sync: Dict[str, Any] = {"templates": [], "templates_removed": [],
                                              "recognizer": False, "errors": []}
         self._laya_service: Any = None      # laya 接入服务（懒建，避免启动时做 import 探测）
+        # 算力不可用时的后台自动重探（V3.6.21）：先开隐盾、后开 Ollama 也能自己恢复，
+        # 不再要求"必须先启动 Ollama"。同一时刻只允许一个重探线程。
+        self._recheck_thread: Optional[threading.Thread] = None
+        self._recheck_stop = threading.Event()
 
     # ── 生命周期 ──────────────────────────────────
     def initialize(self) -> None:
@@ -210,6 +218,69 @@ class AgentService:
             register_sandbox_settings_source(lambda: self.settings.get("sandbox_dir", ""))
         except Exception as exc:
             log.warning("注册可读写范围读取器失败（将按环境变量回退）：%s", exc)
+        # ★ V3.6.21：内置「演示模型」（公共中转，免 Key）。
+        #   评委机器通常没有本地 Ollama，也不该拿到我们的模型 Key——中转站把 Key 留在服务端，
+        #   客户端只拿一个公开地址 + 模型名。这里只登记条目，不强行切换用户的模型；
+        #   首启没有任何可用模型时由 `_resolve_model_selection` 自动选它。
+        self.ensure_demo_model()
+
+    DEMO_MODEL_NAME = "隐盾自建中转站（供评委试用）"
+    DEMO_MODEL_OLD_NAME = "演示模型 · deepseek-v4.1-flash"   # 旧名（V3.6.21 早批），启动时迁移
+    DEMO_MODEL_BASE = "https://yindun-relay.pages.dev/api/ai"
+    DEMO_MODEL_ID = "deepseek-v4.1-flash"
+    # 中转站门禁（V3.6.21）：中转站只接受带这两个头、且 UA 为 Yindun/ 的客户端。
+    # 这是"门禁令牌"不是模型 Key——随客户端分发、可被逆向提取，泄露的后果只是
+    # "别人能用这个限流的演示中转"，上游 Key 仍只在 Cloudflare 环境变量里。
+    DEMO_RELAY_CLIENT = "yindun-desktop"
+    DEMO_RELAY_TOKEN = "yd_demo_7f3a9c1e5b2d4f6081a3c5e7d9b0f2a4"
+
+    def ensure_demo_model(self) -> None:
+        """登记内置演示模型（幂等；不覆盖用户已改过的同名条目）。"""
+        try:
+            custom = self.settings.get("custom_models")
+            if not isinstance(custom, dict):
+                custom = {}
+            custom = dict(custom)
+            _existing = custom.get(self.DEMO_MODEL_NAME)
+            if isinstance(_existing, dict):
+                # ★ 内置条目跟随版本更新（V3.6.21）：早期批次写入的地址/厂商名可能是
+                #   workers.dev 或旧名；只要它仍是我们登记的 demo_relay 且地址指向
+                #   隐盾中转域名，就刷新为当前常量（用户自己改成别处的条目不动）。
+                _base = str(_existing.get("base_url") or "")
+                if _existing.get("demo_relay") and "yindun-relay" in _base:
+                    _fixed = dict(_existing)
+                    _fixed["base_url"] = str(self.settings.get("demo_model_base")
+                                             or self.DEMO_MODEL_BASE)
+                    _fixed["provider"] = "隐盾"
+                    _fixed["tags"] = ["评委试用", "免Key"]
+                    if _fixed != _existing:
+                        custom[self.DEMO_MODEL_NAME] = _fixed
+                        self.settings.set("custom_models", custom)
+                        self.settings.save()
+                        log.info("内置演示条目已随版本更新：%s", _fixed["base_url"])
+                return
+            # 旧名迁移：早期批次登记过 "演示模型 · deepseek-v4.1-flash"，
+            # 改名后把旧条目整体搬过来（保留用户改过的地址/标记），不留重复项。
+            _old = custom.pop(self.DEMO_MODEL_OLD_NAME, None) if self.DEMO_MODEL_OLD_NAME in custom else None
+            _entry = dict(_old or {})
+            _entry.update({
+                "model_id": self.DEMO_MODEL_ID,
+                # 允许用设置项 demo_model_base 覆盖（Pages 项目名不同时不必改代码）
+                "base_url": str(self.settings.get("demo_model_base") or self.DEMO_MODEL_BASE),
+                "api_key": "",                 # 中转站免 Key（Key 只在服务端环境变量）
+                "tier": "wan",
+                "provider": "隐盾",
+                "api_format": "chat_completions",
+                "tags": ["评委试用", "免Key"],
+                "context_window": 0,
+                "demo_relay": True,
+            })
+            custom[self.DEMO_MODEL_NAME] = _entry
+            self.settings.set("custom_models", custom)
+            self.settings.save()
+            log.info("已登记内置演示模型：%s", self.DEMO_MODEL_NAME)
+        except Exception as exc:
+            log.warning("登记内置演示模型失败（不影响其他功能）：%s", exc)
 
     def set_listener(self, listener: Optional[Listener]) -> None:
         self._listener = listener
@@ -397,14 +468,62 @@ class AgentService:
             print(f"[AgentService] 事件 {event} 投递失败：{exc}")
 
     # ── 算力 ─────────────────────────────────────
-    def prepare_llm(self) -> Dict[str, Any]:
-        """构建算力（可能耗时，调用方应放后台线程）。"""
+    def schedule_llm_recheck(self, delay: float = 8.0) -> None:
+        """算力不可用时后台自动重探（V3.6.21，负责人实测）。
+
+        现象：先启动隐盾、后启动 Ollama，界面一直停在"模型不可用"，只能重启客户端。
+        原因：`prepare_llm` 只在启动时跑一次，失败后 `_llm` 一直是 None，`send` 直接拒绝。
+        做法：失败后起一个守护线程，按 8s → 12s → … → 60s 退避做**轻量探测**
+        （`model_catalog().current_available`，只问 Ollama 要模型清单），一旦可用就重跑
+        `prepare_llm` 并广播 `llm_status`；成功即退出。同一时刻只允许一个重探线程。
+        """
+        with self._lock:
+            if self._llm is not None:
+                return
+            if self._recheck_thread is not None and self._recheck_thread.is_alive():
+                return
+            self._recheck_stop.clear()
+
+            def _loop() -> None:
+                wait = max(2.0, float(delay))
+                while not self._recheck_stop.wait(wait):
+                    try:
+                        if self._llm is not None:
+                            return
+                        catalog = self.model_catalog()
+                        if bool(catalog.get("current_available")):
+                            self.prepare_llm(announce=False)
+                            if self._llm is not None:
+                                self._emit("status", "已重新检测到算力，模型可用")
+                                return
+                    except Exception:
+                        pass
+                    wait = min(wait * 1.5, 60.0)
+
+            self._recheck_thread = threading.Thread(target=_loop, daemon=True,
+                                                    name="llm-recheck")
+            self._recheck_thread.start()
+
+    def stop_llm_recheck(self) -> None:
+        """停止后台重探（应用退出/切换模型时调用）。"""
+        try:
+            self._recheck_stop.set()
+        except Exception:
+            pass
+
+    def prepare_llm(self, announce: bool = True) -> Dict[str, Any]:
+        """构建算力（可能耗时，调用方应放后台线程）。
+
+        announce=False 用于**运行期后台重探**（V3.6.21）：不要在界面已经用起来之后
+        再弹一轮"正在检测本机算力"的启动进度，只安静地更新 llm_status。
+        """
+        _say = self._emit if announce else (lambda *a, **k: None)
         # ★ 首启体验（V3.6.0）：整个过程分阶段播报给界面。首次启动时用户要等的其实有三段——
         #   ① onefile 解压（在 Python 起来之前，界面还没出现，只能靠文档说明）；
         #   ② 探测算力 + 建算力（秒级）；③ **把模型载入内存**（本机实测 20~60 秒）。
         #   以前这三段全静默，用户看到的是"界面出来了但点了没反应"，容易以为是坏的。
-        self._emit("startup", {"phase": "probe", "done": False,
-                               "text": "正在检测本机算力与模型…"})
+        _say("startup", {"phase": "probe", "done": False,
+                         "text": "正在检测本机算力与模型…"})
         # ★ 审计锚点自检（V3.6.x，BUG-0002）：锚点写不进去 / 已迁移 / 回退到备用位置，
         #   都要在启动时**主动告诉用户**，而不是等他自己去翻审计面板或日志。
         self._emit_anchor_advisory()
@@ -440,8 +559,10 @@ class AgentService:
             self._llm_error = unavailable_reason or "算力不可用"
             status = self.llm_status()
             self._emit("llm_status", status)
-            self._emit("startup", {"phase": "ready", "done": True,
-                                   "text": f"算力不可用：{self._llm_error}"})
+            _say("startup", {"phase": "ready", "done": True,
+                             "text": f"算力不可用：{self._llm_error}"})
+            # ★ 后台自动重探：用户先开隐盾、后开 Ollama 时，不必重启客户端
+            self.schedule_llm_recheck()
             return status
         # 一次建好两套算力变体（关思考 / 保持模型默认），每轮按当前模式挑一套用：
         # 切「快速 / 深度思考」不需要重建算力，也不会打断正在跑的轮次。
@@ -458,12 +579,12 @@ class AgentService:
         # ★ 第三段等待：把模型载入内存（本机实测 20~60 秒）。放在后台，不阻塞界面可用性。
         #   注意"就绪"必须等**预热真的结束**才播报：早发一次会让界面提前收起提示，
         #   用户以为可以问了、其实第一句话仍在等加载（第一版就是这么错的）。
-        if not self._warmup_llm():
-            self._emit("startup", {"phase": "ready", "done": True,
-                                   "text": f"已就绪：{self.settings.get('model') or ''}"})
+        if not self._warmup_llm(announce=announce):
+            _say("startup", {"phase": "ready", "done": True,
+                             "text": f"已就绪：{self.settings.get('model') or ''}"})
         return status
 
-    def _warmup_llm(self) -> bool:
+    def _warmup_llm(self, announce: bool = True) -> bool:
         """后台把聊天模型载入内存（V3.6.0）。返回是否已在后台预热（True 时由它负责播报就绪）。
 
         为什么要做：Ollama 是**首次调用**才把权重读进内存的，本机实测这一下要 20~60 秒。
@@ -492,8 +613,10 @@ class AgentService:
 
             # 播报"开始载入"必须落在**启动预热线程之前**：这一条是"还要等多久"的唯一提示，
             # 缩进错一层它就会静默（第一版就是这么错的，实测事件流里看不到它）。
-            self._emit("startup", {"phase": "load", "done": False,
-                                   "text": f"正在把模型载入内存：{model}（首次约 20~60 秒，之后不用再等）…"})
+            # announce=False（运行期重探）不播报启动进度，避免界面已经用起来后弹旧提示。
+            if announce:
+                self._emit("startup", {"phase": "load", "done": False,
+                                       "text": f"正在把模型载入内存：{model}（首次约 20~60 秒，之后不用再等）…"})
 
             def _run() -> None:
                 import time as _t
@@ -502,12 +625,14 @@ class AgentService:
                     from langchain_core.messages import HumanMessage
                     llm.invoke([HumanMessage(content="就绪")])
                     self._emit("status", f"模型已载入内存（{_t.time() - t0:.0f} 秒），可以开始提问")
-                    self._emit("startup", {"phase": "ready", "done": True,
-                                           "text": f"已就绪：{model}"})
+                    if announce:
+                        self._emit("startup", {"phase": "ready", "done": True,
+                                               "text": f"已就绪：{model}"})
                 except Exception as exc:
                     print(f"[AgentService] 模型预热失败（不影响使用，首次提问会慢一些）：{exc}")
-                    self._emit("startup", {"phase": "ready", "done": True,
-                                           "text": f"已就绪：{model}（首次提问可能慢一些）"})
+                    if announce:
+                        self._emit("startup", {"phase": "ready", "done": True,
+                                               "text": f"已就绪：{model}（首次提问可能慢一些）"})
 
             threading.Thread(target=_run, daemon=True, name="yindun-llm-warmup").start()
             return True
@@ -542,11 +667,16 @@ class AgentService:
                         picked = str(entry["name"]).strip()
                         break
             if not picked:
+                # ★ V3.6.21：本机没有任何可对话模型时，退到内置演示模型（公共中转，免 Key）——
+                #   评委机器通常没有 Ollama，开箱即可试用；用户自己的模型优先，绝不抢选。
+                if self.DEMO_MODEL_NAME in (self.settings.get("custom_models") or {}):
+                    picked = self.DEMO_MODEL_NAME
+            if not picked:
                 # 检测不到任何可对话模型：保持空（不写死名字），由界面提示"请选择模型"
                 return "", False, self._diagnose_llm_unavailable(catalog=catalog)
             self.settings.set("model", picked)
             self.settings.save()
-            self._emit("status", f"未选择过模型，已自动选用本机检测到的 {picked}")
+            self._emit("status", f"未选择过模型，已自动选用 {picked}")
             catalog = self.model_catalog()
             current = picked
         if bool(catalog.get("current_available")):
@@ -1135,7 +1265,8 @@ class AgentService:
 
         ★ V3.6.8 起多三个**可选**参数（老调用方不传也照常工作）：
           · provider   —— 供应商显示名（界面按它分组）；空 → 按 base_url 的 host 兜底；
-          · api_format —— 接口格式，只认 chat_completions，其它值回落（不假装支持）；
+          · api_format —— 接口格式：chat_completions / ollama_native / anthropic / responses，
+                          其它值回落 chat_completions（不假装支持）；
           · tags       —— 用户标签数组；None = 保持原值、[] = 清空（区分"不改"与"清空"）。
         """
         name = (name or "").strip()
@@ -2044,6 +2175,8 @@ class AgentService:
                     self._emit("llm_status", self.llm_status())
                 except Exception:
                     pass
+                # ★ 顺便启动后台重探：用户此时把 Ollama 打开，下一条消息就能用
+                self.schedule_llm_recheck(delay=5.0)
                 return False
 
             sid = self.sessions.current_id or self.sessions.create()

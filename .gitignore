@@ -77,3 +77,10 @@ archive/
 
 # ppt-master 预览产物（工具自动生成，不入库）
 .preview/
+
+# 交付打包物（按需本地生成，不入库）
+*.zip
+
+# 内部过程稿与 AI 协作约定（不随公开仓库发布；本地保留）
+docs/dev/
+AGENTS.md
