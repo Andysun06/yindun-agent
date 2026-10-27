@@ -1254,6 +1254,17 @@ _demo_svc.ensure_demo_model()
 check("重复调用幂等，且不覆盖用户改过的同名条目",
       (_demo_svc.settings.get("custom_models") or {})[AgentService.DEMO_MODEL_NAME]["base_url"]
       == "http://user-custom.example/v1", "")
+# 旧地址自动升级：早期批次写入的 workers.dev 地址要跟随版本刷新为当前常量
+_demo_svc.settings.set("custom_models", {AgentService.DEMO_MODEL_NAME: {
+    "model_id": AgentService.DEMO_MODEL_ID,
+    "base_url": "https://yindun-relay.944898918.workers.dev/api/ai",
+    "api_key": "", "tier": "wan", "provider": "隐盾自建中转站",
+    "api_format": "chat_completions", "demo_relay": True}})
+_demo_svc.ensure_demo_model()
+_up = (_demo_svc.settings.get("custom_models") or {})[AgentService.DEMO_MODEL_NAME]
+check("★ 旧演示条目地址自动升级到当前地址（评委不会拿到不可达域名）",
+      _up["base_url"] == AgentService.DEMO_MODEL_BASE and _up["provider"] == "隐盾",
+      str(_up))
 # 没有任何本机模型时，首启自动选演示模型（评委机器无 Ollama 的场景）
 _demo_svc.settings.set("model", "")
 _demo_svc.settings.set("custom_models", {AgentService.DEMO_MODEL_NAME: dict(_demo_cm[AgentService.DEMO_MODEL_NAME], base_url="http://x")})

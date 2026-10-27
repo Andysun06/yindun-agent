@@ -240,9 +240,25 @@ class AgentService:
             custom = self.settings.get("custom_models")
             if not isinstance(custom, dict):
                 custom = {}
-            if self.DEMO_MODEL_NAME in custom:
-                return
             custom = dict(custom)
+            _existing = custom.get(self.DEMO_MODEL_NAME)
+            if isinstance(_existing, dict):
+                # ★ 内置条目跟随版本更新（V3.6.21）：早期批次写入的地址/厂商名可能是
+                #   workers.dev 或旧名；只要它仍是我们登记的 demo_relay 且地址指向
+                #   隐盾中转域名，就刷新为当前常量（用户自己改成别处的条目不动）。
+                _base = str(_existing.get("base_url") or "")
+                if _existing.get("demo_relay") and "yindun-relay" in _base:
+                    _fixed = dict(_existing)
+                    _fixed["base_url"] = str(self.settings.get("demo_model_base")
+                                             or self.DEMO_MODEL_BASE)
+                    _fixed["provider"] = "隐盾"
+                    _fixed["tags"] = ["评委试用", "免Key"]
+                    if _fixed != _existing:
+                        custom[self.DEMO_MODEL_NAME] = _fixed
+                        self.settings.set("custom_models", custom)
+                        self.settings.save()
+                        log.info("内置演示条目已随版本更新：%s", _fixed["base_url"])
+                return
             # 旧名迁移：早期批次登记过 "演示模型 · deepseek-v4.1-flash"，
             # 改名后把旧条目整体搬过来（保留用户改过的地址/标记），不留重复项。
             _old = custom.pop(self.DEMO_MODEL_OLD_NAME, None) if self.DEMO_MODEL_OLD_NAME in custom else None

@@ -223,7 +223,7 @@ yindun-agent/
 | 技术报告（形式化 / 威胁模型 / 攻防实验 / 部署形态 · 41 页） | [docs/隐盾安全智能体_技术报告.pdf](docs/隐盾安全智能体_技术报告.pdf) |
 | 使用说明（安装 / 算力 / 功能 / 控制面） | [docs/使用说明.md](docs/使用说明.md) · [PDF](docs/使用说明.pdf) |
 | 汇报 PPT（21 页） | [docs/隐盾安全智能体_项目汇报.pptx](docs/隐盾安全智能体_项目汇报.pptx) |
-| 正式答辩 PPT（11 页） | [隐盾安全智能体汇报.pptx](隐盾安全智能体汇报.pptx) · [5 分钟讲稿](docs/dev/正式答辩_5分钟_讲稿.md) |
+| 正式答辩 PPT（11 页） | [隐盾安全智能体汇报_1027.pptx](隐盾安全智能体汇报_1027.pptx) · [5 分钟讲稿](docs/dev/正式答辩_5分钟_讲稿.md) |
 | 插件开发指南 | [docs/插件开发.md](docs/插件开发.md) |
 | 安全策略与威胁模型 | [SECURITY.md](SECURITY.md) |
 | 隐私说明 | [PRIVACY.md](PRIVACY.md) |
