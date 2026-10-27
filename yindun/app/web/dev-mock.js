@@ -307,7 +307,10 @@
         models: ["qwen2.5:7b-instruct", "nomic-embed-text:latest"], error: null,
       },
       sessions, current_session_id: location.hash.indexOf("empty") >= 0 ? null : "s1",
+      // 预览演示提示：真实打包版首启会带这条（源码运行不带）；用 #mock 看样式时也给一条
+      demo_notice: "演示版本：已内置自制中转站（deepseek-v4.1-flash），无需本地 Ollama 即可试用；中转站有额度与频率限制，请勿滥用。正式使用请接入你自己的模型。",
     }),
+    mark_demo_notice_seen: () => Promise.resolve(true),
     llm_status: () => Promise.resolve({ ready: true, model: "qwen2.5:7b-instruct", models: ["qwen2.5:7b-instruct", "nomic-embed-text:latest"] }),
     list_sessions: () => Promise.resolve(sessions),
     open_session: (id) => Promise.resolve({ id, messages, box_mapping: {} }),
@@ -351,6 +354,10 @@
           { name: "云端GLM", model_id: "glm-4-flash", tier: "wan", source: "custom",
             base_url: "https://open.bigmodel.cn/api/paas/v4", kind: "openai", has_key: true, key_invalid: false,
             provider: "open.bigmodel.cn", api_format: "chat_completions", tags: ["低成本"], note: "" },
+          { name: "演示模型 · deepseek-v4.1-flash", model_id: "deepseek-v4.1-flash", tier: "wan",
+            source: "custom", base_url: "https://yindun-relay.pages.dev/api/ai", kind: "openai",
+            has_key: false, key_invalid: false, provider: "隐盾演示中转",
+            api_format: "chat_completions", tags: ["演示", "免Key"], note: "" },
         ],
       };
       // 预览"本机一个模型都没有"这一态：加 #mock-noollama。
@@ -560,7 +567,14 @@
     delete_session: noop, rename_session: noop,
   };
 
-  window.__YINDUN_MOCK__ = { api };
+  // 调用日志：预览排障与界面回归断言用（记录接口名与参数，不记录返回值）
+  const calls = [];
+  for (const key of Object.keys(api)) {
+    if (typeof api[key] !== "function") continue;
+    const fn = api[key];
+    api[key] = (...args) => { calls.push([key, args]); return fn(...args); };
+  }
+  window.__YINDUN_MOCK__ = { api, calls };
 
 
 

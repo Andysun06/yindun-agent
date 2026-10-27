@@ -1105,6 +1105,9 @@ _svc_c = AgentService(settings=SettingsStore(path=TMP / "k_c.json"),
                       sessions=SessionStore(path=TMP / "k_c_sess.json"),
                       plugin_data_root=TMP / "k_c_pd")
 _svc_c.initialize()
+# 先清掉内置演示模型，单独验证"什么都没有"时的空态（演示模型回退另有专门用例）
+_svc_c.settings.set("custom_models", {})
+_svc_c.settings.save()
 _patch_detect([], [])
 _st_c = _svc_c.prepare_llm()
 check("检测不到可对话模型时保持空（不写死名字）",
@@ -1225,6 +1228,48 @@ _bad.settings.set("custom_models", ["broken"])
 _r = _bad.add_custom_model("n", "m", "https://example.invalid/v1", "k")
 check("★ custom_models 被改坏时仍能保存（坏配置降级为空表）",
       bool(_r.get("ok")) and isinstance(_bad.settings.get("custom_models"), dict), str(_r))
+
+print(chr(10) + "=" * 78)
+print("【7b】内置演示模型（公共中转，免 Key）")
+print("=" * 78)
+_demo_cfg = TMP / "demo_cfg.json"
+_demo_sess = TMP / "demo_sess.json"
+for _p in (_demo_cfg, _demo_sess):
+    if _p.exists():
+        _p.unlink()
+_demo_svc = AgentService(settings=SettingsStore(path=_demo_cfg),
+                         sessions=SessionStore(path=_demo_sess),
+                         plugin_data_root=TMP / "demo_pd")
+_demo_svc.initialize()
+_demo_cm = _demo_svc.settings.get("custom_models") or {}
+check("★ 初始化即登记内置演示模型（免 Key、公网档）",
+      AgentService.DEMO_MODEL_NAME in _demo_cm
+      and _demo_cm[AgentService.DEMO_MODEL_NAME].get("api_key") == ""
+      and _demo_cm[AgentService.DEMO_MODEL_NAME].get("base_url", "").startswith("https://"),
+      str(_demo_cm.get(AgentService.DEMO_MODEL_NAME))[:160])
+# 幂等 + 不覆盖用户改过的同名条目
+_demo_cm[AgentService.DEMO_MODEL_NAME]["base_url"] = "http://user-custom.example/v1"
+_demo_svc.settings.set("custom_models", _demo_cm)
+_demo_svc.ensure_demo_model()
+check("重复调用幂等，且不覆盖用户改过的同名条目",
+      (_demo_svc.settings.get("custom_models") or {})[AgentService.DEMO_MODEL_NAME]["base_url"]
+      == "http://user-custom.example/v1", "")
+# 没有任何本机模型时，首启自动选演示模型（评委机器无 Ollama 的场景）
+_demo_svc.settings.set("model", "")
+_demo_svc.settings.set("custom_models", {AgentService.DEMO_MODEL_NAME: dict(_demo_cm[AgentService.DEMO_MODEL_NAME], base_url="http://x")})
+def _demo_catalog():
+    _cur = str(_demo_svc.settings.get("model") or "")
+    _cm = _demo_svc.settings.get("custom_models") or {}
+    return {"current_available": bool(_cur and _cur in _cm),
+            "local_detected": [],
+            "tiers": {"local": [], "lan": [], "wan": list(_cm.keys())},
+            "local_note": "没有检测到本机模型"}
+
+
+_demo_svc.model_catalog = _demo_catalog
+_picked, _avail, _reason = _demo_svc._resolve_model_selection()
+check("★ 本机无模型时自动选中演示模型（开箱可用）",
+      _picked == AgentService.DEMO_MODEL_NAME and _avail is True, f"{_picked} / {_avail} / {_reason}")
 
 print(chr(10) + "=" * 78)
 print("【8】算力不可用时的后台自动重探（先开隐盾、后开 Ollama）")

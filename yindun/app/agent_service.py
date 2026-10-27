@@ -86,7 +86,11 @@ def _time_stamp() -> str:
 # 存储仍是 `custom_models[条目名] = {model_id, base_url, api_key, tier, ...}`——一条模型
 # 一行；`provider` 只是**可选**的分组显示名，老配置没有它，所以必须能按 base_url 兜底
 # 归组（同一台机器 / 同一个云服务的多条模型要落到同一组，否则左栏会散成一堆单模型分组）。
-API_FORMATS = ("chat_completions",)      # 目前**只有** OpenAI 兼容 Chat Completions 真能用
+API_FORMATS = ("chat_completions", "ollama_native", "anthropic", "responses")
+# V3.6.21：四种接口格式都真能用了——
+#   chat_completions（OpenAI 兼容，含免 Key 中转）/ ollama_native（Ollama 原生）/
+#   anthropic（Messages API）/ responses（OpenAI Responses API）。
+# 后两者由 app/chat_adapters.py 适配（零新增依赖），未知值仍回落 chat_completions。
 API_FORMAT_LABEL = {"chat_completions": "OpenAI 兼容 Chat Completions"}
 
 
@@ -214,6 +218,47 @@ class AgentService:
             register_sandbox_settings_source(lambda: self.settings.get("sandbox_dir", ""))
         except Exception as exc:
             log.warning("注册可读写范围读取器失败（将按环境变量回退）：%s", exc)
+        # ★ V3.6.21：内置「演示模型」（公共中转，免 Key）。
+        #   评委机器通常没有本地 Ollama，也不该拿到我们的模型 Key——中转站把 Key 留在服务端，
+        #   客户端只拿一个公开地址 + 模型名。这里只登记条目，不强行切换用户的模型；
+        #   首启没有任何可用模型时由 `_resolve_model_selection` 自动选它。
+        self.ensure_demo_model()
+
+    DEMO_MODEL_NAME = "演示模型 · deepseek-v4.1-flash"
+    DEMO_MODEL_BASE = "https://yindun-relay.pages.dev/api/ai"
+    DEMO_MODEL_ID = "deepseek-v4.1-flash"
+    # 中转站门禁（V3.6.21）：中转站只接受带这两个头、且 UA 为 Yindun/ 的客户端。
+    # 这是"门禁令牌"不是模型 Key——随客户端分发、可被逆向提取，泄露的后果只是
+    # "别人能用这个限流的演示中转"，上游 Key 仍只在 Cloudflare 环境变量里。
+    DEMO_RELAY_CLIENT = "yindun-desktop"
+    DEMO_RELAY_TOKEN = "yd_demo_7f3a9c1e5b2d4f6081a3c5e7d9b0f2a4"
+
+    def ensure_demo_model(self) -> None:
+        """登记内置演示模型（幂等；不覆盖用户已改过的同名条目）。"""
+        try:
+            custom = self.settings.get("custom_models")
+            if not isinstance(custom, dict):
+                custom = {}
+            if self.DEMO_MODEL_NAME in custom:
+                return
+            custom = dict(custom)
+            custom[self.DEMO_MODEL_NAME] = {
+                "model_id": self.DEMO_MODEL_ID,
+                # 允许用设置项 demo_model_base 覆盖（Pages 项目名不同时不必改代码）
+                "base_url": str(self.settings.get("demo_model_base") or self.DEMO_MODEL_BASE),
+                "api_key": "",                 # 中转站免 Key（Key 只在服务端环境变量）
+                "tier": "wan",
+                "provider": "隐盾演示中转",
+                "api_format": "chat_completions",
+                "tags": ["演示", "免Key"],
+                "context_window": 0,
+                "demo_relay": True,
+            }
+            self.settings.set("custom_models", custom)
+            self.settings.save()
+            log.info("已登记内置演示模型：%s", self.DEMO_MODEL_NAME)
+        except Exception as exc:
+            log.warning("登记内置演示模型失败（不影响其他功能）：%s", exc)
 
     def set_listener(self, listener: Optional[Listener]) -> None:
         self._listener = listener
@@ -600,11 +645,16 @@ class AgentService:
                         picked = str(entry["name"]).strip()
                         break
             if not picked:
+                # ★ V3.6.21：本机没有任何可对话模型时，退到内置演示模型（公共中转，免 Key）——
+                #   评委机器通常没有 Ollama，开箱即可试用；用户自己的模型优先，绝不抢选。
+                if self.DEMO_MODEL_NAME in (self.settings.get("custom_models") or {}):
+                    picked = self.DEMO_MODEL_NAME
+            if not picked:
                 # 检测不到任何可对话模型：保持空（不写死名字），由界面提示"请选择模型"
                 return "", False, self._diagnose_llm_unavailable(catalog=catalog)
             self.settings.set("model", picked)
             self.settings.save()
-            self._emit("status", f"未选择过模型，已自动选用本机检测到的 {picked}")
+            self._emit("status", f"未选择过模型，已自动选用 {picked}")
             catalog = self.model_catalog()
             current = picked
         if bool(catalog.get("current_available")):
@@ -1193,7 +1243,8 @@ class AgentService:
 
         ★ V3.6.8 起多三个**可选**参数（老调用方不传也照常工作）：
           · provider   —— 供应商显示名（界面按它分组）；空 → 按 base_url 的 host 兜底；
-          · api_format —— 接口格式，只认 chat_completions，其它值回落（不假装支持）；
+          · api_format —— 接口格式：chat_completions / ollama_native / anthropic / responses，
+                          其它值回落 chat_completions（不假装支持）；
           · tags       —— 用户标签数组；None = 保持原值、[] = 清空（区分"不改"与"清空"）。
         """
         name = (name or "").strip()

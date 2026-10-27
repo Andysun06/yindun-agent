@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -101,7 +102,30 @@ class JsApi:
             "model_catalog": model_catalog_brief,
             "sessions": self._svc.list_sessions(),
             "current_session_id": self._svc.current_session_id(),
+            # ★ V3.6.21：打包版首启提示「这是演示版本、内置自制中转站」。
+            #   只在 frozen（安装包/便携版）且未看过时给一次；源码运行不打扰开发者。
+            "demo_notice": self._demo_notice_text(),
         }
+
+    def _demo_notice_text(self) -> str:
+        try:
+            if not getattr(sys, "frozen", False):
+                return ""
+            if self._svc.settings.get("demo_notice_seen"):
+                return ""
+            return ("演示版本：已内置自制中转站（deepseek-v4.1-flash），无需本地 Ollama 即可试用；"
+                    "中转站有额度与频率限制，请勿滥用。正式使用请接入你自己的模型。")
+        except Exception:
+            return ""
+
+    def mark_demo_notice_seen(self) -> bool:
+        """界面展示过演示提示后调用一次，避免每次启动都弹。"""
+        try:
+            self._svc.settings.set("demo_notice_seen", True)
+            self._svc.settings.save()
+            return True
+        except Exception:
+            return False
 
     def llm_status(self) -> Dict[str, Any]:
         return self._svc.llm_status()

@@ -1213,13 +1213,17 @@
   // 不可删除），并进去会让用户没法改/删自己手填错的条目；换个清楚的组名反而更好懂。
   const MANUAL_LOCAL_PROVIDER = "本机 Ollama（手动添加）";
 
-  // 接口格式：目前**只有** OpenAI 兼容 Chat Completions 真能用；其它选项在界面上置灰并注明
-  // 「暂不支持」——宁可明说不支持，也不给一个选了会静默失败的选项（内核侧也会回落校验）。
+  // 接口格式（V3.6.21：四种都真能用）。
+  //   chat_completions —— OpenAI 兼容（含免 Key 中转）
+  //   ollama_native    —— Ollama 原生 /api/chat（远程/局域网 Ollama）
+  //   anthropic        —— Anthropic Messages API
+  //   responses        —— OpenAI Responses API
+  // 内核侧 `agent_service.API_FORMATS` 必须与此一致；未知值回落 chat_completions。
   const API_FORMATS = [
     { key: "chat_completions", label: "OpenAI 兼容 Chat Completions", ok: true },
-    { key: "responses", label: "OpenAI Responses", ok: false },
-    { key: "anthropic", label: "Anthropic Messages", ok: false },
-    { key: "ollama_native", label: "Ollama 原生接口", ok: false },
+    { key: "ollama_native", label: "Ollama 原生接口（/api/chat）", ok: true },
+    { key: "anthropic", label: "Anthropic Messages", ok: true },
+    { key: "responses", label: "OpenAI Responses", ok: true },
   ];
 
   const currentModel = () => (state.settings && state.settings.model) || "";
@@ -1448,7 +1452,11 @@
       // 当场展开手动添加面板，不必再"先点回本机档、再去右栏找按钮"。
       const add = tier === "local"
         ? `<button class="prov__add" type="button" data-addt="local">＋ 手动添加本机模型</button>`
-        : `<button class="prov__add" type="button" data-addt="${tier}">＋ 添加供应商</button>`;
+        : `<button class="prov__add" type="button" data-addt="${tier}">＋ 添加供应商</button>`
+          + (tier === "wan"
+            ? `<button class="prov__add" type="button" data-addrelay="1"
+                       title="公共中转站：免 Key、有模型白名单与限流（适合评委/临时机器）">＋ 添加公共中转（免 Key）</button>`
+            : "");
       return `<div class="prov__group">
         <div class="prov__gtitle"><span class="tier-dot tier-dot--${tier}"></span>
           <b>${meta.label}</b><em>${meta.boundary}</em></div>
@@ -1559,8 +1567,26 @@
     const box = $("prov-list");
     if (!box) return;
     box.onclick = (ev) => {
-      const el = ev.target.closest("[data-use],[data-t],[data-addt]");
+      const el = ev.target.closest("[data-use],[data-t],[data-addt],[data-addrelay]");
       if (!el || !box.contains(el)) return;
+      // ⓪「＋ 添加公共中转（免 Key）」：一键接入评审/临时机器可用的公共中转站。
+      //   中转站只在服务端持有模型 Key，客户端零 Key；模型有白名单与限流（见服务端说明）。
+      if (el.dataset.addrelay) {
+        (async () => {
+          const res = await call("add_custom_model", "公共中转 · deepseek-v4.1-flash", "deepseek-v4.1-flash",
+                                 "https://yindun-relay.pages.dev/api/ai", "",
+                                 "wan", "公共中转", "chat_completions");
+          if (!res || res.ok === false) {
+            toast("添加中转站失败：" + ((res && res.error) || "未知原因"));
+            return;
+          }
+          toast("已添加公共中转（免 Key）。点一下它即可切换使用");
+          state.catalog = await call("model_catalog");
+          state.prov = { tier: "wan", provider: "公共中转", builtin: false };
+          renderProv(state.catalog);
+        })();
+        return;
+      }
       // ①「＋ 添加…」：本机档 = 进本机档并当场展开手动添加面板；局域网 / 公网 = 新供应商草稿
       if (el.dataset.addt) {
         if (el.dataset.addt === "local") {
@@ -3657,6 +3683,11 @@
   async function bootstrap() {
     const data = await call("bootstrap");
     if (!data) return;
+    // ★ V3.6.21：打包版首启提示「演示版本 / 内置自制中转站」（只弹一次）
+    if (data.demo_notice) {
+      toast(data.demo_notice, 9000);
+      call("mark_demo_notice_seen");
+    }
     state.settings = data.settings || {};
     state.llm = data.llm || state.llm;
     state.sessions = data.sessions || [];

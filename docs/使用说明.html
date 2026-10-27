@@ -21,7 +21,7 @@ tr:nth-child(even) td{background:#fafcfa;} hr{border:none;border-top:1px solid v
 strong{color:#0a5c3b;} @page{size:A4;margin:16mm 12mm;} h2{page-break-after:avoid;} table,pre,blockquote{page-break-inside:avoid;}
 </style></head><body><div class="page"><h1>隐盾安全智能体 · 使用说明</h1>
 <blockquote>
-<p>面向涉密办公场景的本地化隐私防护桌面智能体 · V3.6.20
+<p>面向涉密办公场景的本地化隐私防护桌面智能体 · V3.6.21
 Yindun Security Agent — 让本地 AI 更安全、更智能、更可控</p>
 </blockquote>
 <hr />
@@ -127,6 +127,8 @@ python run.py
 </ol>
 <blockquote>
 <p><strong>性能提示</strong>：2B/4B 本机模型适合问答、摘要、单步操作；多步骤文件整理（一次移动/改名多个文件）会明显变慢，建议换 7B+ 本机模型或局域网/公网模型。模型大小与耗时是能力上限，不是隐私机制的问题。</p>
+<p><strong>启动顺序不用再管（V3.6.21）</strong>：先开隐盾、后开 Ollama 也可以——客户端在"模型不可用"时
+会每 8~60 秒在后台自动重探一次，Ollama 起来后状态自动变成"算力就绪"，无需重启。</p>
 </blockquote>
 <h3>方式 B：局域网模型（公司内网的推理服务）</h3>
 <ol>
@@ -140,11 +142,48 @@ python run.py
 <h3>方式 C：公网模型（云端 API）</h3>
 <ol>
 <li>「模型接入 → 公网模型」→「＋ 添加公网模型」；</li>
-<li>填名称 / 模型 ID / 接口地址 / API Key，先「测试连接」再「保存」。
+<li>填名称 / 模型 ID / 接口地址 / API Key / <strong>接口格式</strong>，先「测试连接」再「保存」。
    示例（智谱开放平台）：<code>https://open.bigmodel.cn/api/paas/v4</code> + <code>glm-4-flash</code>；</li>
 <li>保存后在输入框下方的<strong>模型胶囊</strong>里选择它。</li>
 </ol>
+<p><strong>接口格式（V3.6.21 起四种都可用）</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>格式</th>
+<th>适用</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OpenAI 兼容 Chat Completions</td>
+<td>绝大多数云端 / 中转站</td>
+<td>默认；免 Key 中转站也可用</td>
+</tr>
+<tr>
+<td>Ollama 原生接口</td>
+<td>远程 / 局域网 Ollama</td>
+<td>填 <code>http://&lt;主机&gt;:11434</code>，模型名为 Ollama 里的名字</td>
+</tr>
+<tr>
+<td>Anthropic Messages</td>
+<td>Claude 系</td>
+<td>填基础地址（如 <code>https://api.anthropic.com</code>）</td>
+</tr>
+<tr>
+<td>OpenAI Responses</td>
+<td>OpenAI 新协议</td>
+<td>填基础地址（如 <code>https://api.openai.com/v1</code>）</td>
+</tr>
+</tbody>
+</table>
 <blockquote>
+<p><strong>演示模型（免 Key）</strong>：便携版/安装包首次启动会自动登记一个「演示模型 ·
+deepseek-v4.1-flash」，走隐盾自制中转站（模型 Key 只在服务端，客户端零 Key）。
+本机没有 Ollama 时首启会自动选它，评委拿到就能直接试用；中转站只接受隐盾客户端
+（门禁头 + UA），并有模型白名单与频率限制。额度有限，请勿滥用。
+地址可用设置项 <code>demo_model_base</code> 覆盖（自建中转时用）。</p>
 <p><strong>密钥怎么改、会不会丢</strong>：密钥存下之后<strong>不再回显</strong>（界面只显示「已配置」），输入框留空即
 <strong>不动已存的密钥</strong>——改地址、改模型名后直接再点保存即可；只有你<strong>填了新密钥</strong>才会替换。
 「测试连接」在留空时也会用<strong>已存的那把密钥</strong>去测，不会因为输入框空着就报「密钥不被接受」。
@@ -472,11 +511,11 @@ python -m yindun.control --host 0.0.0.0 --window yes   # 对外监听（默认�
 <li><strong>控制台只滚动一次</strong>：内容区与侧栏各自滚动，外层页面不再出现第二条滚动条。</li>
 <li><strong>Ctrl+Enter 换行</strong>：主输入框与闪发浮条都支持 Ctrl+Enter（或 Cmd+Enter）换行，Enter 才是发送。</li>
 </ul>
-<h3>4.13 暗色主题下的判定行与插件标签（V3.6.20）</h3>
+<h3>4.13 暗色主题下的判定行与插件标签（V3.6.21）</h3>
 <ul>
 <li>暗色模式下，「隐私隔离网关 / 快速模式限制」这类关键判定行与插件标签、通过态徽标统一使用<strong>暗绿底 + 亮绿字</strong>，不再出现白底卡片。</li>
 <li>浅色主题的配色保持不变；切换主题后无需重启，已有的会话记录会按当前主题重新渲染。</li>
-<li>若仍看到白底，说明运行的是旧版客户端（V3.6.19 及以前），请换用 V3.6.20。</li>
+<li>若仍看到白底，说明运行的是旧版客户端（V3.6.19 及以前），请换用 V3.6.21。</li>
 </ul>
 <hr />
 <h2>五、安全机制说明</h2>
@@ -568,7 +607,7 @@ python -m yindun.control --host 0.0.0.0 --window yes   # 对外监听（默认�
 <hr />
 <h2>八、版本与声明</h2>
 <ul>
-<li>当前版本：<strong>V3.6.20</strong>（技术栈 Python · LangChain · pywebview/WebView2 · Chroma · Ollama；Qt 已移除）</li>
+<li>当前版本：<strong>V3.6.21</strong>（技术栈 Python · LangChain · pywebview/WebView2 · Chroma · Ollama；Qt 已移除）</li>
 <li>插件体系：内核不可插件化（脱敏 / 审批 / 审计 / 沙箱），能力可插件化（识别 / 解析 / 模板 / 导出），
   插件只能"做加法"；详见 <a href="插件开发.md">插件开发.md</a>。</li>
 <li>本文档中出现的个人信息（张伟 / 13812345678 等）均为虚构测试样例，不涉及任何真实个人数据。</li>
