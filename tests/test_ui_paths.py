@@ -376,7 +376,7 @@ def main() -> int:
         check("左列按**供应商**聚合（本机 Ollama / 内网地址 / 云端域名，而不是一串模型名）",
               [(p["tier"], p["prov"]) for p in providers][:3] ==
               [("local", "本机 Ollama"), ("lan", "10.0.0.8:8000"), ("wan", "open.bigmodel.cn")]
-              and ("wan", "隐盾演示中转") in [(p["tier"], p["prov"]) for p in providers],
+              and ("wan", "隐盾自建中转站") in [(p["tier"], p["prov"]) for p in providers],
               str(providers))
         check("本机档仍列出 Ollama 已安装模型（摊开的子项可一键切换）",
               page.eval_on_selector_all("#prov-list .prov__sub", "els => els.map(e => e.dataset.use)") ==
@@ -620,15 +620,15 @@ def main() -> int:
             page.click('[data-addrelay="1"]')
             page.wait_for_timeout(900)
             relay_calls = [c for c in calls("add_custom_model")
-                           if c[1] and "公共中转" in str(c[1][0])]
+                           if c[1] and "自建中转站" in str(c[1][0])]
             check("点一下即写入中转配置（免 Key + OpenAI 兼容）",
                   bool(relay_calls)
-                  and relay_calls[-1][1][2] == "https://yindun-relay.pages.dev/api/ai"
+                  and relay_calls[-1][1][2] == "https://yindun-relay.944898918.workers.dev/api/ai"
                   and relay_calls[-1][1][3] == ""
                   and relay_calls[-1][1][6] == "chat_completions",
                   str(relay_calls[-1][1]) if relay_calls else "no call")
             check("中转站出现在公网档列表里",
-                  "公共中转" in page.inner_text("#prov-list"), page.inner_text("#prov-list")[:200])
+                  "自建中转站" in page.inner_text("#prov-list"), page.inner_text("#prov-list")[:200])
 
         # ── 7e) 可读写范围（沙箱目录）：显示 / 选择 / 清除 / 态势条同步 ──
         print("\n" + "=" * 78)
@@ -2749,7 +2749,7 @@ def main() -> int:
             demo_catalog = page_demo.evaluate("() => window.__YINDUN_MOCK__.api.model_catalog()")
             wan_names = [m.get("name") for m in ((demo_catalog or {}).get("tiers") or {}).get("wan", [])]
             check("内置演示模型出现在公网档（评委可直接选）",
-                  any("演示模型" in str(n) for n in wan_names), str(wan_names))
+                  any("自建中转站" in str(n) for n in wan_names), str(wan_names))
         finally:
             _browser_demo.close()
     _demo_srv.shutdown()

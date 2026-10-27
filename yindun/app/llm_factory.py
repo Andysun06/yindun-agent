@@ -656,7 +656,9 @@ def build_llm(settings: Dict[str, Any], tools: List[Any],
                 # ★ V3.6.21：演示中转站只接受隐盾客户端（门禁头 + UA）。
                 #   仅对 demo_relay 标记或演示中转域名生效，不影响用户自己的公网模型。
                 _base_norm = normalize_base_url(info.get("base_url", ""))
-                _demo_relay = bool(info.get("demo_relay")) or "yindun-relay.pages.dev" in _base_norm
+                _demo_relay = bool(info.get("demo_relay")) or (
+                    "yindun-relay" in _base_norm
+                    and (".workers.dev" in _base_norm or ".pages.dev" in _base_norm))
                 _default_headers = None
                 if _demo_relay:
                     from yindun import __display_version__
@@ -671,7 +673,7 @@ def build_llm(settings: Dict[str, Any], tools: List[Any],
                     #   这里兜底修好，用户不必删了重建。
                     openai_api_base=_base_norm,
                     default_headers=_default_headers,
-                    # ★ V3.6.21：免 Key 中转站（如隐盾演示中转）也要能用——OpenAI SDK
+                    # ★ V3.6.21：免 Key 中转站（如隐盾自建中转站）也要能用——OpenAI SDK
                     #   要求非空字符串，空 key 时给一个占位符；真需要鉴权的服务会照常回 401。
                     openai_api_key=info.get("api_key", "") or "not-needed",
                     max_tokens=_max_out,

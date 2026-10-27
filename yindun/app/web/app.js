@@ -1573,9 +1573,9 @@
       //   中转站只在服务端持有模型 Key，客户端零 Key；模型有白名单与限流（见服务端说明）。
       if (el.dataset.addrelay) {
         (async () => {
-          const res = await call("add_custom_model", "公共中转 · deepseek-v4.1-flash", "deepseek-v4.1-flash",
-                                 "https://yindun-relay.pages.dev/api/ai", "",
-                                 "wan", "公共中转", "chat_completions");
+          const res = await call("add_custom_model", "隐盾自建中转站（手动添加）", "deepseek-v4.1-flash",
+                                 "https://yindun-relay.944898918.workers.dev/api/ai", "",
+                                 "wan", "隐盾自建中转站", "chat_completions");
           if (!res || res.ok === false) {
             toast("添加中转站失败：" + ((res && res.error) || "未知原因"));
             return;

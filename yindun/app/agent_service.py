@@ -224,8 +224,9 @@ class AgentService:
         #   首启没有任何可用模型时由 `_resolve_model_selection` 自动选它。
         self.ensure_demo_model()
 
-    DEMO_MODEL_NAME = "演示模型 · deepseek-v4.1-flash"
-    DEMO_MODEL_BASE = "https://yindun-relay.pages.dev/api/ai"
+    DEMO_MODEL_NAME = "隐盾自建中转站（供评委试用）"
+    DEMO_MODEL_OLD_NAME = "演示模型 · deepseek-v4.1-flash"   # 旧名（V3.6.21 早批），启动时迁移
+    DEMO_MODEL_BASE = "https://yindun-relay.944898918.workers.dev/api/ai"
     DEMO_MODEL_ID = "deepseek-v4.1-flash"
     # 中转站门禁（V3.6.21）：中转站只接受带这两个头、且 UA 为 Yindun/ 的客户端。
     # 这是"门禁令牌"不是模型 Key——随客户端分发、可被逆向提取，泄露的后果只是
@@ -242,18 +243,23 @@ class AgentService:
             if self.DEMO_MODEL_NAME in custom:
                 return
             custom = dict(custom)
-            custom[self.DEMO_MODEL_NAME] = {
+            # 旧名迁移：早期批次登记过 "演示模型 · deepseek-v4.1-flash"，
+            # 改名后把旧条目整体搬过来（保留用户改过的地址/标记），不留重复项。
+            _old = custom.pop(self.DEMO_MODEL_OLD_NAME, None) if self.DEMO_MODEL_OLD_NAME in custom else None
+            _entry = dict(_old or {})
+            _entry.update({
                 "model_id": self.DEMO_MODEL_ID,
                 # 允许用设置项 demo_model_base 覆盖（Pages 项目名不同时不必改代码）
                 "base_url": str(self.settings.get("demo_model_base") or self.DEMO_MODEL_BASE),
                 "api_key": "",                 # 中转站免 Key（Key 只在服务端环境变量）
                 "tier": "wan",
-                "provider": "隐盾演示中转",
+                "provider": "隐盾自建中转站",
                 "api_format": "chat_completions",
-                "tags": ["演示", "免Key"],
+                "tags": ["评委试用", "免Key"],
                 "context_window": 0,
                 "demo_relay": True,
-            }
+            })
+            custom[self.DEMO_MODEL_NAME] = _entry
             self.settings.set("custom_models", custom)
             self.settings.save()
             log.info("已登记内置演示模型：%s", self.DEMO_MODEL_NAME)

@@ -113,7 +113,7 @@ class JsApi:
                 return ""
             if self._svc.settings.get("demo_notice_seen"):
                 return ""
-            return ("演示版本：已内置自制中转站（deepseek-v4.1-flash），无需本地 Ollama 即可试用；"
+            return ("演示版本：已内置「隐盾自建中转站（供评委试用）」（deepseek-v4.1-flash），无需本地 Ollama 即可试用；"
                     "中转站有额度与频率限制，请勿滥用。正式使用请接入你自己的模型。")
         except Exception:
             return ""

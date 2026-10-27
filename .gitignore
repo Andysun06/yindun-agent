@@ -77,3 +77,7 @@ archive/
 
 # ppt-master 预览产物（工具自动生成，不入库）
 .preview/
+
+# 交付打包物（按需本地生成，不入库）
+*.zip
+*_1027.pptx
