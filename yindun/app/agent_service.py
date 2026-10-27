@@ -31,24 +31,6 @@ from yindun.app.llm_factory import (TIER_LABEL, build_llm_variants, detect_chat_
 from yindun.core.permission import PERMISSION_ENV, resolve_mode
 from yindun.app.session_store import SessionStore
 from yindun.app.settings_store import SettingsStore
-from yindun.core.file_tools import (
-    analyze_project,
-    batch_rename_local_files,
-    copy_local_file,
-    create_local_file,
-    delete_local_file,
-    list_local_files,
-    make_local_dir,
-    modify_local_file,
-    move_local_file,
-    read_attachment_chunk,
-    read_local_file,
-    rename_local_file,
-    run_local_command,
-    search_in_files,
-    search_knowledge_base,
-)
-from yindun.worker.agent_worker import WORKER_EVENTS, Worker
 from yindun.plugins.host import PluginHost
 from yindun.utils.logger import get_logger
 
@@ -66,6 +48,14 @@ def build_tools() -> List[Any]:
     没有这些工具时，模型只能用"读出来 + 新建 + 删掉"硬拼，批量改名更是无路可走——
     能力面缺一块，用户感受到的就是"这个智能体没用"。
     """
+    # ★ V3.6.21 启动加速：file_tools 会连带导入 requests/langchain 工具链（实测约 2.6 秒），
+    #   放在这里延迟到 prepare_llm（后台线程）再加载，窗口先出来。
+    from yindun.core.file_tools import (
+        analyze_project, batch_rename_local_files, copy_local_file, create_local_file,
+        delete_local_file, list_local_files, make_local_dir, modify_local_file,
+        move_local_file, read_attachment_chunk, read_local_file, rename_local_file,
+        run_local_command, search_in_files, search_knowledge_base,
+    )
     return [
         list_local_files, create_local_file, delete_local_file, read_local_file,
         modify_local_file, move_local_file, copy_local_file, rename_local_file,
@@ -2208,6 +2198,10 @@ class AgentService:
         self.sessions.set_messages(sid, messages)
         self._last_display_text = display_text
         self.sessions.save()
+
+        # ★ V3.6.21 启动加速：Worker 会连带加载 langchain/requests（实测约 1.9 秒），
+        #   延迟到真正发消息时再导入，窗口与设置页先出来。
+        from yindun.worker.agent_worker import WORKER_EVENTS, Worker
 
         worker = Worker()
         worker.user_input = context          # 送模型的是"附件上下文 + 提问"

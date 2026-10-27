@@ -32,7 +32,6 @@ for pkg in [
     "langchain_ollama",
     "langchain_openai",
     "langchain_chroma",
-    "onnxruntime",
     "pydantic",
     "PyPDF2",
     "pymupdf",
