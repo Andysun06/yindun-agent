@@ -153,7 +153,7 @@ class FastPathWorker(Worker):
         return None        # 事故现场就是"知识库 0 篇文档"（也就顺带免掉 Chroma 依赖）
 
 
-def make_worker(llm, tools_map, user_input, fast_path=False, think_mode="快速回答"):
+def make_worker(llm, tools_map, user_input, fast_path=False, think_mode="深度思考"):
     worker = FastPathWorker() if fast_path else Worker()
     worker.llm = llm
     worker.tools_map = tools_map
@@ -204,14 +204,14 @@ def tail_is_assistant_text(worker, text):
 
 
 print("=" * 78)
-print("【0】事故复现条件：真实分类器把「我的桌面有几张图片？」判为「不需要工具」")
+print("【0】分类器口径：需要真实世界信息的问题必须判为「需要工具」")
 print("=" * 78)
 _real = Worker()
 _simple = _real._is_simple_question(DESKTOP_QUESTION)
 print(f"  [ℹ️] _is_simple_question({DESKTOP_QUESTION!r}) = {_simple}"
-      f"（True ＝ 会走直答快路径，这正是事故的入口）")
-check("事故问题仍被判为简单问答（若这里失败，说明分类器已改，事故前提随之改变）",
-      _simple is True, str(_simple))
+      f"（False ＝ 会进入工具循环，不再走不执行工具的直答车道）")
+check("★ 事故问题被判为「需要工具」（分类器已修，不再把它送进直答快路径）",
+      _simple is False, str(_simple))
 
 print("\n" + "=" * 78)
 print("【1】直答路径不能吞掉模型的工具调用（事故主因）")
@@ -228,7 +228,7 @@ _llm = ScriptedLLM([
     # ③ 收尾：拿到工具结果后给结论
     {"content": "沙箱目录里有 a.txt、b.txt，没有图片文件；你的桌面不在我的沙箱内，我读不到。"},
 ])
-_worker1 = make_worker(_llm, {"list_local_files": _list_tool}, DESKTOP_QUESTION, fast_path=True)
+_worker1 = make_worker(_llm, {"list_local_files": _list_tool}, DESKTOP_QUESTION, think_mode="深度思考")
 _events1, _elapsed1, _stuck1 = run_worker(_worker1)
 _fin1 = last_of(_events1, "finished")
 check("一轮对话必须在有限时间内结束（不会让用户无限等）", not _stuck1, f"耗时 {_elapsed1:.1f}s 仍未结束")
@@ -245,7 +245,7 @@ check("落库链尾＝用户看到的那段文字（不是空助手消息）",
 print("\n" + "=" * 78)
 print("【2】直答路径全程空产出：给可读说明 + 落库 + 有进度事件（「思考中」有东西可显示）")
 print("=" * 78)
-_worker2 = make_worker(ScriptedLLM([{"content": ""}]), {}, DESKTOP_QUESTION, fast_path=True)
+_worker2 = make_worker(ScriptedLLM([{"content": ""}]), {}, "介绍一下巴黎", fast_path=True)
 _events2, _elapsed2, _stuck2 = run_worker(_worker2)
 _fin2 = last_of(_events2, "finished")
 _statuses2 = all_of(_events2, "status")
@@ -280,15 +280,15 @@ _llm3b = ScriptedLLM([{"content": "思考模式下的直答。"}])
 _worker3b = make_worker(_llm3b, {}, "介绍一下巴黎", think_mode="深度思考")
 _events3b, _, _ = run_worker(_worker3b)
 _status3b = [str(x) for x in all_of(_events3b, "status")]
-check("★ 思考模式的直答状态行写「[思考]」，不再冒充「[快速回答]」",
-      any("[思考] 直接作答" in s for s in _status3b)
-      and not any("[快速回答]" in s for s in _status3b), str(_status3b))
+check("★ 工作模式的直答状态行写「[工作]」，不再冒充「[对话]」",
+      any("[工作] 直接作答" in s for s in _status3b)
+      and not any("[对话]" in s for s in _status3b), str(_status3b))
 _llm3c = ScriptedLLM([{"content": "快速模式下的直答。"}])
 _worker3c = make_worker(_llm3c, {}, "介绍一下巴黎", think_mode="快速回答")
 _events3c, _, _ = run_worker(_worker3c)
 _status3c = [str(x) for x in all_of(_events3c, "status")]
-check("快速模式仍写「[快速回答]」（不是一刀切改名）",
-      any("[快速回答] 直接作答" in s for s in _status3c), str(_status3c))
+check("对话模式写「[对话]」（不是一刀切改名）",
+      any("[对话] 直接作答" in s for s in _status3c), str(_status3c))
 
 print("\n" + "=" * 78)
 print("【4】无进展收敛：工具「正常返回警告」的打转不再跑满轮次，如实收尾")
@@ -380,7 +380,7 @@ _llm56 = ScriptedLLM([
 ])
 _worker56 = make_worker(_llm56, {"list_local_files": FakeTool("list_local_files",
                                                              lambda args: "a.png b.jpg c.docx")},
-                        "我桌面有什么")               # ★ 特意用**不含任何动作动词**的问法
+                        "我桌面有什么", think_mode="深度思考")   # ★ 特意用**不含任何动作动词**的问法
 _events56, _elapsed56, _stuck56 = run_worker(_worker56)
 _fin56 = last_of(_events56, "finished")
 check("有限时间内结束", not _stuck56, f"耗时 {_elapsed56:.1f}s 仍未结束")
@@ -462,7 +462,7 @@ print("\n" + "=" * 78)
 print("【6】失败路径：错误必须变成用户可见的回复文本并落库（不再删掉用户提问）")
 print("=" * 78)
 _worker6 = make_worker(RaisingLLM(RuntimeError("Connection refused: 无法连接模型服务")),
-                       {}, DESKTOP_QUESTION, fast_path=True)
+                       {}, DESKTOP_QUESTION, think_mode="深度思考")
 _events6, _elapsed6, _stuck6 = run_worker(_worker6)
 _err6 = last_of(_events6, "error")
 check("有错误事件且文案可读（指明是连不上模型服务）",
@@ -481,7 +481,7 @@ TMP = Path(tempfile.mkdtemp(prefix="yindun_reply_test_"))
 _svc = AgentService(settings=SettingsStore(path=TMP / "cfg.json"),
                     sessions=SessionStore(path=TMP / "sess.json"))
 _svc.initialize()
-_svc.settings.set("think_mode", "快速回答")
+_svc.settings.set("think_mode", "深度思考")
 
 # 7.1 正常回答：状态/渐进事件齐备，回复落库且重启后还在
 _ok_text = "沙箱目录里有 a.txt 和 b.txt，没有图片文件。"
@@ -710,7 +710,7 @@ for _label, _text in _write_negatives:
 
 _WRITE_REQ = "在当前沙箱目录创建 approval_probe.txt 并写入 alpha/beta/gamma"
 _llm_w = ScriptedLLM([{"content": "这一句绝不该被使用"}])
-_worker_w = make_worker(_llm_w, {}, _WRITE_REQ, fast_path=True)
+_worker_w = make_worker(_llm_w, {}, _WRITE_REQ, fast_path=True, think_mode="快速回答")
 _events_w, _elapsed_w, _stuck_w = run_worker(_worker_w)
 _fin_w = str(last_of(_events_w, "finished") or "")
 check("★ 前置拦截：一次模型都没有调用", _llm_w.calls == 0, f"invoke={_llm_w.calls}")
@@ -718,7 +718,7 @@ check("★ 不是故障：不发 error 事件", not all_of(_events_w, "error"), 
 check("有 status + finished（用户看得到限制说明，而不是一直转圈）",
       bool(all_of(_events_w, "status")) and bool(_fin_w), str(all_of(_events_w, "status"))[:160])
 check("★ 说明点明：模式限制 + 怎么切 + 切后弹审批",
-      "快速" in _fin_w and "思考" in _fin_w and "审批" in _fin_w, _fin_w[:160])
+      "对话" in _fin_w and "工作" in _fin_w and "审批" in _fin_w, _fin_w[:160])
 check("前置拦截的说明也落库（刷新/重启后仍能看到）",
       tail_is_assistant_text(_worker_w, _fin_w),
       str([(m.get("role"), len(str(m.get("content") or ""))) for m in (_worker_w.result_messages or [])[-3:]]))
@@ -727,7 +727,7 @@ check("前置拦截没有产生工具调用（审计里也不会有 tool_call）
       f"attempts={_worker_w.tool_call_attempts} count={_worker_w.tool_call_count}")
 
 _llm_ro = ScriptedLLM([{"content": "桌面上一共有 3 个文件。"}])
-_worker_ro = make_worker(_llm_ro, {}, "读一下桌面有几个文件", fast_path=True)
+_worker_ro = make_worker(_llm_ro, {}, "读一下桌面有几个文件", think_mode="深度思考")
 _events_ro, _, _ = run_worker(_worker_ro)
 _fin_ro = str(last_of(_events_ro, "finished") or "")
 check("★ 只读请求不被误拦（照常调用模型并回答）",
@@ -735,8 +735,8 @@ check("★ 只读请求不被误拦（照常调用模型并回答）",
       f"invoke={_llm_ro.calls} reply={_fin_ro[:60]!r}")
 
 # 空产出兜底：不再是"每 5 次一次"的运气论，而是可核对的诊断
-check("★ 通用空产出说明可执行（测试连接 / 切思考 / 换模型）",
-      "测试连接" in _fin2 and "思考" in _fin2 and "换一个模型" in _fin2, _fin2[:180])
+check("★ 通用空产出说明可执行（测试连接 / 切工作 / 换模型）",
+      "测试连接" in _fin2 and "工作" in _fin2 and "换一个模型" in _fin2, _fin2[:180])
 check("★ 不再写「偶发空回复 / 每 5 次」这类与当前模型无关的统计",
       "偶发空回复" not in _fin2 and "每 5 次" not in _fin2, _fin2[:180])
 
@@ -747,8 +747,8 @@ _events_wf, _elapsed_wf, _stuck_wf = run_worker(_worker_wf)
 _fin_wf = str(last_of(_events_wf, "finished") or "")
 check("写类请求空产出：说明本轮没有工具调用、所以不会弹审批",
       "没有产生任何工具调用" in _fin_wf and "不会弹出审批" in _fin_wf, _fin_wf[:200])
-check("写类请求空产出：给出「测试连接」与「切到思考」的下一步",
-      "测试连接" in _fin_wf and "思考" in _fin_wf, _fin_wf[:200])
+check("写类请求空产出：给出「测试连接」与「切到工作」的下一步",
+      "测试连接" in _fin_wf and "工作" in _fin_wf, _fin_wf[:200])
 check("写类请求空产出：落库链尾＝该说明",
       tail_is_assistant_text(_worker_wf, _fin_wf),
       str([(m.get("role"), len(str(m.get("content") or ""))) for m in (_worker_wf.result_messages or [])[-3:]]))
@@ -889,7 +889,7 @@ _w_prefix2.llm = _llm_prefix2
 _w_prefix2.tools_map = {"list_local_files": _list_ok}
 _w_prefix2.user_input = "研究一下快速排序的复杂度"
 _w_prefix2.messages_snapshot = []
-_w_prefix2.think_mode = "快速回答"
+_w_prefix2.think_mode = "深度思考"
 _w_prefix2.privacy_shield = False
 _w_prefix2.sandbox_path = str(SANDBOX_ROOT)
 _w_prefix2.attachment_fulltext = {}
@@ -1078,6 +1078,56 @@ _fin_thin = str(last_of(_ev_thin, "finished") or "")
 check("过渡语仍会触发一次深化（不会把没答完的当完成）",
       _llm_thin.calls >= 4 and "3 个文件" in _fin_thin,
       f"calls={_llm_thin.calls} reply={_fin_thin[:120]!r}")
+
+print()
+print("=" * 78)
+print("【9】对话 / 工作：默认工作；对话不调工具；工作直答不吞工具调用")
+print("=" * 78)
+from yindun.app.settings_store import DEFAULTS as _DEFAULTS
+check("★ 新装默认模式＝工作（深度思考）",
+      _DEFAULTS.get("think_mode") == "深度思考", repr(_DEFAULTS.get("think_mode")))
+check("Worker 默认模式＝工作", Worker().think_mode == "深度思考", repr(Worker().think_mode))
+
+_llm_chat = ScriptedLLM([{"content": "这段不该被使用"}])
+_w_chat = make_worker(_llm_chat, {}, DESKTOP_QUESTION, think_mode="快速回答")
+_ev_chat, _, _ = run_worker(_w_chat)
+_fin_chat = str(last_of(_ev_chat, "finished") or "")
+check("★ 对话模式遇到需要工具的问题：不调用模型", _llm_chat.calls == 0,
+      f"invoke={_llm_chat.calls}")
+check("★ 对话模式如实引导切「工作」",
+      "对话" in _fin_chat and "工作" in _fin_chat, _fin_chat[:120])
+
+_llm_dt = ScriptedLLM([
+    {"content": "我来列一下目录。",
+     "tool_calls": [_tool_call("list_local_files",
+                               {"target_directory": str(SANDBOX_ROOT)}, "c_dt")]},
+    {"content": "目录里有两个文件。"},
+])
+_tool_dt = FakeTool("list_local_files", lambda args: "a.txt b.txt")
+_w_dt = make_worker(_llm_dt, {"list_local_files": _tool_dt}, "介绍一下巴黎",
+                    fast_path=True, think_mode="深度思考")
+_ev_dt, _, _ = run_worker(_w_dt)
+_fin_dt = str(last_of(_ev_dt, "finished") or "")
+check("★ 工作模式直答带开场白 + 工具调用：工具真的执行",
+      len(_tool_dt.calls) >= 1, f"tool={len(_tool_dt.calls)}")
+check("★ 最终回答是工具后的结论，不是开场白",
+      "目录里有两个文件" in _fin_dt and "我来列一下" not in _fin_dt,
+      _fin_dt[:120])
+
+_tool_read = FakeTool("read_local_file", lambda args: "✅ 内容：hello")
+_w_read = make_worker(ScriptedLLM([{"content": "读到了 hello。"}]),
+                      {"read_local_file": _tool_read},
+                      "读取桌面上的 1.md 内容", think_mode="深度思考")
+_ev_read, _, _ = run_worker(_w_read)
+from yindun.core.file_tools import _resolve_target_dir as _rtd_t
+_expected_dir = _rtd_t("桌面")
+check("★ 按用户说的位置定位（桌面），不再一律用程序目录",
+      bool(_tool_read.calls)
+      and _tool_read.calls[0].get("target_directory") == _expected_dir,
+      str(_tool_read.calls[:1]))
+check("★ 传给工具的是纯文件名 1.md",
+      bool(_tool_read.calls) and _tool_read.calls[0].get("filename") == "1.md",
+      str(_tool_read.calls[:1]))
 
 if failures:
     print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))

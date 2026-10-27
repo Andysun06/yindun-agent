@@ -2207,7 +2207,7 @@ class AgentService:
         worker.user_input = context          # 送模型的是"附件上下文 + 提问"
         worker.messages_snapshot = history_snapshot
         worker._box_mapping_restore = self.sessions.get_box_mapping(sid)
-        worker.think_mode = self.settings.get("think_mode") or "快速回答"
+        worker.think_mode = self.settings.get("think_mode") or "深度思考"
         worker.privacy_shield = bool(self.settings.get("privacy", True))
         worker.think_depth = int(self.settings.get("thinking_depth", 3) or 3)
         try:
@@ -2382,7 +2382,7 @@ class AgentService:
             "session_permission": self.effective_permission(session_id).get("session_permission"),
             # 可读写范围：报"当前生效值"（设置 sandbox_dir 优先），与 worker/策略判定同一来源
             "sandbox": (self.worker_sandbox_root()),
-            "think_mode": self.settings.get("think_mode") or "快速回答",
+            "think_mode": self.settings.get("think_mode") or "深度思考",
         }
 
     def worker_sandbox_root(self) -> str:

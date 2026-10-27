@@ -405,7 +405,7 @@ def run_worker(llm, tools_map, user_input="读一下这个文件并总结"):
     worker.llm = llm
     worker.tools_map = tools_map
     worker.user_input = user_input
-    worker.think_mode = "快速回答"
+    worker.think_mode = "深度思考"
     worker.privacy_shield = False          # 关掉脱敏，断言不被占位符干扰
     # 沙箱根必须与内核一致（PolicyManager.SANDBOX_ROOT）：设成别处会让路径落在沙箱外，
     # 触发人工审批 → 测试无人确认 → 卡住（夹具坑，不是产品问题）。

@@ -180,7 +180,7 @@ class Worker:
         self.approval_expired = _EventTopic(self.bus, "approval_expired")
         self.user_input = ""
         self.messages_snapshot: list[dict] = []
-        self.think_mode = "快速回答"
+        self.think_mode = "深度思考"
         # 当前模型上下文窗口（tokens），由 AgentService 注入；0 = 未知
         self.model_context_window = 0
         self.privacy_shield = True
@@ -628,13 +628,13 @@ class Worker:
             #   只读请求不会被误拦：`_looks_like_write_request` 要求"动作动词 + 落盘对象"同时命中。
             if "深度" not in self.think_mode and self._looks_like_write_request(self.user_input):
                 _quick_limit = (
-                    "当前是「快速」模式，写操作（创建/修改/删除/移动/执行）在快速模式下被禁用，"
-                    "所以这一轮没有调用模型，也不会弹出审批。\n"
-                    "请把输入框上方的模式切到「思考」，再发一次；"
+                    "当前是「对话」模式，只回答简单问题，不调用工具；写操作（创建/修改/删除/移动/执行）"
+                    "需要在「工作」模式下完成，所以这一轮没有调用模型，也不会弹出审批。\n"
+                    "请把顶栏模式切到「工作」，再发一次；"
                     "权限档「变更前确认」会在真正写盘前弹出审批，让你核对完整路径与内容。"
                 )
-                self.status.emit("[快速模式限制] 写操作需要在「思考」模式下执行")
-                self._trace("judge", "快速模式限制",
+                self.status.emit("[对话模式] 写操作需要在「工作」模式下执行")
+                self._trace("judge", "对话模式限制",
                             "检测到写类请求；已前置拦截，不调用模型", "warn")
                 if self.privacy_shield and box:
                     self._box_mapping.update(box)
@@ -663,6 +663,26 @@ class Worker:
             #   永远不会被调用，模型会凭空作答（甚至误判为"拒绝提供敏感信息"）。
             #   仅在"本会走快速直答"时才探测 KB，避免给普通问答增加开销。
             _is_simple = self._is_simple_question(ai_input)
+            # ★ V3.6.21：顶栏改为「对话 / 工作」后，对话模式的边界必须说清楚——
+            #   它只回答简单问题，不读取本机文件、不检索知识库、不调用任何工具。
+            #   需要真实世界信息的问题直接引导切「工作」，而不是让弱模型在无工具车道里
+            #   回一句“我来读取一下…”然后没有下文（负责人实测的原始症状）。
+            if "深度" not in self.think_mode and not _is_simple:
+                _chat_only = (
+                    "当前是「对话」模式：只回答简单问题，不读取本机文件、不调用工具。" + chr(10)
+                    + "这个问题需要查看文件或执行操作，请把顶栏模式切到「工作」再发一次；"
+                    "「工作」模式下会真正调用工具，写操作仍会按权限档弹出审批。"
+                )
+                self.status.emit("[对话模式] 该问题需要工具，请切换到「工作」")
+                self._trace("judge", "对话模式限制",
+                            "非简单问题；已引导切换到工作模式", "warn")
+                if self.privacy_shield and box:
+                    self._box_mapping.update(box)
+                memory.update_with_context_result(self.user_input, _chat_only)
+                self.result_messages = memory.to_dict_list()
+                self._ensure_reply_persisted(_chat_only)
+                self.finished.emit(_chat_only)
+                return
             _kb_has_docs = False
             _kb_relevant = self._looks_like_kb_question(ai_input)
             if _is_simple and _kb_relevant and not _has_attachment and not _is_audio_request:
@@ -680,11 +700,14 @@ class Worker:
                         "“知识库里没有这条”。\n\n" + ai_input
                     )
 
+            forced_tool_result = None
+            forced_tool_name = None
+            forced_tool_args = None      # 注入 ToolMessage 时需要回填对应的 tool_call 参数
             if (_is_simple or _is_audio_request) and not _has_attachment and not _kb_has_docs:
                 # ★ 状态行前缀按**当前模式**取（V3.6.13，负责人截图：选了「思考」却显示
                 #   「[快速回答] 直接回答问题…」）。直答快路径在两种模式下都会走，
                 #   但它不是"快速模式"——把模式名写在状态行里会让人以为设置没生效。
-                _mode_tag = "快速回答" if "快速" in str(self.think_mode or "") else "思考"
+                _mode_tag = "对话" if "深度" not in str(self.think_mode or "") else "工作"
                 self.status.emit(f"[{_mode_tag}] 直接作答…")
                 # ★ 进度事件（真机事故整改）：聊天区的"正在思考"等待动画只挂在
                 #   intermediate_result 上（前端 ensureStreamBubble）；直答路径以前一条都不发，
@@ -702,7 +725,8 @@ class Worker:
                 #   下次加载还会被丢掉（只剩自己的提问）。两种空产出必须分开处理：
                 #   · 模型要工具 → 转到下面的工具推理循环，让它真的去调（并如实说明调不到）；
                 #   · 什么都没有 → 给一条可读的说明，绝不发空白。
-                if reply:
+                _direct_tool_calls = getattr(reply_msg, "tool_calls", None)
+                if reply and not _direct_tool_calls:
                     # ★ 先留一份**还原前**的文本给审计链（V3.6.7）：审计链落盘必须是占位符形态，
                     #   而下面这行会把 reply 覆盖成还原后的明文——顺序反了就等于把敏感内容写进审计。
                     _raw_for_audit = reply
@@ -724,12 +748,54 @@ class Worker:
                         pass
                     self.finished.emit(reply)
                     return
-                if getattr(reply_msg, "tool_calls", None):
+                if _direct_tool_calls:
                     # 直答这条车道本来就不执行工具；模型却明确要调工具 → 换到工具推理循环，
                     # 不把它的工具调用吞掉（用户问的是真实世界的信息，答案只能由工具给出）。
+                    # ★ V3.6.21：**即使模型先写了一句“我来读取一下…”也必须转**——旧实现只在
+                    #   content 为空时才转，模型带一句开场白就会把工具调用静默丢掉。
+                    if "深度" not in self.think_mode:
+                        # 「对话」模式不调用任何工具：即使模型想调，也如实告诉用户切「工作」。
+                        _chat_only = (
+                            "当前是「对话」模式：只回答简单问题，不读取本机文件、不调用工具。"
+                            + chr(10)
+                            + "这个问题需要调用工具，请把顶栏模式切到「工作」再发一次。"
+                        )
+                        self.status.emit("[对话模式] 该问题需要工具，请切换到「工作」")
+                        if self.privacy_shield and (box or self._box_mapping):
+                            self._box_mapping.update(box)
+                        memory.update_with_context_result(self.user_input, _chat_only)
+                        self.result_messages = memory.to_dict_list()
+                        self._ensure_reply_persisted(_chat_only)
+                        self.finished.emit(_chat_only)
+                        return
+                    # ★ V3.6.21：转入循环还不够——模型已经在直答里点名要用的工具必须
+                    #   **真的执行**，否则循环里它会重新决策（弱模型常常只重复开场白），
+                    #   用户看到的仍是“我来读取一下…”却没有下文。这里按审批通道执行前
+                    #   3 个调用，把真实结果作为强制观察注入下一轮。
+                    _obs_parts = []
+                    _first_name, _first_args = None, None
+                    for _tc in list(_direct_tool_calls)[:3]:
+                        _tn = str((_tc or {}).get("name") or "")
+                        _ta = dict((_tc or {}).get("args") or {})
+                        if not _tn or _tn not in self.tools_map:
+                            _obs_parts.append(f"[{_tn or '未知工具'}] 工具不可用")
+                            continue
+                        if _first_name is None:
+                            _first_name, _first_args = _tn, _ta
+                        try:
+                            _raw = self._execute_with_approval(_tn, _ta)
+                            _safe, _ = self._anonymize_tool_output(_raw, _tn)
+                            _obs_parts.append(f"[{_tn}] {_safe}")
+                            self.tool_call_count += 1
+                        except Exception as _exc:
+                            _obs_parts.append(f"[{_tn}] 执行失败：{_exc}")
+                    if _obs_parts and _first_name:
+                        forced_tool_result = chr(10).join(_obs_parts)
+                        forced_tool_name = _first_name
+                        forced_tool_args = _first_args or {}
                     self.status.emit(f"[{_mode_tag}] 模型需要调用工具，转入工具推理…")
                     self._trace("thinking", "改用工具推理",
-                                "直答未产出文字：模型要求调用工具", "ok")
+                                "模型要求调用工具（含开场白），已执行并转入工具循环", "ok")
                 else:
                     # 既没文字也没工具调用：如实说明这一轮没拿到回答，并落库（不再是空气泡）。
                     # ★ 文案改成**可执行诊断**（V3.6.13，组员评审 BUG-0007/0008）：
@@ -752,9 +818,6 @@ class Worker:
             #     （LLM 在快速模式下经常偷懒不调用工具而直接编造回答）
             #     注意：音频文件已在前面被拦截，不会到达这里
             # ──────────────────────────────────────────
-            forced_tool_result = None
-            forced_tool_name = None
-            forced_tool_args = None      # 注入 ToolMessage 时需要回填对应的 tool_call 参数
             _path_match = re.search(r'([A-Za-z]:[\\/][^\s]+)', self.user_input)
             _has_analyze = any(w in self.user_input for w in ["分析", "项目结构", "代码", "项目"])
             _has_list = any(w in self.user_input for w in ["列出", "查看目录", "有什么文件", "目录下", "列出文件"])
@@ -852,9 +915,27 @@ class Worker:
             if (forced_tool_result is None and _file_name and _read_verb
                     and "read_local_file" in self.tools_map):
                 _name = _file_name.group(1).strip()
+                # ★ 正则允许中文前缀（否则「读取客户名单.txt」抓不到文件名），但会把
+                #   「读取桌面上的 1.md」整段抓进来。取最后一个空白分隔词，再去掉常见动词前缀，
+                #   确保传给工具的是纯文件名。
+                _name = _name.split()[-1] if _name.split() else _name
+                _name = re.sub(r"^(?:请|帮我|帮忙|读取|读一下|读读|看看|查看|打开|分析)+",
+                               "", _name).strip() or _name
+                # ★ V3.6.21：用户说“桌面上的 1.md”时，旧实现把 target_directory 固定成
+                #   sandbox_path（程序目录），文件明明在桌面却报“不存在”。这里按用户给出的
+                #   位置词解析到同一套外壳真实目录（含 OneDrive 重定向）。
+                _read_dir = self.sandbox_path
+                for _loc in ("桌面", "下载", "文档"):
+                    if _loc in self.user_input:
+                        try:
+                            from yindun.core.file_tools import _resolve_target_dir as _rtd
+                            _read_dir = _rtd(_loc)
+                        except Exception:
+                            pass
+                        break
                 try:
                     self.status.emit(f"[工具执行] 读取文件: {_name}")
-                    _args = {"filename": _name, "target_directory": self.sandbox_path}
+                    _args = {"filename": _name, "target_directory": _read_dir}
                     _raw = self._execute_with_approval("read_local_file", _args)
                     forced_tool_result, _ = self._anonymize_tool_output(_raw, "read_local_file")
                     forced_tool_name = "read_local_file"
@@ -1103,9 +1184,14 @@ class Worker:
         keywords = ["是什么", "怎么样", "如何", "为什么", "怎么", "能否",
                     "是否", "吗", "呢", "?", "？", "解释", "说明", "介绍",
                     "hi", "hello", "你好", "嗨"]
+        # ★ V3.6.21：把「内容 / 桌面 / 附件 / 知识库」等也视为工具信号。实测
+        #   「1.md内容是什么」只命中「是什么」就被判成简单问题，走了不执行工具的直答
+        #   车道；模型回一句「我来读取一下…」却没有下文（工具调用被吞）。
         tool_keywords = ["创建", "读取", "修改", "删除", "列出", "查看",
                          "运行", "执行", "分析", "项目", "文件", "目录",
-                         "写", "新建", "保存", "命令", "脚本", "启动", "搜索"]
+                         "写", "新建", "保存", "命令", "脚本", "启动", "搜索",
+                         "内容", "桌面", "下载", "文档", "附件", "知识库",
+                         "图片", "照片", "表格", "打开", "文件里", "文档里"]
         return (any(w in text for w in keywords)
                 and not any(w in text for w in tool_keywords))
 
@@ -1231,7 +1317,7 @@ class Worker:
                 "模型这一轮没有给出回答——本轮没有产生任何工具调用，所以**不会弹出审批**。\n"
                 "请确认所选模型支持工具调用（可在设置页「模型接入」点「测试连接」核对"
                 "接入地址与模型名），然后把输入框上方的模式切到「思考」，再发一次。\n"
-                "切到「思考」后，权限档「变更前确认」会在真正写盘前弹出审批，"
+                "切到「工作」后，权限档「变更前确认」会在真正写盘前弹出审批，"
                 "让你核对完整路径与内容。"
             )
         return (
@@ -1239,7 +1325,7 @@ class Worker:
             "1. 模型不支持工具调用（多数小模型 / 自定义端点）；\n"
             "2. 接入地址或模型名与端点不符（先点设置页的「测试连接」核对）；\n"
             "3. 上下文过长。\n"
-            "建议：切到「思考」模式重试；仍为空就换一个模型。"
+            "建议：切到「工作」模式重试；仍为空就换一个模型。"
         )
 
     # ──────────────────────────────────────────
@@ -1636,7 +1722,7 @@ class Worker:
                             "1. 附件文本过长超出模型上下文，请尝试截取片段或换更小的 PDF\n"
                             "2. 附件为扫描件/图片，且 OCR 未识别到文字（已安装 rapidocr-onnxruntime 仍可能因图片质量过差失败）\n"
                             "3. 模型当前状态异常，请重试或切换模型\n"
-                            "请尝试：精简提问、切换深度思考模式、或挂载更小的文档。"
+                            "请尝试：精简提问、切换到「工作」模式、或挂载更小的文档。"
                         )
                     else:
                         final_reply = self._empty_output_message()
@@ -1689,7 +1775,7 @@ class Worker:
                 if is_quick_mode and tool_name in _WRITE_TOOLS:
                     display = self._map_tool_display_name(tool_name)
                     tool_result = (
-                        f"⚠️ [快速模式限制] 当前为快速模式，不支持写操作（{display}）。"
+                        f"⚠️ [对话模式限制] 当前为「对话」模式，不调用工具；写操作（{display}）请在「工作」模式下进行。"
                         f"请切换到『深度思考』模式后重试。"
                     )
                     tool_msg = ToolMessage(content=self._with_failure_directive(tool_result),
@@ -1946,7 +2032,7 @@ class Worker:
                         f"抱歉，我尝试了 {round_count} 轮推理，但工具调用连续失败。"
                         f"建议：\n"
                         f"1. 检查路径是否正确\n"
-                        f"2. 如果涉及写操作，请切换到深度思考模式\n"
+                        f"2. 如果涉及写操作，请切换到「工作」模式\n"
                         f"3. 用更具体的表述告诉我你想做什么"
                     )
                     final_reply = self._merge_limit_prefix(final_reply)
@@ -2025,7 +2111,7 @@ class Worker:
                 f"抱歉，我在 {round_count} 轮推理内没有拿到可用的结果，已停止。\n"
                 "可能原因：模型始终没有给出最终回答（也可能目标内容在当前可读写范围之外、"
                 "且当前档位不允许越界访问）。\n"
-                "可以试试：再发一次、把问题问得更具体、切换到「思考」模式，"
+                "可以试试：再发一次、把问题问得更具体、切换到「工作」模式，"
                 "或在设置页「模型接入」换一个支持工具调用的模型。"
             )
             self._reply_is_fallback = True

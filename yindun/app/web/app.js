@@ -661,7 +661,7 @@
       return;
     }
     body.classList.toggle("is-empty-reply", isEmpty);
-    body.innerHTML = md(isEmpty ? EMPTY_REPLY_NOTE : content) + metaHtml(isEmpty ? "无内容" : (tagText || "快速"));
+    body.innerHTML = md(isEmpty ? EMPTY_REPLY_NOTE : content) + metaHtml(isEmpty ? "无内容" : (tagText || "对话"));
     scrollToEnd();
   }
 
@@ -821,7 +821,7 @@
     //   设置回填把 `state.settings` 覆盖回默认），已发出的那一轮就会被贴上**别的**模式标签
     //   （实测：顶栏/输入区是「思考 最高」，气泡却写「快速 2s」）。按轮次快照，标签只反映
     //   这一轮实际用的模式。
-    state.turnMode = state.settings.think_mode || "快速回答";
+    state.turnMode = state.settings.think_mode || "深度思考";
     state.turnDepth = state.settings.thinking_depth;
     setBusy(true);
     // ★ 发送即建"等在那儿"的等待气泡：不等后端第一条事件（直答快路径以前一条都不发，
@@ -3588,8 +3588,8 @@
       case "finished": {
         // ★ 用**本轮开始时的模式快照**（没有快照时退回当前设置）：标签必须反映这一轮
         //   实际用的模式，而不是此刻的设置值（组员评审 BUG-0006）。
-        const modeNow = state.turnMode || state.settings.think_mode || "快速回答";
-        const tag = modeNow.includes("深度") ? "思考" : "快速";
+        const modeNow = state.turnMode || state.settings.think_mode || "深度思考";
+        const tag = modeNow.includes("深度") ? "工作" : "对话";
         finalizeBubble(payload || "", tag); setStatus(""); break;
       }
       case "error":
@@ -3697,7 +3697,7 @@
     state.currentId = data.current_session_id || null;
     state.sessionPermission = data.session_permission || null;   // 本对话的权限覆盖（null=跟随默认）
     $("brand-version").textContent = data.version || "";
-    const seg = state.settings.think_mode || "快速回答";
+    const seg = state.settings.think_mode || "深度思考";
     document.querySelectorAll("#mode-switch .seg__btn").forEach((b) =>
       b.classList.toggle("is-active", b.dataset.mode === seg));
     fillSettings(); renderSessions();

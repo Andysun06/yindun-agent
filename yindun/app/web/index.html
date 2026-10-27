@@ -124,8 +124,8 @@
           </div>
         </div>
         <div class="seg" id="mode-switch">
-          <button class="seg__btn is-active" data-mode="快速回答" title="快速回答：不做内部推理，更快">快速</button>
-          <button class="seg__btn" data-mode="深度思考" title="思考：先做内部推理，更慢但更适合复杂判断">思考</button>
+          <button class="seg__btn" data-mode="快速回答" title="对话：简单问题直接回答，不读取本机文件、不调用工具">对话</button>
+          <button class="seg__btn is-active" data-mode="深度思考" title="工作：可调用工具读写文件、检索知识库、执行任务（推荐）">工作</button>
         </div>
         <button class="btn btn--ghost" id="btn-toggle-right" title="折叠 / 展开右侧面板">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"/><path d="M15 5v14"/></svg>
@@ -349,7 +349,7 @@
                 </div>
                 <div class="setrow">
                   <div class="setrow__text"><b>思考强度</b>
-                    <span title="四档对应最多 4 / 8 / 14 / 20 轮推理；是否先做内部推理由顶栏的「快速 / 思考」决定">低 / 中 / 高 / 最高四档，控件在输入框下方</span></div>
+                    <span title="四档对应最多 4 / 8 / 14 / 20 轮推理；是否先做内部推理由顶栏的「对话 / 工作」决定">低 / 中 / 高 / 最高四档，控件在输入框下方</span></div>
                   <div class="setrow__ctrl"><span class="setrow__ro">见输入区</span></div>
                 </div>
               </div>

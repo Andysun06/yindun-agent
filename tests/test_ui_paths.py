@@ -2135,8 +2135,8 @@ def main() -> int:
             const row = rows[rows.length - 1];
             return (row.querySelector('.bubble__tag') || {}).textContent || '';
         }""")
-        check("★ 中途改设置也不会给已发出的那一轮贴错模式标签（应为「思考」）",
-              tag_now == "思考", f"tag={tag_now!r}")
+        check("★ 中途改设置也不会给已发出的那一轮贴错模式标签（应为「工作」）",
+              tag_now == "工作", f"tag={tag_now!r}")
         # ② 反向：快速档发出的一轮，即使中途切到思考也只标「快速」
         page.evaluate("() => { window.yindun.onEvent('state', {busy: false}); }")
         page.click("#mode-switch .seg__btn[data-mode='快速回答']")
@@ -2154,7 +2154,7 @@ def main() -> int:
             const row = rows[rows.length - 1];
             return (row.querySelector('.bubble__tag') || {}).textContent || '';
         }""")
-        check("★ 反向同样成立（快速档发出的那一轮标「快速」）", tag_now2 == "快速", f"tag={tag_now2!r}")
+        check("★ 反向同样成立（对话档发出的那一轮标「对话」）", tag_now2 == "对话", f"tag={tag_now2!r}")
         check("发送路径确实把模式快照进本轮状态（源码契约）",
               "state.turnMode = state.settings.think_mode" in page.evaluate(
                   "() => fetch('app.js').then(r => r.text()).then(t => t)", ) if False else True)
@@ -2577,8 +2577,8 @@ def main() -> int:
         status_full = (page_think.inner_text("#status-line") or "").strip()
         check("★ 全角「【思考 N/M】」仍兼容改写为「推理 2/6」",
               status_full.startswith("【推理 2/6】"), repr(status_full))
-        check("顶栏模式胶囊仍是「思考」（只改状态行显示前缀）",
-              (page_think.inner_text('#mode-switch [data-mode="深度思考"]') or "").strip() == "思考",
+        check("顶栏模式胶囊是「工作」（只改状态行显示前缀）",
+              (page_think.inner_text('#mode-switch [data-mode="深度思考"]') or "").strip() == "工作",
               repr(page_think.inner_text('#mode-switch [data-mode="深度思考"]')))
         page_think.evaluate("() => window.yindun.onEvent('state', {busy: true})")
         page_think.evaluate("() => window.yindun.onEvent('intermediate_result', '正在整理要点。')")
@@ -2589,7 +2589,7 @@ def main() -> int:
             const row = rows[rows.length - 1];
             return (row.querySelector('.bubble__tag') || {}).textContent || '';
         }""")
-        check("★ 气泡模式标签不受前缀改写影响（仍为「思考」）", tag == "思考", repr(tag))
+        check("★ 气泡模式标签不受前缀改写影响（仍为「工作」）", tag == "工作", repr(tag))
         think_title = page_think.get_attribute("#think-trigger", "title") or ""
         check("★ 思考强度提示写「最多 14 轮推理」而不是「约 7 轮」",
               "最多 14 轮推理" in think_title and "约 7 轮" not in think_title, repr(think_title))
