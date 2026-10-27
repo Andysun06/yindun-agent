@@ -183,6 +183,8 @@ body.is-mini .minibar {
   flex: none; height: 44px; display: flex; align-items: center; gap: var(--sp-3);
   padding: 0 var(--sp-5); border-bottom: 1px solid var(--border-1);
 }
+/* 顶栏/浮条是窗口拖动把手（V3.6.21）：拖的时候不要同时选中标题文字 */
+.topbar, .minibar { -webkit-user-select: none; user-select: none; }
 .topbar__title { font-size: var(--fs-sm); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .topbar__spacer { flex: 1; }
 .band__id { font-size: var(--fs-meta); color: var(--text-3); flex: none; }
@@ -1292,3 +1294,5 @@ html[data-theme="dark"] .wf-step__status--done { color: var(--accent-300); backg
 
 /* [hidden] 必须真的隐藏：.wf-instance 的 display:flex 会覆盖浏览器默认的 [hidden]{display:none} */
 .wf-instance[hidden] { display: none; }
+/* 拖动区里的输入控件仍要能选中文字 */
+.topbar input, .topbar textarea, .minibar input, .minibar textarea { -webkit-user-select: text; user-select: text; }

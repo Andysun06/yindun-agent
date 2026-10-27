@@ -1014,6 +1014,51 @@ check("知识库检索的目标显示为检索词", "检索词" in _dp and "报�
 _dp2 = _worker_len._display_target_path("create_local_file", {}, r"D:\x\a.txt")
 check("写类工具仍显示真实路径", _dp2 == r"D:\x\a.txt", _dp2)
 
+# ── V3.6.21：高思考档的"最低思考轮数"不能把已经答对的短答案带偏 ──
+print("\n" + "=" * 78)
+print("【8】高思考档：完整回答优先于最低轮数（不再强制深化）")
+print("=" * 78)
+
+_list_tool = FakeTool("list_local_files", lambda args: "📁 目录里有 3 个文件")
+# 注意：深度思考下会先有一次"直答预判"调用（判断要不要用工具），随后才进 ReAct 循环；
+# 因此脚本是：预判→要工具、ReAct 第 1 轮→再要工具、第 2 轮→完整短答案。
+_llm_done = ScriptedLLM([
+    {"content": "", "tool_calls": [_tool_call("list_local_files",
+                                              {"target_directory": str(SANDBOX_ROOT)}, "call_p0")]},
+    {"content": "", "tool_calls": [_tool_call("list_local_files",
+                                              {"target_directory": str(SANDBOX_ROOT)}, "call_d1")]},
+    {"content": "周六上午照常开诊。"},          # 短，但完整（句末标点）——第一轮就答对了
+])
+_w_done = make_worker(_llm_done, {"list_local_files": _list_tool},
+                      "周六上午开不开诊？", think_mode="深度思考")
+_w_done.think_depth = 10                        # 最低轮数 = max(2, 8) = 8
+_ev_done, _, _ = run_worker(_w_done)
+_fin_done = str(last_of(_ev_done, "finished") or "")
+check("★ 完整短答案不再被强制深化（工具轮之后直接收尾）",
+      _llm_done.calls == 3 and "照常开诊" in _fin_done,
+      f"calls={_llm_done.calls} reply={_fin_done[:120]!r}")
+check("状态里明确写了「跳过深化轮」",
+      any("跳过深化轮" in str(p) for ev, p in _ev_done if ev == "status"),
+      str([p for ev, p in _ev_done if ev == "status"])[:160])
+
+# 反例：过渡语（没说完）仍应触发一次深化，避免"该深入时过早收尾"
+_llm_thin = ScriptedLLM([
+    {"content": "", "tool_calls": [_tool_call("list_local_files",
+                                              {"target_directory": str(SANDBOX_ROOT)}, "call_p1")]},
+    {"content": "", "tool_calls": [_tool_call("list_local_files",
+                                              {"target_directory": str(SANDBOX_ROOT)}, "call_t1")]},
+    {"content": "我这就去查一下"},
+    {"content": "目录里共有 3 个文件：a.txt、b.txt、c.txt。"},
+])
+_w_thin = make_worker(_llm_thin, {"list_local_files": _list_tool},
+                      "目录里有多少文件？", think_mode="深度思考")
+_w_thin.think_depth = 10
+_ev_thin, _, _ = run_worker(_w_thin)
+_fin_thin = str(last_of(_ev_thin, "finished") or "")
+check("过渡语仍会触发一次深化（不会把没答完的当完成）",
+      _llm_thin.calls >= 4 and "3 个文件" in _fin_thin,
+      f"calls={_llm_thin.calls} reply={_fin_thin[:120]!r}")
+
 if failures:
     print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))
     sys.exit(1)

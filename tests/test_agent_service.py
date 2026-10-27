@@ -654,14 +654,15 @@ _index_src = Path(__file__).resolve().parents[1].joinpath(
     "yindun", "app", "web", "index.html").read_text(encoding="utf-8")
 check("窗口不再用全局 easy_drag（它连输入框里的拖动都会拖走整个窗口）",
       '"easy_drag": False' in _webview_src and '"easy_drag": True' not in _webview_src)
-check("顶栏按钮区不是拖动区域（拖动只留在空白 spacer，避免按钮点击被吞）",
-      'class="band topbar"' in _index_src
-      and 'class="band topbar pywebview-drag-region"' not in _index_src
-      and 'class="topbar__spacer pywebview-drag-region"' in _index_src)
-check("闪发浮条按钮区不是拖动区域（拖动只留在状态文字）",
-      'class="minibar"' in _index_src
-      and 'class="minibar pywebview-drag-region"' not in _index_src
-      and 'class="minibar__status pywebview-drag-region"' in _index_src)
+check("顶栏整条是拖动区域（V3.6.21 恢复：拖顶部即可移动窗口）",
+      'class="band topbar pywebview-drag-region"' in _index_src)
+check("闪发浮条整条是拖动区域（V3.6.21 恢复）",
+      'class="minibar pywebview-drag-region"' in _index_src)
+_app_src = Path(__file__).resolve().parents[1].joinpath(
+    "yindun", "app", "web", "app.js").read_text(encoding="utf-8")
+check("拖动区内的按钮/输入框被拦下（mousedown 不冒泡到 body，点击不会被当成拖窗口）",
+      't.closest("button, a, input, textarea, select, label, [data-no-drag]")' in _app_src
+      and "ev.stopPropagation()" in _app_src)
 check("设置页只让标题块拖动，操作按钮不参与拖动",
       'class="setmain__head"' in _index_src
       and 'class="setmain__head pywebview-drag-region"' not in _index_src
@@ -1060,7 +1061,7 @@ _svc_a = AgentService(settings=SettingsStore(path=TMP / "k_a.json"),
                       plugin_data_root=TMP / "k_a_pd")
 _svc_a.initialize()
 check("首启未选模型时配置为空（不凭空写模型名）", _svc_a.settings.get("model") == "")
-_svc_a._warmup_llm = lambda: False          # 不打桩网络、不起预热线程
+_svc_a._warmup_llm = lambda announce=True: False          # 不打桩网络、不起预热线程
 _patch_detect(["stub-model:1b", "stub-model:7b"], ["stub-model:1b", "stub-model:7b"])
 _st_a = _svc_a.prepare_llm()
 check("★ 首次启动自动选用检测到的第一个可对话模型并落库",
@@ -1077,7 +1078,7 @@ _svc_b = AgentService(settings=SettingsStore(path=TMP / "k_b.json"),
 _svc_b.initialize()
 _svc_b.settings.set("model", "本机没有的模型:9b")
 _svc_b.settings.save()
-_svc_b._warmup_llm = lambda: False
+_svc_b._warmup_llm = lambda announce=True: False
 _patch_detect([], [])
 _st_b = _svc_b.prepare_llm()
 check("★ 配置的模型不在可用清单里 → ready=False（不再「模型不存在却报已就绪」）",
@@ -1224,6 +1225,45 @@ _bad.settings.set("custom_models", ["broken"])
 _r = _bad.add_custom_model("n", "m", "https://example.invalid/v1", "k")
 check("★ custom_models 被改坏时仍能保存（坏配置降级为空表）",
       bool(_r.get("ok")) and isinstance(_bad.settings.get("custom_models"), dict), str(_r))
+
+print(chr(10) + "=" * 78)
+print("【8】算力不可用时的后台自动重探（先开隐盾、后开 Ollama）")
+print("=" * 78)
+_re_svc = AgentService(settings=SettingsStore(path=TMP / "recheck_cfg.json"),
+                       sessions=SessionStore(path=TMP / "recheck_sess.json"),
+                       plugin_data_root=TMP / "recheck_pd")
+_re_svc.initialize()
+_re_svc._llm = None
+_re_svc._llm_error = "连不上本机 Ollama"
+_calls = {"prepare": 0}
+
+
+def _fake_catalog():
+    return {"current_available": True}
+
+
+def _fake_prepare(announce=True):
+    _calls["prepare"] += 1
+    _re_svc._llm = object()          # 模拟"算力已建好"
+    _re_svc._llm_error = ""
+    return {"ready": True}
+
+
+_re_svc.model_catalog = _fake_catalog
+_re_svc.prepare_llm = _fake_prepare
+_re_svc.schedule_llm_recheck(delay=0.05)
+_deadline = time.time() + 3.0
+while time.time() < _deadline and _re_svc._llm is None:
+    time.sleep(0.05)
+check("★ 探测到算力恢复后自动重建（无需重启客户端）",
+      _re_svc._llm is not None and _calls["prepare"] >= 1,
+      f"prepare={_calls['prepare']} llm={_re_svc._llm!r}")
+time.sleep(0.3)
+check("重探线程成功后自行退出（不会常驻空转）",
+      not (_re_svc._recheck_thread and _re_svc._recheck_thread.is_alive()), "")
+_re_svc.schedule_llm_recheck(delay=0.05)
+check("已有算力时 schedule 直接返回（不重复起线程）",
+      _re_svc._recheck_thread is None or not _re_svc._recheck_thread.is_alive(), "")
 
 print(chr(10) + "=" * 78)
 if failures:

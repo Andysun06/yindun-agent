@@ -3869,6 +3869,18 @@
     document.querySelectorAll(".ptab").forEach((tab) => {
       tab.onclick = () => openPane(tab.dataset.pane);
     });
+    // ★ V3.6.21：整条顶栏/浮条都是拖动区（恢复"拖顶部移动窗口"），但按钮、输入框、链接
+    //   不能被当成拖动把手——pywebview 的拖动监听挂在 body 的冒泡阶段，这里在区域容器上
+    //   拦住交互控件的 mousedown，既保住点击/选中文本，又不触发窗口拖动。
+    document.querySelectorAll(".pywebview-drag-region").forEach((region) => {
+      region.addEventListener("mousedown", (ev) => {
+        const t = ev.target;
+        if (t instanceof Element
+            && t.closest("button, a, input, textarea, select, label, [data-no-drag]")) {
+          ev.stopPropagation();
+        }
+      });
+    });
     // 工作流面板：事件委托（面板内容每次重绘，逐按钮绑定会丢）
     const wfRoot = $("panel");
     if (wfRoot) {

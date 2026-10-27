@@ -794,6 +794,38 @@ def main() -> int:
         check("再点一次可展开", not page.evaluate(
             "() => document.querySelector('.app').classList.contains('is-right-collapsed')"))
 
+        # ── 10b) 窗口拖动区（V3.6.21：整条顶栏可拖，按钮不触发拖动）──
+        print("\n" + "=" * 78)
+        print("【10b】顶栏/浮条拖动区（整条可拖 + 交互控件不触发）")
+        print("=" * 78)
+        drag_info = page.evaluate("""() => {
+            const top = document.querySelector('.topbar');
+            const mini = document.querySelector('.minibar');
+            return { top: top && top.classList.contains('pywebview-drag-region'),
+                     mini: mini && mini.classList.contains('pywebview-drag-region') };
+        }""")
+        check("顶栏整条是拖动区（不再只有中间的 spacer）", bool(drag_info.get("top")), str(drag_info))
+        check("闪发浮条整条是拖动区", bool(drag_info.get("mini")), str(drag_info))
+        # 冒泡验证：按钮上的 mousedown 不能到达 body（pywebview 的拖动监听挂在 body），
+        # 顶栏空白处的 mousedown 必须到达 body（否则拖不动窗口）。
+        bubble = page.evaluate("""() => {
+            const seen = { body: 0 };
+            const onBody = () => { seen.body += 1; };
+            document.body.addEventListener('mousedown', onBody);
+            const fire = (el) => el.dispatchEvent(
+                new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+            fire(document.querySelector('#btn-sidebar'));      // 顶栏按钮
+            const afterBtn = seen.body;
+            fire(document.querySelector('.topbar__title'));    // 顶栏空白/标题
+            const afterTitle = seen.body;
+            document.body.removeEventListener('mousedown', onBody);
+            return { afterBtn, afterTitle };
+        }""")
+        check("顶栏按钮的 mousedown 被拦下（不会把点击当成拖窗口）",
+              bubble["afterBtn"] == 0, str(bubble))
+        check("顶栏空白处的 mousedown 能到达 body（窗口可以拖）",
+              bubble["afterTitle"] >= 1, str(bubble))
+
         # ── 11) 附件「＋」：真的触发 pick_files，且有可读反馈 ──
         print("\n" + "=" * 78)
         print("【11】附件「＋」按钮（正常 / 桥缺失两条路径）")

@@ -184,6 +184,10 @@ class AgentService:
         self._plugin_sync: Dict[str, Any] = {"templates": [], "templates_removed": [],
                                              "recognizer": False, "errors": []}
         self._laya_service: Any = None      # laya 接入服务（懒建，避免启动时做 import 探测）
+        # 算力不可用时的后台自动重探（V3.6.21）：先开隐盾、后开 Ollama 也能自己恢复，
+        # 不再要求"必须先启动 Ollama"。同一时刻只允许一个重探线程。
+        self._recheck_thread: Optional[threading.Thread] = None
+        self._recheck_stop = threading.Event()
 
     # ── 生命周期 ──────────────────────────────────
     def initialize(self) -> None:
@@ -397,14 +401,62 @@ class AgentService:
             print(f"[AgentService] 事件 {event} 投递失败：{exc}")
 
     # ── 算力 ─────────────────────────────────────
-    def prepare_llm(self) -> Dict[str, Any]:
-        """构建算力（可能耗时，调用方应放后台线程）。"""
+    def schedule_llm_recheck(self, delay: float = 8.0) -> None:
+        """算力不可用时后台自动重探（V3.6.21，负责人实测）。
+
+        现象：先启动隐盾、后启动 Ollama，界面一直停在"模型不可用"，只能重启客户端。
+        原因：`prepare_llm` 只在启动时跑一次，失败后 `_llm` 一直是 None，`send` 直接拒绝。
+        做法：失败后起一个守护线程，按 8s → 12s → … → 60s 退避做**轻量探测**
+        （`model_catalog().current_available`，只问 Ollama 要模型清单），一旦可用就重跑
+        `prepare_llm` 并广播 `llm_status`；成功即退出。同一时刻只允许一个重探线程。
+        """
+        with self._lock:
+            if self._llm is not None:
+                return
+            if self._recheck_thread is not None and self._recheck_thread.is_alive():
+                return
+            self._recheck_stop.clear()
+
+            def _loop() -> None:
+                wait = max(2.0, float(delay))
+                while not self._recheck_stop.wait(wait):
+                    try:
+                        if self._llm is not None:
+                            return
+                        catalog = self.model_catalog()
+                        if bool(catalog.get("current_available")):
+                            self.prepare_llm(announce=False)
+                            if self._llm is not None:
+                                self._emit("status", "已重新检测到算力，模型可用")
+                                return
+                    except Exception:
+                        pass
+                    wait = min(wait * 1.5, 60.0)
+
+            self._recheck_thread = threading.Thread(target=_loop, daemon=True,
+                                                    name="llm-recheck")
+            self._recheck_thread.start()
+
+    def stop_llm_recheck(self) -> None:
+        """停止后台重探（应用退出/切换模型时调用）。"""
+        try:
+            self._recheck_stop.set()
+        except Exception:
+            pass
+
+    def prepare_llm(self, announce: bool = True) -> Dict[str, Any]:
+        """构建算力（可能耗时，调用方应放后台线程）。
+
+        announce=False 用于**运行期后台重探**（V3.6.21）：不要在界面已经用起来之后
+        再弹一轮"正在检测本机算力"的启动进度，只安静地更新 llm_status。
+        """
+        _say = self._emit if announce else (lambda *a, **k: None)
         # ★ 首启体验（V3.6.0）：整个过程分阶段播报给界面。首次启动时用户要等的其实有三段——
         #   ① onefile 解压（在 Python 起来之前，界面还没出现，只能靠文档说明）；
         #   ② 探测算力 + 建算力（秒级）；③ **把模型载入内存**（本机实测 20~60 秒）。
         #   以前这三段全静默，用户看到的是"界面出来了但点了没反应"，容易以为是坏的。
-        self._emit("startup", {"phase": "probe", "done": False,
-                               "text": "正在检测本机算力与模型…"})
+        _say("startup", {"phase": "probe", "done": False,
+                         "text": "正在检测本机算力与模型…"})
         # ★ 审计锚点自检（V3.6.x，BUG-0002）：锚点写不进去 / 已迁移 / 回退到备用位置，
         #   都要在启动时**主动告诉用户**，而不是等他自己去翻审计面板或日志。
         self._emit_anchor_advisory()
@@ -440,8 +492,10 @@ class AgentService:
             self._llm_error = unavailable_reason or "算力不可用"
             status = self.llm_status()
             self._emit("llm_status", status)
-            self._emit("startup", {"phase": "ready", "done": True,
-                                   "text": f"算力不可用：{self._llm_error}"})
+            _say("startup", {"phase": "ready", "done": True,
+                             "text": f"算力不可用：{self._llm_error}"})
+            # ★ 后台自动重探：用户先开隐盾、后开 Ollama 时，不必重启客户端
+            self.schedule_llm_recheck()
             return status
         # 一次建好两套算力变体（关思考 / 保持模型默认），每轮按当前模式挑一套用：
         # 切「快速 / 深度思考」不需要重建算力，也不会打断正在跑的轮次。
@@ -458,12 +512,12 @@ class AgentService:
         # ★ 第三段等待：把模型载入内存（本机实测 20~60 秒）。放在后台，不阻塞界面可用性。
         #   注意"就绪"必须等**预热真的结束**才播报：早发一次会让界面提前收起提示，
         #   用户以为可以问了、其实第一句话仍在等加载（第一版就是这么错的）。
-        if not self._warmup_llm():
-            self._emit("startup", {"phase": "ready", "done": True,
-                                   "text": f"已就绪：{self.settings.get('model') or ''}"})
+        if not self._warmup_llm(announce=announce):
+            _say("startup", {"phase": "ready", "done": True,
+                             "text": f"已就绪：{self.settings.get('model') or ''}"})
         return status
 
-    def _warmup_llm(self) -> bool:
+    def _warmup_llm(self, announce: bool = True) -> bool:
         """后台把聊天模型载入内存（V3.6.0）。返回是否已在后台预热（True 时由它负责播报就绪）。
 
         为什么要做：Ollama 是**首次调用**才把权重读进内存的，本机实测这一下要 20~60 秒。
@@ -492,8 +546,10 @@ class AgentService:
 
             # 播报"开始载入"必须落在**启动预热线程之前**：这一条是"还要等多久"的唯一提示，
             # 缩进错一层它就会静默（第一版就是这么错的，实测事件流里看不到它）。
-            self._emit("startup", {"phase": "load", "done": False,
-                                   "text": f"正在把模型载入内存：{model}（首次约 20~60 秒，之后不用再等）…"})
+            # announce=False（运行期重探）不播报启动进度，避免界面已经用起来后弹旧提示。
+            if announce:
+                self._emit("startup", {"phase": "load", "done": False,
+                                       "text": f"正在把模型载入内存：{model}（首次约 20~60 秒，之后不用再等）…"})
 
             def _run() -> None:
                 import time as _t
@@ -502,12 +558,14 @@ class AgentService:
                     from langchain_core.messages import HumanMessage
                     llm.invoke([HumanMessage(content="就绪")])
                     self._emit("status", f"模型已载入内存（{_t.time() - t0:.0f} 秒），可以开始提问")
-                    self._emit("startup", {"phase": "ready", "done": True,
-                                           "text": f"已就绪：{model}"})
+                    if announce:
+                        self._emit("startup", {"phase": "ready", "done": True,
+                                               "text": f"已就绪：{model}"})
                 except Exception as exc:
                     print(f"[AgentService] 模型预热失败（不影响使用，首次提问会慢一些）：{exc}")
-                    self._emit("startup", {"phase": "ready", "done": True,
-                                           "text": f"已就绪：{model}（首次提问可能慢一些）"})
+                    if announce:
+                        self._emit("startup", {"phase": "ready", "done": True,
+                                               "text": f"已就绪：{model}（首次提问可能慢一些）"})
 
             threading.Thread(target=_run, daemon=True, name="yindun-llm-warmup").start()
             return True
@@ -2044,6 +2102,8 @@ class AgentService:
                     self._emit("llm_status", self.llm_status())
                 except Exception:
                     pass
+                # ★ 顺便启动后台重探：用户此时把 Ollama 打开，下一条消息就能用
+                self.schedule_llm_recheck(delay=5.0)
                 return False
 
             sid = self.sessions.current_id or self.sessions.create()
