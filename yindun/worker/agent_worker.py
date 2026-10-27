@@ -2701,6 +2701,11 @@ class Worker:
         body = str(text or "").strip()
         if not body or len(body) >= 15:
             return False
+        # 用户明确要求"只回答两个字/一句话/简短"时，短答案就是正确答案，不判截断
+        _short_ask = ("只回答两个字", "只回两个字", "只回答", "一句话", "简短", "简要",
+                      "不要超过", "字数不超过")
+        if any(k in str(user_input or "") for k in _short_ask):
+            return False
         if body.endswith(cls._SENTENCE_END):
             return False
         if not any(ch.isalnum() or ("\u4e00" <= ch <= "\u9fff") for ch in body):
