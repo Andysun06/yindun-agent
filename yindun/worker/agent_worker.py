@@ -3295,6 +3295,14 @@ class Worker:
         if tool_name == "search_knowledge_base":
             query = str((args or {}).get("query") or "").strip()
             return f"检索词：{query[:40]}" if query else "知识库"
+        # ★ V3.6.21：写类工具把**文件名拼到目录上**再展示——审批卡写"完整路径"才名副其实
+        #   （防盲签：只给目录时，用户看不到即将生成/改动的是哪个文件）。
+        #   只改展示，`path` 仍按真实 target_path 做越界判定。
+        if tool_name in ("create_local_file", "modify_local_file", "delete_local_file",
+                         "rename_local_file", "make_local_dir"):
+            fname = str((args or {}).get("filename") or "").strip()
+            if fname and target_path and os.path.isdir(str(target_path)):
+                return os.path.join(str(target_path), fname)
         return target_path
 
     @staticmethod

@@ -915,7 +915,7 @@ check("★ ask 档越界写盘触发人工确认（不是直接拒绝，也不�
 if conf_ask:
     _p = conf_ask[0]
     check("★ 审批弹窗里是完整真实路径（越界审批不能让人盲签）",
-          os.path.normcase(str(_p.get("path"))) == os.path.normcase(str(RANGE_OUT)), str(_p.get("path")))
+          os.path.normcase(str(_p.get("path"))) == os.path.normcase(str(RANGE_FILE)), str(_p.get("path")))
     check("审批载荷标出「这是范围外的操作」+ 当前范围（界面据此显性化）",
           _p.get("outside") is True and bool(_p.get("sandbox")), str(_p.get("outside")))
 check("★ 人工批准后越界写盘真实落盘", RANGE_FILE.exists(), str(RANGE_FILE))

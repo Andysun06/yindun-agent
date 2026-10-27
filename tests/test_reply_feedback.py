@@ -1013,6 +1013,10 @@ _dp = _worker_len._display_target_path(
 check("知识库检索的目标显示为检索词", "检索词" in _dp and "报销" in _dp, _dp)
 _dp2 = _worker_len._display_target_path("create_local_file", {}, r"D:\x\a.txt")
 check("写类工具仍显示真实路径", _dp2 == r"D:\x\a.txt", _dp2)
+_dp3 = _worker_len._display_target_path(
+    "create_local_file", {"filename": "周报.txt"}, str(SANDBOX_ROOT))
+check("★ 写类工具审批目标拼上文件名（完整路径，防盲签）",
+      str(_dp3).endswith("周报.txt") and str(_dp3) != str(SANDBOX_ROOT), _dp3)
 
 # ── V3.6.21：高思考档的"最低思考轮数"不能把已经答对的短答案带偏 ──
 print("\n" + "=" * 78)
