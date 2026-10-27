@@ -223,12 +223,11 @@ yindun-agent/
 | 技术报告（形式化 / 威胁模型 / 攻防实验 / 部署形态 · 41 页） | [docs/隐盾安全智能体_技术报告.pdf](docs/隐盾安全智能体_技术报告.pdf) |
 | 使用说明（安装 / 算力 / 功能 / 控制面） | [docs/使用说明.md](docs/使用说明.md) · [PDF](docs/使用说明.pdf) |
 | 汇报 PPT（21 页） | [docs/隐盾安全智能体_项目汇报.pptx](docs/隐盾安全智能体_项目汇报.pptx) |
-| 正式答辩 PPT（11 页） | [隐盾安全智能体汇报_1027.pptx](隐盾安全智能体汇报_1027.pptx) · [5 分钟讲稿](docs/dev/正式答辩_5分钟_讲稿.md) |
+| 正式答辩 PPT（11 页） | [隐盾安全智能体汇报_1027.pptx](隐盾安全智能体汇报_1027.pptx) |
 | 插件开发指南 | [docs/插件开发.md](docs/插件开发.md) |
 | 安全策略与威胁模型 | [SECURITY.md](SECURITY.md) |
 | 隐私说明 | [PRIVACY.md](PRIVACY.md) |
 | 文档索引（对外 / 内部两层） | [docs/README.md](docs/README.md) |
-| 内部开发记忆（架构决策 / 不变量 / 路线图 / 更新日志） | [docs/dev/开发记忆.md](docs/dev/开发记忆.md) |
 | 隐私攻防评测 / 留出集评测 | [tests/privacy_eval.py](tests/privacy_eval.py) · [tests/privacy_holdout_eval.py](tests/privacy_holdout_eval.py) |
 
 ---
@@ -243,7 +242,7 @@ yindun-agent/
 | **V3.6.18** | 上下文窗口按模型实测折算、直答路径长度上限续写、供应商子菜单溢出修复 |
 | **V3.6.17** | 独立测试报告 12 条缺陷修复（用途红线 / 写意图 / 知识库门控 / 状态行 / 审批语义） |
 
-更早的版本与逐条修复记录见 [docs/dev/开发记忆.md §12](docs/dev/开发记忆.md)（全仓库唯一 changelog）。
+更早的版本见 Release 历史与 git log。
 
 ---
 

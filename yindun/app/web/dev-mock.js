@@ -308,7 +308,7 @@
       },
       sessions, current_session_id: location.hash.indexOf("empty") >= 0 ? null : "s1",
       // 预览演示提示：真实打包版首启会带这条（源码运行不带）；用 #mock 看样式时也给一条
-      demo_notice: "演示版本：已内置自制中转站（deepseek-v4.1-flash），无需本地 Ollama 即可试用；中转站有额度与频率限制，请勿滥用。正式使用请接入你自己的模型。",
+      demo_notice: "演示版本：已内置「隐盾自建中转站（供评委试用）」（deepseek-v4.1-flash），无需本地 Ollama 即可试用；中转站有额度与频率限制，请勿滥用。正式使用请接入你自己的模型。",
     }),
     mark_demo_notice_seen: () => Promise.resolve(true),
     llm_status: () => Promise.resolve({ ready: true, model: "qwen2.5:7b-instruct", models: ["qwen2.5:7b-instruct", "nomic-embed-text:latest"] }),
