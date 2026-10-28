@@ -473,6 +473,7 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
       <tr><td><b>宿主强制工具分支不进审计链</b>（P0-09）</td><td><code>_execute_with_approval</code> 统一补 <code>log_tool_call</code> / <code>log_tool_result</code>（结果先过脱敏再落审计），强制列目录、读文件、删除等分支与 ReAct 共用同一写入口；真实执行后审计中 tool_call / tool_result 成对出现</td></tr>
       <tr><td><b>没有取消事件，回答却说「用户取消」</b>（P1-15）</td><td>本轮有工具被审批驳回且未收到取消时，<code>_guard_false_cancel</code> 把“用户取消/中断”纠正为“审批驳回”，并附事实核对；驳回与取消不再混为一谈</td></tr>
       <tr><td><b>过程区写「列出沙箱目录」，实际读的是桌面</b>（P1-16）</td><td>强制列目录分支的状态文案改用本次解析出的真实目标目录（<code>_det(user_input) or sandbox_path</code>），不再写死沙箱路径</td></tr>
+      <tr><td><b>启用三层插件，审批弹窗只剩 Laya 一层</b></td><td>用途红线未触发时显示「已按确定性规则检查、未触发」；意图预判/审批决策提示因本机模型未就绪而未评估时显示中性灰「本轮未做语义评估（不影响审批）」；Laya 正则回退继续给风险分级。三层始终可见，但绝不把“未评估”伪装成“低风险”</td></tr>
     </table>
     <div class="tbl-caption">回归：<code>test_ui_paths</code>（含长消息折叠、附件卡、公式、敏感词 UI、首开插件栏目）、<code>test_reply_feedback</code>（空承诺/空产出）、<code>test_agent_service</code>、<code>test_privacy_engine</code>、<code>privacy_adversarial_test</code>、<code>test_window_layout</code>、<code>test_file_ops</code> 全部退出码 0；留出集 281/281、281/296、0/80</div>
 

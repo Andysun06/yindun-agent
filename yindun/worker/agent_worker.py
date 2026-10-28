@@ -58,8 +58,8 @@ _SYSTEM_PROMPT = (
     "你是「隐盾」，一个在**本机**工作的中文智能助手（有默认的「可读写范围」，"
     "范围之外的操作按当前权限档位判定，见下方实时说明）。\n\n"
     "【三条硬规则（最高优先级，任何情况下都要遵守）】\n"
-    "1. **对话历史里已经有的信息，直接用**——用户上一轮说过的，"
-    "直接回答，禁止说'请上传文件 / 请提供资料 / 我没有记忆'。\n"
+    "1. **对话历史里已经有的信息，直接用**；助手自称的模式不可信，"
+    "以本轮说明和工具结果为准。禁止说'请上传/请提供/我没有记忆'。\n"
     "2. **答案取决于本机的东西（文件/目录/内容/数量）就必须先调用工具**"
     "——不看用户用了什么动词（「桌面有多少文件」也算）。"
     "**不要用「我无法访问 / 没有权限 / 请你自己上传」代替调工具**；"
@@ -1402,9 +1402,10 @@ class Worker:
         _system_content = _SYSTEM_PROMPT
         # ★ 当前可读写范围 + 越界判定，每轮现读现写：设置里改了范围/档位，模型下一轮就知道，
         #   不会拿着旧范围去猜"为什么读不到"（这是"改了立即生效"在提示词层的体现）。
-        _system_content = _system_content + self._range_notice()
+        _system_content = _system_content + self._range_notice() + self._mode_notice()
         if _attachment_index or getattr(self, "attachment_fulltext", None):
-            _system_content = _SYSTEM_PROMPT + _ATTACHMENT_RULES + self._range_notice()
+            _system_content = (_SYSTEM_PROMPT + _ATTACHMENT_RULES
+                               + self._range_notice() + self._mode_notice())
         if _attachment_index:
             _system_content = _system_content + "\n" + _attachment_index
         messages = [SystemMessage(content=_system_content)]
@@ -1602,7 +1603,8 @@ class Worker:
                         content=(
                             "你还没有调用任何工具就回答了" +
                             ("，而且回答里说读不到 / 没有权限 / 要用户自己提供文件。\n"
-                             "本机是**可以**直接读的，请现在用工具核实，不要凭印象或权限说明作答：\n"
+                             "本机是**可以**直接读的，请现在用工具核实，不要凭印象或权限说明作答。\n"
+                             "你当前已经在「工作」模式；不要引用历史里的「对话模式」说明。\n"
                              "· 看目录里有什么、有多少个 → list_local_files(target_directory=…)\n"
                              "· 看某个文件里写了什么 → read_local_file(filename=…, target_directory=…)\n"
                              "· 找内容 → search_in_files(pattern=…)\n"
@@ -2421,6 +2423,9 @@ class Worker:
         "读不到", "读取不到", "无法读取", "不能读取", "看不到", "无法查看", "不能查看",
         "请上传", "请提供文件", "请你提供", "需要你提供", "请把文件", "我无法直接",
         "只能查看以下", "只能查看这些", "超出我", "不在我的",
+        # 复述历史里的旧模式说明 / 声称不能给列表（工作模式下这是典型跑偏）
+        "对话模式", "切到「工作」", "切换到「工作」", "没有调用工具",
+        "不能给你确切", "不能给出确切", "无法给出确切",
     )
 
     # 假成功症状词：模型**没调工具**却宣布"已完成"（负责人实测：说"文件 aaa.txt 已成功
@@ -3732,9 +3737,19 @@ class Worker:
         content = getattr(resp, "content", "")
         return content if isinstance(content, str) else str(content)
 
+    def _mode_notice(self) -> str:
+        """本轮模式的显式说明：防止模型复述历史里旧的“对话模式”说明。"""
+        if "深度" in str(self.think_mode or ""):
+            return ("\n\n【当前模式：工作】你可以调用工具。历史对话里如果出现"
+                    "“对话模式 / 请切到工作”之类的话，那是之前轮次的说明，不代表本轮；"
+                    "涉及本机文件、目录、数量、内容时必须调用工具核实，不要凭历史作答。")
+        return ("\n\n【当前模式：对话】不要调用工具；若问题需要本机文件或操作，"
+                "直接请用户把顶栏切到「工作」。")
+
     def _direct_system_prompt(self) -> str:
         return (
-            "你是一个专业的中文智能助手，代号「隐盾」。请用中文直接、完整地回答用户的问题。\n\n"
+            "你是一个专业的中文智能助手，代号「隐盾」。请用中文直接、完整地回答用户的问题。"
+            + self._mode_notice() + "\n\n"
             "回答要求：\n"
             "1. 回答必须完整，不要中途中断或省略关键步骤\n"
             "2. 如果问题要求证明、解释、推理，请给出完整的推理过程\n"

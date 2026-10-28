@@ -2045,6 +2045,48 @@ class AgentService:
                 "ollama_host": self.settings.get("ollama_host") or "http://127.0.0.1:11434",
             }
             advisories = self._plugins.call_hook("advisory_for_approval", context)
+            # ★ 三层可见性（V3.6.22，负责人反馈）：用途红线未触发、意图预判/审批决策提示
+            #   因本机模型未就绪而返回 None 时，旧实现整条不显示，弹窗只剩 Laya 一层，
+            #   评委容易误以为另外两层没做。这里为“已启用但本轮没给结论”的层补一条
+            #   **中性状态**（明确写“未评估/未触发”，绝不伪装成低风险）。
+            try:
+                returned_ids = {str(a.get("plugin_id") or "") for a in advisories
+                                if isinstance(a, dict)}
+                _red = str((intent or {}).get("decision") or "") in ("refuse", "warn")
+                if not _red:
+                    advisories.append({
+                        "level": "muted", "order": -10,
+                        "source": "内核 · 用途红线",
+                        "text": "用途红线：未触发（已按确定性规则检查）",
+                    })
+                _notice = {
+                    "intent_guard": ("意图预判", "本轮未做语义评估（本地模型未就绪或未触发红线；不影响审批）"),
+                    "decision_hint": ("审批决策提示", "本轮未做相符判断（本地模型未就绪；不影响审批）"),
+                    "laya_risk": ("操作风险", "本轮未给出分级结论（不影响审批）"),
+                }
+                _enabled = list(self._plugins.enabled_plugins("advisory_for_approval"))
+                _enabled_ids = {str(getattr(r, "plugin_id", "") or "") for r in _enabled}
+                for _rec in _enabled:
+                    _pid = str(getattr(_rec, "plugin_id", "") or "")
+                    if not _pid or _pid in returned_ids:
+                        continue
+                    if _red and _pid in ("intent_guard", "decision_hint"):
+                        continue          # 顶部红色警示已覆盖，不重复“未评估”
+                    # 「是否相符」与「意图预判」属于同一层：意图预判已给中性状态时
+                    # 不再多占一行，保持“用途 / 意图 / 操作风险”三层阅读结构。
+                    if _pid == "decision_hint" and "intent_guard" in _enabled_ids:
+                        continue
+                    _label, _note = _notice.get(
+                        _pid, (getattr(_rec, "name", _pid), "本轮未给出结论（不影响审批）"))
+                    advisories.append({
+                        "level": "muted",
+                        "order": {"intent_guard": 0, "decision_hint": 50}.get(_pid, 90),
+                        "source": getattr(_rec, "name", _pid),
+                        "text": f"{_label}：{_note}",
+                        "plugin_id": _pid,
+                    })
+            except Exception as _exc:
+                print(f"[AgentService] 补三层状态失败：{_exc}")
             # 建议按 order 排序（0=意图预判，100=其余）：界面上的阅读顺序就是
             # "先用途、再相符、最后操作风险"，而不是由插件目录名决定。
             def _advice_order(item):

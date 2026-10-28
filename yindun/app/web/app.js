@@ -2625,7 +2625,7 @@
     clearTimeout(advisoryLoadingTimer);
     $("approval-advisory-loading").style.display = "none";
     $("approval-advisory").innerHTML = items.map((a) => `
-      <div class="advisory__item ${a.level === "warn" ? "advisory__item--warn" : ""}">
+      <div class="advisory__item ${a.level === "warn" ? "advisory__item--warn" : ""}${a.level === "muted" ? " advisory__item--muted" : ""}">
         <span class="advisory__src">${esc(a.source || "插件")}</span>${esc(a.text || "")}
       </div>`).join("");
     wrap.style.display = "";

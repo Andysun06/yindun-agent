@@ -1343,6 +1343,9 @@ html[data-theme="dark"] .tool-fail { background: rgba(196, 54, 47, .12); }
 .advisory { display: flex; flex-direction: column; gap: var(--sp-2); }
 .advisory__item { padding: var(--sp-3) var(--sp-4); border-radius: var(--r-ctrl); background: var(--bg-subtle); font-size: var(--fs-sm); line-height: 1.6; border-left: 2px solid var(--accent-500); }
 .advisory__item--warn { border-left-color: var(--warn-500); }
+/* 已启用但本轮未评估/未触发：中性灰，明确“不是低风险结论” */
+.advisory__item--muted { border-left-color: var(--border-1); background: transparent; color: var(--text-2); }
+.advisory__item--muted .advisory__src { color: var(--text-3); }
 .advisory__src { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-3); margin-right: var(--sp-3); }
 /* 研判占位（V3.6.13）：建议是异步补发的，先按两条建议的高度占位，
    避免半秒后内容插入把弹窗顶得抖一下。 */
