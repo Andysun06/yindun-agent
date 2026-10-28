@@ -808,6 +808,17 @@ check("★ 找不到窗体时退回原生 restore，成功后同样清空 Bounds
 
 check("源码里不再调用 toggle_fullscreen 降级",
       ".toggle_fullscreen(" not in webview_src)
+
+# ── 启动假死回归（V3.6.22）：loaded 回调里访问 CoreWebView2.Controller 会死锁 ──
+check("★ 启动阶段不再访问 WebView2 Controller（会等 UI 线程造成假死）",
+      "_disable_webview_external_drop" not in webview_src
+      and "CoreWebView2" not in webview_src, "")
+check("原生附件拖拽延迟安装（窗口句柄就绪后再 Invoke）",
+      "threading.Timer(1.0, self._api.install_native_file_drop)" in webview_src, "")
+check("UI 线程调度失败时不在后台线程直接碰 WinForms 控件",
+      "窗口句柄尚未就绪，稍后重试安装原生附件拖拽" in webview_src
+      and ("if not self._ui_thread_dispatch(window, setup):"
+           + chr(10) + "            setup()") not in webview_src, "")
 check("最大化/还原也调度到 UI 线程（与置顶同一套 _ui_thread_dispatch）",
       '_invoke_window_method(window, "maximize")' in webview_src
       and '_invoke_window_method(window, "restore")' in webview_src)

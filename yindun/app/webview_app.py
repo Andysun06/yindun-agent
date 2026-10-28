@@ -245,10 +245,6 @@ class JsApi:
                 for ctrl in controls:
                     if ctrl is not form:
                         self._bind_native_drop(ctrl)
-                # ★ WebView2 默认自己处理外部拖放（页面能收到 File，但 File 没有本地路径，
-                #   WinForms 也就收不到 DragDrop）。关掉它，OLE 拖放才会落到上面装的
-                #   Form/控件 Drop 目标；旧运行时没有 Controller 时静默跳过。
-                self._disable_webview_external_drop(form)
                 # Ctrl+V：KeyPreview 让 Form 先于 WebView2 收到按键，只有剪贴板真的含文件时才拦截。
                 form.KeyPreview = True
                 form.KeyDown += _wf.WinForms.KeyEventHandler(self._on_native_key_down)
@@ -256,22 +252,13 @@ class JsApi:
             except Exception as exc:
                 print(f"[WebView] 安装原生附件拖拽失败（已降级为仅「＋」选择）：{exc}")
 
-        # 属性/事件必须在 WinForms UI 线程上写；调度不可用时直接试一次（异常已包住）
+        # 属性/事件必须在 WinForms UI 线程上写。窗口刚 loaded 时句柄可能还没建好，
+        # Invoke 会失败——此时**不能**在后台线程直接碰 WinForms 控件（跨线程访问会假死），
+        # 交给 _on_loaded 的延迟重试。
         if not self._ui_thread_dispatch(window, setup):
-            setup()
+            print("[WebView] 窗口句柄尚未就绪，稍后重试安装原生附件拖拽")
+            return False
         return self._native_drop_installed
-
-    def _disable_webview_external_drop(self, form: Any) -> None:
-        """关闭 WebView2 自身的外部拖放，让 OLE FileDrop 落到 WinForms Drop 目标。"""
-        try:
-            browser = getattr(form, "browser", None)
-            control = getattr(browser, "webview", None)
-            core = getattr(control, "CoreWebView2", None)
-            controller = getattr(core, "Controller", None) if core is not None else None
-            if controller is not None:
-                controller.AllowExternalDrop = False
-        except Exception as exc:
-            print(f"[WebView] 关闭 WebView2 外部拖放失败（改用控件级 Drop）：{exc}")
 
     def _bind_native_drop(self, widget: Any) -> None:
         """给一个原生控件挂 DragEnter/DragDrop（拖拽高亮交给页面，这里只管取路径）。"""
@@ -1200,10 +1187,11 @@ class WebApp:
 
         def _on_loaded() -> None:
             self._flush_pending()
-            # 页面已就绪（原生窗体一定已存在）：装拖拽 / Ctrl+V 挂载。
+            # 页面已就绪后再等 1 秒：给 WinForms 窗口句柄/WebView2 初始化留出时间，
+            # 否则 Invoke 失败会在后台线程直接碰控件（跨线程访问会让窗口假死）。
             # 失败只降级为"仅＋选择"，不能让附件入口影响启动。
             if self._api is not None:
-                self._api.install_native_file_drop()
+                threading.Timer(1.0, self._api.install_native_file_drop).start()
 
         try:
             self._window.events.loaded += _on_loaded
