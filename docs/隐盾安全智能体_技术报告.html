@@ -468,6 +468,7 @@ window.MathJax = { tex: { inlineMath: [['$','$'],['\\(','\\)']], displayMath: [[
       <tr><td><b>首次打开设置看不到插件栏目</b></td><td><code>openSettings()</code> 在插件清单为空时先拉取一次；启动阶段仍不额外同步加载，避免拖慢首屏</td></tr>
       <tr><td><b>自定义敏感词表只有裸 textarea</b></td><td>专属设置页：状态条（生效/正则/重复/无效）、快速添加、规则列表（词/正则徽标、删除）、高级编辑；非法正则阻止保存，保存后按内容哈希热加载</td></tr>
       <tr><td><b>地址误伤「组织者在会场的一片矩形区域」</b></td><td>ADDRESS 正则收紧为「行政区划+道路 / 区县+地点名 / 道路+数字门牌」三种骨架；真实地址留出集 19/19、全量 281/296、负样本 0/80 不变</td></tr>
+      <tr><td><b>“简单问句”用关键词判定，误伤创意任务 / 漏判文件问题</b></td><td>删除关键词路由：对话模式只走一次无工具直答（模型发起工具调用或说“读不到/请上传”时引导切工作）；工作模式一律进入 ReAct，由模型决定是否调工具。本轮模式随 <code>send</code> 一起传给服务层，Worker 与算力选择都用本轮值，不再读可能过期的设置</td></tr>
       <tr><td><b>模型只回「我来读取一下…」或空总结</b></td><td>承诺型开场白纠正一次（点名工具与参数）；已有工具结果而总结为空时由宿主直接呈现结果，不再显示「模型这一轮没有给出内容」</td></tr>
     </table>
     <div class="tbl-caption">回归：<code>test_ui_paths</code>（含长消息折叠、附件卡、公式、敏感词 UI、首开插件栏目）、<code>test_reply_feedback</code>（空承诺/空产出）、<code>test_agent_service</code>、<code>test_privacy_engine</code>、<code>privacy_adversarial_test</code>、<code>test_window_layout</code>、<code>test_file_ops</code> 全部退出码 0；留出集 281/281、281/296、0/80</div>
