@@ -2205,7 +2205,8 @@ class AgentService:
         with self._lock:
             return self._busy
 
-    def send(self, text: str, attachments: Optional[List[Dict[str, str]]] = None) -> bool:
+    def send(self, text: str, attachments: Optional[List[Dict[str, str]]] = None,
+             think_mode: Optional[str] = None) -> bool:
         """发起一轮对话。返回是否成功启动（忙碌或算力未就绪则拒绝）。
 
         附件：使用 `attach_files()` 预先挂载的解析结果；本轮附件会合并进会话的
@@ -2277,7 +2278,11 @@ class AgentService:
         worker.user_input = context          # 送模型的是"附件上下文 + 提问"
         worker.messages_snapshot = history_snapshot
         worker._box_mapping_restore = self.sessions.get_box_mapping(sid)
-        worker.think_mode = self.settings.get("think_mode") or "深度思考"
+        # 本轮模式：优先用前端随消息传来的快照；没传才回落到设置。
+        # 这样界面标签、Worker 分支、算力选择三者用的是同一个值。
+        _mode = think_mode if think_mode in ("快速回答", "深度思考") else (
+            self.settings.get("think_mode") or "深度思考")
+        worker.think_mode = _mode
         worker.privacy_shield = bool(self.settings.get("privacy", True))
         worker.think_depth = int(self.settings.get("thinking_depth", 3) or 3)
         try:
@@ -2286,7 +2291,7 @@ class AgentService:
             worker.model_context_window = 0
         # 思考开关跟着模式走：「快速回答」用关掉思考的算力（实测快 10~30 倍），
         # 「深度思考」用保持模型默认的算力——两套都在 prepare_llm 时建好了。
-        worker.llm = self._llm_for(self.settings.get("think_mode"))
+        worker.llm = self._llm_for(_mode)
         worker.tools_map = self._tools_map
         # 可读写范围：以"设置 sandbox_dir → 环境变量 SANDBOX_PATH → 程序目录"解析后的值为准
         # （与内核判定同一来源），避免 worker 的默认目录与策略判定错位。

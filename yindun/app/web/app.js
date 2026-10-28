@@ -965,7 +965,7 @@
     ensureStreamBubble();
     // 刚点完「快速/思考」就立刻回车时，先把防抖中的模式落库，保证本轮用的是用户看到的模式
     await ensureThinkModeSaved();
-    const ok = await call("send", text);
+    const ok = await call("send", text, { think_mode: state.turnMode });
     if (ok) {
       // 后端已把附件随本轮消息消费掉；本地同步清空，避免输入区胶囊残留
       state.attachments = [];

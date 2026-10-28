@@ -659,23 +659,42 @@ class Worker:
                 self.finished.emit(_del_reply)
                 return
 
-            # ★ 知识库有文档时，禁止走"跳过工具的快速直答"：否则 search_knowledge_base
-            #   永远不会被调用，模型会凭空作答（甚至误判为"拒绝提供敏感信息"）。
-            #   仅在"本会走快速直答"时才探测 KB，避免给普通问答增加开销。
-            _is_simple = self._is_simple_question(ai_input)
-            # ★ V3.6.21：顶栏改为「对话 / 工作」后，对话模式的边界必须说清楚——
-            #   它只回答简单问题，不读取本机文件、不检索知识库、不调用任何工具。
-            #   需要真实世界信息的问题直接引导切「工作」，而不是让弱模型在无工具车道里
-            #   回一句“我来读取一下…”然后没有下文（负责人实测的原始症状）。
-            if "深度" not in self.think_mode and not _is_simple:
+            # ★ 路由不再猜问句：模式决定能力边界。
+            #   · 对话：一次模型调用、不执行任何工具；模型如果发起 tool_calls 或给出
+            #     “读不到 / 请上传”这类推诿，宿主据此引导切「工作」。
+            #   · 工作：所有问题都进 ReAct，模型自己决定要不要调工具。旧实现用关键词
+            #     判“简单问题”并跳过工具，这正是「用 LaTeX 画小猫」被误判、
+            #     「1.md 内容是什么」走错车道的根因；关键词永远补不完。
+            _chat_mode = "深度" not in str(self.think_mode or "")
+
+            _kb_has_docs = False
+            _kb_relevant = self._looks_like_kb_question(ai_input)
+            if _kb_relevant and not _has_attachment and not _is_audio_request:
+                _kb = self._get_knowledge_base()
+                if _kb is not None:
+                    try:
+                        _kb_has_docs = _kb.get_stats().get("total_documents", 0) > 0
+                    except Exception:
+                        _kb_has_docs = False
+
+            _chat_reason = ""
+            if _chat_mode:
+                if _has_attachment:
+                    _chat_reason = "这个问题需要读取附件。"
+                elif _is_audio_request:
+                    _chat_reason = "这个问题需要转写音频。"
+                elif _kb_has_docs:
+                    _chat_reason = "这个问题需要检索本地知识库。"
+            if _chat_reason:
                 _chat_only = (
-                    "当前是「对话」模式：只回答简单问题，不读取本机文件、不调用工具。" + chr(10)
-                    + "这个问题需要查看文件或执行操作，请把顶栏模式切到「工作」再发一次；"
+                    "当前是「对话」模式：只回答简单问题，不读取本机文件、不调用工具。"
+                    + chr(10) + _chat_reason
+                    + chr(10) + "请把顶栏模式切到「工作」再发一次；"
                     "「工作」模式下会真正调用工具，写操作仍会按权限档弹出审批。"
                 )
                 self.status.emit("[对话模式] 该问题需要工具，请切换到「工作」")
                 self._trace("judge", "对话模式限制",
-                            "非简单问题；已引导切换到工作模式", "warn")
+                            "需要附件/音频/知识库；已引导切换到工作模式", "warn")
                 if self.privacy_shield and box:
                     self._box_mapping.update(box)
                 memory.update_with_context_result(self.user_input, _chat_only)
@@ -683,27 +702,21 @@ class Worker:
                 self._ensure_reply_persisted(_chat_only)
                 self.finished.emit(_chat_only)
                 return
-            _kb_has_docs = False
-            _kb_relevant = self._looks_like_kb_question(ai_input)
-            if _is_simple and _kb_relevant and not _has_attachment and not _is_audio_request:
-                _kb = self._get_knowledge_base()
-                if _kb is not None:
-                    try:
-                        _kb_has_docs = _kb.get_stats().get("total_documents", 0) > 0
-                    except Exception:
-                        _kb_has_docs = False
-                if _kb_has_docs:
-                    ai_input = (
-                        "[提示] 本地知识库已入库文档；本问题涉及本机/本单位资料，"
-                        "请先调用 search_knowledge_base 检索后再作答。"
-                        "若检索不到相关内容，**不要反复换词重试**，直接基于一般知识回答并说明"
-                        "“知识库里没有这条”。\n\n" + ai_input
-                    )
+
+            if _kb_has_docs:
+                ai_input = (
+                    "[提示] 本地知识库已入库文档；本问题涉及本机/本单位资料，"
+                    "请先调用 search_knowledge_base 检索后再作答。"
+                    "若检索不到相关内容，**不要反复换词重试**，直接基于一般知识回答并说明"
+                    "“知识库里没有这条”。" + chr(10) * 2 + ai_input
+                )
 
             forced_tool_result = None
             forced_tool_name = None
             forced_tool_args = None      # 注入 ToolMessage 时需要回填对应的 tool_call 参数
-            if (_is_simple or _is_audio_request) and not _has_attachment and not _kb_has_docs:
+            # 对话模式：只走一次无工具直答；工作模式：一律进入 ReAct（模型决定工具）。
+            if _chat_mode:
+
                 # ★ 状态行前缀按**当前模式**取（V3.6.13，负责人截图：选了「思考」却显示
                 #   「[快速回答] 直接回答问题…」）。直答快路径在两种模式下都会走，
                 #   但它不是"快速模式"——把模式名写在状态行里会让人以为设置没生效。
@@ -726,6 +739,22 @@ class Worker:
                 #   · 模型要工具 → 转到下面的工具推理循环，让它真的去调（并如实说明调不到）；
                 #   · 什么都没有 → 给一条可读的说明，绝不发空白。
                 _direct_tool_calls = getattr(reply_msg, "tool_calls", None)
+                # 对话模式：模型没发起工具调用、但回答里说“读不到 / 没权限 / 请上传”，
+                # 说明这题其实需要工具——如实引导切「工作」，而不是把推诿当答案。
+                if reply and not _direct_tool_calls and self._waffles_about_local_access(reply):
+                    _chat_only = (
+                        "当前是「对话」模式：只回答简单问题，不读取本机文件、不调用工具。"
+                        + chr(10) + "这个问题需要查看本机文件或执行操作，"
+                        "请把顶栏模式切到「工作」再发一次。"
+                    )
+                    self.status.emit("[对话模式] 该问题需要工具，请切换到「工作」")
+                    if self.privacy_shield and (box or self._box_mapping):
+                        self._box_mapping.update(box)
+                    memory.update_with_context_result(self.user_input, _chat_only)
+                    self.result_messages = memory.to_dict_list()
+                    self._ensure_reply_persisted(_chat_only)
+                    self.finished.emit(_chat_only)
+                    return
                 if reply and not _direct_tool_calls:
                     # ★ 先留一份**还原前**的文本给审计链（V3.6.7）：审计链落盘必须是占位符形态，
                     #   而下面这行会把 reply 覆盖成还原后的明文——顺序反了就等于把敏感内容写进审计。

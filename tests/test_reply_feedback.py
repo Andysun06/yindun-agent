@@ -245,7 +245,8 @@ check("落库链尾＝用户看到的那段文字（不是空助手消息）",
 print("\n" + "=" * 78)
 print("【2】直答路径全程空产出：给可读说明 + 落库 + 有进度事件（「思考中」有东西可显示）")
 print("=" * 78)
-_worker2 = make_worker(ScriptedLLM([{"content": ""}]), {}, "介绍一下巴黎", fast_path=True)
+_worker2 = make_worker(ScriptedLLM([{"content": ""}]), {}, "介绍一下巴黎",
+                      fast_path=True, think_mode="快速回答")
 _events2, _elapsed2, _stuck2 = run_worker(_worker2)
 _fin2 = last_of(_events2, "finished")
 _statuses2 = all_of(_events2, "status")
@@ -280,9 +281,9 @@ _llm3b = ScriptedLLM([{"content": "思考模式下的直答。"}])
 _worker3b = make_worker(_llm3b, {}, "介绍一下巴黎", think_mode="深度思考")
 _events3b, _, _ = run_worker(_worker3b)
 _status3b = [str(x) for x in all_of(_events3b, "status")]
-check("★ 工作模式的直答状态行写「[工作]」，不再冒充「[对话]」",
-      any("[工作] 直接作答" in s for s in _status3b)
-      and not any("[对话]" in s for s in _status3b), str(_status3b))
+check("★ 工作模式走 ReAct（不再用“简单问句→直答”的捷径）",
+      any(("思考" in s or "推理" in s) for s in _status3b)
+      and not any("[对话] 直接作答" in s for s in _status3b), str(_status3b))
 _llm3c = ScriptedLLM([{"content": "快速模式下的直答。"}])
 _worker3c = make_worker(_llm3c, {}, "介绍一下巴黎", think_mode="快速回答")
 _events3c, _, _ = run_worker(_worker3c)
@@ -906,7 +907,7 @@ def _direct_worker(llm, question="介绍一下常见的排序算法"):
     w.tools_map = {}
     w.user_input = question
     w.messages_snapshot = []
-    w.think_mode = "深度思考"
+    w.think_mode = "快速回答"
     w.privacy_shield = False
     w.sandbox_path = str(SANDBOX_ROOT)
     w.attachment_fulltext = {}
@@ -1088,14 +1089,22 @@ check("★ 新装默认模式＝工作（深度思考）",
       _DEFAULTS.get("think_mode") == "深度思考", repr(_DEFAULTS.get("think_mode")))
 check("Worker 默认模式＝工作", Worker().think_mode == "深度思考", repr(Worker().think_mode))
 
-_llm_chat = ScriptedLLM([{"content": "这段不该被使用"}])
+_llm_chat = ScriptedLLM([{"content": "我无法直接访问您的桌面文件夹，请把文件上传给我。"}])
 _w_chat = make_worker(_llm_chat, {}, DESKTOP_QUESTION, think_mode="快速回答")
 _ev_chat, _, _ = run_worker(_w_chat)
 _fin_chat = str(last_of(_ev_chat, "finished") or "")
-check("★ 对话模式遇到需要工具的问题：不调用模型", _llm_chat.calls == 0,
-      f"invoke={_llm_chat.calls}")
-check("★ 对话模式如实引导切「工作」",
+check("★ 对话模式遇到需要工具的问题：只调用一次模型（不再靠关键词提前拦截）",
+      _llm_chat.calls == 1, f"invoke={_llm_chat.calls}")
+check("★ 模型给出“读不到/请上传”时如实引导切「工作」",
       "对话" in _fin_chat and "工作" in _fin_chat, _fin_chat[:120])
+
+_llm_draw = ScriptedLLM([{"content": "这是一个用 LaTeX 画小猫的示例：\begin{tikzpicture}...\end{tikzpicture}"}])
+_w_draw = make_worker(_llm_draw, {}, "用latex画一个小猫", think_mode="快速回答")
+_ev_draw, _, _ = run_worker(_w_draw)
+_fin_draw = str(last_of(_ev_draw, "finished") or "")
+check("★ 对话模式不再误判“用 LaTeX 画小猫”为需要工具",
+      _llm_draw.calls == 1 and "tikzpicture" in _fin_draw
+      and "切换到「工作」" not in _fin_draw, _fin_draw[:120])
 
 _llm_dt = ScriptedLLM([
     {"content": "我来列一下目录。",

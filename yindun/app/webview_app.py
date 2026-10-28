@@ -174,8 +174,16 @@ class JsApi:
         return self._svc.laya_try(cfg or {})
 
     # ── 推理 ─────────────────────────────────────
-    def send(self, text: str) -> bool:
-        return self._svc.send(text)
+    def send(self, text: str, options: Optional[Dict[str, Any]] = None) -> bool:
+        # 本轮模式随消息一起传：前端标签用的是发送瞬间的快照，后端不能再去读
+        # 可能尚未落盘/已被别的设置回填覆盖的 settings.think_mode，否则会出现
+        # 「标签是工作、实际按对话执行」的错位。
+        mode = None
+        if isinstance(options, dict):
+            candidate = str(options.get("think_mode") or "")
+            if candidate in ("快速回答", "深度思考"):
+                mode = candidate
+        return self._svc.send(text, think_mode=mode)
 
     def cancel(self) -> bool:
         self._svc.cancel()
