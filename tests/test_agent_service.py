@@ -221,7 +221,9 @@ added = svc2.attach_files([str(attachment_path)])
 check("附件解析成功", added and added[0]["chars"] > 0 and not added[0]["error"], str(added))
 check("附件列表可查询", len(svc2.list_attachments()) == 1)
 check("附件事件推送给界面", any(ev == "attachments" for ev, _ in events2))
-check("重复挂载去重", len(svc2.attach_files([str(attachment_path)])) == 0, "同一路径不应重复挂载")
+check("重复挂载去重（含空白/引号变体）",
+      len(svc2.attach_files([f"  \"{attachment_path}\"  ", str(attachment_path)])) == 0,
+      "同一路径不应重复挂载")
 
 captured = {}
 

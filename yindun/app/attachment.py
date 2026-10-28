@@ -234,16 +234,38 @@ def build_attachment_context(user_text: str,
 
 
 def normalize_paths(paths: Any) -> List[str]:
-    """把对话框返回值（str / list / tuple）统一成路径列表，并去重保序。"""
+    """把各种来源（对话框 / 拖拽 FileDrop / 剪贴板 FileDropList）统一成路径列表。
+
+    - 单个 str / PathLike 与任意可迭代对象都接受；
+    - 去掉首尾空白与 Explorer「复制为路径」带上的成对引号；
+    - 按 `normcase(normpath(...))` 去重并保留首次出现的写法（Windows 大小写不敏感）。
+      为什么键要 normcase：同一次拖拽可能同时命中 Form 与 WebView 两层处理器，
+      路径大小写/斜杠写法不同也不能重复挂载同一份文件。
+    """
     if not paths:
         return []
     if isinstance(paths, (str, os.PathLike)):
         paths = [paths]
+    try:
+        items = list(paths)
+    except TypeError:
+        return []
     out: List[str] = []
-    for item in paths:
+    seen = set()
+    for item in items:
         if not item:
             continue
-        text = str(item)
-        if text not in out:
-            out.append(text)
+        text = str(item).strip()
+        if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+            text = text[1:-1].strip()
+        if not text:
+            continue
+        try:
+            key = os.path.normcase(os.path.normpath(text))
+        except Exception:
+            key = text
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
     return out

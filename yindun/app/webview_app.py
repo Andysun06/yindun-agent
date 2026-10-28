@@ -32,6 +32,7 @@ from webview.window import FixPoint   # 边缘改尺寸的单次原生 resize �
 from yindun import APP_ROOT, __display_version__
 from yindun.app import window_layout
 from yindun.app.agent_service import AgentService
+from yindun.app.attachment import normalize_paths
 from yindun.utils.logger import get_logger
 
 log = get_logger("webview")
@@ -81,6 +82,8 @@ class JsApi:
         #   py-spy 栈里可见 set_on_top → `i.TopMost = ...`，其余 Python 线程全停）。
         #   一把锁把它们排成队，配合"值没变就不重复写"的去重，正常点击完全不受影响。
         self._window_lock = threading.Lock()
+        # 原生附件入口（拖拽 / Ctrl+V）是否已装好；装失败就静默降级为仅「＋」选择。
+        self._native_drop_installed = False
 
     # ── 启动数据 ─────────────────────────────────
     def bootstrap(self) -> Dict[str, Any]:
@@ -207,8 +210,141 @@ class JsApi:
 
     def attach_paths(self, paths):
         """直接挂载给定路径（供拖拽或自动化测试使用）。"""
-        from yindun.app.attachment import normalize_paths
         return self._svc.attach_files(normalize_paths(paths))
+
+    # ── 原生拖拽 / Ctrl+V 挂载附件（WebView2 拿不到 File 的本地路径）──
+    # 为什么必须放到 Python/WinForms 侧：WebView2 交给页面的 File 对象**没有本地路径**，
+    # JS 的 drop 事件只能读到文件名与字节；而 OLE DataObject / 系统剪贴板里的
+    # `FileDrop` 是完整路径，正好可以直接交给 AgentService.attach_files() 走既有解析管线。
+    # 任何一步不可用（非 Windows、浏览器后端、pywebview 结构变化、剪贴板被占用）都只打印
+    # 一行日志并返回，绝不影响启动，也绝不拦截普通文本粘贴。
+    def install_native_file_drop(self) -> bool:
+        """给 WinForms 窗体装「拖文件进来 / Ctrl+V 粘贴文件」入口（幂等）。"""
+        window = self._window.get("window")
+        if window is None or self._native_drop_installed:
+            return self._native_drop_installed
+        try:
+            from webview.platforms import winforms as _wf
+            form = _wf.BrowserView.instances.get(getattr(window, "uid", None))
+        except Exception as exc:            # 非 Windows / 无 winforms 后端
+            print(f"[WebView] 原生附件拖拽不可用（已降级为仅「＋」选择）：{exc}")
+            return False
+        if form is None:
+            return False
+
+        def setup() -> None:
+            try:
+                self._bind_native_drop(form)
+                # WebView2 控件铺满窗体，Explorer 的落点通常是它而不是 Form：
+                # 两层都装，谁先拿到 FileDrop 谁挂载（路径去重，不会重复解析）。
+                # 控件集合取不到时只保留 Form 层，不能因此让后面的 KeyDown 也装不上。
+                try:
+                    controls = list(getattr(form, "Controls", []) or [])
+                except Exception:
+                    controls = []
+                for ctrl in controls:
+                    if ctrl is not form:
+                        self._bind_native_drop(ctrl)
+                # ★ WebView2 默认自己处理外部拖放（页面能收到 File，但 File 没有本地路径，
+                #   WinForms 也就收不到 DragDrop）。关掉它，OLE 拖放才会落到上面装的
+                #   Form/控件 Drop 目标；旧运行时没有 Controller 时静默跳过。
+                self._disable_webview_external_drop(form)
+                # Ctrl+V：KeyPreview 让 Form 先于 WebView2 收到按键，只有剪贴板真的含文件时才拦截。
+                form.KeyPreview = True
+                form.KeyDown += _wf.WinForms.KeyEventHandler(self._on_native_key_down)
+                self._native_drop_installed = True
+            except Exception as exc:
+                print(f"[WebView] 安装原生附件拖拽失败（已降级为仅「＋」选择）：{exc}")
+
+        # 属性/事件必须在 WinForms UI 线程上写；调度不可用时直接试一次（异常已包住）
+        if not self._ui_thread_dispatch(window, setup):
+            setup()
+        return self._native_drop_installed
+
+    def _disable_webview_external_drop(self, form: Any) -> None:
+        """关闭 WebView2 自身的外部拖放，让 OLE FileDrop 落到 WinForms Drop 目标。"""
+        try:
+            browser = getattr(form, "browser", None)
+            control = getattr(browser, "webview", None)
+            core = getattr(control, "CoreWebView2", None)
+            controller = getattr(core, "Controller", None) if core is not None else None
+            if controller is not None:
+                controller.AllowExternalDrop = False
+        except Exception as exc:
+            print(f"[WebView] 关闭 WebView2 外部拖放失败（改用控件级 Drop）：{exc}")
+
+    def _bind_native_drop(self, widget: Any) -> None:
+        """给一个原生控件挂 DragEnter/DragDrop（拖拽高亮交给页面，这里只管取路径）。"""
+        try:
+            from webview.platforms import winforms as _wf
+            widget.AllowDrop = True
+            widget.DragEnter += _wf.WinForms.DragEventHandler(self._on_native_drag_enter)
+            widget.DragDrop += _wf.WinForms.DragEventHandler(self._on_native_drag_drop)
+        except Exception as exc:
+            print(f"[WebView] 控件不接受拖放（跳过）：{exc}")
+
+    def _on_native_drag_enter(self, sender: Any, event: Any) -> None:
+        """只有真的拖着文件才给"复制"光标；其它拖放保持系统默认，不抢浏览器的行为。"""
+        try:
+            from webview.platforms import winforms as _wf
+            if event.Data and event.Data.GetDataPresent(_wf.WinForms.DataFormats.FileDrop):
+                event.Effect = _wf.WinForms.DragDropEffects.Copy
+        except Exception:
+            pass
+
+    def _on_native_drag_drop(self, sender: Any, event: Any) -> None:
+        try:
+            from webview.platforms import winforms as _wf
+            if not event.Data or not event.Data.GetDataPresent(_wf.WinForms.DataFormats.FileDrop):
+                return
+            # ★ 必须在事件回调内同步取出路径：DataObject 在 DragDrop 返回后即失效，
+            #   不能把 event.Data 传进后台线程慢慢读。
+            paths = normalize_paths(event.Data.GetData(_wf.WinForms.DataFormats.FileDrop))
+            if not paths:
+                return
+            event.Effect = _wf.WinForms.DragDropEffects.Copy
+            self.attach_native_paths(paths)
+        except Exception as exc:
+            print(f"[WebView] 拖拽挂载附件失败（已忽略）：{exc}")
+
+    def _on_native_key_down(self, sender: Any, event: Any) -> None:
+        """Ctrl+V：剪贴板含文件才挂载并吞掉这次按键；纯文本粘贴原样放行。"""
+        try:
+            from webview.platforms import winforms as _wf
+            if not (event.Control and not event.Alt
+                    and event.KeyCode == _wf.WinForms.Keys.V):
+                return
+            if not _wf.WinForms.Clipboard.ContainsFileDropList():
+                return                     # ★ 没有文件：绝不 Handled，保证正常文本粘贴
+            paths = normalize_paths(_wf.WinForms.Clipboard.GetFileDropList())
+            if not paths:
+                return
+            event.Handled = True
+            event.SuppressKeyPress = True
+            self.attach_native_paths(paths)
+        except Exception as exc:
+            # 剪贴板被别的进程锁住 / 非 Windows：如实记一行，然后把粘贴让给浏览器
+            print(f"[WebView] 读取剪贴板文件失败（已放行普通粘贴）：{exc}")
+
+    def attach_native_paths(self, paths: Any) -> bool:
+        """后台解析并挂载原生来源的路径；结果仍走 AgentService 的 attachments 事件。
+
+        为什么一定放后台：PDF / OCR 解析可能几秒到几十秒，而拖放 / 按键回调跑在
+        WinForms UI 线程上——同步解析会让窗口变成"未响应"。事件通道本身已有，
+        前端渲染与「＋」选择完全一致，不需要新协议。
+        """
+        clean = normalize_paths(paths)
+        if not clean:
+            return False
+
+        def work() -> None:
+            try:
+                self._svc.attach_files(clean)
+            except Exception as exc:
+                print(f"[WebView] 后台挂载附件失败：{exc}")
+
+        threading.Thread(target=work, daemon=True, name="yindun-native-attach").start()
+        return True
 
     def pick_directory(self):
         """选择「可读写范围（沙箱目录）」。
@@ -1064,6 +1200,10 @@ class WebApp:
 
         def _on_loaded() -> None:
             self._flush_pending()
+            # 页面已就绪（原生窗体一定已存在）：装拖拽 / Ctrl+V 挂载。
+            # 失败只降级为"仅＋选择"，不能让附件入口影响启动。
+            if self._api is not None:
+                self._api.install_native_file_drop()
 
         try:
             self._window.events.loaded += _on_loaded

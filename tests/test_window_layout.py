@@ -243,9 +243,10 @@ check("浮条输入是多行控件（单行 input 装不下换行，Shift+Enter 
       '<textarea class="minibar__input" id="mini-input"' in html)
 check("浮条输入框有高度上限（浮条窗口固定 60px，不能被文本撑破）",
       "max-height: 44px" in css and 'AUTOSIZE_MAX = { input: 180, "mini-input": 44 }' in js)
+_mini_block = js.split('$("mini-input").addEventListener("keydown"', 1)[1][:400]     if '$("mini-input").addEventListener("keydown"' in js else ""
 check("Shift+Enter / Ctrl+Enter 在浮条里都不发送（换行交给控件/显式插入）",
       'if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.isComposing) {' in js
-      and 'if (e.key === "Enter" && !e.isComposing) {' not in js
+      and 'if (e.key === "Enter" && !e.isComposing) {' not in _mini_block
       and 'insertNewline($("mini-input"))' in js)
 check("草稿双向搬运：折叠时主输入 → 浮条，展开时浮条 → 主输入",
       'carryDraft("mini-input", "input")' in js and 'carryDraft("input", "mini-input")' in js
@@ -365,8 +366,8 @@ check("四档按钮与 core/permission.py 的 MODES 一一对应",
       all(f'data-mode="{m}"' in html for m in ("plan", "ask", "auto", "full")))
 check("选择器带无障碍语义（radiogroup + 每档一个 radio）",
       'id="perm-modes" role="radiogroup"' in html and html.count('class="permseg__btn"') == 4)
-check("切换即落库（不再挂「立即生效」字样；「重启后生效」这类话也不允许出现）",
-      'persist({ permission: mode })' in js and "立即生效" not in js and "重启后生效" not in js)
+check("切换即落库（不再挂「重启后生效」这类话）",
+      'persist({ permission: mode })' in js and "重启后生效" not in js)
 check("后端把档位立刻下发到内核环境变量（不是只写配置文件）",
       # 窗口从 900 放宽到 2000：save_settings 里现在还要处理 sandbox_dir（可读写范围）等
       # 新增设置项的专用入口，方法体变长是正常的；这里钉的是"确有立即下发"这件事，

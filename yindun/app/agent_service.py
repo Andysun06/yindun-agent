@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from yindun import APP_ROOT
-from yindun.app.attachment import build_attachment_context, parse_attachment
+from yindun.app.attachment import build_attachment_context, normalize_paths, parse_attachment
 from yindun.app.llm_factory import (TIER_LABEL, build_llm_variants, detect_chat_models,
                                     normalize_base_url,
                                     detect_ollama_models, infer_tier, model_catalog,
@@ -153,6 +153,9 @@ class AgentService:
         self._active_run = 0
         # 本轮待发送的附件（解析后的 {name, path, text, chars, error}）
         self._attachments: List[Dict[str, Any]] = []
+        # 附件挂载串行化：拖拽 / 剪贴板可能从 UI 事件线程并发进入，解析期间还会 emit 事件；
+        # 并发 append 会让同一文件被挂两次、事件顺序错乱（"已挂载 2 个"但只看到 1 个）。
+        self._attach_lock = threading.Lock()
         # 本轮用户消息的"展示文本"（附件场景下与送模型的上下文不同）
         self._last_display_text: str = ""
         # 知识库实例（懒加载并复用：Chroma + 本地 embedding 初始化较重）
@@ -850,12 +853,29 @@ class AgentService:
         插件解析——**插件产出的文本同样要过隐私扫描与脱敏**，与内核路径完全一致。
 
         返回解析结果摘要列表：[{name, chars, error}]，供界面提示。
+
+        ★ 线程安全：拖拽 / Ctrl+V 的路径来自 UI 事件线程，而解析可能耗时；调用方通常已经
+        转到后台线程。这里再用 `_attach_lock` 串行化，避免两次拖拽并发 append 出重复记录。
         """
+        with self._attach_lock:
+            return self._attach_files_locked(normalize_paths(paths))
+
+    def _attach_files_locked(self, paths: List[str]) -> List[Dict[str, Any]]:
         added: List[Dict[str, Any]] = []
-        existing = {item.get("path") for item in self._attachments}
+        existing = {
+            os.path.normcase(os.path.normpath(str(item.get("path") or "")))
+            for item in self._attachments
+        }
         for path in paths:
-            if not path or path in existing:
+            if not path:
                 continue
+            try:
+                key = os.path.normcase(os.path.normpath(str(path)))
+            except Exception:
+                key = str(path)
+            if key in existing:
+                continue
+            existing.add(key)
             self._emit("status", f"正在解析附件：{Path(path).name} …")
             ext = Path(path).suffix.lower().lstrip(".")
             claimed = ext and ext not in self.KERNEL_NATIVE_EXTS and ext in self._plugin_exts()
@@ -932,12 +952,53 @@ class AgentService:
         self._attachments = []
         self._emit("attachments", [])
 
+    _PREVIEW_CACHE: Dict[str, str] = {}
+
+    @classmethod
+    def _attachment_preview(cls, path: str) -> str:
+        """图片附件 → 小尺寸 data URL（仅界面展示，不进模型上下文/会话快照）。
+
+        为什么只做缩略图：用户发的是 4MB 照片时，原图 base64 会把桥接事件撑到数 MB；
+        320px PNG 通常几十 KB，足够在消息里认出是哪张图。
+        """
+        if not path:
+            return ""
+        cached = cls._PREVIEW_CACHE.get(path)
+        if cached is not None:
+            return cached
+        preview = ""
+        try:
+            from pathlib import Path as _P
+            src = _P(path)
+            if (src.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
+                    or not src.is_file() or src.stat().st_size > 20 * 1024 * 1024):
+                cls._PREVIEW_CACHE[path] = ""
+                return ""
+            import base64
+            import io
+            from PIL import Image
+            with Image.open(src) as im:
+                im.thumbnail((320, 320))
+                if im.mode not in ("RGB", "RGBA"):
+                    im = im.convert("RGB")
+                buf = io.BytesIO()
+                im.save(buf, format="PNG")
+            preview = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+        except Exception:
+            preview = ""
+        cls._PREVIEW_CACHE[path] = preview
+        return preview
+
     def list_attachments(self) -> List[Dict[str, Any]]:
-        # report 仅供界面提示（截断到 300 字），绝不进入模型上下文 / 会话快照
-        return [{"name": item.get("name", ""), "chars": item.get("chars", 0),
-                 "error": item.get("error"), "via": item.get("via", "内核解析"),
-                 "report": (item.get("report") or "")[:300]}
-                for item in self._attachments]
+        # report 仅供界面提示（截断到 300 字），绝不进入模型上下文 / 会话快照；
+        # preview 只给图片附件，且同样只用于界面。
+        out = []
+        for item in self._attachments:
+            out.append({"name": item.get("name", ""), "chars": item.get("chars", 0),
+                        "error": item.get("error"), "via": item.get("via", "内核解析"),
+                        "report": (item.get("report") or "")[:300],
+                        "preview": self._attachment_preview(item.get("path", ""))})
+        return out
 
     def attachment_count(self) -> int:
         return len(self._attachments)
@@ -2186,6 +2247,9 @@ class AgentService:
         if pending:
             self.sessions.set_attachment_fulltext(sid, updated_snapshot)
             self._attachments = []
+            # 本轮附件已随消息送出：立刻清空输入区附件条（旧实现只在手动移除时发事件，
+            # 发送后胶囊仍挂在输入框上，看起来像"没发出去"）。
+            self._emit("attachments", [])
 
         # 界面上展示的消息保持"用户原话 + 附件名"，不把附件正文写进气泡
         self._last_user_request = text
@@ -2194,7 +2258,13 @@ class AgentService:
             names = "、".join(item.get("name", "") for item in pending)
             display_text = f"📎 附件：{names}\n{text}"
         messages = list(history_snapshot)
-        messages.append({"role": "user", "content": display_text})
+        _att_meta = [{"name": item.get("name", ""), "chars": int(item.get("chars") or 0),
+                      "error": item.get("error")} for item in pending]
+        _user_msg: Dict[str, Any] = {"role": "user", "content": display_text}
+        if _att_meta:
+            # 随消息落库：重开会话后仍能在气泡上看到"这轮带了哪些附件"
+            _user_msg["attachments"] = _att_meta
+        messages.append(_user_msg)
         self.sessions.set_messages(sid, messages)
         self._last_display_text = display_text
         self.sessions.save()

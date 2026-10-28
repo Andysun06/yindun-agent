@@ -264,10 +264,22 @@ def main():
             import traceback
             traceback.print_exc()
 
+    # === 地址结构回归（V3.6.22：修「在会场…」误判 ADDRESS + 守住真实地址识别）===
+    print("\n【地址结构回归（V3.6.22）】")
+    address_ok = True
+    try:
+        run_address_structure_test()
+    except Exception as e:
+        address_ok = False
+        print(f"  ❌ 地址结构回归失败：{type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+
     print("\n" + "=" * 70)
-    all_ok = (passed_count == total) and interface_ok and not nonce_failed
+    all_ok = (passed_count == total) and interface_ok and not nonce_failed and address_ok
     if all_ok:
-        print(f"✅ 全部通过：用例 {passed_count}/{total}，接口兼容，nonce 专项 {len(nonce_checks)} 项")
+        print(f"✅ 全部通过：用例 {passed_count}/{total}，接口兼容，nonce 专项 {len(nonce_checks)} 项，"
+              f"地址结构回归通过")
     else:
         if passed_count != total:
             print(f"❌ 用例通过 {passed_count}/{total}")
@@ -275,6 +287,8 @@ def main():
             print("❌ 接口兼容性验证未通过")
         for desc in nonce_failed:
             print(f"❌ nonce 专项未通过：{desc}")
+        if not address_ok:
+            print("❌ 地址结构回归未通过")
     print("=" * 70)
     return 0 if all_ok else 1
 
@@ -386,6 +400,60 @@ def run_name_contact_cooccurrence_test():
         out, _ = engine.anonymize(sample)
         assert not _has(out, "NAME"), f"{label}：不应误造人名 → {out}"
         print(f"  ✅ 负例：{label}")
+
+
+def run_address_structure_test():
+    """地址识别回归（V3.6.22）：普通短语不得当地址，真实地址不得漏。
+
+    负责人实测误伤：
+      「为了准备一个独特的颁奖典礼，组织者在会场的一片矩形区域（可看做是平面直角坐标系
+        的第一象限）铺上一些矩形地毯。」→ 旧版输出「组织者[ADDRESS_0_xxxx]一片矩形区域」。
+    根因：ADDRESS 分支①的"道路后缀"是**可选**的，"矩形区域"的"区"被当成行政区划后，
+    后面任意 1~20 个非标点字符都被吃进命中段。
+    现在要求真实地址骨架（区划+道路 / 市+区+地点名 / 道路+数字门牌），并对
+    "该市区 / 这个城市"这类泛指短语做负向判定。
+    """
+    import re
+
+    engine = NewEngine()
+
+    def _address_hits(text):
+        out, box = engine.anonymize(text)
+        return out, box, len(re.findall(r"\[ADDRESS_\d+_[a-z0-9]{4}\]", out))
+
+    # ── ① 误伤句：必须 0 命中（含负责人原句）──
+    false_positive_cases = [
+        "为了准备一个独特的颁奖典礼，组织者在会场的一片矩形区域"
+        "（可看做是平面直角坐标系的第一象限）铺上一些矩形地毯。",
+        "他在现场指挥交通。",
+        "学生在教室里自习。",
+        "这是矩形区域的面积。",
+        "在小区门口等一会儿。",
+        "该市区的道路正在整修。",
+    ]
+    for sample in false_positive_cases:
+        out, _, hits = _address_hits(sample)
+        assert hits == 0, f"普通短语不应被当作地址：{sample} → {out}"
+        assert out == sample, f"普通短语应原文不变：{sample} → {out}"
+        shown = sample[:28] + ("…" if len(sample) > 28 else "")
+        print(f"  ✅ 【0 命中】{shown}")
+
+    # ── ② 真实地址：必须命中，且往返可还原 ──
+    real_address_cases = [
+        "地址：北京市海淀区中关村大街1号",
+        "广东省深圳市南山区科技园",
+        "上海市浦东新区世纪大道100号",
+        "北京市海淀区中关村南大街 5 号院 3 号楼 1201 室",
+    ]
+    for sample in real_address_cases:
+        out, box, hits = _address_hits(sample)
+        assert hits >= 1, f"真实地址必须命中：{sample} → {out}"
+        restored = engine.deanonymize(out, box)
+        assert restored == sample, f"地址还原后应与原文一致：{sample} → {restored}"
+        print(f"  ✅ 【命中】{sample} → {out}")
+
+    print(f"  合计：误伤负例 {len(false_positive_cases)} 条（0 命中），"
+          f"真实地址 {len(real_address_cases)} 条（全部命中且可还原）")
 
 
 if __name__ == "__main__":

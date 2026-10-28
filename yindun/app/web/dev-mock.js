@@ -266,6 +266,24 @@
       hooks: { workflow_template: { ok: true, error: "" } } },
   ] };
 
+  // 插件配置文件沙盘（有状态）：读回来的就是上次写进去的内容。
+  // 词表页"添加 → 保存 → 再读取"的闭环只有在同一份文本上才验得出来。
+  const pluginFiles = {
+    "custom_dict/words.txt":
+      "# 自定义敏感词表 · 每行一条\n" +
+      "# 1) 普通词：按字面匹配\n" +
+      "# 2) 正则：以 re: 开头\n" +
+      "#\n" +
+      "# 示例（去掉行首的 # 即可生效）：\n" +
+      "# 隐盾专项\n" +
+      "# 星海计划\n" +
+      "# re:[A-Z]{2,4}-[0-9]{3,6}\n",
+    "laya_risk/risk_rules.txt":
+      "# 风险分级规则（预览）\n高危|删除|删除操作\n中危|外发|外发数据\n",
+  };
+  const fileKey = (pluginId, name) => `${pluginId}/${name}`;
+  const byteLength = (text) => new TextEncoder().encode(String(text || "")).length;
+
 
   // 沙盘里的自定义模型（预览用状态）：保存/删除会真的改它，三档列表跟着变
   const mockCustomModels = new Map();
@@ -483,11 +501,19 @@
     },
     plugin_sync_state: () => Promise.resolve(pluginSync),
     plugin_selfcheck: () => Promise.resolve(pluginCheck),
-    plugin_config_read: () => Promise.resolve({
-      ok: true, exists: true, path: "plugins_data/custom_dict/words.txt",
-      text: "# 自定义敏感词表 · 每行一条\n# 1) 普通词：按字面匹配\n# 2) 正则：以 re: 开头\n#\n# 示例（去掉行首的 # 即可生效）：\n# 隐盾专项\n# 星海计划\n# re:[A-Z]{2,4}-[0-9]{3,6}\n",
-    }),
-    plugin_config_write: () => Promise.resolve({ ok: true, bytes: 128 }),
+    plugin_config_read: (pluginId, name) => {
+      const key = fileKey(pluginId, name);
+      const exists = Object.prototype.hasOwnProperty.call(pluginFiles, key);
+      return Promise.resolve({
+        ok: true, exists, path: `plugins_data/${key}`,
+        text: exists ? pluginFiles[key] : "",
+      });
+    },
+    plugin_config_write: (pluginId, name, text) => {
+      const key = fileKey(pluginId, name);
+      pluginFiles[key] = String(text == null ? "" : text);
+      return Promise.resolve({ ok: true, bytes: byteLength(pluginFiles[key]) });
+    },
     window_action: noop,
     window_bounds: () => Promise.resolve({ ok: true, x: 80, y: 60, w: 1180, h: 780 }),
     window_resize_edge: noop,

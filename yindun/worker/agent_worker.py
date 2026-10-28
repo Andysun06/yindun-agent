@@ -1414,12 +1414,18 @@ class Worker:
                 tool_call_id="forced_tool_001"
             ))
             last_tool_result = str(forced_tool_result)[:2000]
+            # ★ 宿主直接呈现工具结果时用的是**脱敏态**副本（forced_tool_result 本身已经
+            #   过了 `_anonymize_tool_output`），最终由 run() 的还原链路换回真值。
+            last_tool_result_safe = str(forced_tool_result)[:2000]
+            last_tool_name = forced_tool_name
             has_executed_tool = True
             self.status.emit("[工具执行完成] 已读取/扫描，准备总结…")
             # 渐进输出：把工具结果先发给用户看
             self.intermediate_result.emit("正在为您整理工具返回的内容…")
         else:
             last_tool_result = ""
+            last_tool_result_safe = ""
+            last_tool_name = ""
 
         # 记录本轮产生的所有中间消息（排除初始系统/上下文），用于后续持久化
         round_start_idx = len(messages) - 1  # 从 HumanMessage 开始记录
@@ -1438,11 +1444,20 @@ class Worker:
         self._text_call_retried = False   # "把工具调用写成了文字"只重试一次，再犯就如实标注
         self._trunc_retried = False       # "回答疑似被截断"只重生成一次（V3.6.10，组员评审 BUG-0003）
         self._tool_retry_used = False     # "一次工具没调却只讲权限"只纠正一次（见下方自纠错说明）
+        # ★ 承诺型开场白（「我来读取一下…」）只纠正一次（V3.6.22，负责人实测：
+        #   工作模式连问「1.md内容是什么」，第 1 轮只回一句承诺、没有内容）。
+        self._promise_retry_used = False
         # ★ 本轮"到底用没用过工具"的判据基线：强制分支（在循环之前跑的）已经加过计数，
         #   所以要在这里取一次快照，后面按"计数是否超过基线"判断，而不是看绝对值。
         _tool_baseline = self.tool_call_count
         self._tool_baseline_count = _tool_baseline
-        last_tool_result = ""  # 初始化，防止循环结束时 NameError
+        # ★ "模型自己发起过工具调用"的基线（隐含 reset，见下方承诺纠正的说明）：
+        #   强制分支不经过 tool_calls 循环，不增加 `tool_call_attempts`；用基线比较而非
+        #   绝对值，避免 worker 被复用（计数器跨轮累积）时判据失真。
+        _attempt_baseline = self.tool_call_attempts
+        # ★ last_tool_result / last_tool_result_safe / last_tool_name 已在上面的强制分支
+        #   （或它的 else）里初始化过了，这里**不能**再清空——否则强制工具结果在
+        #   "达到最大轮次"兜底时会被当成"本轮没执行过工具"而丢掉（V3.6.22）。
 
         while round_count < max_rounds:
             # 取消检测
@@ -1564,6 +1579,35 @@ class Worker:
                              "做完之后，按工具返回的真实结果回答（成功就说成功、失败就说失败）。\n"
                              "如果这次请求本来就不需要动盘（例如只是问知识），请直接回答，不要提「已完成」。")
                         ),
+                        additional_kwargs={"internal": True}))
+                    continue
+
+                # ★ 承诺型开场白纠正（V3.6.22，负责人实测）：工作模式下连问「1.md内容是什么」，
+                #   模型第 1 轮只回一句「我来读取一下桌面上的 1.md。」——content 非空、
+                #   tool_calls 为空，旧实现把它当最终回答直接展示，用户拿到的是一句承诺。
+                #   判据三条（宁可少纠正，也别把正常短答顶掉）：
+                #     ① 工作模式（「对话」模式不调用工具，承诺句不应触发工具纠正）；
+                #     ② 本轮**模型自己**还没有发起过工具调用（`tool_call_attempts` 未超基线）——
+                #        注意强制工具（宿主在进循环前执行的）不算：模型面对已经取回的工具结果
+                #        仍然只说承诺，正是要纠正的情形（`_turn_tool_success` 为 True 也不跳过）；
+                #     ③ content 是短句 + 承诺主语/动词（`_looks_like_promise`）。
+                #   只纠正一次（`_promise_retry_used`），第二次仍只承诺就不再把承诺当答案（见下方收尾）。
+                if (not getattr(self, "_promise_retry_used", False)
+                        and "深度" in str(self.think_mode or "")
+                        and self.tool_call_attempts == _attempt_baseline
+                        and isinstance(content, str)
+                        and self._looks_like_promise(content)):
+                    self._promise_retry_used = True
+                    _have_tool_result = bool(
+                        (forced_tool_result and forced_tool_name)
+                        or str(last_tool_result_safe or "").strip())
+                    self.status.emit("[纠正] 只回了「我来读取…」这类承诺、没有给出内容 —— "
+                                     "要求它现在给出结论…")
+                    self._trace("thinking", "承诺纠正",
+                                "模型只回承诺型开场白（无工具调用、无内容），已要求它直接作答",
+                                "warn")
+                    messages.append(HumanMessage(
+                        content=self._promise_correction_message(_have_tool_result),
                         additional_kwargs={"internal": True}))
                     continue
 
@@ -1692,6 +1736,24 @@ class Worker:
                             continue
                         final_reply += ("\n\n（提示：模型这一轮把工具调用写成了文字，因此**没有被真正执行**；"
                                         "可以再发一次，或换用更大的模型。）")
+                    # ★ 承诺型开场白不能当最终答复交付（V3.6.22）：纠正过一次后模型仍然
+                    #   只回一句「我来读取一下…」——那就由宿主把本轮工具结果直接呈现
+                    #   （没有工具结果时如实说明没拿到内容），绝不把一句承诺当作回答。
+                    #   仅工作模式生效：「对话」模式不走工具纠正，行为保持原样。
+                    if ("深度" in str(self.think_mode or "")
+                            and self._looks_like_promise(final_reply)):
+                        _p_name, _p_result = self._pick_tool_result(
+                            forced_tool_result, forced_tool_name,
+                            last_tool_name, last_tool_result_safe)
+                        if _p_result.strip():
+                            self.status.emit("[整理] 模型只回了承诺，已直接呈现工具结果")
+                            self._trace("judge", "承诺兜底",
+                                        "模型只回承诺型开场白，宿主直接呈现工具结果", "warn")
+                            final_reply = self._host_tool_reply(_p_name, _p_result)
+                        else:
+                            # 没有可呈现的工具结果：用既有的空产出诊断，别把承诺当答案
+                            self._reply_is_fallback = True
+                            final_reply = self._empty_output_message()
                     # ★ 续写前缀并回最终回答（P0-04）：放在重试判定之后——
                     #   若这一轮要重生成，前缀必须留着，不能提前消费掉。
                     final_reply = self._merge_limit_prefix(final_reply)
@@ -1702,6 +1764,28 @@ class Worker:
                     chain = messages[round_start_idx:]
                     memory.update_with_full_chain(chain)
                     final_reply = self._append_write_facts(final_reply)
+                    self.result_messages = memory.to_dict_list()
+                    self._ensure_reply_persisted(final_reply)
+                    return final_reply
+                # ★ 工具结果已在手上、模型却返回空内容（V3.6.22，负责人实测）：
+                #   强制读取 1.md 之后模型总结返回空串，旧实现落到「模型这一轮没有给出内容」，
+                #   用户问的内容其实早就读到了。这里由**宿主**直接给出可读答复：
+                #   简短说明「已读取/已列出」+ 工具结果正文（脱敏态，交给 run() 的还原链路）；
+                #   工具结果本身是失败标记时如实说明失败原因。
+                #   不先走 `_direct_answer` 重生成：那会再耗一次完整推理，而返回空产出的
+                #   模型大概率还是空产出（真机实测正是如此）。
+                _fb_name, _fb_result = self._pick_tool_result(
+                    forced_tool_result, forced_tool_name, last_tool_name, last_tool_result_safe)
+                if _fb_result.strip():
+                    self.status.emit("[整理] 模型没有给出总结文字，已直接呈现工具结果")
+                    self._trace("judge", "工具结果直接呈现",
+                                f"模型总结为空，宿主直接呈现 {_fb_name or '工具'} 的结果", "ok")
+                    final_reply = self._host_tool_reply(_fb_name, _fb_result)
+                    # ★ 续写前缀不能因为兜底文案而丢失（P0-04）
+                    final_reply = self._merge_limit_prefix(final_reply)
+                    final_reply = self._append_write_facts(final_reply)
+                    chain = messages[round_start_idx:]
+                    memory.update_with_full_chain(chain)
                     self.result_messages = memory.to_dict_list()
                     self._ensure_reply_persisted(final_reply)
                     return final_reply
@@ -1972,9 +2056,13 @@ class Worker:
                     tool_result = self._execute_tool(tool_name, tool_args)
                     has_executed_tool = True  # 标记已执行过工具
                     last_tool_result = str(tool_result)[:2000]
+                    last_tool_name = tool_name
 
                     # 统一脱敏工具返回内容（内部已处理：搜索知识库豁免、映射合并进跨轮表、审计）
                     tool_result, _ = self._anonymize_tool_output(tool_result, tool_name)
+                    # ★ 宿主直接呈现工具结果时用这份**脱敏态**副本（V3.6.22），最终由
+                    #   run() 的还原链路换回真值——不能把未脱敏的原值直接塞进回答。
+                    last_tool_result_safe = str(tool_result)[:2000]
 
                     # ★ 真值校验：写盘/删除类操作到文件系统核对一遍，把"声称成功"与事实对齐
                     _verdict = self._verify_tool_outcome(tool_name, tool_args, str(tool_result))
@@ -2102,7 +2190,13 @@ class Worker:
             # 达到最大轮次时，模型这一轮没给正文：已生成的前缀仍是用户的回答（P0-04）
             final_reply = self._merge_limit_prefix("")
         else:
-            final_reply = last_tool_result
+            # ★ 模型这一轮没给正文：若本轮已有工具结果，由宿主直接呈现（V3.6.22），
+            #   而不是把原始结果（或空串）当回答。`last_tool_result_safe` 是脱敏态，
+            #   最终由 run() 的还原链路换回真值。
+            _tail_name, _tail_result = self._pick_tool_result(
+                forced_tool_result, forced_tool_name, last_tool_name, last_tool_result_safe)
+            final_reply = (self._host_tool_reply(_tail_name, _tail_result)
+                           if _tail_result.strip() else last_tool_result)
         # ★ 空产出兜底：`_clean` 之后可能是空串（只有空白/只有 tool_call 标签），而
         #   last_tool_result 也可能为空（本轮一个工具都没执行）——旧实现会把空串当回答返回，
         #   用户看到的就是一个空气泡。宁可如实说明，也不发空白。
@@ -2724,6 +2818,108 @@ class Worker:
         except Exception:
             # 兜底失败也不能让异常冒出去（它发生在异常处理路径里，再抛就会吞掉真正的失败原因）
             self.result_messages = self.messages_snapshot
+
+    # ── 承诺型开场白（V3.6.22）──────────────────────────────────────────────
+    # 负责人实测（工作模式，连问「1.md内容是什么」）：第 1 轮模型只回
+    # 「我来读取一下桌面上的 1.md。」——content 非空、tool_calls 为空。
+    # 旧实现把它当最终回答展示；第 2 轮总结为空，又落到「模型这一轮没有给出内容」。
+    _PROMISE_LEADS = ("我来", "我这就", "我马上", "我现在", "让我", "我先",
+                      "接下来我", "我帮您", "我帮你", "稍等", "请稍候", "正在")
+    _PROMISE_VERBS = ("读取", "读一下", "读读", "查看", "看看", "看一眼", "检查",
+                      "列出", "列一下", "搜索", "检索", "查找", "打开", "扫描",
+                      "分析", "整理", "统计", "获取")
+
+    @classmethod
+    def _looks_like_promise(cls, text: str) -> bool:
+        """这一段是不是**只有一句"我这就去…"的承诺**，没有交付任何内容。
+
+        判据刻意收紧（误判一次＝白跑一轮模型）：
+          · 单行、很短（≤ 40 字）——有分段/篇幅说明已经在给内容；
+          · 开头（前 12 字）是承诺主语（我来/我这就/让我/正在…）；
+          · 句中有工具类动作动词（读取/查看/列出/检索/分析…）；
+          · 冒号后面已经有实际内容（如「我读取到：共 3 条」）不算承诺。
+        """
+        body = str(text or "").strip()
+        if not body:
+            return False
+        if chr(10) in body or len(body) > 40:
+            return False
+        if not any(lead in body[:12] for lead in cls._PROMISE_LEADS):
+            return False
+        if not any(verb in body for verb in cls._PROMISE_VERBS):
+            return False
+        _m = re.search(r"[：:]", body)
+        if _m and len(body) - _m.end() >= 2:
+            return False                      # 冒号后已有内容：不是纯承诺
+        return True
+
+    def _promise_correction_message(self, has_tool_result: bool) -> str:
+        """给模型的纠正指令：点名可用工具与参数，要求它现在给出结论。
+
+        `has_tool_result` 表示本轮工具已经执行过（结果在消息链里）——这时要求它
+        **直接基于结果作答**，而不是再承诺一次；否则要求它真的调用工具。
+        """
+        _lines = []
+        if "list_local_files" in (self.tools_map or {}):
+            _lines.append('· 列目录 / 数文件 → list_local_files(target_directory="桌面")')
+        if "read_local_file" in (self.tools_map or {}):
+            _lines.append('· 读某个文件的内容 → read_local_file(filename="1.md", target_directory="桌面")')
+        if "search_in_files" in (self.tools_map or {}):
+            _lines.append('· 在文件里找内容 → search_in_files(pattern="关键词", target_directory="桌面")')
+        _tools_text = (chr(10).join(_lines) if _lines
+                       else "（本轮没有可用的文件工具——请直接基于已知信息回答）")
+        if has_tool_result:
+            return (
+                "你上一条只说了「我来读取一下…」这类**承诺**，并没有给出任何内容。\n"
+                "本轮的工具**已经执行过**，结果就在上面的工具消息里——请直接基于它给出结论"
+                "（具体到文件内容/文件名/数量），**不要再说一遍「我来读取」**。\n"
+                "如果还需要更多信息，可以继续调用工具：\n" + _tools_text + "\n"
+                "如果确实不需要工具，请直接回答用户的问题。")
+        return (
+            "你上一条只说了「我来读取一下…」这类**承诺**，既没有调用工具，也没有给出内容。\n"
+            "文件不会因为一句承诺就被读到：现在要么调用工具，要么直接作答。\n"
+            "可用工具（参数照这个格式写）：\n" + _tools_text + "\n"
+            "拿到工具结果后，请把真实内容/数字/文件名写进回答里；"
+            "如果确实不需要工具（纯知识问答），请直接给出答案，不要只讲你要去做什么。")
+
+    @staticmethod
+    def _pick_tool_result(forced_result, forced_name, last_name, last_safe):
+        """挑出"本轮可呈现的工具结果"：优先强制工具，其次循环里最后一次成功结果。
+
+        返回 `(工具名, 脱敏态结果)`。都为空则返回 `("", "")`——调用方据此决定
+        是如实说明没拿到内容，还是走其它兜底。
+        """
+        if forced_result and forced_name:
+            return str(forced_name), str(forced_result)
+        if str(last_safe or "").strip():
+            return str(last_name or ""), str(last_safe)
+        return "", ""
+
+    def _host_tool_reply(self, tool_name: str, tool_result: str) -> str:
+        """工具结果已就绪、但模型没有给出总结时，由宿主生成的**可读答复**。
+
+        · 成功：简短说明「已读取 / 已列出」，附上工具结果正文（脱敏态，交给 run()
+          的还原链路换回真值）；
+        · 失败（结果带 `_FAILURE_MARKS`）：如实说明失败原因，不把失败包装成成功。
+        """
+        body = str(tool_result or "").strip()
+        if not body:
+            return ""
+        label = self._map_tool_display_name(tool_name) if tool_name else ""
+        name_part = f"{label}（{tool_name}）" if label and label != tool_name else (label or tool_name)
+        if any(mark in body[:200] for mark in self._FAILURE_MARKS):
+            head = (f"这一步没能完成：{name_part or '工具调用'}返回了失败。"
+                    "以下是工具给出的原因：")
+        elif label in ("列出目录文件",):
+            head = f"已{label}，结果如下："
+        elif label in ("读取文件", "读取附件片段", "知识库检索", "文件搜索"):
+            head = f"已{label}，内容如下："
+        else:
+            head = (f"已通过「{name_part}」取到以下结果：" if name_part
+                    else "已取到以下结果：")
+        if len(body) > 1500:
+            body = body[:1500] + "\n…（内容较长，已截断）"
+        return head + chr(10) + chr(10) + body
 
     @staticmethod
     def _looks_substantive(text: str) -> bool:

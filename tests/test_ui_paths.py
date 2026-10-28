@@ -50,6 +50,8 @@
      本机档空态原样显示 `local_note` + 两个动作、手动添加本机模型走 `<ollama_host>/v1` + `ollama` 密钥、
      加完能立刻切换；没有任何可选模型时选择器给可行动提示；**本机档为空时左列仍列出「本机 Ollama」
      与「＋ 手动添加本机模型」入口**（点过局域网添加之后仍能回到本机档继续加本地模型）
+  28. 设置首开即出插件栏目（不点插件页）；custom_dict 专属设置：状态条 / 快速添加 /
+     规则列表 / 高级编辑；添加后保存参数含该词；非法正则 `re:[` 标红且阻止保存
 
 用法：python tests/test_ui_paths.py        （退出码 0 = 全部通过）
 依赖：pip install playwright && python -m playwright install chromium
@@ -868,8 +870,9 @@ def main() -> int:
               len(calls("pick_files")) > picks_before,
               f"{picks_before} → {len(calls('pick_files'))}")
         chips_after = page.eval_on_selector_all("#chips .chip", "els => els.map(e => e.textContent)")
-        check("点「＋」后附件条多出一项（界面真的生效）",
-              len(chips_after) == len(chips_before) + 1,
+        check("点「＋」后附件条至少多出一项（界面真的生效）",
+              len(chips_after) > len(chips_before)
+              and any("新增附件" in c for c in chips_after),
               f"{len(chips_before)} → {len(chips_after)}")
         toast_text = page.eval_on_selector_all(
             "#toast-root .toast", "els => els.map(e => e.textContent).join(' | ')")
@@ -1059,6 +1062,127 @@ def main() -> int:
         # 而不是并存两条、空终稿有如实兜底且不留空气泡、trace 没有流式气泡时也有落点。
         # 全部用 #mock 沙盘 + 直接派发事件构造时序（沙盘的 send 是 noop，不会自己发事件）。
         print("\n" + "=" * 78)
+        # ── 12c) 公式渲染 / 代码块复制 / 附件随用户消息展示（V3.6.21 热修）──
+        print()
+        print("=" * 78)
+        print("【12c】公式渲染 / 代码复制 / 附件随消息展示")
+        print("=" * 78)
+        md_math = ("公式 $E=mc^2$，块级：" + chr(10) * 2 + "$$" + chr(92) + "frac{a}{b}$$"
+                   + chr(10) * 2 + "```python" + chr(10) + "print(1)" + chr(10) + "```")
+        page.evaluate("() => { window.yindun.onEvent('state', {busy: true}); }")
+        page.evaluate("(t) => window.yindun.onEvent('finished', t)", md_math)
+        page.evaluate("() => window.yindun.onEvent('state', {busy: false})")
+        page.wait_for_timeout(500)
+        math_state = page.evaluate("""() => {
+          const body = [...document.querySelectorAll('#chat .entry__body')].pop();
+          if (!body) return null;
+          const pre = body.querySelector('pre code');
+          return {
+            katex: !!body.querySelector('.katex'),
+            display: !!body.querySelector('.katex-display'),
+            copyBtn: !!body.querySelector('[data-copy-code]'),
+            code: pre ? pre.textContent : '',
+          };
+        }""")
+        check("★ 行内与块级 LaTeX 都渲染成 KaTeX（不再是字面 $...$）",
+              bool(math_state) and math_state["katex"] and math_state["display"], str(math_state))
+        check("★ 代码块带「复制」按钮，且代码内容未被公式渲染污染",
+              bool(math_state) and math_state["copyBtn"] and math_state["code"] == "print(1)",
+              str(math_state))
+
+        page.click("#btn-attach")
+        page.wait_for_timeout(450)
+        chips_before = page.locator("#chips .chip").count()
+        page.fill("#input", "这个可展示没错吧")
+        page.click("#btn-send")
+        page.wait_for_timeout(700)
+        att_state = page.evaluate("""() => {
+          const rows = [...document.querySelectorAll('#chat .row--user')];
+          const row = rows[rows.length - 1];
+          return {
+            cards: row ? row.querySelectorAll('.user-attachment').length : 0,
+            names: row ? [...row.querySelectorAll('.user-attachment__name')].map((e) => e.textContent) : [],
+            chips: document.querySelectorAll('#chips .chip').length,
+            text: row ? row.innerText : '',
+          };
+        }""")
+        check("★ 发送后附件卡跟着用户消息一起展示",
+              chips_before > 0 and att_state["cards"] == chips_before, str(att_state))
+        check("★ 发送后输入区附件条清空（不会看起来像没发出去）",
+              att_state["chips"] == 0, str(att_state))
+        check("用户消息正文仍在（附件卡不吞消息）",
+              "这个可展示没错吧" in att_state["text"], att_state["text"][:120])
+
+        # 用户长消息折叠（V3.6.22）：长题面默认只显示约 8 行 + 渐变遮罩 + 「展开」，
+        # 点开后全文可见并变「收起」；短消息不生成按钮。刷新/切会话同样按内容长度重算。
+        long_lines = [f"第 {i} 行：这是用户长题面的第 {i} 行内容，用于验证折叠区域。" for i in range(1, 15)]
+        long_text = "\n".join(long_lines + ["末行标记-LONG-TAIL"])
+        # 沙盘的 send 是 noop，不会自己回 finished：先手动清 busy，否则输入框仍是 disabled
+        page.evaluate("() => window.yindun.onEvent('state', {busy: false})")
+        page.fill("#input", long_text)
+        page.click("#btn-send")
+        page.wait_for_timeout(400)
+        fold_state = page.evaluate("""() => {
+          const rows = [...document.querySelectorAll('#chat .row--user')];
+          const row = rows[rows.length - 1];
+          const slip = row && row.querySelector('.slip');
+          const fold = row && row.querySelector('.slip__fold');
+          const btn = row && row.querySelector('.slip__toggle');
+          return {
+            folded: !!slip && slip.classList.contains('is-folded'),
+            btn: btn ? btn.textContent : '',
+            maxH: fold ? getComputedStyle(fold).maxHeight : '',
+            clientH: fold ? fold.clientHeight : 0,
+            scrollH: fold ? fold.scrollHeight : 0,
+            tail: fold ? fold.innerText.includes('末行标记-LONG-TAIL') : false,
+          };
+        }""")
+        check("★ 长用户消息默认折叠（约 8 行 + 遮罩 + 「展开」按钮）",
+              fold_state["folded"] and fold_state["btn"] == "展开"
+              and fold_state["maxH"] not in ("", "none")
+              and fold_state["clientH"] < fold_state["scrollH"], str(fold_state))
+
+        page.locator("#chat .row--user .slip__toggle").last.click()
+        page.wait_for_timeout(200)
+        expanded_state = page.evaluate("""() => {
+          const rows = [...document.querySelectorAll('#chat .row--user')];
+          const row = rows[rows.length - 1];
+          const slip = row.querySelector('.slip');
+          const fold = row.querySelector('.slip__fold');
+          const btn = row.querySelector('.slip__toggle');
+          return {
+            expanded: slip.classList.contains('is-expanded') && !slip.classList.contains('is-folded'),
+            btn: btn ? btn.textContent : '',
+            maxH: getComputedStyle(fold).maxHeight,
+            clientH: fold.clientHeight,
+            scrollH: fold.scrollHeight,
+            tail: fold.innerText.includes('末行标记-LONG-TAIL'),
+          };
+        }""")
+        check("★ 点「展开」后全文可见、按钮变「收起」",
+              expanded_state["expanded"] and expanded_state["btn"] == "收起"
+              and expanded_state["maxH"] == "none"
+              and expanded_state["tail"]
+              and expanded_state["clientH"] >= expanded_state["scrollH"] - 1,
+              str(expanded_state))
+
+        page.evaluate("() => window.yindun.onEvent('state', {busy: false})")
+        page.fill("#input", "短消息不折叠")
+        page.click("#btn-send")
+        page.wait_for_timeout(250)
+        short_state = page.evaluate("""() => {
+          const rows = [...document.querySelectorAll('#chat .row--user')];
+          const row = rows[rows.length - 1];
+          const slip = row && row.querySelector('.slip');
+          return {
+            folded: !!slip && (slip.classList.contains('is-folded')
+                               || slip.classList.contains('is-expanded')),
+            buttons: row ? row.querySelectorAll('.slip__toggle').length : -1,
+          };
+        }""")
+        check("短用户消息不出现折叠按钮（不被误折叠）",
+              not short_state["folded"] and short_state["buttons"] == 0, str(short_state))
+
         print("【13】等待态（发送即出现）/ 空回复兜底 / trace 落点")
         print("=" * 78)
         errors_before = len(errors)
@@ -2667,6 +2791,126 @@ def main() -> int:
                   return !!s && s.hidden && b.classList.contains('pill--send')
                          && !b.classList.contains('pill--stop'); }"""))
 
+        # ── 28) 设置首开插件栏目就位 + custom_dict 专属设置（V3.6.21 热修）──
+        print("\n" + "=" * 78)
+        print("【28】首次打开设置即有插件栏目 / custom_dict 专属设置")
+        print("=" * 78)
+        # 用一张新页面保证是"新开便携版第一次打开设置"：默认停在模型页，
+        # 不点「插件」页，左侧插件分组也必须一次就位。
+        page_dict = browser.new_page(viewport={"width": 1440, "height": 900})
+        errors_dict = []
+        page_dict.on("pageerror", lambda err: errors_dict.append(str(err)))
+        page_dict.goto(url, wait_until="domcontentloaded")
+        page_dict.wait_for_function(
+            "() => { const v = document.querySelector('#brand-version');"
+            " return v && v.textContent.trim() && v.textContent.trim() !== '—'; }", timeout=20000)
+        page_dict.evaluate("""() => {
+            window.__calls = [];
+            const api = window.__YINDUN_MOCK__.api;
+            for (const key of Object.keys(api)) {
+                if (typeof api[key] !== 'function') continue;
+                const fn = api[key];
+                api[key] = (...args) => { window.__calls.push([key, args]); return fn(...args); };
+            }
+        }""")
+
+        def dcalls(name: str) -> list:
+            return page_dict.evaluate("(n) => (window.__calls || []).filter(c => c[0] === n)", name)
+
+        page_dict.click("#btn-settings")
+        page_dict.wait_for_selector("#setnav-plugins .setnav__item[data-plugin='custom_dict']",
+                                    state="visible", timeout=8000)
+        nav_plugins = page_dict.eval_on_selector_all(
+            "#setnav-plugins .setnav__item", "els => els.map(e => e.dataset.plugin)")
+        check("★ 首次打开设置（未点「插件」页）左侧已出现插件设置栏目",
+              page_dict.is_visible("#setnav-plugins") and "custom_dict" in nav_plugins,
+              str(nav_plugins))
+        check("首次打开时仍停在默认的模型页（不是靠点「插件」页触发）",
+              page_dict.evaluate(
+                  "() => { const p = document.querySelector('.setpage[data-set=\"model\"]');"
+                  " return !!p && p.classList.contains('is-active'); }"), "")
+        check("首次打开设置确实拉取过插件清单（plugins_list）",
+              bool(dcalls("plugins_list")), str(dcalls("plugins_list")[:1]))
+
+        page_dict.click("#setnav-plugins .setnav__item[data-plugin='custom_dict']")
+        page_dict.wait_for_selector("#cdict-status", state="visible", timeout=8000)
+        page_dict.wait_for_function(
+            "() => !document.querySelector('#cdict-status').textContent.includes('正在读取')",
+            timeout=8000)
+        check("custom_dict 设置页有状态条 / 快速添加 / 规则列表 / 高级编辑",
+              page_dict.is_visible("#cdict-status") and page_dict.is_visible("#cdict-add-input")
+              and page_dict.is_visible("#cdict-add") and page_dict.is_visible("#cdict-list")
+              and page_dict.query_selector("#cdict-adv") is not None, "")
+        page_dict.click("#cdict-adv summary")            # 展开高级编辑（textarea / 读取 / 保存）
+        page_dict.wait_for_timeout(150)
+        check("高级编辑折叠项展开后出现 textarea 与读取/保存",
+              page_dict.is_visible("#cdict-text") and page_dict.is_visible("#cdict-load")
+              and page_dict.is_visible("#cdict-save"), "")
+        empty_text = page_dict.inner_text("#cdict-list")
+        status0 = page_dict.inner_text("#cdict-status")
+        check("空词表给出空态说明与两个可点击示例",
+              "词表还是空的" in empty_text
+              and page_dict.eval_on_selector_all(
+                  "#cdict-list [data-cdict-example]", "els => els.length") == 2,
+              repr(empty_text[:120]))
+        check("状态条初始计数如实（生效 0 / 正则 0 / 重复 0）",
+              "生效 0 条" in status0 and "其中正则 0 条" in status0
+              and "重复 0 条已合并" in status0, repr(status0))
+        page_dict.click("#cdict-list [data-cdict-example]")
+        check("点空态示例即填入快速添加框",
+              bool((page_dict.input_value("#cdict-add-input") or "").strip()),
+              repr(page_dict.input_value("#cdict-add-input")))
+
+        word = "回归敏感词"
+        page_dict.fill("#cdict-add-input", word)
+        page_dict.press("#cdict-add-input", "Enter")
+        page_dict.wait_for_timeout(220)
+        rows1 = page_dict.eval_on_selector_all("#cdict-list .cdict__row", "els => els.length")
+        status1 = page_dict.inner_text("#cdict-status")
+        check("★ 添加一条词后规则列表 +1（回车也能添加）", rows1 == 1, str(rows1))
+        check("状态条随列表更新（生效 1 条 / 其中正则 0 条）",
+              "生效 1 条" in status1 and "其中正则 0 条" in status1, repr(status1))
+        check("规则行带类型徽标（词）与删除按钮",
+              page_dict.eval_on_selector_all(
+                  "#cdict-list .cdict__row .cdict__badge", "els => els.map(e => e.textContent)") == ["词"]
+              and page_dict.eval_on_selector_all(
+                  "#cdict-list .cdict__row [data-cdict-del]", "els => els.length") == 1, "")
+
+        writes_before = len(dcalls("plugin_config_write"))
+        page_dict.click("#cdict-save")
+        page_dict.wait_for_timeout(450)
+        writes = dcalls("plugin_config_write")
+        check("★ 保存调用 plugin_config_write，写入文本包含刚添加的词",
+              len(writes) > writes_before and word in str(writes[-1][1][2]),
+              str(writes[-1][1])[:200] if writes else "no call")
+        dict_toast = page_dict.eval_on_selector_all(
+            "#toast-root .toast", "els => els.map(e => e.textContent).join(' | ')")
+        check("保存成功提示「已保存 1 条敏感词，立即生效」",
+              "已保存 1 条敏感词，立即生效" in dict_toast, repr(dict_toast))
+
+        # 非法正则：状态条显示无效条数、对应行标红，保存被阻止
+        page_dict.fill("#cdict-add-input", "re:[")
+        page_dict.click("#cdict-add")
+        page_dict.wait_for_timeout(220)
+        status_bad = page_dict.inner_text("#cdict-status")
+        bad_rows = page_dict.eval_on_selector_all(
+            "#cdict-list .cdict__row.is-bad", "els => els.length")
+        check("★ 非法正则 re:[ 在状态条显示「1 条正则无效」",
+              "1 条正则无效" in status_bad, repr(status_bad))
+        check("★ 非法正则对应的规则行标红（is-bad）", bad_rows == 1, str(bad_rows))
+        writes_before_bad = len(dcalls("plugin_config_write"))
+        page_dict.click("#cdict-save")
+        page_dict.wait_for_timeout(400)
+        bad_toast = page_dict.eval_on_selector_all(
+            "#toast-root .toast", "els => els.map(e => e.textContent).join(' | ')")
+        check("★ 有非法正则时保存被阻止（不再写接口，且提示原因）",
+              len(dcalls("plugin_config_write")) == writes_before_bad
+              and "正则无效" in bad_toast and "阻止保存" in bad_toast,
+              f"{writes_before_bad} → {len(dcalls('plugin_config_write'))} / {bad_toast!r}")
+        check("custom_dict 用例全程无 JS 运行时错误", not errors_dict,
+              "；".join(errors_dict[:3]))
+        page_dict.close()
+
         check("全程无 JS 运行时错误", not errors, "；".join(errors[:3]))
         browser.close()
 
@@ -2720,6 +2964,25 @@ def main() -> int:
           all(isinstance(p.get("tokens"), int) and isinstance(p.get("percent"), (int, float))
               and p.get("label") for p in usage["parts"]), str(usage["parts"]))
 
+    # ── 拖拽 / Ctrl+V 的路径规范化（原生 DnD 无法在 Playwright 里模拟，这里锁死纯函数）──
+    # WebView2 拿不到 File 的本地路径，路径由 WinForms 的 OLE FileDrop 交给 Python；
+    # 每次拖拽可能同时命中 Form 与 WebView2 两层处理器，所以规范化/去重必须可回归。
+    from yindun.app.attachment import normalize_paths                      # noqa: E402
+    sample = str(tmp / "拖拽 示例.txt")
+    check("normalize_paths：单个字符串不会被逐字符拆开",
+          normalize_paths(sample) == [sample], str(normalize_paths(sample)))
+    check("normalize_paths：去空白/成对引号并按路径去重（保留首次写法）",
+          normalize_paths([f"  {sample}  ", f'"{sample}"', sample, "", None]) == [sample],
+          str(normalize_paths([f"  {sample}  ", f'"{sample}"', sample, "", None])))
+    check("normalize_paths：接受生成器（FileDropList 这类可迭代来源）",
+          normalize_paths(p for p in [sample]) == [sample])
+    if os.name == "nt":
+        upper = sample.upper()
+        lower = sample.lower()
+        check("normalize_paths：Windows 大小写不敏感去重（保留第一次的写法）",
+              normalize_paths([upper, lower]) == [upper],
+              str(normalize_paths([upper, lower])))
+
     # ── 18) 演示版本提示（打包版首启 toast）──
     print("\n" + "=" * 78)
     print("【18】演示版本提示：内置自制中转站（首启 toast）")
@@ -2763,7 +3026,8 @@ def main() -> int:
         return 1
     print("✅ 界面关键路径全部通过（权限 / 胶囊 / 思考紧凑形态 / 插件 / 模型接入重做 / 模型选择器两级 / "
           "上下文浮层 / 窗口四按钮 / 可读写范围 / 模型可用性诚实化 / 闪发 / 主题与布局 / 附件＋ / "
-          "Markdown 表格 / 等待态与空回复兜底 / 工作流面板 / 暗色滚动条）")
+          "Markdown 表格 / 等待态与空回复兜底 / 工作流面板 / 暗色滚动条 / 设置首开插件栏目 / "
+          "自定义敏感词表设置）")
     return 0
 
 

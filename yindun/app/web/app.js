@@ -30,6 +30,27 @@
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+  /** 复制纯文本：优先 Clipboard API（WebView2/file:// 可能受限），失败退回 textarea + execCommand。 */
+  async function copyPlainText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (e) {}
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch (e) {
+      return false;
+    }
+  }
+
   /** 行内标记 → 受控标签（入参必须是**已经 esc() 过**的文本）。
    *  为什么强调"已转义"：模型输出是不可信内容，这里只做"把已转义的标记换回白名单标签"，
    *  绝不二次解码 HTML 实体；链接只放行 http(s)/mailto，javascript:/data: 等一律按普通文字显示。
@@ -88,7 +109,16 @@
 
     // 1) 代码块
     out = out.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, _lang, code) =>
-      stash(`<pre><code>${code.replace(/\n$/, "")}</code></pre>`));
+      stash(`<div class="code-block"><button type="button" class="code-copy" data-copy-code>复制</button><pre><code>${code.replace(/\n$/, "")}</code></pre></div>`));
+
+    // 1.5) 行内代码先占位：代码里的 $ 不能被公式渲染器当成 TeX
+    out = out.replace(/`([^`]+)`/g, (m, code) => code.includes("$") ? stash(`<code>${code}</code>`) : m);
+
+    // 1.6) 简单 LaTeX → 离线 KaTeX；代码已占位，不会被误渲染
+    const maths = [];
+    const NUL = String.fromCharCode(0);
+    const stashMath = (html) => { maths.push(html); return NUL + "M" + (maths.length - 1) + NUL; };
+    if (window.YindunMath) out = window.YindunMath.renderEscaped(out, stashMath);
 
     // 2) 表格（表头 + |---| 分隔行的连续块）
     const lines = out.split("\n");
@@ -130,6 +160,11 @@
     // 3) 行内格式
     out = mdInline(out);
 
+    // 3.5) 段落间距收敛：模型常用 2~4 个空行分段，旧实现每个空行都变成 <br>，
+    //      视觉上是一条大裂口。统一换成一个受控高度的段落间隔（8px），
+    //      列表/表格/代码块仍由各自块级元素撑开。
+    out = out.replace(/(?:<br>\s*){2,}/g, '<div class="md-gap"></div>');
+
     // 4) 空行收敛（V3.6.12，负责人反馈「有些地方空白太大」）：
     //    模型常在代码块前后留 2~3 个空行，旧实现每个空行都变 <br>，再叠加 <pre> 的外边距
     //    → 视觉上是大片空白。这里：连续空行最多留一个；块级元素（代码块/表格/引用/分隔线，
@@ -138,7 +173,8 @@
       .replace(/\n+(?=\u0000B\d+\u0000)/g, "\n")
       .replace(/(\u0000B\d+\u0000)\n+/g, "$1\n");
 
-    return out.replace(/\u0000B(\d+)\u0000/g, (_m, i) => blocks[Number(i)]);
+    out = out.replace(/\u0000B(\d+)\u0000/g, (_m, i) => blocks[Number(i)]);
+    return out.replace(new RegExp(NUL + "M([0-9]+)" + NUL, "g"), (_m, i) => maths[Number(i)]);
   }
 
   function toast(text, ms = 2600) {
@@ -516,10 +552,98 @@
     row.innerHTML = `<div class="trace-block"></div>`;
     return row;
   }
-  function slipEl(html) {
+  /** 用户消息上的附件卡：图片显示缩略图，其它文件显示图标 + 名称 + 字数。
+   *  为什么不再只靠输入框上方的胶囊：消息发出后胶囊会被清空，回看时完全看不出
+   *  "这一轮带了什么文件"；主流 agent 都是把附件跟在用户消息里一起展示。 */
+  function attachmentCards(items) {
+    const box = document.createElement("div");
+    box.className = "user-attachments";
+    for (const item of items || []) {
+      const card = document.createElement("div");
+      card.className = "user-attachment" + (item.error ? " is-bad" : "");
+      if (item.preview) {
+        const img = document.createElement("img");
+        img.src = item.preview;
+        img.alt = item.name || "附件";
+        card.appendChild(img);
+      } else {
+        const ico = document.createElement("span");
+        ico.className = "user-attachment__ico";
+        ico.innerHTML = CLIP_ICON;
+        card.appendChild(ico);
+      }
+      const meta = document.createElement("div");
+      meta.className = "user-attachment__meta";
+      const name = document.createElement("span");
+      name.className = "user-attachment__name";
+      name.textContent = item.name || "附件";
+      const sub = document.createElement("span");
+      sub.className = "user-attachment__sub";
+      sub.textContent = item.error
+        ? item.error
+        : (item.chars ? `${(item.chars / 1000).toFixed(1)}k 字` : "已挂载");
+      meta.append(name, sub);
+      card.appendChild(meta);
+      card.title = item.name || "";
+      box.appendChild(card);
+    }
+    return box;
+  }
+
+  /* ── 用户长消息折叠（V3.6.22）────────────────────────
+     只作用于用户消息：长题面铺满屏幕会让人看不到自己的提问结构，也挤压对话区。
+     判据用**纯文本**（不依赖测量）：超过约 12 行或 600 字才折叠，刷新/切会话重绘时
+     结果一致；短消息不生成按钮。收起高度固定 8 行（样式见 app.css）。
+     为什么在 .slip 内另加一层 .slip__fold：`.bubble` 是 display:contents（不产生盒子），
+     直接在 .slip 上设 max-height 会把附件卡与正文一起裁掉却没有独立的遮罩定位盒。
+     折叠层包住 bubble，附件卡与正文因此都在折叠区域内。 */
+  const SLIP_FOLD_MIN_CHARS = 600;
+  const SLIP_FOLD_MIN_LINES = 12;
+  const SLIP_FOLD_LINE_CHARS = 48;      // 粗略的视觉行宽（CJK 混排按 48 字符估一行）
+
+  function estimateTextLines(text) {
+    return String(text || "").split(/\r?\n/).reduce(
+      (n, line) => n + Math.max(1, Math.ceil(Array.from(line).length / SLIP_FOLD_LINE_CHARS)), 0);
+  }
+
+  function applySlipFold(row, plainText) {
+    const text = String(plainText || "");
+    const chars = Array.from(text).length;
+    if (chars <= SLIP_FOLD_MIN_CHARS && estimateTextLines(text) <= SLIP_FOLD_MIN_LINES) return;
+    const slip = row.querySelector(".slip");
+    if (!slip) return;
+    const fold = slip.querySelector(".slip__fold");
+    if (!fold) return;
+    slip.classList.add("is-folded");
+    // 折叠高度 = 8 行正文 + 附件卡实际高度：否则带附件的长消息只剩两行正文可见。
+    try {
+      const atts = slip.querySelector(".user-attachments");
+      const lineH = parseFloat(getComputedStyle(fold).lineHeight) || 22;
+      const extra = atts ? atts.getBoundingClientRect().height + 8 : 0;
+      slip.style.setProperty("--slip-fold-h", Math.round(lineH * 8 + extra) + "px");
+    } catch (e) {}
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "slip__toggle";
+    btn.textContent = "展开";
+    btn.setAttribute("aria-expanded", "false");
+    btn.title = "展开/收起这条消息";
+    btn.onclick = () => {
+      const folded = !slip.classList.contains("is-folded");
+      slip.classList.toggle("is-folded", folded);
+      slip.classList.toggle("is-expanded", !folded);
+      btn.textContent = folded ? "展开" : "收起";
+      btn.setAttribute("aria-expanded", String(!folded));
+    };
+    slip.appendChild(btn);
+  }
+
+  function slipEl(html, attachments = [], plainText = "") {
     const row = document.createElement("div");
     row.className = "row row--user";
-    row.innerHTML = `<div class="slip"><div class="bubble">${html}</div></div>`;
+    row.innerHTML = `<div class="slip"><div class="slip__fold"><div class="bubble">${html}</div></div></div>`;
+    if (attachments.length) row.querySelector(".bubble").prepend(attachmentCards(attachments));
+    applySlipFold(row, plainText);
     return row;
   }
 
@@ -538,7 +662,17 @@
         continue;
       }
       traceBlock = null;                     // 非轨迹消息打断分组
-      if (m.role === "user") { chat.appendChild(slipEl(md(m.content || ""))); }
+      if (m.role === "user") {
+        const atts = Array.isArray(m.attachments) ? m.attachments : [];
+        let content = m.content || "";
+        // 旧会话只有 "📎 附件：..." 前缀、没有 attachments 元数据：保留原样；
+        // 新会话两者都有，前缀去掉，改由附件卡展示，避免同一信息出现两遍。
+        if (atts.length && content.startsWith("📎 附件：")) {
+          const nl = content.indexOf(String.fromCharCode(10));
+          content = nl >= 0 ? content.slice(nl + 1) : "";
+        }
+        chat.appendChild(slipEl(md(content), atts, content));
+      }
       else if (m.role === "assistant") {
         index += 1;
         // 空的助手记录（旧数据/中断留下）也要如实呈现：直接跳过会让人以为"那一轮没发生过"
@@ -562,10 +696,10 @@
 
   function scrollToEnd() { const c = $("chat"); c.scrollTop = c.scrollHeight; }
 
-  function appendUser(text) {
+  function appendUser(text, attachments = []) {
     const chat = $("chat");
     if (chat.querySelector(".chat__empty")) chat.innerHTML = "";
-    chat.appendChild(slipEl(md(text))); scrollToEnd();
+    chat.appendChild(slipEl(md(text), attachments, text)); scrollToEnd();
   }
 
   /** 空终稿兜底文案。为什么必须有：真机事故里后端在"直答快路径吞掉工具调用"后回了空串，
@@ -814,7 +948,9 @@
   async function sendText(text) {
     text = (text || "").trim();
     if (!text) return;
-    appendUser(text);
+    // 附件快照必须赶在后端清空输入区之前取：消息气泡要带上本轮挂载的文件
+    const attachedNow = state.attachments.slice();
+    appendUser(text, attachedNow);
     state.startedAt = Date.now();
     // ★ 记下**这一轮发出时**的模式与思考强度（组员评审 BUG-0006）：气泡底部的模式标签
     //   原先在 `finished` 时才去读 `state.settings.think_mode`——期间用户改了模式（或某次
@@ -830,6 +966,11 @@
     // 刚点完「快速/思考」就立刻回车时，先把防抖中的模式落库，保证本轮用的是用户看到的模式
     await ensureThinkModeSaved();
     const ok = await call("send", text);
+    if (ok) {
+      // 后端已把附件随本轮消息消费掉；本地同步清空，避免输入区胶囊残留
+      state.attachments = [];
+      renderChips();
+    }
     if (!ok) {
       setBusy(false);
       // 根本没开始推理：把刚建的空等待气泡撤掉（留着就是一条空气泡），提示语保持不变
@@ -2300,10 +2441,20 @@
     });
   }
 
+  /** 拉取插件清单并刷新市场页与左侧设置栏目。
+   *  返回清单数组；失败返回 null，且**不清空**已加载的清单/栏目——
+   *  设置页不能因为一次插件清单读取失败就打不开（失败原因由 call() 或这里 toast 一次）。 */
   async function refreshPlugins() {
     const list = await call("plugins_list");
+    if (!Array.isArray(list)) {
+      // call() 对"桥缺失 / 调用抛异常"已经给过一条可读提示；这里只在后端返回了
+      // 非清单结构时补一条，避免同一原因连弹两次。
+      if (list !== null) toast("插件清单格式异常，已保持原状");
+      return null;
+    }
     renderPlugins(list);
     refreshPluginNav();
+    return list;
   }
 
   /* ══ 插件专属设置（V3.5.4）══════════════════════════════════
@@ -2315,6 +2466,8 @@
      （如 laya 的三级接入）注册在 PLUGIN_SETTINGS_RENDERERS 里覆盖。 */
   const PLUGIN_SETTINGS_RENDERERS = {
     laya_risk: { render: renderLayaSettings, subtitle: "审批弹窗的风险分级来源：本机 / 局域网 / 正则" },
+    custom_dict: { render: renderCustomDictSettings,
+                   subtitle: "把项目代号、内部称谓等加入脱敏范围：命中即替换为占位符" },
   };
 
   /** 当前该显示哪些插件设置栏目：启用 + 有设置（config_files 或专属渲染器） */
@@ -2880,6 +3033,13 @@
     app.classList.add("is-settings-open");
     applyLayout();                      // 列宽走单一出口
     placeWinCtrls();                    // 顶栏与右栏都被隐藏 → 窗口按钮改挂设置页头部右侧
+    // ★ 左侧「插件」分组要**一次就位**（本轮修）：插件清单原先只在 setSettingsPage("plugin")
+    //   或右栏设置加载器里拉取，于是新开的便携版直接进设置（默认模型页）时，左侧插件分组
+    //   是空的，必须再点一下「插件」页才出现。这里按需补一次，仍不在启动阶段同步拉取；
+    //   失败时保持原状并给出可读提示，设置页照常打开。
+    if (!Array.isArray(state.plugins) || state.plugins.length === 0) {
+      await refreshPlugins();
+    }
     if (page) setSettingsPage(page); else if (!state.settingsPage) setSettingsPage("model");
     if (!state.catalog) renderProv(await call("model_catalog"));
   }
@@ -3278,6 +3438,264 @@
         };
       });
     }
+  }
+
+  /* ── 自定义敏感词表（custom_dict 专属设置）─────────────────────
+     词表格式（与 yindun/plugins/builtin/custom_dict/plugin.py 一致）：
+       每行一条；普通词按字面匹配；`re:` 开头按正则；`#` 开头是注释。
+     页面只做"更好编辑"，读写仍走既有的 plugin_config_read / plugin_config_write
+     通道，保存后由插件按内容哈希热加载——不需要重启，也不在前端伪造生效状态。 */
+  const CDICT_FILE = "words.txt";
+  const CDICT_MAX_SHOW = 200;
+  const CDICT_MAX_CHARS = 80;          // 与插件 MAX_PATTERN_CHARS 同一口径（超长规则插件会丢弃）
+
+  function cdictKind(rule) {
+    return String(rule || "").trim().slice(0, 3).toLowerCase() === "re:" ? "re" : "word";
+  }
+
+  /** 单条规则的问题说明（空串 = 可用）。正则只做 JS RegExp 编译校验，不执行匹配。 */
+  function cdictRuleError(rule) {
+    const item = String(rule || "").trim();
+    if (!item) return "空规则";
+    if (cdictKind(item) === "re") {
+      const pattern = item.slice(3).trim();
+      if (!pattern) return "正则为空";
+      if (pattern.length > CDICT_MAX_CHARS) return `正则超长（最多 ${CDICT_MAX_CHARS} 字符）`;
+      try { new RegExp(pattern); return ""; }
+      catch (err) { return "正则无效：" + ((err && err.message) || "无法解析"); }
+    }
+    if (item.length > CDICT_MAX_CHARS) return `超长（最多 ${CDICT_MAX_CHARS} 字符）`;
+    return "";
+  }
+
+  /** 拆成"顶部注释/空行"与"规则行"；正文中间的空行与注释在保存时不回写（口径见 setfoot）。 */
+  function cdictParse(text) {
+    const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+    const header = [];
+    const rules = [];
+    let inHeader = true;
+    lines.forEach((line) => {
+      const item = line.trim();
+      if (inHeader && (!item || item.startsWith("#"))) { header.push(line); return; }
+      inHeader = false;
+      if (!item || item.startsWith("#")) return;
+      rules.push(item);
+    });
+    // 顶部注释末尾的空行不保留，避免保存后凭空多出空白行
+    while (header.length && !header[header.length - 1].trim()) header.pop();
+    return { header, rules };
+  }
+
+  function cdictDedupe(rules) {
+    const seen = new Set();
+    const unique = [];
+    let dup = 0;
+    (rules || []).forEach((rule) => {
+      if (seen.has(rule)) { dup += 1; return; }
+      seen.add(rule);
+      unique.push(rule);
+    });
+    return { unique, dup };
+  }
+
+  function cdictCompose(header, rules) {
+    const lines = [...(header || []), ...(rules || [])];
+    return lines.length ? lines.join("\n").replace(/\s+$/, "") + "\n" : "";
+  }
+
+  function cdictStats(rules) {
+    let valid = 0, re = 0, invalid = 0, invalidRe = 0;
+    (rules || []).forEach((rule) => {
+      const err = cdictRuleError(rule);
+      if (err) {
+        invalid += 1;
+        if (cdictKind(rule) === "re") invalidRe += 1;
+      } else {
+        valid += 1;
+        if (cdictKind(rule) === "re") re += 1;
+      }
+    });
+    return { valid, re, invalid, invalidRe };
+  }
+
+  async function renderCustomDictSettings(host) {
+    if (!host) return;
+    host.innerHTML = `
+      <div class="cdict">
+        <div class="cdict__state" id="cdict-status"><span>正在读取词表…</span></div>
+        <div class="cdict__add">
+          <input type="text" id="cdict-add-input" placeholder="输入敏感词，或以 re: 开头的正则"
+                 autocomplete="off" spellcheck="false">
+          <button class="btn btn--primary" id="cdict-add" type="button">添加</button>
+        </div>
+        <div class="cdict__list" id="cdict-list"></div>
+        <div class="cdict__hint" id="cdict-hint" hidden></div>
+        <details class="cdict__adv" id="cdict-adv">
+          <summary>高级编辑</summary>
+          <div class="setrow setrow--stack">
+            <textarea class="plugin-cfg__text" id="cdict-text" rows="12" spellcheck="false"
+                      placeholder="点「读取」载入当前词表…"></textarea>
+            <div class="setrow__hint">每行一条：普通词按字面匹配；re: 开头按正则；# 开头是注释。
+              保存时顶部注释与空行原样保留。</div>
+            <div class="setrow__ctrl">
+              <button class="btn" id="cdict-load" type="button">读取</button>
+              <button class="btn btn--primary" id="cdict-save" type="button">保存</button>
+            </div>
+            <div class="cdict__result" id="cdict-result"></div>
+          </div>
+        </details>
+        <p class="setfoot">命中项在送往模型前替换为占位符，还原只在本机完成。
+          保存后插件按内容哈希热加载，无需重启。</p>
+      </div>`;
+
+    const els = {
+      status: $("cdict-status"), list: $("cdict-list"), hint: $("cdict-hint"),
+      input: $("cdict-add-input"), add: $("cdict-add"), text: $("cdict-text"),
+      load: $("cdict-load"), save: $("cdict-save"), result: $("cdict-result"),
+    };
+    let doc = { header: [], rules: [] };
+    let dupCount = 0;
+    let writable = false;
+
+    const setResult = (text, cls) => {
+      if (!els.result) return;
+      els.result.textContent = text || "";
+      els.result.className = "cdict__result" + (cls ? " " + cls : "");
+    };
+
+    const setWritable = (on) => {
+      writable = !!on;
+      [els.input, els.add, els.save].forEach((el) => { if (el) el.disabled = !writable; });
+    };
+    setWritable(false);       // 词表没读到之前不许改（避免把未知内容覆盖掉）
+
+    const paint = () => {
+      const stats = cdictStats(doc.rules);
+      const parts = [`生效 ${stats.valid} 条`, `其中正则 ${stats.re} 条`,
+                     `重复 ${dupCount} 条已合并`];
+      let statusHtml = parts.map(esc).join("、");
+      if (stats.invalidRe) statusHtml += ` <span class="cdict__bad">${stats.invalidRe} 条正则无效</span>`;
+      else if (stats.invalid) statusHtml += ` <span class="cdict__bad">${stats.invalid} 条规则无效</span>`;
+      els.status.innerHTML = `<span>${statusHtml}</span>`;
+      els.text.value = cdictCompose(doc.header, doc.rules);
+
+      if (!doc.rules.length) {
+        els.list.innerHTML = `<div class="cdict__empty">
+          <span>词表还是空的：加一个项目代号或内部称谓，它就会在送往模型前被替换成占位符。</span>
+          <span class="cdict__examples">试试：
+            <button class="cdict__example" type="button" data-cdict-example="隐盾专项">隐盾专项</button>
+            <button class="cdict__example" type="button" data-cdict-example="星海计划">星海计划</button>
+          </span>
+        </div>`;
+      } else {
+        els.list.innerHTML = doc.rules.slice(0, CDICT_MAX_SHOW).map((rule, idx) => {
+          const kind = cdictKind(rule);
+          const err = cdictRuleError(rule);
+          return `<div class="cdict__row${err ? " is-bad" : ""}">
+            <span class="cdict__text">${esc(rule)}</span>
+            ${err ? `<span class="cdict__err" title="${esc(err)}">${esc(err)}</span>` : ""}
+            <span class="cdict__badge${kind === "re" ? " is-re" : ""}">${kind === "re" ? "正则" : "词"}</span>
+            <button class="cdict__x" type="button" data-cdict-del="${idx}" title="从列表移除这条">×</button>
+          </div>`;
+        }).join("");
+      }
+      els.hint.hidden = doc.rules.length <= CDICT_MAX_SHOW;
+      if (!els.hint.hidden) {
+        els.hint.textContent = `仅显示前 ${CDICT_MAX_SHOW} 条，完整列表见高级编辑`;
+      }
+      if (writable) setResult("", "");
+    };
+
+    const load = async () => {
+      els.status.innerHTML = "<span>正在读取词表…</span>";
+      const res = await call("plugin_config_read", "custom_dict", CDICT_FILE);
+      if (!els.status.isConnected) return;        // 期间已切走/重绘，别往旧节点写
+      if (!res || !res.ok) {
+        const reason = (res && res.error) || "未知原因";
+        els.status.innerHTML = `<span class="cdict__bad">词表读取失败：${esc(reason)}</span>`;
+        setWritable(false);
+        setResult("读取失败：" + reason, "is-bad");
+        return;
+      }
+      const parsed = cdictParse(res.text || "");
+      const d = cdictDedupe(parsed.rules);
+      doc = { header: parsed.header, rules: d.unique };
+      dupCount = d.dup;
+      setWritable(true);
+      paint();
+      setResult(res.path ? `已载入：${res.path}` : "已载入当前词表", "is-ok");
+    };
+
+    // 以高级编辑框为准取回当前内容：用户在 textarea 里的改动不能被"快速添加"覆盖掉
+    const adoptText = () => {
+      const parsed = cdictParse(els.text.value);
+      const d = cdictDedupe(parsed.rules);
+      doc = { header: parsed.header, rules: d.unique };
+      dupCount = d.dup;
+    };
+
+    const commitAdd = () => {
+      if (!writable) return;
+      const raw = els.input.value;
+      const value = raw.trim();
+      if (!value) { toast("先输入一条敏感词或正则"); return; }
+      if (/[\r\n]/.test(raw)) { toast("一条规则只能写一行，请分开添加"); return; }
+      adoptText();
+      if (doc.rules.indexOf(value) >= 0) { toast("这条规则已在词表里（重复项会自动合并）"); return; }
+      doc.rules.push(value);
+      els.input.value = "";
+      paint();
+      const err = cdictRuleError(value);
+      toast(err ? `已加入列表，但${err}；修正后才能保存` : "已加入列表，点「保存」后生效");
+    };
+
+    els.add.onclick = commitAdd;
+    els.input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); commitAdd(); }
+    });
+    els.list.onclick = (e) => {
+      const del = e.target.closest("[data-cdict-del]");
+      if (del) {
+        if (!writable) return;
+        doc.rules.splice(Number(del.dataset.cdictDel), 1);
+        paint();
+        toast("已从列表移除，点「保存」后生效");
+        return;
+      }
+      const ex = e.target.closest("[data-cdict-example]");
+      if (ex) { els.input.value = ex.dataset.cdictExample; els.input.focus(); }
+    };
+    els.load.onclick = load;
+    els.save.onclick = async () => {
+      if (!writable) return;
+      // 以高级编辑框为准（用户可能直接改了文本）：先解析，再按"顶部注释 + 规则行"回写
+      adoptText();
+      paint();
+      const stats = cdictStats(doc.rules);
+      if (stats.invalidRe) {
+        setResult(`有 ${stats.invalidRe} 条正则无效，未保存：请修正红色标出的行`, "is-bad");
+        toast(`有 ${stats.invalidRe} 条正则无效，已阻止保存`);
+        return;
+      }
+      if (stats.invalid) {
+        setResult(`有 ${stats.invalid} 条规则无效（超长），未保存`, "is-bad");
+        toast(`有 ${stats.invalid} 条规则无效，已阻止保存`);
+        return;
+      }
+      const res = await call("plugin_config_write", "custom_dict", CDICT_FILE,
+                             cdictCompose(doc.header, doc.rules));
+      if (!els.status.isConnected) return;
+      if (res && res.ok) {
+        setResult(`已写入 ${res.bytes || 0} 字节，改动立即生效`, "is-ok");
+        toast(`已保存 ${stats.valid} 条敏感词，立即生效`);
+      } else {
+        const reason = (res && res.error) || "未知原因";
+        setResult("保存失败：" + reason, "is-bad");
+        toast("保存失败：" + reason);
+      }
+    };
+
+    await load();
   }
 
   /* ── 设置抽屉 ─────────────────────────────────────── */
@@ -3837,6 +4255,30 @@
       state.attachments = Array.isArray(list) ? list : state.attachments;
       renderChips();
     };
+    // 拖文件到窗口：只做视觉提示，**绝不 preventDefault**。
+    // 为什么：WebView2 给页面的 File 没有本地路径；真正的挂载由 Python 侧 WinForms 的
+    // DragDrop（OLE FileDrop）完成。页面一旦 preventDefault，浏览器就自己消费这次拖放，
+    // 原生处理器反而收不到文件。这里只跟着拖拽深度切换高亮，不改变默认行为。
+    let fileDragDepth = 0;
+    const isFileDrag = (e) => !!(e.dataTransfer
+      && Array.from(e.dataTransfer.types || []).includes("Files"));
+    document.addEventListener("dragenter", (e) => {
+      if (!isFileDrag(e)) return;
+      fileDragDepth += 1;
+      document.body.classList.add("is-file-dragover");
+    });
+    document.addEventListener("dragleave", (e) => {
+      if (!isFileDrag(e)) return;
+      fileDragDepth = Math.max(0, fileDragDepth - 1);
+      if (!fileDragDepth) document.body.classList.remove("is-file-dragover");
+    });
+    document.addEventListener("dragover", (e) => {
+      if (isFileDrag(e)) e.dataTransfer.dropEffect = "copy";
+    });
+    document.addEventListener("drop", () => {
+      fileDragDepth = 0;
+      document.body.classList.remove("is-file-dragover");
+    });
     // 模型接入页由 renderProv() 渲染并自带事件绑定（见文件上半部分）
     $("btn-health").onclick = () => runTool("health");
     $("btn-behavior").onclick = () => runTool("behavior");
@@ -3921,6 +4363,18 @@
         }
       });
     });
+    // 代码块复制：按钮在代码块右上角，只复制 <pre> 的纯文本
+    document.addEventListener("click", (ev) => {
+      const btn = ev.target && ev.target.closest && ev.target.closest("[data-copy-code]");
+      if (!btn) return;
+      const block = btn.closest(".code-block");
+      const pre = block && block.querySelector("pre");
+      copyPlainText(pre ? pre.innerText : "").then((ok) => {
+        btn.textContent = ok ? "已复制" : "复制失败";
+        setTimeout(() => { btn.textContent = "复制"; }, 1200);
+      });
+    });
+
     // 工作流面板：事件委托（面板内容每次重绘，逐按钮绑定会丢）
     const wfRoot = $("panel");
     if (wfRoot) {

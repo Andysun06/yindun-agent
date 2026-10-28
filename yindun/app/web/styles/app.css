@@ -294,11 +294,52 @@ body.is-maximized .win-btn__ico-restore { display: block; }
 .slip__mark { display: none; }                    /* Codex 式：不写"指令"标签，靠位置与底色区分 */
 .slip .bubble { display: contents; }
 
+/* 用户长消息折叠（V3.6.22）：长题面整段铺开会占满屏幕，默认只留 8 行 + 渐变遮罩。
+   折叠容器必须在 .bubble 外（bubble 是 display:contents，自身不产生盒子，撑不住高度）；
+   附件卡在 bubble 内，因此也落在折叠区域内，收起时同样被遮住。
+   阈值（约 12 行 / 600 字）由 app.js 判定，短消息不生成按钮。 */
+.slip__fold { position: relative; }
+.slip.is-folded .slip__fold {
+  max-height: var(--slip-fold-h, calc(8 * var(--fs-base) * var(--lh-body)));
+  overflow: hidden;
+}
+.slip.is-folded .slip__fold::after {
+  content: "";
+  position: absolute; left: 0; right: 0; bottom: 0; height: 3.4em;
+  background: linear-gradient(to bottom, transparent, var(--bg-subtle));
+  pointer-events: none;
+}
+.slip__toggle {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-top: var(--sp-2); padding: 1px 8px;
+  border: 1px solid var(--border-1); border-radius: var(--r-chip);
+  background: var(--bg-elev, var(--bg-subtle)); color: var(--text-2);
+  font-size: var(--fs-meta); line-height: 1.7; white-space: nowrap;
+  -webkit-user-select: none; user-select: none;
+}
+.slip__toggle:hover { color: var(--text-1); border-color: var(--accent-500); }
+
+/* 用户消息里的附件卡（V3.6.21）：发送后仍能看到本轮带了什么文件 */
+.user-attachments { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; white-space: normal; }
+.user-attachment {
+  display: flex; align-items: center; gap: 8px; max-width: 260px;
+  padding: 6px 10px; border: 1px solid var(--border-1); border-radius: 10px;
+  background: var(--bg-elev, var(--bg-subtle)); white-space: normal;
+}
+.user-attachment img { width: 44px; height: 44px; object-fit: cover; border-radius: 6px; display: block; flex: none; }
+.user-attachment__ico { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; flex: none; color: var(--text-2); }
+.user-attachment__ico svg { width: 18px; height: 18px; }
+.user-attachment__meta { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+.user-attachment__name { font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-attachment__sub { font-size: var(--fs-meta); color: var(--text-3); }
+.user-attachment.is-bad { border-color: var(--danger-500); }
+
 /* 助手输出：画布上的纯文本 + 一行极小的标记行 */
 .entry { display: flex; flex-direction: column; gap: var(--sp-2); }
 .entry__marker { display: flex; align-items: center; gap: var(--sp-3); font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--text-3); }
 .entry__dot { width: 6px; height: 6px; border-radius: 999px; background: var(--accent-500); flex: none; }
 .entry__body { color: var(--text-1); }
+.md-gap { height: 8px; }   /* 段落间隔（替代连续 <br> 造成的大空行） */
 .entry__body p { margin: 0 0 var(--sp-3); }
 .entry__body p:last-child { margin-bottom: 0; }
 .entry__body.is-thinking { color: var(--text-2); }
@@ -348,6 +389,25 @@ body.is-maximized .win-btn__ico-restore { display: block; }
 .bubble pre, .entry__body pre { margin: var(--sp-3) 0; padding: var(--sp-4); background: var(--code-bg); border: 1px solid var(--code-border); border-radius: var(--r-ctrl); overflow-x: auto; line-height: 1.7; font-size: var(--fs-sm); }
 .bubble code, .entry__body code { font-family: var(--font-mono); font-size: .92em; background: var(--bg-subtle); padding: 1px 5px; border-radius: var(--r-chip); }
 .bubble pre code, .entry__body pre code { background: none; padding: 0; border: none; }
+
+/* 代码块复制 + 对话区自由选中（V3.6.21 热修）：
+   显式声明 user-select:text，避免 WebView2 在无边框窗口里把正文当拖动区；
+   复制按钮只在悬停/聚焦时出现，不打断阅读。 */
+.chat, .entry__body, .entry__body *, .bubble, .bubble * {
+  -webkit-user-select: text;
+  user-select: text;
+}
+.code-block { position: relative; }
+.code-block pre { margin-top: var(--sp-3); }
+.code-copy {
+  position: absolute; top: 12px; right: 10px; z-index: 2;
+  border: 1px solid var(--border-1); background: var(--bg-subtle); color: var(--text-2);
+  border-radius: 6px; padding: 2px 8px; font-size: var(--fs-meta); line-height: 1.6;
+  cursor: pointer; opacity: 0; transition: opacity .15s ease;
+  -webkit-user-select: none; user-select: none;
+}
+.code-block:hover .code-copy, .code-copy:focus-visible { opacity: 1; }
+.code-copy:hover { color: var(--text-1); border-color: var(--accent-500); }
 .bubble table, .entry__body table { border-collapse: collapse; margin: var(--sp-3) 0; font-size: var(--fs-sm); }
 .bubble th, .bubble td, .entry__body th, .entry__body td { border-bottom: 1px solid var(--border-1); padding: 5px var(--sp-4); text-align: left; }
 .bubble th:first-child, .bubble td:first-child,
@@ -416,6 +476,16 @@ html[data-theme="dark"] .trace--judge .trace__ico { color: var(--accent-300); }
   transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
 .composer__box:focus-within { border-color: var(--border-2); box-shadow: 0 0 0 3px var(--focus-ring), 0 8px 24px rgba(0,0,0,.05); }
+/* 拖文件到输入区/对话区时的高亮（仅视觉提示；真正的路径由 Python 侧 OLE FileDrop 取） */
+body.is-file-dragover .composer__box {
+  border-color: var(--accent-500);
+  box-shadow: 0 0 0 3px var(--focus-ring), 0 8px 24px rgba(0,0,0,.08);
+}
+body.is-file-dragover .composer__box::before {
+  content: "松开即可挂载文件（本地解析，不联网）";
+  display: block; margin-bottom: 8px; color: var(--accent-600);
+  font-size: var(--fs-meta); text-align: center;
+}
 .composer textarea { width: 100%; min-height: 40px; resize: none; border: none; outline: none; background: transparent; padding: 2px 2px 0; max-height: 180px; line-height: 1.6; font-size: var(--fs-base); }
 /* ★ 焦点只由外层容器表达（V3.6.9 修「两个圈」）：下方那条全局
    `textarea:focus { border-color + box-shadow }` 也会给这个内层输入框加一圈，
@@ -1075,6 +1145,51 @@ html[data-theme="dark"] .cap__ok { color: var(--accent-300); }
 .plugin-cfg__text { width: 100%; resize: vertical; font-family: var(--font-mono); font-size: var(--fs-meta); line-height: 1.6; }
 .plugin-cfg__ops { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
 .plugin-cfg__ops .field__hint { flex: 1; min-width: 0; }
+
+/* ── 自定义敏感词表（custom_dict 专属设置）──────────────
+   状态条 + 快速添加 + 规则列表 + 折叠的高级编辑；规则行参与滚动，
+   超过 200 条只渲染前 200 条（完整列表在高级编辑的 textarea 里）。 */
+.cdict { display: flex; flex-direction: column; gap: var(--sp-4); }
+.cdict__state { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap;
+  padding: var(--sp-3) var(--sp-4); border: 1px solid var(--border-1); border-radius: 12px;
+  background: var(--bg-subtle); color: var(--text-2); font-size: var(--fs-sm); line-height: 1.6; }
+.cdict__bad { color: var(--danger-500); }
+.cdict__add { display: flex; align-items: center; gap: var(--sp-3); }
+.cdict__add input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--border-2);
+  border-radius: var(--r-ctrl); background: var(--bg-input); color: var(--text-1);
+  font-family: var(--font-mono); font-size: var(--fs-sm); }
+.cdict__add input:focus { outline: none; border-color: var(--accent-500); box-shadow: 0 0 0 3px var(--focus-ring); }
+.cdict__add .btn { flex: none; }
+.cdict__list { max-height: 320px; overflow-y: auto; border: 1px solid var(--border-1);
+  border-radius: 12px; background: var(--bg-canvas); }
+.cdict__row { display: flex; align-items: center; gap: var(--sp-3); padding: 7px var(--sp-4);
+  border-bottom: 1px solid var(--border-1); font-size: var(--fs-sm); }
+.cdict__row:last-child { border-bottom: none; }
+.cdict__row.is-bad { border-left: 2px solid var(--danger-500); background: var(--bg-subtle); }
+.cdict__text { flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--text-1);
+  font-family: var(--font-mono); font-size: var(--fs-meta); }
+.cdict__row.is-bad .cdict__text { color: var(--danger-500); }
+.cdict__err { flex: none; max-width: 44%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--danger-500); font-size: var(--fs-meta); }
+.cdict__badge { flex: none; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border-2);
+  color: var(--text-3); font-size: var(--fs-meta); }
+.cdict__badge.is-re { color: var(--accent-600); border-color: var(--accent-500); }
+.cdict__x { flex: none; width: 22px; height: 22px; border-radius: var(--r-chip);
+  color: var(--text-3); font-size: var(--fs-sm); line-height: 1; }
+.cdict__x:hover { background: var(--bg-hover); color: var(--danger-500); }
+.cdict__empty { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-3);
+  padding: var(--sp-5); color: var(--text-2); font-size: var(--fs-sm); line-height: 1.65; }
+.cdict__examples { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.cdict__example { padding: 3px 10px; border: 1px dashed var(--border-2); border-radius: var(--r-chip);
+  background: transparent; color: var(--accent-600); font-family: var(--font-mono); font-size: var(--fs-meta); }
+.cdict__example:hover { border-color: var(--accent-500); background: var(--bg-subtle); }
+.cdict__hint { color: var(--text-3); font-size: var(--fs-meta); line-height: 1.6; }
+.cdict__hint[hidden] { display: none; }
+.cdict__adv summary { padding: var(--sp-2) 0; color: var(--text-2); font-size: var(--fs-sm); cursor: pointer; }
+.cdict__adv .setrow { padding: 0; border-top: none; }
+.cdict__result { color: var(--text-3); font-size: var(--fs-meta); line-height: 1.6; overflow-wrap: anywhere; }
+.cdict__result.is-ok { color: var(--accent-600); }
+.cdict__result.is-bad { color: var(--danger-500); }
 .panel__actions { display: flex; align-items: center; gap: 2px; }
 /* 链校验原因 + 可执行动作（只在需要时出现，平时不占位） */
 .chain-detail { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-2); }

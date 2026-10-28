@@ -1129,6 +1129,97 @@ check("★ 传给工具的是纯文件名 1.md",
       bool(_tool_read.calls) and _tool_read.calls[0].get("filename") == "1.md",
       str(_tool_read.calls[:1]))
 
+print()
+print("=" * 78)
+print("【10】承诺型开场白 / 工具结果已就绪但总结为空（V3.6.22 负责人实测）")
+print("=" * 78)
+# 现场（工作模式，连问「1.md内容是什么」）：
+#   第 1 轮 —— 模型只回「我来读取一下桌面上的 1.md。」（content 非空、tool_calls 为空），
+#              旧实现把这句承诺当最终回答展示，用户什么内容都没拿到；
+#   第 2 轮 —— 强制读取已执行、模型总结返回空串，旧实现落到
+#              「模型这一轮没有给出内容，可以再问一次或换个说法」；
+#   第 3 轮 —— 才正常读取并回答。
+# 下面三条把这两个入口钉住，并确认「对话」模式不被工具纠正打扰。
+
+# ── 场景 A：第 1 次只给承诺（无工具） → 纠正一次 → 第 2 次给出正常答案 ──
+# 问法刻意选「查看桌面的说明」（含工具信号词 → 不进直答快路径；又没有路径/扩展名
+# → 不触发宿主的强制读取分支），这样测到的就是 ReAct 循环里"无 tool_calls"那一段。
+_llm_promise = ScriptedLLM([
+    {"content": "我来查看一下桌面上的说明文件。"},          # 承诺：content 非空、无 tool_calls
+    {"content": "桌面上的说明文件写着：请勿外传。"},        # 被纠正后给出真正的内容
+])
+_w_promise = make_worker(_llm_promise,
+                         {"read_local_file": FakeTool("read_local_file", lambda a: "✅ 说明"),
+                          "list_local_files": FakeTool("list_local_files", lambda a: "说明.txt")},
+                         "查看桌面的说明", think_mode="深度思考")
+_ev_promise, _elapsed_promise, _stuck_promise = run_worker(_w_promise)
+_fin_promise = str(last_of(_ev_promise, "finished") or "")
+_status_promise = [str(p) for p in all_of(_ev_promise, "status")]
+check("A1 有限时间内结束", not _stuck_promise, f"耗时 {_elapsed_promise:.1f}s 仍未结束")
+check("A2 ★ 最终答复不是承诺句（承诺没有被当最终答案）",
+      "请勿外传" in _fin_promise
+      and not _fin_promise.strip().startswith("我来查看")
+      and "我来查看一下桌面上的说明文件" not in _fin_promise,
+      repr(_fin_promise[:120]))
+check("A3 ★ 模型被纠正至少一次（多跑了一轮生成）",
+      _llm_promise.calls >= 2, f"invoke={_llm_promise.calls}")
+check("A4 ★ 状态里能看到「承诺纠正」提示",
+      any("[纠正]" in s and "承诺" in s for s in _status_promise),
+      str(_status_promise)[:220])
+_sent_promise = "\n".join(str(getattr(m, "content", "")) for m in _llm_promise.seen[-1])
+check("A5 纠正指令里点名了可用工具与参数（不是空喊「请重试」）",
+      "read_local_file" in _sent_promise and "target_directory" in _sent_promise,
+      _sent_promise[-200:])
+check("A6 落库链尾＝用户看到的那段文字",
+      tail_is_assistant_text(_w_promise, _fin_promise),
+      str([(m.get("role"), len(str(m.get("content") or ""))) for m in (_w_promise.result_messages or [])]))
+
+# ── 场景 B：强制工具结果已在手、模型总结为空 → 宿主直接呈现结果（不发「无内容」）──
+_tool_read_b = FakeTool("read_local_file", lambda a: "✅ 内容：hello from 1.md")
+_llm_empty_after_tool = ScriptedLLM([{"content": ""}])       # 无论问几次都返回空串
+_w_empty_after_tool = make_worker(
+    _llm_empty_after_tool, {"read_local_file": _tool_read_b},
+    "读取桌面上的 1.md 内容", think_mode="深度思考")
+_ev_b, _elapsed_b, _stuck_b = run_worker(_w_empty_after_tool)
+_fin_b = str(last_of(_ev_b, "finished") or "")
+check("B1 有限时间内结束", not _stuck_b, f"耗时 {_elapsed_b:.1f}s 仍未结束")
+check("B2 ★ 强制读取确实执行了", bool(_tool_read_b.calls), str(_tool_read_b.calls[:1]))
+check("B3 ★ 最终答复包含工具结果正文（内容早就读到了，不该再说没内容）",
+      "hello from 1.md" in _fin_b, repr(_fin_b[:160]))
+check("B4 ★ 不再出现「模型这一轮没有给出内容 / 没有给出回答」",
+      "没有给出内容" not in _fin_b and "没有给出回答" not in _fin_b,
+      repr(_fin_b[:160]))
+check("B5 宿主答复说明了「已读取」并保留工具原文",
+      "已读取文件" in _fin_b and "✅ 内容：hello from 1.md" in _fin_b, repr(_fin_b[:160]))
+check("B6 落库链尾非空且与界面一致", tail_is_assistant_text(_w_empty_after_tool, _fin_b),
+      str([(m.get("role"), len(str(m.get("content") or ""))) for m in (_w_empty_after_tool.result_messages or [])]))
+
+# ── 场景 B2：工具结果本身是失败标记 → 如实说明失败原因 ──
+_tool_read_fail = FakeTool("read_local_file", lambda a: "❌ 文件不存在：1.md")
+_w_tool_fail = make_worker(ScriptedLLM([{"content": ""}]),
+                           {"read_local_file": _tool_read_fail},
+                           "读取桌面上的 1.md 内容", think_mode="深度思考")
+_ev_bf, _, _ = run_worker(_w_tool_fail)
+_fin_bf = str(last_of(_ev_bf, "finished") or "")
+check("B7 ★ 失败结果如实呈现（说明没能完成 + 失败原因），不包装成成功",
+      "没能完成" in _fin_bf and "文件不存在：1.md" in _fin_bf,
+      repr(_fin_bf[:160]))
+
+# ── 场景 C：「对话」模式不受影响（承诺句不触发工具纠正）──
+_promise_chat = "我来读取一下相关资料。"
+_llm_chat_promise = ScriptedLLM([{"content": _promise_chat}])
+_w_chat_promise = make_worker(_llm_chat_promise, {},
+                              "介绍一下巴黎", think_mode="快速回答")
+_ev_c, _, _ = run_worker(_w_chat_promise)
+_fin_c = str(last_of(_ev_c, "finished") or "")
+_status_c = [str(p) for p in all_of(_ev_c, "status")]
+check("C1 ★ 对话模式不触发工具纠正（没有「[纠正] … 承诺」状态）",
+      not [s for s in _status_c if "[纠正]" in s and "承诺" in s], str(_status_c)[:200])
+check("C2 对话模式行为保持原样（只调模型一次）",
+      _llm_chat_promise.calls == 1, f"invoke={_llm_chat_promise.calls}")
+check("C3 对话模式原样返回该句（没有被工具兜底改写）",
+      _fin_c.strip() == _promise_chat, repr(_fin_c[:120]))
+
 if failures:
     print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))
     sys.exit(1)
