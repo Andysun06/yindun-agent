@@ -491,6 +491,8 @@ class Worker:
             # ★ 本轮被驳回/超时的工具集合（P1-11）：每轮重置，避免跨轮误伤
             self._denied_tools = set()
             self._approval_outcome = ""
+            # 本轮是否有工具被人工驳回（用于纠正模型“用户取消”的编造）
+            self._turn_rejected = False
             # ★ 恢复跨轮脱敏映射表（从会话数据恢复，保证历史占位符可还原）
             if self._box_mapping_restore:
                 self._box_mapping = dict(self._box_mapping_restore)
@@ -887,9 +889,12 @@ class Worker:
             _dir_noun = any(w in self.user_input for w in ["文件", "文件夹", "目录", "沙箱"])
             if forced_tool_result is None and not _path_match and _list_verb and _dir_noun:
                 if "list_local_files" in self.tools_map:
-                    self.status.emit(f"[工具执行] 列出沙箱目录: {self.sandbox_path}")
+                    # ★ 过程区必须显示**本次真正要读的目录**（P1-16）：用户说“桌面”时
+                    #   _execute_tool 会用桌面覆盖 target_directory，旧文案却写死沙箱路径。
+                    _list_target = self._det(self.user_input) or self.sandbox_path
+                    self.status.emit(f"[工具执行] 列出目录: {_list_target}")
                     try:
-                        _args = {"target_directory": self.sandbox_path}
+                        _args = {"target_directory": _list_target}
                         _raw = self._execute_with_approval("list_local_files", _args)
                         forced_tool_result, _ = self._anonymize_tool_output(_raw, "list_local_files")
                         forced_tool_name = "list_local_files"
@@ -1060,6 +1065,10 @@ class Worker:
                 final_reply,
                 list(getattr(self, "_turn_tool_names", []) or []),
             )
+            # ★ 反“编造取消”（P1-15）：本轮有工具被审批驳回、但从未收到取消事件时，
+            #   模型常把“没执行”说成“用户取消后没有执行”。这是与操作记录不符的状态描述，
+            #   必须纠正为“审批驳回”，并附一句事实核对。
+            final_reply = self._guard_false_cancel(final_reply)
             # ★ 反"半句话当完成"（V3.6.10，组员评审 BUG-0003）：重生成后仍是断句就如实说明
             final_reply = self._guard_truncated_answer(final_reply)
             # ★ 长回答被单次生成上限截断（V3.6.13）：自动续写一次后仍截断就如实说明
@@ -2024,6 +2033,7 @@ class Worker:
                         #   确定性答复。旧实现 continue 让模型再跑 1~2 轮，最后把
                         #   “用户拒绝了”说成“我失败了”（真实使用报告 D-7）。
                         if _outcome in ("rejected", ""):
+                            self._turn_rejected = True
                             self.status.emit("[停止] 已按你的选择驳回，本轮已终止（未执行该操作）")
                             final_reply = (
                                 f"已按你的选择驳回：{tool_display_name} 未执行"
@@ -2633,6 +2643,7 @@ class Worker:
             if not self._request_approval(tool_display_name, args, target_path, tool_id=tool_name):
                 # 驳回 / 取消 / 超时
                 self.status.emit(f"🚫 已驳回: {tool_display_name}")
+                self._turn_rejected = True
                 try:
                     AuditLog().log_access_control(
                         f"{tool_display_name}({tool_name})", target_path, approved=False)
@@ -2649,10 +2660,29 @@ class Worker:
         # approve 或已通过人工审批：越界则授予令牌，然后执行工具（令牌用完即撤）
         self._grant_outside_for(tool_name, target_path, policy_result)
         self.status.emit(f"执行工具: {tool_display_name}")
+        # ★ 工具执行必须成对写审计（P0-09）：宿主强制分支以前只走这里，完全不落
+        #   tool_call / tool_result，导致「界面执行了、审计里没有」。与 ReAct 分支
+        #   共用同一组写入点；审计里只存脱敏副本（隐私不变量）。
         try:
-            return self._execute_tool(tool_name, args)
+            AuditLog().log_tool_call(tool_name, args, target_path)
+        except Exception:
+            pass
+        try:
+            result = self._execute_tool(tool_name, args)
+        except Exception as exc:
+            try:
+                AuditLog().log_tool_result(tool_name, False, str(exc))
+            except Exception:
+                pass
+            raise
         finally:
             self._revoke_outside_grants()
+        try:
+            _safe_result, _ = self._anonymize_tool_output(str(result), tool_name)
+            AuditLog().log_tool_result(tool_name, True, str(_safe_result)[:500])
+        except Exception:
+            pass
+        return result
 
     # ──────────────────────────────────────────
     # 模型利用率与工具链完善（V3.5.0）
@@ -4088,6 +4118,40 @@ class Worker:
                 "（审批也不会弹——审批只在真的执行操作时才出现）。"
                 "请再发一次；若反复如此，说明当前模型不支持工具调用，"
                 "可在设置页「模型接入」换一个支持 function calling 的模型（本机 qwen 系列、云端 glm 系列都可以）。")
+
+    _CANCEL_CLAIM_RE = re.compile(r"用户取消|你取消了|取消后|因取消|用户中断|被取消")
+
+    def _guard_false_cancel(self, reply: str) -> str:
+        """没有取消事件时，纠正模型“用户取消/中断”的编造（P1-15）。
+
+        只在“本轮确实有工具被审批驳回”时介入：驳回与取消是两种不同事实，
+        模型把“未执行”解释成“用户取消”，会让用户以为程序被自己中断过。
+        """
+        if not reply or not isinstance(reply, str):
+            return reply
+        if not getattr(self, "_turn_rejected", False):
+            return reply
+        if self._cancel_requested.is_set():
+            return reply
+        if not self._CANCEL_CLAIM_RE.search(reply):
+            return reply
+        fixed = reply
+        for old, new in (
+            ("用户取消后没有执行", "该操作被审批驳回，没有执行"),
+            ("用户取消了", "审批驳回了该操作"),
+            ("你取消了", "审批驳回了该操作"),
+            ("取消后", "驳回后"),
+            ("因取消", "因审批驳回"),
+            ("用户中断", "审批驳回"),
+            ("被取消", "被审批驳回"),
+            ("用户取消", "审批驳回"),
+        ):
+            fixed = fixed.replace(old, new)
+        if fixed == reply:
+            return reply
+        return (fixed.rstrip()
+                + chr(10) * 2
+                + "（事实核对：本轮没有收到取消操作；该步骤未执行是因为审批被驳回，不是取消。）")
 
     @staticmethod
     def _clean(text):

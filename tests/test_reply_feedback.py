@@ -1229,6 +1229,62 @@ check("C2 对话模式行为保持原样（只调模型一次）",
 check("C3 对话模式原样返回该句（没有被工具兜底改写）",
       _fin_c.strip() == _promise_chat, repr(_fin_c[:120]))
 
+print()
+print("=" * 78)
+print("【11】测试报告回归：工具审计 / 编造取消 / 过程区路径 / 对话短答")
+print("=" * 78)
+
+# P0-09：宿主审批通道执行工具也必须成对写 tool_call + tool_result
+import os as _os2
+from yindun.core.audit_log import AuditLog as _AL
+_prev_perm2 = _os2.environ.get("YINDUN_PERMISSION")
+_os2.environ["YINDUN_PERMISSION"] = "full"
+try:
+    _audit_tool = FakeTool("list_local_files", lambda args: "a.txt")
+    _w_audit = make_worker(ScriptedLLM([{"content": "ok"}]), {"list_local_files": _audit_tool},
+                           "列出沙箱里的文件", think_mode="深度思考")
+    _calls_before = len(_AL().get_entries({"event_type": "tool_call"}))
+    _results_before = len(_AL().get_entries({"event_type": "tool_result"}))
+    _w_audit._execute_with_approval("list_local_files", {"target_directory": str(SANDBOX_ROOT)})
+    _calls_after = len(_AL().get_entries({"event_type": "tool_call"}))
+    _results_after = len(_AL().get_entries({"event_type": "tool_result"}))
+finally:
+    if _prev_perm2 is None:
+        _os2.environ.pop("YINDUN_PERMISSION", None)
+    else:
+        _os2.environ["YINDUN_PERMISSION"] = _prev_perm2
+check("★ 宿主审批通道执行工具：tool_call + tool_result 各 +1",
+      _calls_after == _calls_before + 1 and _results_after == _results_before + 1,
+      f"call {_calls_before}->{_calls_after}, result {_results_before}->{_results_after}")
+
+# P1-15：本轮有驳回、没有取消 → 不得把“未执行”说成“用户取消”
+_w_cancel = Worker()
+_w_cancel._turn_rejected = True
+_w_cancel._cancel_requested.clear()
+_fixed_cancel = _w_cancel._guard_false_cancel("新建文件这一步在用户取消后没有执行。")
+check("★ 没有取消事件时，模型编造的“用户取消”被纠正为审批驳回",
+      "审批驳回" in _fixed_cancel and "事实核对" in _fixed_cancel
+      and "用户取消" not in _fixed_cancel, _fixed_cancel[:160])
+
+# P1-16：过程区路径必须等于实际解析出的目录（不能写死沙箱）
+_w_path = make_worker(ScriptedLLM([{"content": "桌面有文件。"}]),
+                      {"list_local_files": FakeTool("list_local_files", lambda args: "x.txt")},
+                      "列出桌面上的 txt 文件", think_mode="深度思考")
+_expected_path = _w_path._det(_w_path.user_input) or _w_path.sandbox_path
+_ev_path, _, _ = run_worker(_w_path)
+_status_path = [str(x) for x in all_of(_ev_path, "status")]
+check("★ 过程区显示本次真正读取的目录（不再写死沙箱）",
+      any(f"列出目录: {_expected_path}" in x for x in _status_path)
+      and not any("列出沙箱目录" in x for x in _status_path), str(_status_path)[:220])
+
+# P1-12：对话模式下“只回答两个字”不应被误判成需要工具
+_llm_short = ScriptedLLM([{"content": "收到"}])
+_w_short = make_worker(_llm_short, {}, "只回答两个字：收到", think_mode="快速回答")
+_ev_short, _, _ = run_worker(_w_short)
+_fin_short = str(last_of(_ev_short, "finished") or "").strip()
+check("★ 对话模式“只回答两个字：收到”原样返回，不触发切工作",
+      _fin_short == "收到" and _llm_short.calls == 1, repr(_fin_short[:80]))
+
 if failures:
     print(f"❌ {len(failures)} 项未通过：" + "；".join(failures))
     sys.exit(1)
